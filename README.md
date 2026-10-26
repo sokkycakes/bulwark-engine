@@ -36,8 +36,9 @@ new games.
 - **Input**: keyboard, mouse and SDL game controllers. Packages: `.pk3`
   and Quake `.pak`.
 - **Bots**: a game-side QC bot framework in `qc/bots` (action stack,
-  locomotion with climbing and gap jumps, vision, waypoint paths and chasing),
-  with headless scenario tests in `tests/bots`.
+  locomotion with climbing and gap jumps, vision, waypoint paths and chasing,
+  and player bots that play as fake clients through player input), with
+  headless scenario tests in `tests/bots`, including a TF2-style match.
 - Not yet: ragdolls, the menu progs.
 
 ## Building

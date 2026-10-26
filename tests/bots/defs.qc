@@ -140,3 +140,17 @@ void(filestream f) fclose = #0:fclose;
 float(float mdl, string name) frameforname = #0:frameforname;
 float(float mdl, float frame) frameduration = #0:frameduration;
 void(optional entity e, optional vector o) touchtriggers = #0:touchtriggers;
+
+/* client input, filled for SV_RunClientCommand and read by the physics */
+float input_timelength;
+vector input_angles;
+vector input_movevalues;
+float input_buttons;
+float input_impulse;
+.float maxspeed;
+const float FL_JUMPRELEASED = 4096;
+entity() spawnclient = #0:spawnclient;
+float(entity e) clienttype = #0:clienttype;
+void(entity e) runstandardplayerphysics = #0:runstandardplayerphysics;
+void(entity e, string key, string value) forceinfokey = #0:forceinfokey;
+float(float f) tan = #0:tan;

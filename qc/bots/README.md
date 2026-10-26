@@ -50,6 +50,38 @@ for example `bot.m_loco.m_run_speed = 250`. The bot moves itself through
 `.customphysics`; `.think` still runs as usual. Remove bots with
 `bot.BotRemove()`.
 
+## Player bots
+
+A bot can also be a player: a fake client from `spawnclient()` that plays
+through player input, so it uses the game's player physics and weapons.
+
+```c
+entity os = self;
+self = spawnclient();
+spawnfunc_Soldier();		/* the client entity becomes the bot class */
+Soldier s = (Soldier)self;
+self = os;
+/* the game places it as a player: box, origin at the feet, health, team */
+s.BotStart();			/* sees FL_CLIENT and picks BWPlayerLocomotion */
+
+void SV_RunClientCommand(void)
+{
+	entity p = self;
+	bw_player_input(p);	/* bots fill input_angles, input_movevalues, input_buttons */
+	self = p;
+	/* weapons, then the player physics */
+}
+```
+
+Behaviour presses buttons with `m_bot.PressButton(BWIN_ATTACK, 0.15)`,
+switches weapons with `SelectWeapon(impulse)`, and aims with the Body as
+usual. `m_bot.m_body.m_aim_error`, `m_track_rate` and `m_head_rate` set the
+aiming skill, `m_vision.m_reaction` the reaction time. After the game
+respawns a dead player bot it calls `BotRespawn()`. In Nuclide, define
+`BW_PAWN_BASE` as `ncBot` before including the framework, derive the bot from
+`BWBot` and call `bw_player_input(this)` from its `RunAI`.
+`tests/bots/tf.qc` is a whole TF2-style example.
+
 ## Actions
 
 ```c
@@ -114,4 +146,6 @@ Paths: `BWPathFollower` (`Compute(bot, goal, forbiddenflags)`, then
 
 `tests/bots/run.sh build/bulwark-ded` (or `ctest`, with `FTEQCC` set) runs
 the headless scenarios on `tests/data/maps/botmap.bsp`, made by
-`tools/mkq1map_test.py --bots`. See the spec doc for what they check.
+`tools/mkq1map_test.py --bots`: `basic` and `l4d` for bots that move
+themselves, `pnav` and `tf` (a TF2-style King of the Hill match) for player
+bots. See the spec doc for what they check.

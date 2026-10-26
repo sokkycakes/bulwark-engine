@@ -2,3 +2,4 @@ progs.dat
 defs.qc
 ../../qc/bots/bots.qc
 bottest.qc
+tf.qc

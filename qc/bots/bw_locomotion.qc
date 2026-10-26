@@ -44,6 +44,7 @@ void BWLocomotion::Approach(vector goal, float weight)
 	if (vlen(d) < 0.5)
 		return;
 	m_pend_dir += normalize(d) * weight;
+	m_pend_goal += goal * weight;
 	m_pend_weight += weight;
 	bw_log(m_bot, BWD_LOCOMOTION, sprintf("approach %v weight %g", goal, weight));
 }
@@ -58,6 +59,7 @@ void BWLocomotion::Stop(void)
 {
 	m_pend_weight = 0;
 	m_pend_dir = '0 0 0';
+	m_pend_goal = '0 0 0';
 	m_move_until = 0;
 }
 
@@ -72,6 +74,7 @@ float BWLocomotion::GetStuckDuration(void) { return m_stuck ? time - m_stuck_sin
 float BWLocomotion::GetStillDuration(void) { return time - m_still_since; }
 /* bumped into a player or bot, or saw one in the way, in the last half second */
 float BWLocomotion::IsBlockedByActor(void) { return (time - m_actor_blocked < 0.5) ? TRUE : FALSE; }
+float BWLocomotion::DrivesInput(void) { return FALSE; }
 float BWLocomotion::IsImmobile(void) { return (GetStillDuration() > 1) ? TRUE : FALSE; }
 
 void BWLocomotion::ClearStuck(void)
@@ -432,9 +435,11 @@ void BWLocomotion::FrameUpdate(float dt)
 	if (m_pend_weight > 0) {
 		if (vlen(m_pend_dir) > 0.001) {
 			m_move_dir = normalize(bw_flat(m_pend_dir));
+			m_move_goal = m_pend_goal * (1 / m_pend_weight);
 			m_move_until = time + bw_request_hold();
 		}
 		m_pend_dir = '0 0 0';
+		m_pend_goal = '0 0 0';
 		m_pend_weight = 0;
 	}
 	m_wants_move = (time < m_move_until && m_bot.IsAlive() && !m_bot.m_bot_paused) ? TRUE : FALSE;

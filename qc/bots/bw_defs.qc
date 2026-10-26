@@ -117,6 +117,18 @@
 
 #define BWPATH_MAXSEGS	192
 
+/* --- player bots ---------------------------------------------------------------
+ * input_buttons bits, the same as Nuclide's INPUT_BUTTON* (and the engine's
+ * standard player physics, which reads BWIN_JUMP) */
+#define BWIN_ATTACK	1
+#define BWIN_JUMP	2
+#define BWIN_PRONE	4
+#define BWIN_RELOAD	8
+#define BWIN_ATTACK2	16
+#define BWIN_USE	32
+#define BWIN_SPRINT	64
+#define BWIN_CROUCH	128
+
 /* one point of a path; segment i runs from point i-1 to point i */
 struct bw_seg_t {
 	vector pos;
@@ -231,6 +243,8 @@ class BWLocomotion : BWComponent {
 
 	vector m_pend_dir;
 	float m_pend_weight;
+	vector m_pend_goal;	/* weighted sum of the goals asked for */
+	vector m_move_goal;	/* where this think's requests point */
 	vector m_move_dir;
 	float m_move_until;
 	vector m_face_goal;
@@ -270,10 +284,11 @@ class BWLocomotion : BWComponent {
 	nonvirtual void ClearStuck(void);
 	nonvirtual float IsBlockedByActor(void);
 
-	nonvirtual void Jump(float height);
-	nonvirtual void Leap(vector vel);
-	nonvirtual float JumpAcrossGap(vector landing, vector fwd);
-	nonvirtual float ClimbUpToLedge(vector ledge, vector fwd);
+	virtual void Jump(float height);
+	virtual void Leap(vector vel);
+	virtual float JumpAcrossGap(vector landing, vector fwd);
+	virtual float ClimbUpToLedge(vector ledge, vector fwd);
+	virtual float DrivesInput(void);	/* TRUE for player bots */
 
 	virtual float IsPotentiallyTraversable(vector from, vector to, float eventually);
 	virtual float HasGap(vector from, vector to);
@@ -284,6 +299,26 @@ class BWLocomotion : BWComponent {
 	nonvirtual void CheckGround(float was);
 	nonvirtual void UpdateStuck(void);
 	nonvirtual void Turn(float dt);
+};
+
+/* Locomotion for player bots: fake clients made with spawnclient(). Instead
+ * of moving the box it turns requests into the input a player would send,
+ * and the game's player physics moves it. See bw_player.qc. */
+class BWPlayerLocomotion : BWLocomotion {
+	vector m_in_move;	/* input_movevalues for this frame */
+	float m_was_ground;
+	float m_jump_press;	/* press jump on the next input frame */
+	float m_jump_at;	/* when the jump was asked for */
+	float m_air_steer;	/* keep moving towards m_air_goal while airborne */
+
+	virtual void Reset(void);
+	virtual void FrameUpdate(float dt);
+	virtual void Jump(float height);
+	virtual float JumpAcrossGap(vector landing, vector fwd);
+	virtual float ClimbUpToLedge(vector ledge, vector fwd);
+	virtual float DrivesInput(void);
+	nonvirtual void Observe(void);
+	nonvirtual void Feel(void);
 };
 
 class BWBody : BWComponent {
@@ -297,6 +332,13 @@ class BWBody : BWComponent {
 	string m_look_reason;
 	vector m_track;
 	float m_on_target;
+	/* aiming skill; 0 means the default */
+	float m_head_rate;	/* degrees per second when far off target */
+	float m_track_rate;	/* how fast the aim catches up with a moving subject */
+	float m_aim_error;	/* degrees of error, re-rolled every half second or so */
+	vector m_err_off;
+	float m_err_next;
+	vector m_aim_pos;	/* where the head is steering now, error included */
 
 	virtual void Reset(void);
 	virtual void FrameUpdate(float dt);
@@ -317,6 +359,7 @@ class BWBody : BWComponent {
 	nonvirtual void AimHeadTowardsEntity(entity subject, float prio, float duration, BWAimReply reply, string reason);
 	nonvirtual float IsHeadAimingOnTarget(void);
 	nonvirtual float IsHeadSteady(void);
+	nonvirtual float IsAimingAt(vector pos, float radius);
 	nonvirtual void ClearAim(void);
 	nonvirtual void EndAim(float reason);
 };
@@ -482,8 +525,14 @@ class BWChasePath : BWPathFollower {
 	nonvirtual float IsRepathNeeded(BWBot bot, entity subject);
 };
 
-/* the bot itself: games derive from this */
+/* the bot itself: games derive from this. A game whose player bots must be
+ * its own player class defines BW_PAWN_BASE to that class before including
+ * the framework, so the bot is both (see docs/spec/bots.md, "Player bots"). */
+#ifdef BW_PAWN_BASE
+class BWBot : BW_PAWN_BASE {
+#else
 class BWBot {
+#endif
 	BWLocomotion m_loco;
 	BWBody m_body;
 	BWVision m_vision;
@@ -493,6 +542,9 @@ class BWBot {
 	float m_bot_paused;
 	BWBot m_bot_next;
 	float m_debug_on;
+	float m_btn_until[8];	/* held buttons, by bit */
+	float m_btn_once;	/* pressed for the next input frame only */
+	float m_impulse;
 
 	virtual BWLocomotion CreateLocomotion(void);
 	virtual BWBody CreateBody(void);
@@ -503,20 +555,26 @@ class BWBot {
 
 	virtual float IsEnemy(entity e);
 	virtual float IsFriend(entity e);
-	virtual float IsAlive(void);
+#ifndef BW_PAWN_BASE
+	virtual float IsAlive(void);	/* the pawn class has its own */
+#endif
 	virtual string BotName(void);
 
 	nonvirtual void BotStart(void);
 	nonvirtual void BotRemove(void);
+	nonvirtual void BotRespawn(void);
 	nonvirtual void BotFrame(void);
 	nonvirtual void SendEvent(float type);
 	nonvirtual void Killed(entity inflictor, entity attacker, float damage);
 	nonvirtual float IsDebugging(float category);
 
-	nonvirtual BWLocomotion GetLocomotion(void);
-	nonvirtual BWBody GetBody(void);
-	nonvirtual BWVision GetVision(void);
-	nonvirtual BWIntention GetIntention(void);
+	/* player bots: buttons and weapon switches for the input frame */
+	nonvirtual void PressButton(float bits, float duration);
+	nonvirtual void ReleaseButton(float bits);
+	nonvirtual float IsButtonDown(float bits);
+	nonvirtual float TakeButtons(void);
+	nonvirtual void SelectWeapon(float impulse);
+	nonvirtual void PlayerInput(void);
 };
 
 .entity bw_ownnext;
@@ -550,5 +608,6 @@ float *bw_route_nodes;
 float bw_route_len;
 float bw_route_partial;
 void bw_bot_physics(void);
+void bw_player_input(entity pawn);
 void bw_console_register(void);
 float bw_debug_matches(BWBot bot);

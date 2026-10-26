@@ -3,7 +3,13 @@
 
 /* --- factories and defaults ------------------------------------------------- */
 
-BWLocomotion BWBot::CreateLocomotion(void) { return spawn(BWLocomotion); }
+/* a client (a fake one from spawnclient()) is a player bot */
+BWLocomotion BWBot::CreateLocomotion(void)
+{
+	if (flags & FL_CLIENT)
+		return spawn(BWPlayerLocomotion);
+	return spawn(BWLocomotion);
+}
 BWBody BWBot::CreateBody(void) { return spawn(BWBody); }
 BWVision BWBot::CreateVision(void) { return spawn(BWVision); }
 BWIntention BWBot::CreateIntention(void) { return spawn(BWIntention); }
@@ -24,7 +30,9 @@ float BWBot::IsFriend(entity e)
 	return (e.team == team) ? TRUE : FALSE;
 }
 
+#ifndef BW_PAWN_BASE
 float BWBot::IsAlive(void) { return (!m_bot_dead && health > 0) ? TRUE : FALSE; }
+#endif
 
 string BWBot::BotName(void)
 {
@@ -32,11 +40,6 @@ string BWBot::BotName(void)
 		return netname;
 	return classname;
 }
-
-BWLocomotion BWBot::GetLocomotion(void) { return m_loco; }
-BWBody BWBot::GetBody(void) { return m_body; }
-BWVision BWBot::GetVision(void) { return m_vision; }
-BWIntention BWBot::GetIntention(void) { return m_intention; }
 
 float BWBot::IsDebugging(float category)
 {
@@ -51,18 +54,22 @@ void BWBot::BotStart(void)
 	float rate = bw_cvar("bot_think_rate");
 	if (rate <= 0)
 		rate = 10;
-	solid = SOLID_SLIDEBOX;
-	movetype = MOVETYPE_WALK;	/* only for code that looks; .customphysics moves it */
-	flags |= FL_MONSTER;
+	m_loco = CreateLocomotion();
+	if (!m_loco.DrivesInput()) {
+		solid = SOLID_SLIDEBOX;
+		movetype = MOVETYPE_WALK;	/* only for code that looks; .customphysics moves it */
+		flags |= FL_MONSTER;
+		customphysics = bw_bot_physics;
+		if (!bw_cvar("bot_actors_block"))
+			hitcontentsmaski = CONTENTBIT_SOLID | CONTENTBIT_PLAYERCLIP | CONTENTBIT_MONSTERCLIP;
+	}
+	/* a player bot is a client: the game set up its box and physics, and
+	 * runs it through bw_player_input each input frame */
 	if (!health)
 		health = 100;
 	if (takedamage == DAMAGE_NO)
 		takedamage = DAMAGE_AIM;
-	customphysics = bw_bot_physics;
-	if (!bw_cvar("bot_actors_block"))
-		hitcontentsmaski = CONTENTBIT_SOLID | CONTENTBIT_PLAYERCLIP | CONTENTBIT_MONSTERCLIP;
 
-	m_loco = CreateLocomotion();
 	m_body = CreateBody();
 	m_vision = CreateVision();
 	m_intention = CreateIntention();
@@ -83,6 +90,7 @@ void BWBot::BotStart(void)
 void BWBot::BotRemove(void)
 {
 	BWBot b, prev = __NULL__;
+	float player = (m_loco && m_loco.DrivesInput()) ? TRUE : FALSE;
 	for (b = bw_bots; b; prev = b, b = b.m_bot_next) {
 		if (b != this)
 			continue;
@@ -107,8 +115,31 @@ void BWBot::BotRemove(void)
 	}
 	if (m_loco)
 		remove(m_loco);
+	m_loco = __NULL__;
+	m_body = __NULL__;
+	m_vision = __NULL__;
+	m_intention = __NULL__;
 	customphysics = __NULL__;
-	remove(this);
+	if (!player)
+		remove(this);	/* a client stays; the game drops it */
+}
+
+/* for player bots the game respawns: the bot starts over from its
+ * initial action with a fresh memory */
+void BWBot::BotRespawn(void)
+{
+	float i;
+	m_bot_dead = FALSE;
+	m_intention.Reset();
+	m_vision.Reset();
+	m_body.ClearAim();
+	m_body.Reset();
+	m_loco.Reset();
+	for (i = 0; i < 8; i++)
+		m_btn_until[i] = 0;
+	m_btn_once = 0;
+	m_impulse = 0;
+	m_next_think = time;
 }
 
 /* to every component in turn; the Intention passes it to the actions */
@@ -165,9 +196,12 @@ void BWBot::Killed(entity inflictor, entity attacker, float damage)
 	m_bot_dead = TRUE;
 	if (health > 0)
 		health = 0;
-	solid = SOLID_NOT;
-	takedamage = DAMAGE_NO;
-	deadflag = 1;
+	if (!m_loco.DrivesInput()) {
+		/* the game looks after a dead player */
+		solid = SOLID_NOT;
+		takedamage = DAMAGE_NO;
+		deadflag = 1;
+	}
 	m_loco.Stop();
 	m_intention.ForceChange(DeadAction(), "killed");
 }

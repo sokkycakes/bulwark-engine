@@ -12,4 +12,5 @@
 #include "bw_follow.qc"
 #include "bw_actions.qc"
 #include "bw_bot.qc"
+#include "bw_player.qc"
 #include "bw_console.qc"

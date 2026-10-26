@@ -26,8 +26,14 @@ float BWBody::PostureEyeHeight(float posture)
 void BWBody::Reset(void)
 {
 	m_posture = BWPOSTURE_STAND;
-	setsize(m_bot, [-BW_HALF_WIDTH, -BW_HALF_WIDTH, 0], PostureMaxs(m_posture));
-	m_bot.view_ofs = [0, 0, PostureEyeHeight(m_posture)];
+	if (m_bot.m_loco.DrivesInput()) {
+		/* a player's box and eyes belong to the game */
+		if (!m_bot.view_ofs)
+			m_bot.view_ofs = [0, 0, m_bot.maxs_z - 8];
+	} else {
+		setsize(m_bot, [-BW_HALF_WIDTH, -BW_HALF_WIDTH, 0], PostureMaxs(m_posture));
+		m_bot.view_ofs = [0, 0, PostureEyeHeight(m_posture)];
+	}
 	m_look_prio = -1;
 	m_look_until = 0;
 	m_activity = BWACT_NONE;
@@ -41,6 +47,13 @@ float BWBody::SetDesiredPosture(float posture)
 	vector mx;
 	if (posture == m_posture)
 		return TRUE;
+	if (m_bot.m_loco.DrivesInput()) {
+		/* the crouch or prone button does it, through the game's physics */
+		m_posture = posture;
+		bw_ev_clear();
+		m_bot.SendEvent(BWE_POSTURE);
+		return TRUE;
+	}
 	mx = PostureMaxs(posture);
 	if (mx_z > m_bot.maxs_z) {
 		tracebox(m_bot.origin, m_bot.mins, mx, m_bot.origin, MOVE_NORMAL, m_bot);
@@ -182,6 +195,18 @@ float BWBody::IsHeadAimingOnTarget(void) { return (m_look_prio >= 0 && m_on_targ
 
 float BWBody::IsHeadSteady(void) { return m_on_target; }
 
+/* the line of sight passes within radius of pos: for a game deciding to
+ * shoot. Pass m_aim_pos to shoot where the bot believes the target is, so
+ * its aiming error shows in the shot. */
+float BWBody::IsAimingAt(vector pos, float radius)
+{
+	vector eye = GetEyePosition(), dir = GetViewVector();
+	float along = (pos - eye) * dir;
+	if (along <= 0)
+		return FALSE;
+	return (vlen(eye + dir * along - pos) <= radius) ? TRUE : FALSE;
+}
+
 void BWBody::FrameUpdate(float dt)
 {
 	vector eye = GetEyePosition(), target, want, ang = m_bot.v_angle;
@@ -216,13 +241,22 @@ void BWBody::FrameUpdate(float dt)
 	} else if (m_look_ent) {
 		/* follow the subject with some lag, leading its motion */
 		want = m_bot.m_intention.SelectTargetPoint(m_look_ent) + m_look_ent.velocity * 0.1;
-		k = min(1, 8 * dt);
+		k = min(1, (m_track_rate ? m_track_rate : 8) * dt);
 		m_track = m_track + (want - m_track) * k;
 		target = m_track;
+		if (m_aim_error > 0) {
+			/* a wobble that moves on now and then, as wide as the error at that range */
+			if (time >= m_err_next) {
+				m_err_next = time + 0.4 + random() * 0.4;
+				m_err_off = [random() * 2 - 1, random() * 2 - 1, (random() * 2 - 1) * 0.5];
+			}
+			target += m_err_off * (vlen(target - eye) * m_aim_error * (M_PI / 180));
+		}
 	} else {
 		target = m_look_pos;
 	}
 
+	m_aim_pos = target;
 	want = vectoangles(target - eye);
 	want_x = -want_x;	/* v_angle pitch is positive looking down */
 	if (want_x < -180)
@@ -234,7 +268,7 @@ void BWBody::FrameUpdate(float dt)
 	err = max(fabs(dy), fabs(dp));
 
 	/* eased: fast when far off, slow near the target, ramping up at first */
-	rate = BW_HEAD_RATE * bound(0.15, err / BW_HEAD_EASE, 1);
+	rate = (m_head_rate ? m_head_rate : BW_HEAD_RATE) * bound(0.15, err / BW_HEAD_EASE, 1);
 	if (m_look_prio >= 0)
 		rate *= bound(0.25, (time - m_look_start) / BW_HEAD_RAMP, 1);
 	k = rate * dt;

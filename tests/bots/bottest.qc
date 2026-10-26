@@ -20,6 +20,12 @@ float g_pounces, g_punches, g_fled, g_best_pounce;
 
 void test_line(string s) { print(strcat("TEST ", s, "\n")); }
 
+/* player-bot scenarios, in tf.qc */
+void tf_start(void);
+void tf_tick(void);
+void pnav_start(void);
+void pnav_check(void);
+
 class TestBot : BWBot {
 	float m_kind;
 	vector m_goal;
@@ -508,6 +514,7 @@ void worldspawn(void)
 	registercvar("bottest_debug", "");
 	registercvar("bottest_filter", "");
 	registercvar("bottest_seed", "0");
+	registercvar("tf_bot_skill", "1");
 }
 
 void info_player_start(void) { }
@@ -540,6 +547,10 @@ void StartFrame(void)
 		}
 		if (g_scenario == "l4d")
 			l4d_start();
+		else if (g_scenario == "tf")
+			tf_start();
+		else if (g_scenario == "pnav")
+			pnav_start();
 		else
 			basic_start();
 		g_status_at = time + 10;
@@ -551,13 +562,17 @@ void StartFrame(void)
 	}
 	if (g_scenario == "l4d")
 		l4d_tick();
+	else if (g_scenario == "tf")
+		tf_tick();
+	else if (g_scenario == "pnav")
+		pnav_check();
 	else
 		basic_check();
 	if (g_finished)
 		localcmd("quit\n");
 }
 
-/* unused engine entry points (no players in these tests) */
+/* unused engine entry points (the only players are bots) */
 void main(void) { }
 void PlayerPreThink(void) { }
 void PlayerPostThink(void) { }

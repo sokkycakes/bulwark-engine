@@ -13,7 +13,7 @@ if [ -z "$FTEQCC" ]; then
 	echo "FTEQCC not set, skipping bot tests"
 	exit 0
 fi
-SCENARIOS="${*:-basic l4d}"
+SCENARIOS="${*:-basic l4d pnav tf}"
 OUT="$(dirname "$DED")/bottest"
 mkdir -p "$OUT/game/maps" "$OUT/game/data"
 (cd "$HERE" && "$FTEQCC" -Tfte progs.src > "$OUT/qcc.log" 2>&1) || { cat "$OUT/qcc.log"; exit 1; }
@@ -28,7 +28,7 @@ for s in $SCENARIOS; do
 	for seed in ${BOTTEST_SEEDS:-0}; do
 		log="$OUT/$s-$seed.log"
 		# 72 frames a second; the scenarios end themselves, this is a backstop
-		"$DED" -basedir "$OUT" -game game -frames 10000 +set bottest "$s" +set bottest_seed "$seed" \
+		"$DED" -basedir "$OUT" -game game -frames 30000 +maxplayers 16 +set bottest "$s" +set bottest_seed "$seed" \
 			$BOTTEST_ARGS +map botmap > "$log" 2>&1 || true
 		grep '^TEST' "$log" || true
 		if grep -q '^PASS' "$log"; then
