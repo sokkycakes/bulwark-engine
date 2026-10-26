@@ -193,6 +193,41 @@ static void free_client_state(client_t *c)
 	}
 	SB_Free(&c->qcrel);
 	SB_Free(&c->datagram);
+	Blob_Clear(c->blobs);
+}
+
+static void write_blob(msg_t *m, int slot, const infoblob_t *b)
+{
+	MSG_WriteByte(m, svc_playerblob);
+	MSG_WriteByte(m, slot);
+	MSG_WriteString(m, b->key);
+	MSG_WriteVarUInt(m, (uint32_t)b->len);
+	MSG_WriteData(m, b->data, (size_t)b->len);
+}
+
+/* a client's binary info key; keys starting with _ stay on the server */
+static void parse_userblob(client_t *c, msg_t *m)
+{
+	char key[64];
+	uint32_t len;
+	const infoblob_t *b;
+	msg_t out;
+	Str_Copy(key, MSG_ReadString(m), sizeof(key));
+	len = MSG_ReadVarUInt(m);
+	if (len > MAX_INFOBLOB_SIZE || m->readpos + len > m->cursize) {
+		m->badread = true;
+		return;
+	}
+	Blob_Set(c->blobs, key, m->data + m->readpos, (int)len);
+	m->readpos += len;
+	if (!key[0] || key[0] == '_' || !(b = Blob_Get(c->blobs, key)))
+		return;
+	MSG_Init(&out, Mem_Alloc(len + 128), len + 128);
+	write_blob(&out, client_slot(c), b);
+	for (int i = 0; i < svs.maxclients; i++)
+		if (svs.clients[i].state >= CS_CONNECTED && !svs.clients[i].bot)
+			client_reliable(&svs.clients[i], &out);
+	Mem_Free(out.data);
 }
 
 static void snap_add(snaprec_t *s, uint32_t ent, uint32_t flags, bool remove, bool create)
@@ -462,6 +497,16 @@ static void send_serverdata(client_t *c)
 		MSG_WriteString(&p, "");
 		MSG_WriteString(&p, o->userinfo);
 		client_reliable(c, &p);
+		for (int k = 0; k < MAX_INFOBLOBS; k++) {
+			const infoblob_t *b = &o->blobs[k];
+			msg_t bm;
+			if (!b->key[0] || b->key[0] == '_')
+				continue;
+			MSG_Init(&bm, Mem_Alloc((size_t)b->len + 128), (size_t)b->len + 128);
+			write_blob(&bm, i, b);
+			client_reliable(c, &bm);
+			Mem_Free(bm.data);
+		}
 	}
 	if (svs.signonlen) {
 		MSG_Init(&m, Mem_Alloc(svs.signonlen + 16), svs.signonlen + 16);
@@ -1105,6 +1150,9 @@ static void parse_client_message(client_t *c, msg_t *m)
 			break;
 		case clc_event:
 			parse_event(c, m);
+			break;
+		case clc_userblob:
+			parse_userblob(c, m);
 			break;
 		default:
 			Con_DPrintf("bad message %d from %s\n", cmd, c->name);

@@ -651,14 +651,48 @@ static void r_unproject(qcvm_t *vm)
 	QC_ReturnVector(vm, out);
 }
 
-static void r_shaderforname(qcvm_t *vm) { QC_ReturnFloat(vm, (float)R_MaterialHandle(R_FindMaterial(QC_PSTR(vm, 0), 0))); }
+/* shaderforname(name, optional body): the body text makes the material
+ * when nothing of that name exists yet */
+static void r_shaderforname(qcvm_t *vm)
+{
+	const char *body = vm->argc > 1 ? QC_PSTR(vm, 1) : "";
+	material_t *m = *body ? R_MaterialFromText(QC_PSTR(vm, 0), body, 0) : R_FindMaterial(QC_PSTR(vm, 0), 0);
+	QC_ReturnFloat(vm, (float)R_MaterialHandle(m));
+}
+
+/* r_uploadimage(name, width, height, pixels, datasize, format): raw RGBA,
+ * or with a data size, an image file to decode */
+static void r_uploadimage(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 0);
+	int w = QC_PINT(vm, 1), h = QC_PINT(vm, 2), size = vm->argc > 4 ? QC_PINT(vm, 4) : 0;
+	uint32_t ptr = (uint32_t)QC_PINT(vm, 3);
+	if (size > 0) {
+		const uint8_t *data = QC_Pointer(vm, ptr, (size_t)size);
+		int iw, ih;
+		uint8_t *px = data ? R_DecodeImage(data, (size_t)size, &iw, &ih) : NULL;
+		if (px) {
+			R_ImageFromPixels(name, px, iw, ih, IMG_NOMIP | IMG_CLAMP);
+			Mem_Free(px);
+		} else {
+			Con_DPrintf("r_uploadimage: couldn't decode %s\n", name);
+		}
+		return;
+	}
+	if (w > 0 && h > 0 && w <= 8192 && h <= 8192) {
+		const uint8_t *px = QC_Pointer(vm, ptr, (size_t)w * h * 4);
+		if (px)
+			R_ImageFromPixels(name, px, w, h, IMG_NOMIP | IMG_CLAMP);
+	}
+}
 
 static void r_getlight(qcvm_t *vm)
 {
 	float amb[3], dif[3], dir[3], v[3];
 	R_LightPoint(QC_PVEC(vm, 0), amb, dif, dir);
+	/* in Quake light units: 255 shows a texture at its own brightness */
 	for (int k = 0; k < 3; k++)
-		v[k] = (amb[k] + dif[k]) * 0.5f;
+		v[k] = (amb[k] + dif[k]) * 255;
 	QC_ReturnVector(vm, v);
 }
 
@@ -879,5 +913,5 @@ const qc_builtin_t r_builtins[] = {
 	{"getmodeleventidx", r_zero}, {"getnextmodelevent", r_zero}, {"processmodelevents", r_nop},
 	{"skinforname", r_zero}, {"cin_open", r_zero}, {"cin_close", r_nop}, {"cin_setstate", r_nop},
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
-	{"r_uploadimage", r_nop}, {"r_readimage", r_zero},
+	{"r_uploadimage", r_uploadimage}, {"r_readimage", r_zero},
 	{NULL, NULL}};

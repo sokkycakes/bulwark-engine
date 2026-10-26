@@ -17,6 +17,8 @@ clstate_t cl;
 static cvar_t *cl_name, *cl_updaterate, *cl_rate, *cl_interp, *cl_cmdrate, *cl_timeout, *cl_shownet;
 static cvar_t *net_fakelag, *net_fakeloss;
 static char sent_userinfo[2048];
+static infoblob_t localblobs[MAX_INFOBLOBS]; /* setinfoblob keys, sent once connected */
+static bool blobsent[MAX_INFOBLOBS];
 
 /* --- info strings (same format as the server's) ------------------------- */
 
@@ -190,6 +192,9 @@ static void clear_map_state(void)
 		Mem_Free(cl.lightstyles[i]);
 		cl.lightstyles[i] = NULL;
 	}
+	for (int i = 0; i < CL_MAX_PLAYERS; i++)
+		Blob_Clear(cl.playerblobs[i]);
+	memset(blobsent, 0, sizeof(blobsent));
 	BSP_Free(cl.world);
 	cl.world = NULL;
 	Mem_Free(cl.ents);
@@ -466,13 +471,30 @@ static void parse_server_message(msg_t *m, bool reliable)
 			CSQC_ServerInfoChanged();
 			break;
 		}
+		case svc_playerblob: {
+			int slot = MSG_ReadByte(m);
+			char key[64];
+			uint32_t len;
+			Str_Copy(key, MSG_ReadString(m), sizeof(key));
+			len = MSG_ReadVarUInt(m);
+			if (len > MAX_INFOBLOB_SIZE || m->readpos + len > m->cursize) {
+				m->badread = true;
+				break;
+			}
+			Blob_Set(cl.playerblobs[slot], key, m->data + m->readpos, (int)len);
+			m->readpos += len;
+			CSQC_PlayerInfoChanged(slot);
+			break;
+		}
 		case svc_playerinfo: {
 			int slot = MSG_ReadByte(m);
 			char key[256];
 			Str_Copy(key, MSG_ReadString(m), sizeof(key));
-			if (!key[0])
+			if (!key[0]) {
 				Str_Copy(cl.playerinfo[slot], MSG_ReadString(m), sizeof(cl.playerinfo[slot]));
-			else
+				if (!cl.playerinfo[slot][0])
+					Blob_Clear(cl.playerblobs[slot]); /* the player left */
+			} else
 				info_set(cl.playerinfo[slot], sizeof(cl.playerinfo[slot]), key, MSG_ReadString(m));
 			CSQC_PlayerInfoChanged(slot);
 			break;
@@ -594,11 +616,79 @@ static void update_clock(double dt)
 		cl.time += (target - cl.time) * BW_MIN(1.0, dt * 4);
 }
 
+/* --- binary user info ---------------------------------------------------------- */
+
+static void send_blob(int i)
+{
+	const infoblob_t *b = &localblobs[i];
+	msg_t m;
+	if (cl.state < ca_loading || !b->key[0])
+		return;
+	MSG_Init(&m, Mem_Alloc((size_t)b->len + 128), (size_t)b->len + 128);
+	MSG_WriteByte(&m, clc_userblob);
+	MSG_WriteString(&m, b->key);
+	MSG_WriteVarUInt(&m, (uint32_t)b->len);
+	MSG_WriteData(&m, b->data, (size_t)b->len);
+	if (!m.overflowed)
+		Netchan_WriteReliable(&cl.chan, m.data, m.cursize);
+	Mem_Free(m.data);
+	blobsent[i] = true;
+}
+
+void CL_SetLocalBlob(const char *key, const void *data, int len)
+{
+	Blob_Set(localblobs, key, data, len);
+	for (int i = 0; i < MAX_INFOBLOBS; i++)
+		if (localblobs[i].key[0] && !Str_ICmp(localblobs[i].key, key))
+			blobsent[i] = false;
+}
+
+const infoblob_t *CL_GetLocalBlob(const char *key) { return Blob_Get(localblobs, key); }
+
+/* setinfoblob key file: a file's contents as a user info key (sprays) */
+static void CL_SetInfoBlob_f(int argc, const char **argv)
+{
+	size_t len;
+	uint8_t *d;
+	if (argc < 3) {
+		Con_Printf("usage: setinfoblob <key> <file>\n");
+		return;
+	}
+	d = (uint8_t *)FS_LoadFile(argv[2], &len);
+	if (!d) {
+		Con_Printf("setinfoblob: couldn't read %s\n", argv[2]);
+		return;
+	}
+	if (len > MAX_INFOBLOB_SIZE)
+		Con_Printf("setinfoblob: %s is over %d bytes\n", argv[2], MAX_INFOBLOB_SIZE);
+	else
+		CL_SetLocalBlob(argv[1], d, (int)len);
+	Mem_Free(d);
+}
+
+/* setinfo key value: a user info key, sent to the server */
+static void CL_SetInfo_f(int argc, const char **argv)
+{
+	cvar_t *v;
+	if (argc < 3) {
+		Con_Printf("usage: setinfo <key> <value>\n");
+		return;
+	}
+	v = Cvar_Find(argv[1]);
+	if (!v)
+		v = Cvar_Get(argv[1], "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
+	v->flags |= CVAR_USERINFO;
+	Cvar_Set(argv[1], argv[2]);
+}
+
 static void check_userinfo(void)
 {
 	char now[2048];
 	if (cl.state < ca_loading)
 		return;
+	for (int i = 0; i < MAX_INFOBLOBS; i++)
+		if (!blobsent[i] && localblobs[i].key[0])
+			send_blob(i);
 	build_userinfo(now, sizeof(now));
 	if (!strcmp(now, sent_userinfo))
 		return;
@@ -798,6 +888,8 @@ void CL_Init(void)
 	Cvar_Get("team", "", CVAR_USERINFO, NULL);
 	Cvar_Get("model", "", CVAR_ARCHIVE | CVAR_USERINFO, NULL);
 	Cmd_Add("connect", CL_Connect_f);
+	Cmd_Add("setinfo", CL_SetInfo_f);
+	Cmd_Add("setinfoblob", CL_SetInfoBlob_f);
 	Cmd_Add("disconnect", CL_Disconnect_f);
 	Cmd_Add("reconnect", CL_Reconnect_f);
 	Cmd_Add("cmd", CL_Cmd_f);

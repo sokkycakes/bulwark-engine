@@ -19,6 +19,7 @@ add_library(bwcommon STATIC
 	src/common/fs.c
 	src/common/pmove.c
 	src/common/skel.c
+	src/common/infoblob.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m)
 

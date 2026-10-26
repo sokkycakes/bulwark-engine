@@ -29,6 +29,7 @@ enum {
 	svc_download,     /* reserved */
 	svc_pointparticles, /* varuint effect, coord x3 origin, float x3 direction, float count */
 	svc_trailparticles, /* varuint effect, entity, coord x3 start, coord x3 end */
+	svc_playerblob,   /* byte slot, string key, varuint length, bytes */
 	svc_count
 };
 
@@ -40,6 +41,7 @@ enum {
 	clc_move,      /* see protocol.md */
 	clc_stringcmd, /* string */
 	clc_event,     /* string function, then typed arguments */
+	clc_userblob,  /* string key, varuint length, bytes */
 	clc_count
 };
 

@@ -517,7 +517,8 @@ void R_SpawnDecal(material_t *mat, int blend, GLenum src, GLenum dst, const floa
 	dc->die = r_time + life;
 }
 
-/* adddecal: up and side are the decal's axes, each scaled by one over its size */
+/* adddecal(shader, origin, up, side, rgb, alpha); see the note inside on
+ * how up and side are read */
 void R_AddDecal(material_t *mat, const float *org, const float *up, const float *side, const float *rgb, float alpha)
 {
 	int found = -1, oldest = 0;
@@ -539,24 +540,28 @@ void R_AddDecal(material_t *mat, const float *org, const float *up, const float 
 	if (found < 0) {
 		dbuild_t d;
 		tdecal_t *t = &tcache[oldest];
-		float ls = VectorLength(up), lt = VectorLength(side);
-		if (ls < 1e-6f || lt < 1e-6f)
+		float ln = VectorLength(up), lt = VectorLength(side);
+		if (ln < 1e-6f || lt < 1e-6f)
 			return;
 		memset(&d, 0, sizeof(d));
 		VectorCopy(org, d.org);
+		/* up is along the surface normal (either way) over the width; side
+		 * is the picture's downward axis over its height, as Nuclide's
+		 * decals and sprays pass them; the picture's right is side x up */
 		for (int k = 0; k < 3; k++) {
-			d.s[k] = up[k] / ls;
+			d.n[k] = up[k] / ln;
 			d.t[k] = side[k] / lt;
 		}
-		CrossProduct(d.s, d.t, d.n);
-		if (VectorNormalize(d.n) < 1e-6f)
+		CrossProduct(d.t, d.n, d.s);
+		if (VectorNormalize(d.s) < 1e-6f)
 			return;
-		d.hs = 0.5f / ls;
+		d.hs = 0.5f / ln;
 		d.ht = 0.5f / lt;
 		d.depth = BW_MAX(4.0f, BW_MIN(d.hs, d.ht));
 		d.bothsides = true;
 		d.tc[0] = 0, d.tc[1] = 0, d.tc[2] = 1, d.tc[3] = 1;
 		build_decal(&d);
+		Con_DPrintf("decal %s at %.0f %.0f %.0f: %d triangles\n", mat->name, org[0], org[1], org[2], d.num / 3);
 		Mem_Free(t->v);
 		t->mat = mat;
 		memcpy(t->key, key, sizeof(key));

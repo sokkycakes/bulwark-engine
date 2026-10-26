@@ -38,6 +38,7 @@ void R_ShutdownImages(void);
 extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal, *r_whitecube;
 /* decodes an image file into RGBA (Mem_Free the result) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h);
+uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h);
 
 /* --- materials ----------------------------------------------------------- */
 
@@ -80,6 +81,7 @@ typedef struct material_s {
 #define MATF_2D 1    /* defaults suit a HUD picture: no lightmap */
 #define MATF_MODEL 2 /* defaults suit a model skin */
 material_t *R_FindMaterial(const char *name, int flags);
+material_t *R_MaterialFromText(const char *name, const char *text, int flags); /* unless it exists */
 bool R_MaterialFileExists(const char *name);
 /* numeric handles for shaderforname and .forceshader; 0 is none */
 int R_MaterialHandle(material_t *m);

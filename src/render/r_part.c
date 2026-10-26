@@ -1076,6 +1076,9 @@ void R_ClearParticles(void)
 {
 	numparts = 0;
 	numplights = 0;
+	/* effect numbers belong to the map's precache list */
+	memset(byindex, 0, sizeof(byindex));
+	memset(resolved, 0, sizeof(resolved));
 }
 
 /* --- drawing ----------------------------------------------------------------- */

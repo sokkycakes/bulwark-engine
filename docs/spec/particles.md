@@ -84,11 +84,14 @@ scripts only.
 
 ## Decals
 
-- `adddecal(shader, origin, up, side, rgb, alpha)`: up and side are the
-  decal's axes, each scaled by one over its size (Nuclide passes
-  `v_up / width`). Texture s runs along up and t along side, from the
-  centre. It lasts until the next clearscene, but its clipped geometry is
-  cached by placement so a decal redrawn each frame is clipped once.
+- `adddecal(shader, origin, up, side, rgb, alpha)`: Nuclide's decals and
+  sprays pass `up` along the surface normal (its sign varies) scaled by one
+  over the width, and `side` along the picture's downward axis scaled by
+  one over the height. Texture t runs along side and s along side x up,
+  from the centre. Both faces of the normal are accepted. The decal lasts
+  until the next clearscene, but its clipped geometry is cached by
+  placement so a decal redrawn each frame is clipped once. This reading
+  makes Nuclide's sprays upright; it has not been checked against FTE.
 - Effect decals face the effect's direction (or away from the nearest wall
   when it has none), are `scale` units across, turn by `rotation`, and fade
   out over their last second. `r_decal_max` (1024) are kept; the oldest
@@ -103,3 +106,20 @@ scripts only.
   `getsurfaceclippedpoint` answer from the drawn world surfaces. A surface
   number is an index into the model's surfaces; the nearest is found by
   distance to its triangles.
+
+## Sprays
+
+- `setinfoblob key file` reads a file (at most 64 KiB) into a binary user
+  info key; `setinfo key value` sets a text one. Blobs go to the server as
+  clc_userblob once connected and to every client as svc_playerblob, and
+  new clients get everyone's blobs with the player info. Keys starting with
+  `_` stay on the server.
+- `getplayerkeyblob`, `getlocaluserinfoblob` and `setlocaluserinfoblob`
+  read and write them from QC memory.
+- `r_uploadimage(name, w, h, data, size)` decodes an image file when given
+  a size, otherwise takes raw RGBA. Materials name such images as
+  `$rt:name`.
+- `shaderforname(name, body)` makes the material from the body text when
+  no material of that name exists yet.
+- `getlight` answers in Quake light units: 255 is a texture at its own
+  brightness.
