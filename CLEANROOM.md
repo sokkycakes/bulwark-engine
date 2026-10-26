@@ -30,3 +30,8 @@ writing engine code here reads those engines' source.
 Whenever behaviour was learned from a probe or from content rather than a
 written spec, write it down in `docs/spec/` with how it was established. Code
 comments point at those files. If something is a guess, say so.
+
+## Third-party libraries
+
+Libraries under `third_party/` are used as they are and listed with their
+licences in `third_party/README.md`. Only permissive licences are allowed.

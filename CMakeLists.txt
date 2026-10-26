@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(bulwark C)
+project(bulwark C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -61,6 +61,18 @@ if(NOT SDL2_FOUND)
 	endif()
 endif()
 
+# UI: PanoramaEngine (MIT, vendored in third_party) behind src/ui
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(PANORAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(PANORAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(PANORAMA_BUILD_PERFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/PanoramaEngine EXCLUDE_FROM_ALL)
+add_library(bwui STATIC
+	src/ui/ui_panorama.cpp
+	src/ui/ui_qc.c)
+target_link_libraries(bwui PUBLIC bwserver PRIVATE PanoramaEngine)
+
 add_library(bwclient STATIC
 	src/client/cl_main.c
 	src/client/cl_input.c
@@ -75,7 +87,7 @@ add_library(bwclient STATIC
 	src/render/r_model.c
 	src/render/r_scene.c
 	src/sound/snd_main.c)
-target_link_libraries(bwclient PUBLIC bwserver)
+target_link_libraries(bwclient PUBLIC bwserver bwui)
 
 if(SDL2_FOUND)
 	add_executable(bulwark src/main.c src/client/vid_sdl.c)

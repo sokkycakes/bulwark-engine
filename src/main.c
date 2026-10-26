@@ -14,6 +14,7 @@
 #include "render/render.h"
 #include "server/sv_local.h"
 #include "sound/sound.h"
+#include "ui/ui.h"
 
 static bool quit_requested;
 
@@ -99,6 +100,8 @@ int main(int argc, char **argv)
 	}
 	R_Init(headless);
 	S_Init(headless);
+	UI_Init();
+	UI_InitQC();
 	Cmd_Add("quit", Quit_f);
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
@@ -157,6 +160,8 @@ int main(int argc, char **argv)
 			R_GetSize(&w, &h);
 			CSQC_Frame(w, h);
 		}
+		UI_Frame(dt);
+		UI_Draw();
 		R_EndFrame();
 		S_Update(NULL, NULL, NULL, NULL);
 	}
@@ -164,6 +169,7 @@ int main(int argc, char **argv)
 		Cmd_ExecuteString("netstats");
 	CL_Disconnect("quit");
 	SV_Shutdown();
+	UI_Shutdown();
 	S_Shutdown();
 	R_Shutdown();
 	VID_Shutdown();
