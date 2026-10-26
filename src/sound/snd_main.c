@@ -574,8 +574,43 @@ static void next_track(void)
 	media_playing = false;
 }
 
+/* the playlist lives in sound/media.m3u */
+static void save_playlist(void)
+{
+	char path[1024];
+	FILE *f;
+	if (!FS_WritePath("sound/media.m3u", path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "w")))
+		return;
+	fprintf(f, "#EXTM3U\n");
+	for (int i = 0; i < numtracks; i++)
+		fprintf(f, "%s\n", playlist[i]);
+	fclose(f);
+}
+
+static void load_playlist(void)
+{
+	char *text = FS_LoadFile("sound/media.m3u", NULL);
+	for (char *l = text; l && *l && numtracks < (int)BW_ARRAY_COUNT(playlist);) {
+		char *e = strchr(l, '\n');
+		if (e)
+			*e = 0;
+		size_t n = strlen(l);
+		while (n && (l[n - 1] == '\r' || l[n - 1] == ' '))
+			l[--n] = 0;
+		if (*l && *l != '#')
+			playlist[numtracks++] = Mem_Strdup(l);
+		l = e ? e + 1 : NULL;
+	}
+	Mem_Free(text);
+}
+
 static void media_frame(void)
 {
+	static bool loaded;
+	if (!loaded) {
+		loaded = true;
+		load_playlist();
+	}
 	if (media_playing && snd_started && !S_MusicActive())
 		next_track();
 }
@@ -591,6 +626,7 @@ static void MediaAdd_f(int argc, const char **argv)
 	}
 	for (int i = 1; i < argc && numtracks < (int)BW_ARRAY_COUNT(playlist); i++)
 		playlist[numtracks++] = Mem_Strdup(argv[i]);
+	save_playlist();
 	if (!media_playing && !S_MusicActive())
 		play_track(numtracks - 1);
 }
@@ -608,6 +644,7 @@ static void MediaRemove_f(int argc, const char **argv)
 		Mem_Free(playlist[i]);
 		memmove(playlist + i, playlist + i + 1, (size_t)(numtracks - i - 1) * sizeof(playlist[0]));
 		numtracks--;
+		save_playlist();
 		if (curtrack == i) {
 			media_playing = false;
 			SNDDMA_Lock();
