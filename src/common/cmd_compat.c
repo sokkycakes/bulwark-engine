@@ -142,16 +142,6 @@ static void FsRestart_f(int argc, const char **argv)
 	Con_Printf("file system rescanned\n");
 }
 
-/* fs_showmanifest: what defines the game. Bulwark has no manifest file; this
- * is what one would say. */
-static void FsShowmanifest_f(int argc, const char **argv)
-{
-	Con_Printf("basedir \"%s\"\n", FS_BaseDir());
-	for (int i = 0; i < FS_NumGameDirs(); i++)
-		Con_Printf("gamedir \"%s\"\n", FS_GameDirAt(i));
-	Con_Printf("mainconfig \"%s.cfg\"\n", Cvar_String("cfg_save_name"));
-}
-
 /* colorize/colourise <text>: prints text with ezQuake's &cRGB colours
  * turned into the engine's ^xRGB */
 static void Colorize_f(int argc, const char **argv)
@@ -291,7 +281,6 @@ void Cmd_InitCompat(void)
 	Cmd_AddD("fs_restart", FsRestart_f, "Rescan the game directories for packages");
 	Cmd_AddD("fs_flush", FsRestart_f, "Rescan the game directories for packages");
 	Cmd_AddD("flush", FsRestart_f, "Rescan the game directories for packages");
-	Cmd_AddD("fs_showmanifest", FsShowmanifest_f, "The base directory, game directories and config name");
 	Cmd_AddD("colorize", Colorize_f, "colorize <text>: print text with &cRGB colours");
 	Cmd_AddD("colourise", Colorize_f, "colourise <text>: print text with &cRGB colours");
 	Cvar_Get("cmd_gamecodelevel", "29", 0, "The execution level of commands the game's QC runs (localcmd)");

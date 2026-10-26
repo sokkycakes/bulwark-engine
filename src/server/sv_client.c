@@ -9,6 +9,7 @@
  * An entity's updates always carry every bit until its creation is acked,
  * so the client never builds an entity from a partial update. */
 #include "sv_local.h"
+#include "../common/manifest.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
@@ -24,7 +25,7 @@
 serverstatic_t svs;
 
 static cvar_t *sv_maxclients, *sv_timeout, *sv_unlag, *sv_maxunlag, *sv_minupdaterate, *sv_maxupdaterate;
-static cvar_t *sv_port, *hostname, *sv_maxrate;
+static cvar_t *sv_port, *hostname, *sv_maxrate, *sv_chatfilter;
 
 /* the buffers QC's Write* builtins target */
 static strbuf_t msg_entity_buf; /* MSG_ENTITY, inside SendEntity */
@@ -1197,6 +1198,13 @@ static void parse_stringcmd(client_t *c, const char *s)
 			goto done;
 		if (chat == CHAT_ONLY_SENDER)
 			sv_chat_only = c;
+		char filtered[2048];
+		bool saying = !strcmp(t->argv[0], "say") || !strcmp(t->argv[0], "say_team");
+		if (saying && sv_chatfilter->ivalue && strlen(s) < sizeof(filtered)) {
+			Str_Copy(filtered, s, sizeof(filtered));
+			if (Com_FilterText(filtered, sizeof(filtered)))
+				s = filtered;
+		}
 		if (f) {
 			QC_SetGInt(sv.vm, G.self, c->edict);
 			QC_SetGFloat(sv.vm, G.time, (float)sv.time);
@@ -2011,6 +2019,7 @@ void SV_InitClients(void)
 	sv_minupdaterate = Cvar_Get("sv_minupdaterate", "10", 0, "Lowest snapshot rate a client may ask for");
 	sv_maxupdaterate = Cvar_Get("sv_maxupdaterate", "100", 0, "Highest snapshot rate a client may ask for");
 	sv_maxrate = Cvar_Get("sv_maxrate", "0", 0, "Upper bound on client rate in bytes per second, 0 for none");
+	sv_chatfilter = Cvar_Get("sv_chatfilter", "0", 0, "Replace the words in filter.txt in players' chat");
 	sv_port = Cvar_Get("sv_port", "27500", 0, "UDP port for incoming connections");
 	hostname = Cvar_Get("hostname", "Bulwark server", CVAR_SERVERINFO, "Server name shown in browsers");
 	SV_InitPMove();

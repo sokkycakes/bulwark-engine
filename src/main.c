@@ -10,7 +10,9 @@
 #include "common/common.h"
 #include "common/cvar.h"
 #include "common/fs.h"
+#include "common/manifest.h"
 #include "net/net.h"
+#include "net/pkg.h"
 #include "render/render.h"
 #include "server/sv_local.h"
 #include "sound/sound.h"
@@ -89,11 +91,9 @@ int main(int argc, char **argv)
 	Cmd_Init();
 	Con_Init();
 	FS_Init(basedir);
-	if (!numgames)
-		games[numgames++] = "base";
-	for (int i = 0; i < numgames; i++)
-		FS_AddGameDir(games[i]);
+	Mf_Startup(games, numgames);
 	NET_Init();
+	PKG_Init();
 	SV_Init();
 	QC_InitDebugCommands();
 	CL_Init();
@@ -117,14 +117,7 @@ int main(int argc, char **argv)
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
 
-	if (FS_FileExists("default.cfg"))
-		Cbuf_AddText("exec default.cfg\n");
-	else if (FS_FileExists("default_controls.cfg"))
-		Cbuf_AddText("exec default_controls.cfg\n");
-	if (FS_FileExists("config.cfg"))
-		Cbuf_AddText("exec config.cfg\n");
-	if (FS_FileExists("autoexec.cfg"))
-		Cbuf_AddText("exec autoexec.cfg\n");
+	Mf_ExecConfigs();
 	/* the front end starts on its menu unless the command line starts a game */
 	bool starts_game = false;
 	for (const char *l = cmds.data; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : "") {
@@ -137,9 +130,9 @@ int main(int argc, char **argv)
 	/* when the command line starts a game, the menu loads once that game is
 	 * running, so its init sees clientstate() 2 and skips the background
 	 * map and intro it would otherwise queue in front of the game */
-	bool menu_pending = starts_game;
-	double menu_deadline = Sys_Seconds() + 30;
-	if (!starts_game && MQC_Load())
+	if (starts_game)
+		MQC_LoadWhenActive();
+	else if (MQC_Load())
 		MQC_Toggle(1);
 
 	double last = Sys_Seconds();
@@ -185,15 +178,13 @@ int main(int argc, char **argv)
 		if (!sv.active && server_was_active)
 			cl.listen = false;
 		server_was_active = sv.active;
-		if (menu_pending && (cl.state == ca_active || Sys_Seconds() > menu_deadline)) {
-			menu_pending = false;
-			MQC_Load();
-		}
+		MQC_PendingLoad();
 
 		host_time += dt;
 		/* a local game can run slow or fast; a remote server sets its own pace */
 		double gdt = sv.active && host_timescale->value > 0 ? dt * BW_CLAMP(host_timescale->value, 0.01f, 10) : dt;
 		NET_RunDelayed();
+		PKG_Frame();
 		SV_Frame(gdt);
 		CL_Frame(gdt);
 		R_BeginFrame();

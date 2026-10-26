@@ -20,6 +20,7 @@ add_library(bwcommon STATIC
 	src/common/cmd_compat.c
 	src/common/bsptool.c
 	src/common/fs.c
+	src/common/manifest.c
 	src/common/pmove.c
 	src/common/skel.c
 	src/common/infoblob.c
@@ -29,8 +30,11 @@ target_link_libraries(bwcommon PUBLIC m)
 add_library(bwnet STATIC
 	src/net/msg.c
 	src/net/net.c
+	src/net/http.c
+	src/net/pkg.c
 	src/net/netchan.c)
-target_link_libraries(bwnet PUBLIC bwcommon)
+find_package(Threads REQUIRED)
+target_link_libraries(bwnet PUBLIC bwcommon Threads::Threads ${CMAKE_DL_LIBS})
 
 add_library(bwqcvm STATIC
 	src/qcvm/qcvm.c

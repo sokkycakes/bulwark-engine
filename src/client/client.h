@@ -217,6 +217,8 @@ void CSQC_PlayerInfoChanged(int slot);
 /* menu progs (cl_menu.c) */
 void MQC_Init(void);
 bool MQC_Load(void);
+void MQC_LoadWhenActive(void); /* once the game being started is in */
+void MQC_PendingLoad(void); /* does the load MQC_LoadWhenActive asked for */
 void MQC_Shutdown(void);
 bool MQC_Active(void);
 void MQC_Toggle(int mode);

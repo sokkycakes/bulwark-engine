@@ -78,6 +78,8 @@ extern cfg_reset_fn cfg_reset_hook;
 bool Cfg_Save(const char *name);
 /* on quit: saves when cfg_save_auto is on and something changed */
 void Cfg_SaveIfModified(void);
+/* archived cvars and binds back to their defaults */
+void Cfg_ResetDefaults(void);
 /* opens or closes the console log when con_logfile changed */
 void Cmd_CheckLogfile(void);
 

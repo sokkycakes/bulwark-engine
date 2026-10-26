@@ -3,6 +3,9 @@
  * same 2D drawing builtins as the client game. Entry points and key/mouse
  * routing: docs/spec/menu.md. ISC licence, see LICENSE. */
 #include "client.h"
+#include "../common/manifest.h"
+#include "../net/pkg.h"
+#include "../server/sv_local.h"
 
 #include "../common/cmd.h"
 #include "../common/cvar.h"
@@ -46,11 +49,24 @@ static void m_registercommand(qcvm_t *vm)
 		M.registered[M.numregistered++] = Mem_Strdup(n);
 }
 
+static void return_maybe(qcvm_t *vm, const char *s)
+{
+	if (s)
+		QC_ReturnString(vm, s);
+	else
+		vm->globals[OFS_RETURN].i = 0; /* the null string ends the caller's loop */
+}
+
+static void m_getgamedirinfo(qcvm_t *vm) { return_maybe(vm, Mf_GameDirInfo((int)QC_PFLOAT(vm, 0), (int)QC_PFLOAT(vm, 1))); }
+/* takes ints */
+static void m_getpackagemanagerinfo(qcvm_t *vm) { return_maybe(vm, PKG_Info(QC_PINT(vm, 0), QC_PINT(vm, 1))); }
+
 /* menu-only builtins; anything else comes from the shared tables */
 static const qc_builtin_t m_builtins[] = {
 	{"setkeydest", m_setkeydest}, {"getkeydest", m_getkeydest},
 	{"setmousetarget", m_setmousetarget}, {"getmousetarget", m_getmousetarget},
 	{"registercommand", m_registercommand},
+	{"getgamedirinfo", m_getgamedirinfo}, {"getpackagemanagerinfo", m_getpackagemanagerinfo},
 	{NULL, NULL}
 };
 
@@ -210,10 +226,32 @@ static void Menu_Toggle_f(int argc, const char **argv)
 	MQC_Toggle(-1);
 }
 
+static bool load_pending;
+static double load_deadline;
+
+/* loads the menu once the game being started is in, so that its init sees
+ * clientstate() 2 and skips the background map and intro it would otherwise
+ * queue in front of the game */
+void MQC_LoadWhenActive(void)
+{
+	load_pending = true;
+	load_deadline = Sys_Seconds() + 30;
+}
+
+void MQC_PendingLoad(void)
+{
+	if (load_pending && (cl.state == ca_active || Sys_Seconds() > load_deadline)) {
+		load_pending = false;
+		MQC_Load();
+	}
+}
+
 static void Menu_Restart_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
-	if (!MQC_Load())
+	if (sv.active && cl.state != ca_active)
+		MQC_LoadWhenActive(); /* a map is starting */
+	else if (!MQC_Load())
 		Con_Printf("no menu.dat\n");
 }
 

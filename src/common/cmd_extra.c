@@ -763,7 +763,7 @@ void Cfg_SaveIfModified(void)
 }
 
 /* back to the engine and game defaults: cvars, binds, then default.cfg */
-static void reset_all(void)
+void Cfg_ResetDefaults(void)
 {
 	for (cvar_t *v = Cvar_First(); v; v = v->next)
 		if (v->flags & CVAR_ARCHIVE)
@@ -788,7 +788,7 @@ static void CfgLoad_f(int argc, const char **argv)
 		Con_Printf("no config named %s\n", name);
 		return;
 	}
-	reset_all();
+	Cfg_ResetDefaults();
 	Cbuf_InsertText(va("exec \"%s\"\n", name));
 	exec_defaults();
 	cfg_saved_at = -2; /* settled after the exec runs */
@@ -797,7 +797,7 @@ static void CfgLoad_f(int argc, const char **argv)
 /* cfg_reset/resetcfg: everything back to defaults */
 static void CfgReset_f(int argc, const char **argv)
 {
-	reset_all();
+	Cfg_ResetDefaults();
 	exec_defaults();
 }
 

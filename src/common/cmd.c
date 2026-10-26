@@ -1,5 +1,6 @@
 /* Bulwark engine - console commands and the command buffer. ISC licence, see LICENSE. */
 #include "cmd.h"
+#include "manifest.h"
 #include "cvar.h"
 #include "fs.h"
 
@@ -640,4 +641,5 @@ void Cmd_Init(void)
 	Cmd_Add("unalias", Cmd_Unalias_f);
 	Cmd_InitExtra();
 	Cmd_InitCompat();
+	Mf_Init();
 }
