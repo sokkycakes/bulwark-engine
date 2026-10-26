@@ -410,6 +410,8 @@ void IN_MouseMove(float dx, float dy)
 		return;
 	if (CSQC_InputEvent(2, dx, dy, 0))
 		return;
+	if (HUD_MouseMove(dx, dy))
+		return;
 	if (m_filter->ivalue) {
 		mx = (dx + olddx) * 0.5f;
 		my = (dy + olddy) * 0.5f;

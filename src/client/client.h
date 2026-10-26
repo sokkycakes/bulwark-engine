@@ -77,6 +77,10 @@ typedef struct {
 	int numsounds;
 	char *particles[CL_MAX_PARTICLES];
 	char *lightstyles[256];
+	/* the player's stats (svc_stats): type 0 none, 1 string, 2 float, 8 integer */
+	uint8_t stattype[256];
+	uint32_t statval[256];
+	char *statstr[256];
 	bspmap_t *world;
 
 	/* timing */
@@ -140,6 +144,20 @@ const infoblob_t *CL_GetLocalBlob(const char *key);
 void CL_SendEvent(const msg_t *m); /* clc_event body, written by sendevent */
 bool CL_ForwardToServer(const char *line, int argc, const char **argv);
 const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size);
+const char *CL_ServerKey(const char *key, char *out, size_t size);
+float CL_StatFloat(int i);
+int CL_StatInt(int i);
+const char *CL_StatString(int i);
+bool CL_DemoMultiview(void);
+/* cl_tp.c: teamplay macros, locations, triggers */
+void TP_Init(void);
+void TP_Frame(void);
+void TP_NewMap(void);
+void TP_CheckTriggers(const char *text, int level);
+void TP_ParseSay(const char *in, char *out, size_t size);
+/* cl_hud.c: the engine's scoreboards and weapon wheel */
+void HUD_Init(void);
+bool HUD_MouseMove(float dx, float dy);
 /* cl_chat.c: ignore lists and message filters */
 void CL_InitChat(void);
 bool CL_ChatAllowed(const char *text, int level);

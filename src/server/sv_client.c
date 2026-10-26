@@ -123,6 +123,14 @@ static void client_print(client_t *c, int level, const char *text)
 
 void SV_ClientPrint(client_t *c, int level, const char *text) { client_print(c, level, text); }
 
+void SV_ClientReliable(client_t *c, const void *data, size_t len)
+{
+	msg_t m;
+	MSG_Init(&m, (uint8_t *)data, len);
+	m.cursize = len;
+	client_reliable(c, &m);
+}
+
 void SV_StuffText(client_t *c, const char *text)
 {
 	LOCALMSG(m, 4200);
@@ -242,6 +250,7 @@ static void free_client_state(client_t *c)
 	SB_Free(&c->qcrel);
 	SB_Free(&c->datagram);
 	Blob_Clear(c->blobs);
+	SV_ResetStats(c);
 }
 
 static void write_blob(msg_t *m, int slot, const infoblob_t *b)
@@ -612,6 +621,8 @@ static void send_serverdata(client_t *c)
 	}
 	c->spawncount = svs.spawncount;
 	c->state = CS_CONNECTED;
+	if (!capture)
+		SV_ResetStats(c); /* the client forgets them with the new map */
 }
 
 static void copy_parms_to_globals(client_t *c)
@@ -1471,6 +1482,7 @@ void SV_SendClientMessages(void)
 			snprintf(ping, sizeof(ping), "%d", (int)(c->chan.rtt * 1000));
 			set_playerkey(c, "ping", ping, true);
 		}
+		SV_UpdateStats(c);
 		send_snapshot(c);
 	}
 }

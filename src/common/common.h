@@ -11,6 +11,7 @@
 
 typedef float vec3_t[3];
 
+#define BULWARK_VERSION "0.1"
 #define BW_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 #define BW_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define BW_MAX(a, b) ((a) > (b) ? (a) : (b))

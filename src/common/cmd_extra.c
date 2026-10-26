@@ -15,7 +15,6 @@
 #include <time.h>
 
 #ifndef BULWARK_VERSION
-#define BULWARK_VERSION "0.1"
 #endif
 
 cfg_write_fn cfg_write_hook;

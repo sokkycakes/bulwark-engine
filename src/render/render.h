@@ -54,4 +54,9 @@ void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const ui
 void R_Set2DClip(float x, float y, float w, float h);
 void R_Reset2DClip(void);
 
+/* the main view's origin and forward direction, from the last frame */
+void R_MainView(float origin[3], float forward[3]);
+/* $r_editlights_current_* macros (r_editlights); NULL for other names */
+const char *R_EditLightsMacro(const char *name);
+
 #endif

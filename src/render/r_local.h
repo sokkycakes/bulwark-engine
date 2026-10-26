@@ -387,6 +387,8 @@ void R_DrawToolsWorld(void);   /* pointfile and route lines, in the 3D pass */
 void R_DrawToolsOverlay(int w, int h); /* showpic pictures */
 void R_ToolsEndFrame(void);    /* the cubemap, 360, stereo and mega screenshots */
 void R_InitTools(void);
+void R_DrawHud(int w, int h); /* r_hud.c */
+void R_ReloadImage(const char *name);
 void R_ToolsMapLoaded(void);  /* skygroup overrides */
 
 extern cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;

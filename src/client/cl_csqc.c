@@ -846,7 +846,69 @@ static void cl_registercommand(qcvm_t *vm)
 }
 
 static void cl_isserver(qcvm_t *vm) { QC_ReturnFloat(vm, cl.listen ? 1 : 0); }
-static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
+/* 2 for a demo holding every player's view (a server demo or QTV stream) */
+static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, !cl.demoplayback ? 0 : CL_DemoMultiview() ? 2 : 1); }
+
+float CL_StatFloat(int i)
+{
+	float f;
+	if (i < 0 || i > 255)
+		return 0;
+	if (cl.stattype[i] == 8)
+		return (float)(int32_t)cl.statval[i];
+	if (cl.stattype[i] == 1)
+		return cl.statstr[i] ? (float)atof(cl.statstr[i]) : 0;
+	memcpy(&f, &cl.statval[i], 4);
+	return f;
+}
+
+int CL_StatInt(int i)
+{
+	if (i < 0 || i > 255)
+		return 0;
+	if (cl.stattype[i] == 2)
+		return (int)CL_StatFloat(i);
+	if (cl.stattype[i] == 1)
+		return cl.statstr[i] ? atoi(cl.statstr[i]) : 0;
+	return (int32_t)cl.statval[i];
+}
+
+const char *CL_StatString(int i) { return i >= 0 && i < 256 && cl.stattype[i] == 1 && cl.statstr[i] ? cl.statstr[i] : ""; }
+
+/* getstatf(num [, firstbit, bitcount]): with bits, part of the stat as a whole number */
+static void cl_getstatf(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	if (vm->argc > 1) {
+		int first = (int)QC_PFLOAT(vm, 1), count = vm->argc > 2 ? (int)QC_PFLOAT(vm, 2) : 1;
+		uint32_t v = (uint32_t)CL_StatInt(i);
+		if (first < 0 || first > 31 || count <= 0)
+			QC_ReturnFloat(vm, 0);
+		else
+			QC_ReturnFloat(vm, (float)((v >> first) & (count >= 32 ? 0xffffffffu : (1u << count) - 1)));
+		return;
+	}
+	QC_ReturnFloat(vm, CL_StatFloat(i));
+}
+
+static void cl_getstati(qcvm_t *vm) { QC_ReturnInt(vm, CL_StatInt((int)QC_PFLOAT(vm, 0))); }
+static void cl_getstats(qcvm_t *vm) { QC_ReturnString(vm, CL_StatString((int)QC_PFLOAT(vm, 0))); }
+
+/* getplayerstat(player, stat, type): only our own (or, in a demo, the tracked player's) */
+static void cl_getplayerstat(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 1), type = (int)QC_PFLOAT(vm, 2);
+	if ((int)QC_PFLOAT(vm, 0) != cl.playerslot) {
+		QC_ReturnInt(vm, 0);
+		return;
+	}
+	if (type == 1)
+		QC_ReturnString(vm, CL_StatString(i));
+	else if (type == 8 || type == 4)
+		QC_ReturnInt(vm, CL_StatInt(i));
+	else
+		QC_ReturnFloat(vm, CL_StatFloat(i));
+}
 static void cl_clientstate(qcvm_t *vm) { QC_ReturnFloat(vm, cl.state == ca_active ? 2 : cl.state >= ca_loading ? 1 : 0); }
 
 static void cl_getentity(qcvm_t *vm)
@@ -920,7 +982,6 @@ static void cl_findkeysforcommandex(qcvm_t *vm)
 }
 
 static void cl_setsensitivityscaler(qcvm_t *vm) { (void)vm; }
-static void cl_zero(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 static void cl_nop(qcvm_t *vm) { (void)vm; }
 
 static void cl_getlightstyle(qcvm_t *vm)
@@ -988,7 +1049,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"findkeysforcommand", cl_findkeysforcommand}, {"findkeysforcommandex", cl_findkeysforcommandex},
 	{"setsensitivityscaler", cl_setsensitivityscaler}, {"getlightstyle", cl_getlightstyle},
 	{"lightstyle", cl_lightstyle}, {"anglesub", cl_anglesub},
-	{"getstatf", cl_zero}, {"getstati", cl_zero}, {"getstats", cl_zero}, {"getplayerstat", cl_zero},
+	{"getstatf", cl_getstatf}, {"getstati", cl_getstati}, {"getstats", cl_getstats}, {"getplayerstat", cl_getplayerstat},
 	{"setwatchpoint", cl_nop}, {"gp_rumble", cl_nop}, {"gp_rumbletriggers", cl_nop}, {"gp_setledcolor", cl_nop},
 	{"gp_settriggerfx", cl_nop},
 	{NULL, NULL}};

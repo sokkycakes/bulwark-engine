@@ -85,4 +85,9 @@ void Cmd_Init(void);
 /* the console utility commands (cmd_extra.c) */
 void Cmd_InitExtra(void);
 
+/* teamplay-style $macros ($health, $location...): returns the text for a
+ * name that isn't a cvar, or NULL */
+typedef const char *(*cmd_macro_fn)(const char *name);
+void Cmd_SetMacroProvider(cmd_macro_fn fn);
+
 #endif

@@ -191,7 +191,11 @@ static void clear_map_state(void)
 	for (int i = 0; i < 256; i++) {
 		Mem_Free(cl.lightstyles[i]);
 		cl.lightstyles[i] = NULL;
+		Mem_Free(cl.statstr[i]);
+		cl.statstr[i] = NULL;
 	}
+	memset(cl.stattype, 0, sizeof(cl.stattype));
+	memset(cl.statval, 0, sizeof(cl.statval));
 	for (int i = 0; i < CL_MAX_PLAYERS; i++)
 		Blob_Clear(cl.playerblobs[i]);
 	memset(blobsent, 0, sizeof(blobsent));
@@ -392,6 +396,7 @@ static void finish_signon(void)
 		return;
 	}
 	CSQC_WorldLoaded();
+	TP_NewMap();
 	snprintf(cmd, sizeof(cmd), "begin %d", cl.spawncount);
 	CL_SendStringCmd(cmd);
 }
@@ -452,6 +457,7 @@ static void parse_server_message(msg_t *m, bool reliable)
 			const char *s = MSG_ReadString(m);
 			if (!CL_ChatAllowed(s, level))
 				break;
+			TP_CheckTriggers(s, level);
 			if (!CSQC_Print(s, level))
 				Con_Print(s);
 			break;
@@ -485,6 +491,20 @@ static void parse_server_message(msg_t *m, bool reliable)
 			Str_Copy(key, MSG_ReadString(m), sizeof(key));
 			info_set(cl.serverinfo, sizeof(cl.serverinfo), key, MSG_ReadString(m));
 			CSQC_ServerInfoChanged();
+			break;
+		}
+		case svc_stats: {
+			uint32_t n = MSG_ReadVarUInt(m);
+			for (uint32_t k = 0; k < n && !m->badread; k++) {
+				int i = MSG_ReadByte(m), type = MSG_ReadByte(m);
+				cl.stattype[i] = (uint8_t)type;
+				if (type == 1) {
+					Mem_Free(cl.statstr[i]);
+					cl.statstr[i] = Mem_Strdup(MSG_ReadString(m));
+				} else {
+					cl.statval[i] = (uint32_t)MSG_ReadLong(m);
+				}
+			}
 			break;
 		}
 		case svc_playerblob: {
@@ -833,6 +853,7 @@ void CL_Frame(double dt)
 {
 	cl.realtime += dt;
 	cl.frametime = dt;
+	TP_Frame();
 	if (cl.demoplayback) {
 		CL_DemoReadPackets(dt);
 		update_clock(dt);
@@ -954,6 +975,8 @@ void CL_Init(void)
 	Cvar_Get("model", "", CVAR_ARCHIVE | CVAR_USERINFO, NULL);
 	Cmd_Add("connect", CL_Connect_f);
 	CL_InitChat();
+	TP_Init();
+	HUD_Init();
 	Cmd_Add("setinfo", CL_SetInfo_f);
 	Cmd_AddD("fullinfo", CL_FullInfo_f, "fullinfo \\key\\value...: set several userinfo keys");
 	Cmd_AddD("color", CL_Color_f, "color <top> [bottom]: player colours");

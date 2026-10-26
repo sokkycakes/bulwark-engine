@@ -191,7 +191,9 @@ static void ConEcho_f(int argc, const char **argv) { Con_Printf("%s\n", Cmd_Args
 static void Say_f(int argc, const char **argv)
 {
 	if (cl.state >= ca_loading) {
-		CL_SendStringCmd(va("%s %s", argv[0], Cmd_Args()));
+		char text[1024];
+		TP_ParseSay(Cmd_Args(), text, sizeof(text));
+		CL_SendStringCmd(va("%s %s", argv[0], text));
 		return;
 	}
 	if (!Str_ICmp(argv[0], "say") && SV_ConsoleSay(Cmd_Args()))

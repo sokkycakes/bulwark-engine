@@ -156,6 +156,7 @@ static void add_view(sink_t *s, client_t *c, bool spawned)
 		at += n;
 	}
 	SB_Free(&sig);
+	SV_ResetStats(c); /* so the recording gets every stat */
 	if (spawned) {
 		uint8_t m[2] = {svc_signon, 2};
 		put(s, DR_RELIABLE, slot, m, 2);

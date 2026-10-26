@@ -80,6 +80,7 @@ static bool autotrack_on;
 static void easy_record(int argc, const char **argv, bool ask_update);
 
 bool CL_DemoPlaying(void) { return demo.play != NULL || demo.qtv; }
+bool CL_DemoMultiview(void) { return (demo.play || demo.qtv) && demo.multiview; }
 bool CL_DemoRecording(void) { return demo.rec != NULL && !demo.waiting; }
 
 static void write_record(int type, const void *data, uint32_t len)

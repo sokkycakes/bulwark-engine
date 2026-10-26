@@ -367,6 +367,8 @@ static char *read_save(const char *name, size_t *len)
 	return FS_LoadFile(rel, len);
 }
 
+static bool load_legacy(const char *name, char *data, size_t len);
+
 bool SV_LoadGame(const char *name)
 {
 	size_t len;
@@ -383,6 +385,11 @@ bool SV_LoadGame(const char *name)
 	if (!data) {
 		Con_Printf("no save called %s\n", name);
 		return false;
+	}
+	if (data[0] >= '0' && data[0] <= '9') {
+		bool ok = load_legacy(name, data, len);
+		Mem_Free(data);
+		return ok;
 	}
 	if (strncmp(data, SAVE_MAGIC, strlen(SAVE_MAGIC))) {
 		Con_Printf("%s isn't a Bulwark save\n", name);
@@ -486,6 +493,196 @@ fail:
 	return false;
 }
 
+
+/* one line of a legacy save, without its end */
+static const char *legacy_line(const char *p, char *out, size_t size)
+{
+	size_t n = strcspn(p, "\n");
+	Str_Copy(out, p, BW_MIN(size, n + 1));
+	out[strcspn(out, "\r")] = 0;
+	return p[n] ? p + n + 1 : p + n;
+}
+
+/* --- the classic single player format (savegame_legacy) -----------------
+ * A version line (5), a comment, the 16 spawn parms, skill, map, time, 64
+ * lightstyles, then { } blocks of "key" "value" lines: the globals, and one
+ * per entity slot from the world on, empty for free slots. */
+
+#define LEGACY_VERSION 5
+
+static void write_legacy_block(FILE *f, int e)
+{
+	qcvm_t *vm = sv.vm;
+	char buf[4096];
+	fputs("{\n", f);
+	if (e < 0) {
+		for (int i = 0; i < vm->numglobaldefs; i++) {
+			qcdef_t *d = &vm->globaldefs[i];
+			int t = d->type & ~DEF_SAVEGLOBAL;
+			if (!(d->type & DEF_SAVEGLOBAL) || skip_def(d) ||
+			    (t != ev_string && t != ev_float && t != ev_vector && t != ev_entity && t != ev_function))
+				continue;
+			global_to_string(vm, d, buf, sizeof(buf));
+			put_quoted(f, d->name);
+			fputc(' ', f);
+			put_quoted(f, buf);
+			fputc('\n', f);
+		}
+	} else if (!vm->edicts[e].free) {
+		for (int i = 1; i < vm->numfielddefs; i++) {
+			qcdef_t *d = &vm->fielddefs[i];
+			if (skip_def(d))
+				continue;
+			QC_FieldToString(vm, e, d, buf, sizeof(buf));
+			if (!buf[0] || !strcmp(buf, "0") || !strcmp(buf, "0 0 0"))
+				continue;
+			put_quoted(f, d->name);
+			fputc(' ', f);
+			put_quoted(f, buf);
+			fputc('\n', f);
+		}
+	}
+	fputs("}\n", f);
+}
+
+static void SaveLegacy_f(int argc, const char **argv)
+{
+	char path[1024], comment[40];
+	qcvm_t *vm = sv.vm;
+	client_t *c = &svs.clients[0];
+	FILE *f;
+	if (svs.maxclients > 1) {
+		Con_Printf("Unable to use legacy savegame format to save multiplayer games\nUnable to use legacy save format\n");
+		return;
+	}
+	if (argc < 2) {
+		Con_Printf("%s <name>: save in the classic single player format\n", argv[0]);
+		return;
+	}
+	if (!game_running())
+		return;
+	if (!save_path(argv[1], path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "wb"))) {
+		Con_Printf("can't write the save %s\n", argv[1]);
+		return;
+	}
+	SV_SaveSpawnParms();
+	{
+		int ofs_k = QC_GlobalOfs(vm, "killed_monsters"), ofs_t = QC_GlobalOfs(vm, "total_monsters");
+		snprintf(comment, sizeof(comment), "%-22.22s kills:%3d/%3d", sv.mapname,
+		         ofs_k >= 0 ? (int)vm->globals[ofs_k].f : 0, ofs_t >= 0 ? (int)vm->globals[ofs_t].f : 0);
+		for (char *p = comment; *p; p++)
+			if (*p == ' ')
+				*p = '_';
+	}
+	fprintf(f, "%d\n%s\n", LEGACY_VERSION, comment);
+	for (int i = 0; i < 16; i++)
+		fprintf(f, "%f\n", i < MAX_SPAWN_PARMS ? c->spawn_parms[i] : 0.0f);
+	fprintf(f, "%d\n%s\n%f\n", (int)(Cvar_Value("skill") + 0.5f), sv.mapname, sv.time);
+	for (int i = 0; i < 64; i++)
+		fprintf(f, "%s\n", i < SV_MAX_LIGHTSTYLES && sv.lightstyles[i] ? sv.lightstyles[i] : "m");
+	write_legacy_block(f, -1);
+	for (int e = 0; e < vm->num_edicts; e++)
+		write_legacy_block(f, e);
+	fclose(f);
+	Con_Printf("saved %s (legacy format)\n", argv[1]);
+}
+
+/* loads one: the classic format is told apart by its first line, a number */
+static bool load_legacy(const char *name, char *data, size_t len)
+{
+	const char *p = data;
+	char line[256], mapname[64];
+	float parms[16];
+	char *styles[64] = {0};
+	double time;
+	qcvm_t *vm;
+	int e = -1, version;
+#define LINE() (p = legacy_line(p, line, sizeof(line)))
+	(void)len;
+	LINE();
+	version = atoi(line);
+	if (version != LEGACY_VERSION) {
+		Con_Printf("%s is a version %d save, not %d\n", name, version, LEGACY_VERSION);
+		return false;
+	}
+	LINE(); /* comment */
+	for (int i = 0; i < 16; i++) {
+		LINE();
+		parms[i] = (float)atof(line);
+	}
+	LINE();
+	Cvar_SetValue("skill", (float)atoi(line));
+	LINE();
+	Str_Copy(mapname, line, sizeof(mapname));
+	LINE();
+	time = atof(line);
+	for (int i = 0; i < 64; i++) {
+		LINE();
+		styles[i] = Mem_Strdup(line);
+	}
+	Con_Printf("loading %s (%s, legacy format)\n", name, mapname);
+	autosave_pending = false;
+	for (int i = 0; i < svs.maxclients; i++)
+		svs.clients[i].have_parms = false;
+	if (!SV_SpawnServer(mapname)) {
+		for (int i = 0; i < 64; i++)
+			Mem_Free(styles[i]);
+		return false;
+	}
+	vm = sv.vm;
+	memcpy(svs.clients[0].spawn_parms, parms, sizeof(float) * BW_MIN(16, MAX_SPAWN_PARMS));
+	svs.clients[0].have_parms = true;
+	for (int i = 0; i < 64; i++) {
+		if (i < SV_MAX_LIGHTSTYLES) {
+			Mem_Free(sv.lightstyles[i]);
+			sv.lightstyles[i] = styles[i];
+		} else
+			Mem_Free(styles[i]);
+	}
+	sv.time = time;
+	QC_SetGFloat(vm, G.time, (float)sv.time);
+	/* what the map spawned goes; the blocks say what exists */
+	for (int k = 1; k < vm->num_edicts; k++)
+		if (!vm->edicts[k].free) {
+			SV_UnlinkEdict(k);
+			QC_FreeEdict(vm, k, 0);
+		}
+	while (*p) {
+		const char *q = p;
+		while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n')
+			q++;
+		if (*q != '{')
+			break;
+		if (e >= 0) {
+			if (e >= vm->max_edicts) {
+				Con_Printf("^3save: entity %d is past max_edicts\n", e);
+				break;
+			}
+			if (e >= vm->num_edicts)
+				vm->num_edicts = e + 1;
+			QC_ClearEdict(vm, e);
+		}
+		{
+			/* an empty block is a free slot */
+			const char *body = next_line(q);
+			bool empty = *body == '}';
+			p = read_block(q, e);
+			if (e > 0 && empty)
+				QC_FreeEdict(vm, e, 0);
+		}
+		e++;
+	}
+	for (int k = 1; k < vm->num_edicts; k++)
+		if (!vm->edicts[k].free)
+			SV_LinkEdict(k, false);
+	memset(slot_restored, 0, sizeof(slot_restored));
+	restored_spawncount = svs.spawncount;
+	for (int i = 0; i < svs.maxclients && i < 256; i++)
+		slot_restored[i] = !vm->edicts[i + 1].free && F_CLASSNAME_SET(vm, i + 1);
+#undef LINE
+	return true;
+}
+
 static void Load_f(int argc, const char **argv)
 {
 	if (argc < 2) {
@@ -580,6 +777,7 @@ void SV_InitSaves(void)
 	sv_save_engine = Cvar_Get("sv_save_engine", "0", 0, "Save every global and entity field in the engine instead of asking the game (SV_PerformSave)");
 	Cmd_AddD("save", Save_f, "save <name> [comment]: save the game to saves/<name>.sav");
 	Cmd_AddD("savegame", Save_f, "savegame <name> [comment]: save the game");
+	Cmd_AddD("savegame_legacy", SaveLegacy_f, "savegame_legacy <name>: save in the classic single player format");
 	Cmd_AddD("load", Load_f, "load <name>: load saves/<name>.sav");
 	Cmd_AddD("loadgame", Load_f, "loadgame <name>: load a saved game");
 	Cmd_AddD("quicksave", Quicksave_f, "Save to the \"quick\" slot");

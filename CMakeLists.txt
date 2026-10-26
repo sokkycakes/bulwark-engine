@@ -58,6 +58,7 @@ add_library(bwserver STATIC
 	src/server/sv_compat.c
 	src/server/sv_admin.c
 	src/server/sv_mvd.c
+	src/server/sv_stats.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 
@@ -87,6 +88,7 @@ add_library(bwclient STATIC
 	src/client/console.c
 	src/client/cl_cmds.c
 	src/client/cl_chat.c
+	src/client/cl_tp.c
 	src/client/cl_demo.c
 	src/render/r_main.c
 	src/render/r_overlay.c
@@ -98,6 +100,7 @@ add_library(bwclient STATIC
 	src/render/r_decal.c
 	src/render/r_part.c
 	src/render/r_tools.c
+	src/render/r_hud.c
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c

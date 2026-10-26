@@ -171,4 +171,5 @@ void R_DrawOverlays(int w, int h)
 	draw_centerprint(w, h, size * 2);
 	draw_chat(w, h, size);
 	draw_readouts(w, h, size);
+	R_DrawHud(w, h);
 }

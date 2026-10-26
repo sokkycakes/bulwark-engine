@@ -248,9 +248,14 @@ void Cmd_SetPreHook(cmd_fallback_fn fn) { cmd_prehook = fn; }
 
 const char *Cmd_Args(void) { return cmd_args; }
 
-/* a cvar reference starting at p ("$name" or "${name}"); returns its length */
-static size_t macro_at(const char *p, cvar_t **out)
+static cmd_macro_fn macro_provider;
+void Cmd_SetMacroProvider(cmd_macro_fn fn) { macro_provider = fn; }
+
+/* a cvar or macro reference starting at p ("$name" or "${name}"); returns
+ * its length, with its text in *out */
+static size_t macro_at(const char *p, const char **out)
 {
+	cvar_t *v;
 	char name[128];
 	size_t n = 0, len;
 	if (p[0] != '$')
@@ -270,7 +275,11 @@ static size_t macro_at(const char *p, cvar_t **out)
 		name[n] = 0;
 		len = n + 1;
 	}
-	if (!name[0] || !(*out = Cvar_Find(name)))
+	if (!name[0])
+		return 0;
+	if ((v = Cvar_Find(name)))
+		*out = v->string;
+	else if (!macro_provider || !(*out = macro_provider(name)))
 		return 0;
 	return len;
 }
@@ -280,7 +289,7 @@ bool Cmd_ExpandMacros(const char *in, char *out, size_t outsize)
 	bool any = false, quoted = false;
 	size_t o = 0;
 	for (const char *p = in; *p && o + 1 < outsize;) {
-		cvar_t *v;
+		const char *v;
 		size_t n;
 		if (*p == '"')
 			quoted = !quoted;
@@ -292,7 +301,7 @@ bool Cmd_ExpandMacros(const char *in, char *out, size_t outsize)
 			continue;
 		}
 		if (!quoted && (n = macro_at(p, &v))) {
-			o += Str_Copy(out + o, v->string, outsize - o);
+			o += Str_Copy(out + o, v, outsize - o);
 			if (o >= outsize)
 				o = outsize - 1;
 			p += n;

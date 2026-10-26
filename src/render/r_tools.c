@@ -1158,3 +1158,15 @@ void R_InitTools(void)
 	Cmd_AddD("mod_buildcubemaps", Buildcubemaps_f, "Draw a cubemap at each env_cubemap into textures/env/");
 	Cmd_AddD("mod_findcubemaps", Findcubemaps_f, "Find each surface's nearest env_cubemap and store it in the map's BSPX lumps");
 }
+
+void R_MainView(float origin[3], float forward[3])
+{
+	VectorCopy(r_scene.mainorigin, origin);
+	VectorCopy(r_scene.mainforward, forward);
+}
+
+const char *R_EditLightsMacro(const char *name)
+{
+	(void)name;
+	return NULL;
+}

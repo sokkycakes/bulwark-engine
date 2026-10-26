@@ -30,6 +30,7 @@ enum {
 	svc_pointparticles, /* varuint effect, coord x3 origin, float x3 direction, float count */
 	svc_trailparticles, /* varuint effect, entity, coord x3 start, coord x3 end */
 	svc_playerblob,   /* byte slot, string key, varuint length, bytes */
+	svc_stats,        /* varuint count, then per stat: byte index, byte type (EV_FLOAT 2, EV_STRING 1, EV_INTEGER 8), value */
 	svc_count
 };
 

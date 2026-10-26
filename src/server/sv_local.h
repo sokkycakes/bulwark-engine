@@ -92,6 +92,7 @@ typedef struct {
 } snaprec_t;
 
 #define MAX_SPAWN_PARMS 16
+#define MAX_CL_STATS 256
 
 typedef struct client_s {
 	clientstate_t state;
@@ -133,6 +134,9 @@ typedef struct client_s {
 	double chat_times[16];  /* recent chat, for flood protection */
 	int chat_head;
 	double silenced_until;
+	uint8_t stattype[MAX_CL_STATS]; /* what the client was last sent (sv_stats.c), 0 none */
+	uint32_t statval[MAX_CL_STATS];
+	char *statstr[MAX_CL_STATS];
 } client_t;
 
 typedef struct {
@@ -296,6 +300,12 @@ void W_bi_walkmove(qcvm_t *vm);
 void W_bi_changeyaw(qcvm_t *vm);
 void W_bi_touchtriggers(qcvm_t *vm);
 void W_bi_checkpvs(qcvm_t *vm);
+
+/* sv_stats.c */
+extern const qc_builtin_t sv_stat_builtins[];
+void SV_UpdateStats(client_t *c);
+void SV_ResetStats(client_t *c);
+void SV_ClientReliable(client_t *c, const void *data, size_t len);
 
 /* sv_mvd.c: server demos and QTV streams */
 void SV_InitMVD(void);
