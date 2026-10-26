@@ -161,7 +161,7 @@ typedef struct {
 enum {
 	B_FORWARD, B_BACK, B_MOVELEFT, B_MOVERIGHT, B_MOVEUP, B_MOVEDOWN, B_LEFT, B_RIGHT, B_LOOKUP, B_LOOKDOWN, B_SPEED,
 	B_JUMP, B_ATTACK, B_ATTACK2, B_USE, B_RELOAD, B_DUCK, B_SPRINT, B_PRONE, B_BUTTON3, B_BUTTON4, B_BUTTON5,
-	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_COUNT
+	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_STRAFE, B_KLOOK, B_COUNT
 };
 static kbutton_t buttons[B_COUNT];
 static int pending_impulse;
@@ -230,6 +230,47 @@ BUTTON_CMDS(button5, B_BUTTON5)
 BUTTON_CMDS(button6, B_BUTTON6)
 BUTTON_CMDS(button7, B_BUTTON7)
 BUTTON_CMDS(button8, B_BUTTON8)
+BUTTON_CMDS(strafe, B_STRAFE)
+BUTTON_CMDS(klook, B_KLOOK)
+
+/* the mouse always looks around; +mlook and -mlook are kept so old configs
+ * that bind them don't print errors */
+static void mlook_f(int argc, const char **argv) {}
+
+/* +button0 .. +button19 by number: 0 and 2 are attack and jump, 3-8 the
+ * buttons above, 1 is bit 8 (256) and 9-19 the bits after it */
+static kbutton_t numbered[20];
+static void numbered_button(int argc, const char **argv)
+{
+	int n = atoi(argv[0] + 7);
+	if (n < 0 || n >= 20)
+		return;
+	if (argv[0][0] == '+')
+		key_down(&numbered[n], argc, argv);
+	else
+		key_up(&numbered[n], argc, argv);
+}
+
+static uint32_t numbered_bits(void)
+{
+	uint32_t bits = 0;
+	for (int n = 0; n < 20; n++) {
+		kbutton_t *b = &numbered[n];
+		if (!b->active && !b->impulse_down)
+			continue;
+		if (n == 0)
+			bits |= 1;
+		else if (n == 1)
+			bits |= 256;
+		else if (n == 2)
+			bits |= 2;
+		else if (n <= 8)
+			bits |= 1u << (n - 1);
+		else
+			bits |= 512u << (n - 9);
+	}
+	return bits;
+}
 
 static void Impulse_f(int argc, const char **argv)
 {
@@ -396,9 +437,18 @@ static void fill_command(usercmd_t *u, double now)
 	float dt = (float)cl.frametime;
 	float joy_move[2];
 	unsigned bits = 0;
-	/* keyboard turning */
-	cl.viewangles[1] += dt * cl_yawspeed->value * (button_amount(&buttons[B_LEFT]) - button_amount(&buttons[B_RIGHT]));
+	/* keyboard turning; +strafe makes the turn keys strafe, +klook makes
+	 * forward and back look up and down */
+	bool strafe = buttons[B_STRAFE].active, klook = buttons[B_KLOOK].active;
+	float turn = button_amount(&buttons[B_LEFT]) - button_amount(&buttons[B_RIGHT]);
+	float walk = button_amount(&buttons[B_FORWARD]), walkback = button_amount(&buttons[B_BACK]);
+	if (!strafe)
+		cl.viewangles[1] += dt * cl_yawspeed->value * turn;
 	cl.viewangles[0] += dt * cl_pitchspeed->value * (button_amount(&buttons[B_LOOKDOWN]) - button_amount(&buttons[B_LOOKUP]));
+	if (klook) {
+		cl.viewangles[0] += dt * cl_pitchspeed->value * (walkback - walk);
+		walk = walkback = 0;
+	}
 	if (cl.viewangles[0] > 89)
 		cl.viewangles[0] = 89;
 	if (cl.viewangles[0] < -89)
@@ -420,10 +470,9 @@ static void fill_command(usercmd_t *u, double now)
 	}
 
 	VectorCopy(cl.viewangles, u->angles);
-	u->movevalues[0] = speed * (cl_forwardspeed->value * button_amount(&buttons[B_FORWARD]) -
-	                            cl_backspeed->value * button_amount(&buttons[B_BACK]));
+	u->movevalues[0] = speed * (cl_forwardspeed->value * walk - cl_backspeed->value * walkback);
 	u->movevalues[1] = speed * cl_sidespeed->value *
-	                   (button_amount(&buttons[B_MOVERIGHT]) - button_amount(&buttons[B_MOVELEFT]));
+	                   (button_amount(&buttons[B_MOVERIGHT]) - button_amount(&buttons[B_MOVELEFT]) - (strafe ? turn : 0));
 	u->movevalues[0] += speed * (joy_move[0] > 0 ? cl_forwardspeed->value : cl_backspeed->value) * joy_move[0];
 	u->movevalues[1] += speed * cl_sidespeed->value * joy_move[1];
 	for (int k = 0; k < 2; k++) {
@@ -450,6 +499,7 @@ static void fill_command(usercmd_t *u, double now)
 		bits |= 64;
 	if (buttons[B_DUCK].active || buttons[B_BUTTON8].active)
 		bits |= 128;
+	bits |= numbered_bits();
 	u->buttons = bits;
 	u->impulse = (uint8_t)pending_impulse;
 	u->sequence = cl.clientcommandframe;
@@ -481,6 +531,8 @@ void CL_BuildCommand(double now)
 	pending_impulse = 0;
 	for (int i = 0; i < B_COUNT; i++)
 		buttons[i].impulse_down = false;
+	for (int i = 0; i < 20; i++)
+		numbered[i].impulse_down = false;
 	memset(&cl.cmds[cl.clientcommandframe % CL_CMD_BACKUP], 0, sizeof(usercmd_t));
 }
 
@@ -547,7 +599,20 @@ void IN_Init(void)
 	ADD(button6);
 	ADD(button7);
 	ADD(button8);
+	ADD(strafe);
+	ADD(klook);
+	Cmd_Add("+mlook", mlook_f);
+	Cmd_Add("-mlook", mlook_f);
 #undef ADD
+	for (int n = 0; n < 20; n++) {
+		char name[16];
+		if (n >= 3 && n <= 8)
+			continue; /* registered above */
+		snprintf(name, sizeof(name), "+button%d", n);
+		Cmd_Add(name, numbered_button);
+		name[0] = '-';
+		Cmd_Add(name, numbered_button);
+	}
 }
 
 /* the pointer moved while not grabbed (menus, cursor mode) */

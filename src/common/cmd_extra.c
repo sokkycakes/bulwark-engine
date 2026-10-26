@@ -998,6 +998,7 @@ void Cmd_InitExtra(void)
 	Cmd_AddD("dir", Dir_f, "dir [pattern]: list game files");
 	Cmd_AddD("ls", Dir_f, "ls [pattern]: list game files");
 	Cmd_AddD("maps", Maps_f, "maps [text]: list the maps");
+	Cmd_AddD("maplist", Maps_f, "maplist [text]: list the maps");
 	Cmd_AddD("listmaps", Maps_f, "listmaps [text]: list the maps");
 	Cmd_AddD("version", Version_f, "Engine version and build date");
 	Cmd_AddD("hunkprint", Memstats_f, "Memory statistics");

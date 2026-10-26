@@ -685,8 +685,14 @@ static void CL_SetInfoBlob_f(int argc, const char **argv)
 static void CL_SetInfo_f(int argc, const char **argv)
 {
 	cvar_t *v;
-	if (argc < 3) {
-		Con_Printf("usage: setinfo <key> <value>\n");
+	if (argc == 1) {
+		for (v = Cvar_First(); v; v = v->next)
+			if (v->flags & CVAR_USERINFO)
+				Con_Printf("  %-20s %s\n", v->name, v->string);
+		return;
+	}
+	if (argc < 3 || !argv[1][0] || strchr(argv[1], '\\') || strchr(argv[2], '\\')) {
+		Con_Printf("usage: setinfo <key> <value> (no backslashes)\n");
 		return;
 	}
 	v = Cvar_Find(argv[1]);
@@ -694,6 +700,39 @@ static void CL_SetInfo_f(int argc, const char **argv)
 		v = Cvar_Get(argv[1], "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
 	v->flags |= CVAR_USERINFO;
 	Cvar_Set(argv[1], argv[2]);
+}
+
+/* fullinfo \\key\\value\\key\\value...: several setinfo at once */
+static void CL_FullInfo_f(int argc, const char **argv)
+{
+	const char *p = argc > 1 ? argv[1] : "";
+	while (*p == '\\') {
+		char key[256], value[1024];
+		const char *sv[3] = {"setinfo", key, value};
+		size_t n = strcspn(++p, "\\");
+		snprintf(key, sizeof(key), "%.*s", (int)n, p);
+		p += n;
+		if (*p != '\\')
+			break;
+		n = strcspn(++p, "\\");
+		snprintf(value, sizeof(value), "%.*s", (int)n, p);
+		p += n;
+		CL_SetInfo_f(3, sv);
+	}
+}
+
+/* color <top> [bottom]: player colours, as topcolor and bottomcolor */
+static void CL_Color_f(int argc, const char **argv)
+{
+	const char *sv[3] = {"setinfo", "topcolor", argc > 1 ? argv[1] : ""};
+	if (argc < 2) {
+		Con_Printf("color is %s %s\n", Cvar_String("topcolor"), Cvar_String("bottomcolor"));
+		return;
+	}
+	CL_SetInfo_f(3, sv);
+	sv[1] = "bottomcolor";
+	sv[2] = argc > 2 ? argv[2] : argv[1];
+	CL_SetInfo_f(3, sv);
 }
 
 static void check_userinfo(void)
@@ -910,6 +949,8 @@ void CL_Init(void)
 	Cvar_Get("model", "", CVAR_ARCHIVE | CVAR_USERINFO, NULL);
 	Cmd_Add("connect", CL_Connect_f);
 	Cmd_Add("setinfo", CL_SetInfo_f);
+	Cmd_AddD("fullinfo", CL_FullInfo_f, "fullinfo \\key\\value...: set several userinfo keys");
+	Cmd_AddD("color", CL_Color_f, "color <top> [bottom]: player colours");
 	Cmd_Add("setinfoblob", CL_SetInfoBlob_f);
 	Cmd_Add("disconnect", CL_Disconnect_f);
 	Cmd_Add("reconnect", CL_Reconnect_f);

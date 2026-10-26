@@ -151,6 +151,36 @@ static void Users_f(int argc, const char **argv)
 	Con_Printf("%d of %d slots used\n", n, svs.maxclients);
 }
 
+/* user <player>: a player's userinfo */
+static void User_f(int argc, const char **argv)
+{
+	client_t *c;
+	const char *p;
+	if (!need_server())
+		return;
+	if (argc < 2) {
+		Con_Printf("usage: user <slot or name>\n");
+		return;
+	}
+	if (!(c = find_client(argv[1]))) {
+		Con_Printf("no player \"%s\"\n", argv[1]);
+		return;
+	}
+	Con_Printf("%s:\n", c->name);
+	for (p = c->userinfo; *p == '\\';) {
+		char key[256], value[1024];
+		size_t n = strcspn(++p, "\\");
+		snprintf(key, sizeof(key), "%.*s", (int)n, p);
+		p += n;
+		if (*p != '\\')
+			break;
+		n = strcspn(++p, "\\");
+		snprintf(value, sizeof(value), "%.*s", (int)n, p);
+		p += n;
+		Con_Printf("  %-20s %s\n", key, value);
+	}
+}
+
 static void Kickall_f(int argc, const char **argv)
 {
 	if (!need_server())
@@ -922,6 +952,7 @@ void SV_InitCommands(void)
 	Cmd_AddD("setpause", Pause_f, "Pause the game");
 	Cmd_AddD("unpause", Pause_f, "Unpause the game");
 	Cmd_AddD("users", Users_f, "List the players");
+	Cmd_AddD("user", User_f, "user <player>: a player's userinfo");
 	Cmd_AddD("listplayers", Users_f, "List the players");
 	Cmd_AddD("kickall", Kickall_f, "kickall [reason]: kick every player");
 	Cmd_AddD("kickid", KickId_f, "kickid <slot> [reason]: kick a player");
