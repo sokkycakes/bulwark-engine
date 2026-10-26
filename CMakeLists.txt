@@ -79,6 +79,7 @@ add_library(bwclient STATIC
 	src/client/cl_menu.c
 	src/client/console.c
 	src/client/cl_cmds.c
+	src/client/cl_demo.c
 	src/render/r_main.c
 	src/render/r_overlay.c
 	src/render/r_gl.c

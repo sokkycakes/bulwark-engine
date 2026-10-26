@@ -250,6 +250,7 @@ static void Serverinfo_f(int argc, const char **argv)
 
 void CL_InitCommands(void)
 {
+	CL_InitDemos();
 	cfg_write_hook = write_binds;
 	cfg_reset_hook = reset_binds;
 

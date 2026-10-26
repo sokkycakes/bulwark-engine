@@ -124,6 +124,7 @@ typedef struct client_s {
 	double next_snapshot;
 	float updaterate; /* snapshots per second (cl_updaterate) */
 	float interp;     /* client's interpolation delay, seconds (for lag compensation) */
+	bool fullupdate;  /* resent the signon for a demo recording; "begin" doesn't respawn */
 } client_t;
 
 typedef struct {

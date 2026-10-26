@@ -475,6 +475,7 @@ void CL_BuildCommand(double now)
 	}
 	/* the server receives whole milliseconds, so predict with the same */
 	u->msec = roundf(u->msec * 1000) / 1000;
+	CL_DemoUsercmd(u);
 	cl.clientcommandframe++;
 	cl.cmd_start = now;
 	pending_impulse = 0;

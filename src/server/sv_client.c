@@ -1045,8 +1045,30 @@ static void parse_stringcmd(client_t *c, const char *s)
 	if (!t->argc)
 		goto done;
 	if (!strcmp(t->argv[0], "begin")) {
-		if (c->state == CS_CONNECTED && t->argc >= 2 && atoi(t->argv[1]) == svs.spawncount)
-			spawn_client(c);
+		if (c->state == CS_CONNECTED && t->argc >= 2 && atoi(t->argv[1]) == svs.spawncount) {
+			if (c->fullupdate) {
+				/* back in the game where the player was */
+				LOCALMSG(p, 8);
+				c->fullupdate = false;
+				c->state = CS_SPAWNED;
+				reset_entity_state(c);
+				MSG_WriteByte(&p, svc_signon);
+				MSG_WriteByte(&p, 2);
+				client_reliable(c, &p);
+			} else {
+				spawn_client(c);
+			}
+		}
+		goto done;
+	}
+	/* "fullupdate": everything from serverdata on again, without a
+	 * respawn, so a demo recording can start mid-game */
+	if (!strcmp(t->argv[0], "fullupdate")) {
+		if (c->state == CS_SPAWNED) {
+			c->fullupdate = true;
+			reset_entity_state(c);
+			send_serverdata(c);
+		}
 		goto done;
 	}
 	if (!strcmp(t->argv[0], "disconnect") || !strcmp(t->argv[0], "drop")) {

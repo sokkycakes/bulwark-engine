@@ -210,7 +210,9 @@ static void clear_map_state(void)
 
 void CL_Disconnect(const char *reason)
 {
-	if (cl.state >= ca_loading) {
+	if (cl.demoplayback)
+		CL_DemoAbort();
+	else if (cl.state >= ca_loading) {
 		uint8_t b[2] = {clc_disconnect, 0};
 		for (int i = 0; i < 3; i++)
 			Netchan_Transmit(&cl.chan, b, 1);
@@ -218,9 +220,11 @@ void CL_Disconnect(const char *reason)
 	}
 	if (cl.state != ca_disconnected)
 		Con_Printf("disconnected%s%s\n", reason ? ": " : "", reason ? reason : "");
+	CL_DemoDisconnected();
 	clear_map_state();
 	S_StopAllSounds();
 	cl.state = ca_disconnected;
+	cl.paused = false;
 	memset(cl.serverinfo, 0, sizeof(cl.serverinfo));
 	memset(cl.playerinfo, 0, sizeof(cl.playerinfo));
 	Str_Copy(cl.disconnect_reason, reason ? reason : "", sizeof(cl.disconnect_reason));
@@ -301,7 +305,7 @@ void CL_SendStringCmd(const char *s)
 {
 	uint8_t buf[4096];
 	msg_t m;
-	if (cl.state < ca_loading)
+	if (cl.state < ca_loading || cl.demoplayback)
 		return;
 	MSG_Init(&m, buf, sizeof(buf));
 	MSG_WriteByte(&m, clc_stringcmd);
@@ -314,7 +318,7 @@ void CL_SendEvent(const msg_t *body)
 {
 	uint8_t *buf;
 	msg_t m;
-	if (cl.state != ca_active)
+	if (cl.state != ca_active || cl.demoplayback)
 		return;
 	buf = Mem_Alloc(body->cursize + 1);
 	MSG_Init(&m, buf, body->cursize + 1);
@@ -327,7 +331,7 @@ void CL_SendEvent(const msg_t *body)
 /* unknown commands go to the server, like the console in Quake and Source */
 bool CL_ForwardToServer(const char *line, int argc, const char **argv)
 {
-	if (cl.state < ca_loading || !argc)
+	if (cl.state < ca_loading || !argc || cl.demoplayback)
 		return false;
 	CL_SendStringCmd(line);
 	return true;
@@ -424,6 +428,9 @@ static void parse_sound(msg_t *m)
 	if (idx > 0 && idx < (uint32_t)cl.numsounds && cl.sounds[idx])
 		S_StartSound(ent, chan, cl.sounds[idx], org, vol, atten, pitch, flags);
 }
+
+static void parse_server_message(msg_t *m, bool reliable);
+void CL_ParseServerMessage(msg_t *m, bool reliable) { parse_server_message(m, reliable); }
 
 static void parse_server_message(msg_t *m, bool reliable)
 {
@@ -591,11 +598,15 @@ static void read_packets(void)
 		cl.chan.numacked = cl.chan.numlost = 0;
 		{
 			msg_t rel;
-			while (cl.state >= ca_loading && Netchan_NextReliable(&cl.chan, &rel))
+			while (cl.state >= ca_loading && Netchan_NextReliable(&cl.chan, &rel)) {
+				CL_DemoServerMessage(rel.data + rel.readpos, rel.cursize - rel.readpos, true);
 				parse_server_message(&rel, true);
+			}
 		}
-		if (cl.state >= ca_loading)
+		if (cl.state >= ca_loading) {
+			CL_DemoServerMessage(m.data + m.readpos, m.cursize - m.readpos, false);
 			parse_server_message(&m, false);
+		}
 	}
 }
 
@@ -778,6 +789,11 @@ void CL_Frame(double dt)
 {
 	cl.realtime += dt;
 	cl.frametime = dt;
+	if (cl.demoplayback) {
+		CL_DemoReadPackets(dt);
+		update_clock(dt);
+		return;
+	}
 	NET_SetFakeConditions(net_fakelag->value, net_fakeloss->value);
 	read_packets();
 	check_connect();
@@ -799,6 +815,7 @@ void CL_Frame(double dt)
 			if (Netchan_CanSend(&cl.chan))
 				send_move();
 		}
+		CL_DemoFrame();
 	} else if (cl.state == ca_loading) {
 		/* keep acknowledging the signon stream */
 		if (cl.realtime >= cl.next_cmd) {

@@ -107,6 +107,7 @@ typedef struct {
 
 	/* local server if this process hosts one */
 	bool listen;
+	bool demoplayback; /* the server messages come from a demo file */
 } clstate_t;
 
 extern clstate_t cl;
@@ -142,6 +143,17 @@ const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size);
 int CL_ModelIndex(const char *name, bool add);
 void CL_SetModelBounds(int index);
 void CL_PrintServerinfo(void);
+void CL_ParseServerMessage(msg_t *m, bool reliable);
+/* cl_demo.c */
+void CL_InitDemos(void);
+bool CL_DemoPlaying(void);
+bool CL_DemoRecording(void);
+void CL_DemoServerMessage(const uint8_t *data, size_t len, bool reliable);
+void CL_DemoFrame(void);
+void CL_DemoUsercmd(const usercmd_t *u);
+void CL_DemoReadPackets(double dt);
+void CL_DemoDisconnected(void);
+void CL_DemoAbort(void);
 
 /* cl_input.c */
 void IN_Init(void);
