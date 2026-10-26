@@ -12,7 +12,13 @@ typedef struct cmd_s {
 	struct cmd_s *next;
 } cmd_t;
 
+typedef struct alias_s {
+	char *name, *text;
+	struct alias_s *next;
+} alias_t;
+
 static cmd_t *cmd_list;
+static alias_t *alias_list;
 static cmd_fallback_fn cmd_fallback;
 static cmd_fallback_fn cmd_prehook;
 static strbuf_t cbuf;
@@ -124,6 +130,14 @@ void Cmd_ExecuteString(const char *line)
 			return;
 		}
 	}
+	/* an alias runs its text in place of the line */
+	for (alias_t *a = alias_list; a; a = a->next) {
+		if (!Str_ICmp(a->name, local.argv[0])) {
+			Cbuf_InsertText(a->text);
+			cmd_args = saved_args;
+			return;
+		}
+	}
 	if (Cvar_Command(local.argc, local.argv)) {
 		cmd_args = saved_args;
 		return;
@@ -211,6 +225,58 @@ static void Cmd_Wait_f(int argc, const char **argv)
 	cbuf_wait = n > 0 ? n : 1;
 }
 
+/* "alias name "commands"": with no text it prints the alias, with no name all */
+static void Cmd_Alias_f(int argc, const char **argv)
+{
+	alias_t *a;
+	if (argc < 2) {
+		for (a = alias_list; a; a = a->next)
+			Con_Printf("%s : %s\n", a->name, a->text);
+		return;
+	}
+	for (a = alias_list; a; a = a->next)
+		if (!Str_ICmp(a->name, argv[1]))
+			break;
+	if (argc < 3) {
+		if (a)
+			Con_Printf("%s : %s\n", a->name, a->text);
+		return;
+	}
+	if (!a) {
+		a = Mem_Alloc(sizeof(*a));
+		a->name = Mem_Strdup(argv[1]);
+		a->next = alias_list;
+		alias_list = a;
+	} else {
+		Mem_Free(a->text);
+	}
+	/* the rest of the line, so unquoted multi-word text works too */
+	{
+		const char *rest = Cmd_Args();
+		while (*rest && (unsigned char)*rest > ' ')
+			rest++;
+		while (*rest && (unsigned char)*rest <= ' ')
+			rest++;
+		if (argc == 3)
+			a->text = Mem_Strdup(argv[2]);
+		else
+			a->text = Mem_Strdup(rest);
+	}
+}
+
+static void Cmd_Unalias_f(int argc, const char **argv)
+{
+	for (alias_t **l = &alias_list; argc > 1 && *l; l = &(*l)->next)
+		if (!Str_ICmp((*l)->name, argv[1])) {
+			alias_t *a = *l;
+			*l = a->next;
+			Mem_Free(a->name);
+			Mem_Free(a->text);
+			Mem_Free(a);
+			return;
+		}
+}
+
 static void Cmd_List_f(int argc, const char **argv)
 {
 	int n = 0;
@@ -229,4 +295,6 @@ void Cmd_Init(void)
 	Cmd_Add("exec", Cmd_Exec_f);
 	Cmd_Add("wait", Cmd_Wait_f);
 	Cmd_Add("cmdlist", Cmd_List_f);
+	Cmd_Add("alias", Cmd_Alias_f);
+	Cmd_Add("unalias", Cmd_Unalias_f);
 }
