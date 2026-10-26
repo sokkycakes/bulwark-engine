@@ -24,6 +24,7 @@ typedef struct sfx_s {
 sfx_t *S_FindSfx(const char *name, bool load);
 bool S_LoadSfx(sfx_t *sfx);
 void S_FreeAllSfx(void);
+void S_ForEachSfx(void (*fn)(const sfx_t *sfx, void *ctx), void *ctx);
 
 /* --- music --------------------------------------------------------------- */
 

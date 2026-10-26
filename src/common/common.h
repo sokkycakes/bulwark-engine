@@ -14,6 +14,7 @@ typedef float vec3_t[3];
 #define BW_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 #define BW_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define BW_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define BW_CLAMP(v, lo, hi) BW_MIN(BW_MAX((v), (lo)), (hi))
 
 #if defined(__GNUC__) || defined(__clang__)
 #define BW_PRINTF(f, a) __attribute__((format(printf, f, a)))
@@ -26,6 +27,8 @@ typedef float vec3_t[3];
 /* console output; everything goes through here so a client console can hook it */
 typedef void (*con_hook_fn)(const char *text);
 void Con_SetHook(con_hook_fn fn);
+/* a second receiver of all output, for the console log file */
+void Con_SetLogHook(con_hook_fn fn);
 void Con_Printf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_DPrintf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_Print(const char *text);

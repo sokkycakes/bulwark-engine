@@ -330,6 +330,7 @@ void R_End2D(void);
 void R_Flush2D(void);
 void R_DrawPic(float x, float y, float w, float h, material_t *mat, float s1, float t1, float s2, float t2,
                const float *rgb, float alpha, int flags);
+void R_DrawOverlays(int w, int h);
 void R_DrawFill(float x, float y, float w, float h, const float *rgb, float alpha, int flags);
 float R_DrawString(float x, float y, const char *text, float sx, float sy, const float *rgb, float alpha,
                    int flags, bool markup);

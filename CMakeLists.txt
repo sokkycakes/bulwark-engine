@@ -16,6 +16,7 @@ add_library(bwcommon STATIC
 	src/common/digest.c
 	src/common/cvar.c
 	src/common/cmd.c
+	src/common/cmd_extra.c
 	src/common/fs.c
 	src/common/pmove.c
 	src/common/skel.c
@@ -76,7 +77,9 @@ add_library(bwclient STATIC
 	src/client/cl_csqc.c
 	src/client/cl_menu.c
 	src/client/console.c
+	src/client/cl_cmds.c
 	src/render/r_main.c
+	src/render/r_overlay.c
 	src/render/r_gl.c
 	src/render/r_image.c
 	src/render/r_material.c

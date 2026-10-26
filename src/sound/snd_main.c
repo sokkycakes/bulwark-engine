@@ -367,6 +367,53 @@ static void Play_f(int argc, const char **argv)
 		start_sound(0, 0, S_FindSfx(argv[i], true), NULL, 1, 0, 100, 0, 0);
 }
 
+/* playvol <sound> <volume> [<sound> <volume>...] */
+static void PlayVol_f(int argc, const char **argv)
+{
+	for (int i = 1; i + 1 < argc; i += 2)
+		start_sound(0, 0, S_FindSfx(argv[i], true), NULL, (float)atof(argv[i + 1]), 0, 100, 0, 0);
+}
+
+typedef struct {
+	int count;
+	size_t bytes;
+} sfxstats_t;
+
+static void list_sfx(const sfx_t *sfx, void *ctx)
+{
+	sfxstats_t *st = ctx;
+	size_t bytes = sfx->loaded ? (size_t)sfx->frames * sfx->channels * 2 : 0;
+	if (sfx->loaded)
+		Con_Printf("%c %6dHz %s %7.2fs %8zu %s\n", sfx->loopstart >= 0 ? 'L' : ' ', sfx->rate,
+		           sfx->channels == 2 ? "stereo" : "mono  ", sfx->rate ? (double)sfx->frames / sfx->rate : 0, bytes,
+		           sfx->name);
+	else
+		Con_Printf("  %s %s\n", sfx->failed ? "missing" : "not loaded", sfx->name);
+	st->count++;
+	st->bytes += bytes;
+}
+
+static void SoundList_f(int argc, const char **argv)
+{
+	sfxstats_t st = {0};
+	S_ForEachSfx(list_sfx, &st);
+	Con_Printf("%d sounds, %zu bytes of samples\n", st.count, st.bytes);
+}
+
+static void SoundInfo_f(int argc, const char **argv)
+{
+	int live = 0;
+	if (!snd_active) {
+		Con_Printf("sound is off\n");
+		return;
+	}
+	for (int i = 0; i < MAX_CHANNELS; i++)
+		if (channel_live(&channels[i]))
+			live++;
+	Con_Printf("%d Hz stereo, 16 bit; %d of %d channels playing; volume %g, music %g\n", snd_rate, live, MAX_CHANNELS,
+	           s_volume->value, s_bgmvolume->value);
+}
+
 static void StopSound_f(int argc, const char **argv)
 {
 	(void)argc;
@@ -396,6 +443,10 @@ void S_Init(bool headless)
 	Cmd_Add("music", Music_f);
 	Cmd_Add("stopmusic", StopMusic_f);
 	Cmd_Add("play", Play_f);
+	Cmd_AddD("play2", Play_f, "play2 <sound>...: play sounds without position");
+	Cmd_AddD("playvol", PlayVol_f, "playvol <sound> <volume>: play a sound at a volume");
+	Cmd_AddD("soundlist", SoundList_f, "List the loaded sounds");
+	Cmd_AddD("soundinfo", SoundInfo_f, "Sound device and mixer state");
 	Cmd_Add("stopsound", StopSound_f);
 	Cmd_Add("snd_restart", SndRestart_f);
 	S_InitDSPCvars();

@@ -174,6 +174,8 @@ void SV_InfoSet(char *info, size_t size, const char *key, const char *value);
 const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outsize);
 int SV_Spawn(void);
 bool SV_ConsoleCommand(const char *line);
+/* "say" from the server console; false when no server is running */
+bool SV_ConsoleSay(const char *msg);
 
 /* sv_world.c */
 typedef struct {

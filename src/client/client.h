@@ -3,6 +3,7 @@
 #define BW_CLIENT_H
 
 #include "../common/common.h"
+#include "../common/cvar.h"
 #include "../net/netchan.h"
 #include "../net/protocol.h"
 #include "../qcvm/qcvm.h"
@@ -110,6 +111,23 @@ typedef struct {
 
 extern clstate_t cl;
 
+/* screen effects and readouts the engine draws over the game (cl_cmds.c,
+ * drawn by r_overlay.c) */
+typedef struct {
+	float flash[4], flash_fade; /* "bf": fades out by flash_fade alpha per second */
+	float cshift[4];            /* "v_cshift": steady tint */
+	float fade_color[3];        /* "fadein"/"fadeout" */
+	double fade_start;
+	float fade_time;
+	bool fade_out, fading;
+	char centerprint[1024];     /* only when the game doesn't draw centre prints */
+	double centerprint_time;
+	cvar_t *showfps, *showpos, *netgraph, *drawnotify, *notifytime, *notifylines, *drawhud, *crosshair;
+} clscreen_t;
+extern clscreen_t cl_screen;
+void CL_InitCommands(void);
+bool SV_ConsoleSay(const char *msg);
+
 /* cl_main.c */
 void CL_Init(void);
 void CL_Frame(double dt);
@@ -152,6 +170,8 @@ void CSQC_Shutdown(void);
 void CSQC_ParseEntities(msg_t *m);
 void CSQC_ParseEvent(msg_t *m, size_t len);
 void CSQC_WorldLoaded(void);
+void CSQC_RendererRestarted(void);
+void MQC_RendererRestarted(void);
 void CSQC_Frame(int width, int height);
 bool CSQC_ConsoleCommand(const char *line);
 bool CSQC_InputEvent(int type, float a, float b, int device);

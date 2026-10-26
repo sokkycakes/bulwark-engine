@@ -8,6 +8,7 @@
 
 typedef struct cmd_s {
 	char *name;
+	char *description;
 	cmd_fn fn;
 	struct cmd_s *next;
 } cmd_t;
@@ -84,6 +85,55 @@ void Cmd_Add(const char *name, cmd_fn fn)
 	cmd_list = c;
 }
 
+void Cmd_AddD(const char *name, cmd_fn fn, const char *description)
+{
+	Cmd_Add(name, fn);
+	for (cmd_t *c = cmd_list; c; c = c->next)
+		if (!Str_ICmp(c->name, name)) {
+			Mem_Free(c->description);
+			c->description = description ? Mem_Strdup(description) : NULL;
+		}
+}
+
+const char *Cmd_Description(const char *name)
+{
+	for (cmd_t *c = cmd_list; c; c = c->next)
+		if (!Str_ICmp(c->name, name))
+			return c->description;
+	return NULL;
+}
+
+void Cmd_ForEach(cmd_walk_fn fn, void *ctx)
+{
+	for (cmd_t *c = cmd_list; c; c = c->next)
+		fn(c->name, c->description, ctx);
+}
+
+void Cmd_ForEachAlias(cmd_walk_fn fn, void *ctx)
+{
+	for (alias_t *a = alias_list; a; a = a->next)
+		fn(a->name, a->text, ctx);
+}
+
+const char *Cmd_AliasText(const char *name)
+{
+	for (alias_t *a = alias_list; a; a = a->next)
+		if (!Str_ICmp(a->name, name))
+			return a->text;
+	return NULL;
+}
+
+void Cmd_WriteAliases(strbuf_t *sb)
+{
+	for (alias_t *a = alias_list; a; a = a->next) {
+		SB_Printf(sb, "alias %s \"", a->name);
+		for (const char *p = a->text; *p; p++)
+			if (*p != '"' && *p != '\n')
+				SB_Append(sb, p, 1);
+		SB_AppendStr(sb, "\"\n");
+	}
+}
+
 bool Cmd_Exists(const char *name)
 {
 	for (cmd_t *c = cmd_list; c; c = c->next)
@@ -98,6 +148,7 @@ void Cmd_Remove(const char *name)
 		if (!Str_ICmp((*l)->name, name)) {
 			cmd_t *c = *l;
 			*l = c->next;
+			Mem_Free(c->description);
 			Mem_Free(c->name);
 			Mem_Free(c);
 			return;
@@ -109,13 +160,111 @@ void Cmd_SetPreHook(cmd_fallback_fn fn) { cmd_prehook = fn; }
 
 const char *Cmd_Args(void) { return cmd_args; }
 
+/* a cvar reference starting at p ("$name" or "${name}"); returns its length */
+static size_t macro_at(const char *p, cvar_t **out)
+{
+	char name[128];
+	size_t n = 0, len;
+	if (p[0] != '$')
+		return 0;
+	if (p[1] == '{') {
+		const char *e = strchr(p + 2, '}');
+		if (!e || (size_t)(e - p - 2) >= sizeof(name))
+			return 0;
+		memcpy(name, p + 2, (size_t)(e - p - 2));
+		name[e - p - 2] = 0;
+		len = (size_t)(e - p) + 1;
+	} else {
+		while ((unsigned char)p[1 + n] > ' ' && p[1 + n] != '"' && p[1 + n] != ';' && p[1 + n] != '$' && n + 1 < sizeof(name)) {
+			name[n] = p[1 + n];
+			n++;
+		}
+		name[n] = 0;
+		len = n + 1;
+	}
+	if (!name[0] || !(*out = Cvar_Find(name)))
+		return 0;
+	return len;
+}
+
+bool Cmd_ExpandMacros(const char *in, char *out, size_t outsize)
+{
+	bool any = false, quoted = false;
+	size_t o = 0;
+	for (const char *p = in; *p && o + 1 < outsize;) {
+		cvar_t *v;
+		size_t n;
+		if (*p == '"')
+			quoted = !quoted;
+		/* "$$" stands for a lone $ */
+		if (p[0] == '$' && p[1] == '$') {
+			out[o++] = '$';
+			p += 2;
+			any = true;
+			continue;
+		}
+		if (!quoted && (n = macro_at(p, &v))) {
+			o += Str_Copy(out + o, v->string, outsize - o);
+			if (o >= outsize)
+				o = outsize - 1;
+			p += n;
+			any = true;
+			continue;
+		}
+		out[o++] = *p++;
+	}
+	out[o] = 0;
+	return any;
+}
+
+/* commands that read $ references themselves, or store text to run later */
+static bool keeps_macros(const char *name)
+{
+	static const char *const names[] = {"alias", "bind", "if", "set_calc", "seta_calc", "defer", "in_bind",
+	                                    "bindtoggle", "newalias", NULL};
+	for (int i = 0; names[i]; i++)
+		if (!Str_ICmp(names[i], name))
+			return true;
+	return false;
+}
+
+/* an alias's text with $1.. $9 and $* replaced by the arguments it was run with */
+static void alias_args(const char *text, const cmd_tokens_t *t, const char *line, strbuf_t *out)
+{
+	for (const char *p = text; *p; p++) {
+		if (p[0] == '$' && p[1] >= '1' && p[1] <= '9') {
+			int i = p[1] - '0';
+			if (i < t->argc)
+				SB_AppendStr(out, t->argv[i]);
+			p++;
+			continue;
+		}
+		if (p[0] == '$' && p[1] == '*') {
+			if (t->argc > 1)
+				SB_AppendStr(out, line + t->argstart[1]);
+			p++;
+			continue;
+		}
+		SB_Append(out, p, 1);
+	}
+}
+
 void Cmd_ExecuteString(const char *line)
 {
+	static int depth;
 	cmd_tokens_t local;
+	char expanded[8192];
 	const char *saved_args = cmd_args;
 	Cmd_TokenizeInto(&local, line);
 	if (!local.argc)
 		return;
+	if (!keeps_macros(local.argv[0]) && strchr(line, '$') && depth < 4 &&
+	    Cmd_ExpandMacros(line, expanded, sizeof(expanded))) {
+		depth++;
+		Cmd_ExecuteString(expanded);
+		depth--;
+		return;
+	}
 	cmd_args = local.argc > 1 ? line + local.argstart[1] : "";
 
 	/* commands the game registered come first, so it can override ours */
@@ -133,7 +282,14 @@ void Cmd_ExecuteString(const char *line)
 	/* an alias runs its text in place of the line */
 	for (alias_t *a = alias_list; a; a = a->next) {
 		if (!Str_ICmp(a->name, local.argv[0])) {
-			Cbuf_InsertText(a->text);
+			if (local.argc > 1 && strchr(a->text, '$')) {
+				strbuf_t sb = {0};
+				alias_args(a->text, &local, line, &sb);
+				Cbuf_InsertText(sb.data ? sb.data : "");
+				SB_Free(&sb);
+			} else {
+				Cbuf_InsertText(a->text);
+			}
 			cmd_args = saved_args;
 			return;
 		}
@@ -161,9 +317,45 @@ void Cbuf_InsertText(const char *text)
 	cbuf = n;
 }
 
+typedef struct deferred_s {
+	double when;
+	char *text;
+	struct deferred_s *next;
+} deferred_t;
+static deferred_t *deferred;
+
+void Cbuf_AddDeferred(double seconds, const char *text)
+{
+	deferred_t *d = Mem_Alloc(sizeof(*d));
+	d->when = Sys_Seconds() + seconds;
+	d->text = Mem_Strdup(text);
+	d->next = deferred;
+	deferred = d;
+}
+
+static void run_deferred(void)
+{
+	double now = Sys_Seconds();
+	for (deferred_t **l = &deferred; *l;) {
+		deferred_t *d = *l;
+		if (d->when > now) {
+			l = &d->next;
+			continue;
+		}
+		*l = d->next;
+		Cbuf_AddText(d->text);
+		Cbuf_AddText("\n");
+		Mem_Free(d->text);
+		Mem_Free(d);
+	}
+}
+
 void Cbuf_Execute(void)
 {
 	char line[8192];
+	if (deferred)
+		run_deferred();
+	Cmd_CheckLogfile();
 	if (cbuf_wait > 0) {
 		cbuf_wait--;
 		return;
@@ -281,9 +473,12 @@ static void Cmd_List_f(int argc, const char **argv)
 {
 	int n = 0;
 	for (cmd_t *c = cmd_list; c; c = c->next) {
-		if (argc > 1 && !Str_WildMatch(argv[1], c->name, true))
+		if (argc > 1 && !Str_WildMatch(argv[1], c->name, true) && !Str_WildMatch(va("%s*", argv[1]), c->name, true))
 			continue;
-		Con_Printf("%s\n", c->name);
+		if (c->description)
+			Con_Printf("%-24s %s\n", c->name, c->description);
+		else
+			Con_Printf("%s\n", c->name);
 		n++;
 	}
 	Con_Printf("%d commands\n", n);
@@ -297,4 +492,5 @@ void Cmd_Init(void)
 	Cmd_Add("cmdlist", Cmd_List_f);
 	Cmd_Add("alias", Cmd_Alias_f);
 	Cmd_Add("unalias", Cmd_Unalias_f);
+	Cmd_InitExtra();
 }

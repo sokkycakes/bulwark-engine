@@ -15,7 +15,7 @@ static bool r_active;
 double r_time;
 cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
-static cvar_t *scr_scale, *r_screenshot_format;
+static cvar_t *scr_scale, *r_screenshot_format, *jpeg_quality;
 static bool cursor_mode;
 static char screenshot_pending[256];
 
@@ -133,6 +133,7 @@ void R_EndFrame(void)
 		R_DrawFill(0, 0, (float)r_vwidth, (float)r_vheight, black, 1, 0);
 		Con_SetActive(true);
 	}
+	R_DrawOverlays(r_vwidth, r_vheight);
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
 	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode);
@@ -163,19 +164,25 @@ static void write_func(void *ctx, void *data, int size) { fwrite(data, 1, (size_
 
 static void take_screenshot(const char *name)
 {
-	char rel[300], path[1024];
+	char rel[600], path[1024];
 	uint8_t *px = Mem_Alloc((size_t)r_pwidth * r_pheight * 3);
 	FILE *f;
 	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
 	qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+	/* "*" numbers the shot; "*jpg" and the like pick the format too */
+	const char *ext = name[0] == '*' && name[1] ? name + 1 : r_screenshot_format->string;
+	if (!Str_ICmp(ext, "jpeg"))
+		ext = "jpg";
+	if (Str_ICmp(ext, "jpg") && Str_ICmp(ext, "tga") && Str_ICmp(ext, "bmp"))
+		ext = "png";
 	if (name[0] == '*') {
 		for (int i = 0; i < 10000; i++) {
-			snprintf(rel, sizeof(rel), "screenshots/shot%04d.png", i);
+			snprintf(rel, sizeof(rel), "screenshots/shot%04d.%s", i, ext);
 			if (!FS_FileExists(rel))
 				break;
 		}
 	} else {
-		snprintf(rel, sizeof(rel), "screenshots/%s%s", name, strchr(name, '.') ? "" : ".png");
+		snprintf(rel, sizeof(rel), "screenshots/%s%s%s", name, strchr(name, '.') ? "" : ".", strchr(name, '.') ? "" : ext);
 	}
 	if (!FS_WritePath(rel, path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "wb"))) {
 		Con_Printf("screenshot: can't write %s\n", rel);
@@ -184,7 +191,11 @@ static void take_screenshot(const char *name)
 	}
 	stbi_flip_vertically_on_write(1);
 	if (strstr(rel, ".jpg"))
-		stbi_write_jpg_to_func(write_func, f, r_pwidth, r_pheight, 3, px, 90);
+		stbi_write_jpg_to_func(write_func, f, r_pwidth, r_pheight, 3, px, BW_CLAMP(jpeg_quality->ivalue, 1, 100));
+	else if (strstr(rel, ".tga"))
+		stbi_write_tga_to_func(write_func, f, r_pwidth, r_pheight, 3, px);
+	else if (strstr(rel, ".bmp"))
+		stbi_write_bmp_to_func(write_func, f, r_pwidth, r_pheight, 3, px);
 	else
 		stbi_write_png_to_func(write_func, f, r_pwidth, r_pheight, 3, px, r_pwidth * 3);
 	fclose(f);
@@ -195,6 +206,17 @@ static void take_screenshot(const char *name)
 static void Screenshot_f(int argc, const char **argv)
 {
 	Str_Copy(screenshot_pending, argc > 1 ? argv[1] : "*", sizeof(screenshot_pending));
+}
+
+/* jpeg/screenshot_jpeg [name], screenshot_tga [name] */
+static void ScreenshotFormat_f(int argc, const char **argv)
+{
+	const char *ext = strstr(argv[0], "tga") ? "tga" : "jpg";
+	if (argc > 1)
+		snprintf(screenshot_pending, sizeof(screenshot_pending), "%s%s%s", argv[1], strchr(argv[1], '.') ? "" : ".",
+		         strchr(argv[1], '.') ? "" : ext);
+	else
+		snprintf(screenshot_pending, sizeof(screenshot_pending), "*%s", ext);
 }
 
 /* "sky <name>": a skybox from env/<name>_rt and friends, as sent by games */
@@ -209,6 +231,34 @@ static void Sky_f(int argc, const char **argv)
 	r_world.skybox = NULL;
 }
 
+/* "fog <density> [r g b] [alpha] [start]": overrides the map's fog, as
+ * games send it; "fog 0" turns it off. With r_fog_linear set the first
+ * number is instead the distance at which fog is complete. */
+static cvar_t *r_fog_linear;
+static void Fog_f(int argc, const char **argv)
+{
+	float d;
+	if (argc < 2) {
+		if (r_world.hasfog)
+			Con_Printf("fog %g %g %g %g\n", r_world.fog[3], r_world.fog[0], r_world.fog[1], r_world.fog[2]);
+		else
+			Con_Printf("no fog\n");
+		return;
+	}
+	d = (float)atof(argv[1]);
+	if (r_fog_linear->ivalue && d > 0)
+		d = 3.0f / d; /* about 95% fogged at that distance with exponential fog */
+	r_world.fog[3] = d;
+	if (argc > 4) {
+		r_world.fog[0] = (float)atof(argv[2]);
+		r_world.fog[1] = (float)atof(argv[3]);
+		r_world.fog[2] = (float)atof(argv[4]);
+	} else if (!r_world.hasfog) {
+		r_world.fog[0] = r_world.fog[1] = r_world.fog[2] = 0.3f;
+	}
+	r_world.hasfog = d > 0;
+}
+
 bool R_Init(bool headless)
 {
 	r_lightmapscale = Cvar_Get("r_lightmapscale", "2", CVAR_ARCHIVE, "Brightness multiplier for lightmaps (Q3 maps are stored at half brightness)");
@@ -221,9 +271,15 @@ bool R_Init(bool headless)
 	r_wireframe = Cvar_Get("r_wireframe", "0", 0, NULL);
 	r_speeds = Cvar_Get("r_speeds", "0", 0, NULL);
 	scr_scale = Cvar_Get("scr_scale", "0", CVAR_ARCHIVE, "2D scale: virtual pixels per screen pixel, 0 for automatic");
-	r_screenshot_format = Cvar_Get("r_screenshot_format", "png", CVAR_ARCHIVE, NULL);
+	r_screenshot_format = Cvar_Get("r_screenshot_format", "png", CVAR_ARCHIVE, "Screenshot format: png, jpg, tga or bmp");
+	jpeg_quality = Cvar_Get("jpeg_quality", "90", CVAR_ARCHIVE, "JPEG screenshot quality, 1-100");
 	Cmd_Add("screenshot", Screenshot_f);
+	Cmd_AddD("jpeg", ScreenshotFormat_f, "jpeg [name]: a JPEG screenshot");
+	Cmd_AddD("screenshot_jpeg", ScreenshotFormat_f, "screenshot_jpeg [name]: a JPEG screenshot");
+	Cmd_AddD("screenshot_tga", ScreenshotFormat_f, "screenshot_tga [name]: a TGA screenshot");
 	Cmd_Add("sky", Sky_f);
+	r_fog_linear = Cvar_Get("r_fog_linear", "0", 0, "fog's first number is the full-fog distance instead of a density");
+	Cmd_AddD("fog", Fog_f, "fog <density> [r g b]: set the fog (0 turns it off)");
 	R_InitScene();
 	r_active = false;
 	if (!headless && VID_Active()) {

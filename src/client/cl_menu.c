@@ -129,6 +129,14 @@ bool MQC_Load(void)
 	return true;
 }
 
+void MQC_RendererRestarted(void)
+{
+	if (!M.vm || !M.restarted || !R_Active())
+		return;
+	M.vm->globals[OFS_PARM(0)].i = QC_NewString(M.vm, "");
+	call(M.restarted, 1);
+}
+
 /* mode 1 shows the menu, 0 hides it, -1 flips it */
 void MQC_Toggle(int mode)
 {

@@ -18,5 +18,9 @@ const char *Con_Line(int back);
 const char *Con_InputLine(int *cursor);
 double Con_LineTime(int back); /* realtime when the line was printed */
 int Con_Scroll(void);
+/* chat input opened by messagemode (1) or messagemode2 (2), 0 when closed */
+int Con_ChatMode(void);
+const char *Con_ChatInput(void);
+void Con_ChatKey(int key, int unicode);
 
 #endif

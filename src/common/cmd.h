@@ -22,6 +22,16 @@ typedef struct {
 void Cmd_TokenizeInto(cmd_tokens_t *t, const char *text);
 
 void Cmd_Add(const char *name, cmd_fn fn);
+/* the same, with a line of help for "help", "find" and "apropos" */
+void Cmd_AddD(const char *name, cmd_fn fn, const char *description);
+const char *Cmd_Description(const char *name);
+/* walks the registered commands and aliases */
+typedef void (*cmd_walk_fn)(const char *name, const char *text, void *ctx);
+void Cmd_ForEach(cmd_walk_fn fn, void *ctx);
+void Cmd_ForEachAlias(cmd_walk_fn fn, void *ctx);
+const char *Cmd_AliasText(const char *name);
+/* writes the aliases as "alias" lines, for a config file */
+void Cmd_WriteAliases(strbuf_t *sb);
 bool Cmd_Exists(const char *name);
 void Cmd_Remove(const char *name);
 
@@ -34,10 +44,31 @@ void Cmd_SetPreHook(cmd_fallback_fn fn);
 void Cbuf_AddText(const char *text);
 void Cbuf_InsertText(const char *text);
 void Cbuf_Execute(void);
+/* runs text once the given number of seconds have passed ("defer") */
+void Cbuf_AddDeferred(double seconds, const char *text);
+/* expands $cvar and ${cvar} references in a line; returns false if none */
+bool Cmd_ExpandMacros(const char *in, char *out, size_t outsize);
 void Cmd_ExecuteString(const char *line);
 /* the full text of the command currently executing, after argv[0] */
 const char *Cmd_Args(void);
 
+/* evaluates an "if"/"set_calc" expression; false if it didn't fully parse */
+bool Cmd_Evaluate(const char *text, char *out, size_t outsize, bool *truth);
+
+/* config files: the client adds its binds through the write hook and
+ * clears them through the reset hook */
+typedef void (*cfg_write_fn)(strbuf_t *sb);
+typedef void (*cfg_reset_fn)(void);
+extern cfg_write_fn cfg_write_hook;
+extern cfg_reset_fn cfg_reset_hook;
+bool Cfg_Save(const char *name);
+/* on quit: saves when cfg_save_auto is on and something changed */
+void Cfg_SaveIfModified(void);
+/* opens or closes the console log when con_logfile changed */
+void Cmd_CheckLogfile(void);
+
 void Cmd_Init(void);
+/* the console utility commands (cmd_extra.c) */
+void Cmd_InitExtra(void);
 
 #endif

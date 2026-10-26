@@ -359,6 +359,18 @@ bool CSQC_Load(void)
 	return true;
 }
 
+/* the renderer was reset (vid_restart, vid_reload): the game reloads
+ * what it keeps of it, fonts and shaders */
+void CSQC_RendererRestarted(void)
+{
+	qcvm_t *vm = cl.csqc;
+	if (!vm || !CS.RendererRestarted || !R_Active())
+		return;
+	vm->globals[OFS_PARM(0)].i = QC_NewString(vm, "");
+	vm->argc = 1;
+	QC_Execute(vm, CS.RendererRestarted);
+}
+
 void CSQC_WorldLoaded(void)
 {
 	qcvm_t *vm = cl.csqc;

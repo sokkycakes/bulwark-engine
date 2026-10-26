@@ -314,3 +314,10 @@ void S_MixMusic(float *out, int frames, int rate, float volume)
 		}
 	}
 }
+
+void S_ForEachSfx(void (*fn)(const sfx_t *sfx, void *ctx), void *ctx)
+{
+	for (int i = 0; i < SFX_HASH; i++)
+		for (sfx_t *s = sfxhash[i]; s; s = s->next)
+			fn(s, ctx);
+}

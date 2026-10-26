@@ -258,6 +258,10 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		return; /* key repeat on a held button */
 	keydown[key] = down;
 
+	if (Con_ChatMode() && down) {
+		Con_ChatKey(key, unicode);
+		return;
+	}
 	if (key == '`' || key == '~') {
 		if (down)
 			Con_ToggleConsole();

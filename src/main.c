@@ -45,7 +45,7 @@ int main(int argc, char **argv)
 	long maxframes = -1;
 	bool headless = false;
 	int width = 1280, height = 720;
-	bool fullscreen = false;
+	bool fullscreen = false, size_given = false;
 	strbuf_t cmds = {0};
 
 	for (int i = 1; i < argc; i++) {
@@ -58,13 +58,13 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "-headless"))
 			headless = true;
 		else if (!strcmp(argv[i], "-width") && i + 1 < argc)
-			width = atoi(argv[++i]);
+			width = atoi(argv[++i]), size_given = true;
 		else if (!strcmp(argv[i], "-height") && i + 1 < argc)
-			height = atoi(argv[++i]);
+			height = atoi(argv[++i]), size_given = true;
 		else if (!strcmp(argv[i], "-fullscreen"))
-			fullscreen = true;
+			fullscreen = true, size_given = true;
 		else if (!strcmp(argv[i], "-window"))
-			fullscreen = false;
+			fullscreen = false, size_given = true;
 		else if (!strcmp(argv[i], "-developer"))
 			developer = 1;
 		else if (argv[i][0] == '+') {
@@ -96,6 +96,7 @@ int main(int argc, char **argv)
 	NET_Init();
 	SV_Init();
 	CL_Init();
+	CL_InitCommands();
 	MQC_Init();
 	IN_Init();
 	if (!headless && !VID_Init(width, height, fullscreen)) {
@@ -105,6 +106,11 @@ int main(int argc, char **argv)
 	R_Init(headless);
 	S_Init(headless);
 	Cmd_Add("quit", Quit_f);
+	Cmd_AddD("exit", Quit_f, "Quit the game");
+	cvar_t *fps_max = Cvar_Get("fps_max", "0", CVAR_ARCHIVE, "Frame rate cap, 0 for none");
+	cvar_t *cl_maxfps = Cvar_Get("cl_maxfps", "0", CVAR_ARCHIVE, "Frame rate cap (FTE's name), used when fps_max is 0");
+	cvar_t *host_timescale = Cvar_Get("host_timescale", "1", CVAR_CHEAT, "Game speed multiplier for a local server");
+	cvar_t *host_framerate = Cvar_Get("host_framerate", "0", 0, "Fixed seconds per frame when above 0, for recording");
 	Cmd_Add("path", Path_f);
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
@@ -136,7 +142,7 @@ int main(int argc, char **argv)
 
 	double last = Sys_Seconds();
 	long frames = 0;
-	bool server_was_active = false;
+	bool server_was_active = false, mode_applied = false;
 	while (!quit_requested) {
 		double now, dt;
 		if (maxframes >= 0) {
@@ -145,17 +151,29 @@ int main(int argc, char **argv)
 				break;
 			dt = 1.0 / 72;
 		} else {
+			float cap = fps_max->value > 0 ? fps_max->value : cl_maxfps->value;
+			double mindt = cap > 0 ? 1.0 / BW_MAX(cap, 10) : 0.001;
 			now = Sys_Seconds();
 			dt = now - last;
-			if (dt < 0.001) {
-				Sys_Sleep(0.0005);
+			if (dt < mindt) {
+				/* sleep most of the gap, then spin the rest for an even rate */
+				if (mindt - dt > 0.002)
+					Sys_Sleep(mindt - dt - 0.001);
 				continue;
 			}
 			last = now;
+			if (host_framerate->value > 0)
+				dt = host_framerate->value;
 		}
 		if (!headless && !VID_PumpEvents())
 			break;
 		Cbuf_Execute();
+		/* the saved video mode applies once the configs have run, unless
+		 * the command line chose one */
+		if (frames <= 1 && maxframes < 0 && !size_given && !headless && !mode_applied) {
+			mode_applied = true;
+			VID_ApplyMode();
+		}
 
 		/* a map started here: join it over loopback */
 		if (sv.active && !server_was_active) {
@@ -171,9 +189,11 @@ int main(int argc, char **argv)
 		}
 
 		host_time += dt;
+		/* a local game can run slow or fast; a remote server sets its own pace */
+		double gdt = sv.active && host_timescale->value > 0 ? dt * BW_CLAMP(host_timescale->value, 0.01f, 10) : dt;
 		NET_RunDelayed();
-		SV_Frame(dt);
-		CL_Frame(dt);
+		SV_Frame(gdt);
+		CL_Frame(gdt);
 		R_BeginFrame();
 		{
 			int w, h;
@@ -186,6 +206,9 @@ int main(int argc, char **argv)
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("netstats");
+	/* scripted runs never touch the player's config */
+	if (maxframes < 0)
+		Cfg_SaveIfModified();
 	CL_Disconnect("quit");
 	MQC_Shutdown();
 	SV_Shutdown();

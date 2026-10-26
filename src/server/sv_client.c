@@ -1787,6 +1787,19 @@ static void SV_Clients_f(int argc, const char **argv)
 	}
 }
 
+bool SV_ConsoleSay(const char *msg)
+{
+	char text[1024];
+	if (!sv.active)
+		return false;
+	snprintf(text, sizeof(text), "console: %s\n", msg);
+	Con_Print(text);
+	for (int i = 0; i < svs.maxclients; i++)
+		if (svs.clients[i].state == CS_SPAWNED)
+			client_print(&svs.clients[i], 3, text);
+	return true;
+}
+
 static void SV_Say_f(int argc, const char **argv)
 {
 	char text[1024];
