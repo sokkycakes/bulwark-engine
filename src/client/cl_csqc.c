@@ -511,9 +511,18 @@ void CSQC_Frame(int width, int height)
 	vm->globals[OFS_PARM(1)].f = (float)height;
 	vm->globals[OFS_PARM(2)].f = 1; /* "notmenu": no menu progs yet */
 	vm->argc = 3;
-	QC_Execute(vm, CS.UpdateView);
-	if (CS.view_angles >= 0)
-		VectorCopy(&vm->globals[CS.view_angles].f, cl.viewangles);
+	{
+		float before[3];
+		VectorCopy(cl.viewangles, before);
+		QC_Execute(vm, CS.UpdateView);
+		/* the game turns the player by writing view_angles or through
+		 * setproperty(VF_CL_VIEWANGLES); the latter must not be undone */
+		if (CS.view_angles >= 0) {
+			const float *va = &vm->globals[CS.view_angles].f;
+			if (va[0] != before[0] || va[1] != before[1] || va[2] != before[2])
+				VectorCopy(va, cl.viewangles);
+		}
+	}
 	QC_CollectGarbage(vm, false);
 }
 

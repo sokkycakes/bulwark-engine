@@ -209,7 +209,7 @@ static const char *fs_sky =
 	"in vec3 v_dir;\n"
 	"uniform samplerCube u_cube; uniform vec4 u_color;\n"
 	"out vec4 o_color;\n"
-	"void main() { vec3 d = normalize(v_dir); o_color = texture(u_cube, vec3(-d.y, d.z, -d.x)) * u_color; }\n";
+	"void main() { vec3 d = normalize(v_dir); o_color = texture(u_cube, vec3(-d.x, d.z, d.y)) * u_color; }\n";
 
 static GLuint compile(GLenum type, const char *src, const char *what)
 {

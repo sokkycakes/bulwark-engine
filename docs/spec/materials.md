@@ -35,7 +35,7 @@ runs `sky "<name>"` from the map's `skyname` server key) or worldspawn's
 
 The six files are `<name>_rt`, `_lf`, `_up`, `_dn`, `_bk`, `_ft`. They are
 uploaded as the cube faces +X, -X, +Y, -Y, +Z, -Z, and the sky shader looks
-the cube up with (-y, z, -x) of the Quake-space view direction.
+the cube up with (-x, z, y) of the Quake-space view direction.
 
 The up face is turned a quarter counter-clockwise and the down face a
 quarter clockwise before upload. This was measured rather than taken from a
@@ -45,5 +45,12 @@ meet with a mean error under 1 (of 255) as stored. The up face only meets
 them when turned counter-clockwise (error 0.3 and 0.5, against 33 to 61 for
 the other turns), and dune's down face only when turned clockwise (3.3,
 against 14 to 18). Which way the whole box faces about the vertical axis
-can't be told from the seams. It is a guess until checked against a map
-whose lighting gives the sun's direction.
+can't be told from the seams, so it was checked against a reference
+engine run as a black box: FTE was built and run on Nuclide's `ai` map
+(its source was not read), screenshots were taken at pitch -50 and yaws 0,
+90, 180 and 270, and the same views were rendered here with each of the
+four quarter turns of the box. Grayscale correlation over the sky pixels,
+with the HUD and dialog masked, was 0.19, 0.54, 0.25 and 0.42; the quarter
+turn (from the earlier (-y, z, -x) to (-x, z, y)) is the mapping above. The
+same check on `demo` was inconclusive, since its views at that pitch show
+almost no sky.
