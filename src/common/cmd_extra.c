@@ -261,6 +261,18 @@ static void list_alias(const char *name, const char *text, void *ctx)
 
 static void Aliaslist_f(int argc, const char **argv) { Cmd_ForEachAlias(list_alias, (void *)(argc > 1 ? argv[1] : NULL)); }
 
+/* showalias <name>: what an alias runs */
+static void Showalias_f(int argc, const char **argv)
+{
+	const char *t = argc > 1 ? Cmd_AliasText(argv[1]) : NULL;
+	if (argc < 2)
+		Con_Printf("usage: showalias <name>\n");
+	else if (!t)
+		Con_Printf("no alias \"%s\"\n", argv[1]);
+	else
+		Con_Printf("alias %s \"%s\"\n", argv[1], t);
+}
+
 /* --- expressions ---------------------------------------------------------------- */
 
 /* A small evaluator for "if" and "set_calc": numbers, quoted or bare
@@ -979,6 +991,7 @@ void Cmd_InitExtra(void)
 	Cmd_AddD("apropos", Find_f, "apropos <text>: commands and cvars whose name or help holds the text");
 	Cmd_AddD("help", Help_f, "help <name>: describe a command or cvar");
 	Cmd_AddD("aliaslist", Aliaslist_f, "aliaslist [pattern]: list the aliases");
+	Cmd_AddD("showalias", Showalias_f, "showalias <name>: what an alias runs");
 	Cmd_AddD("if", If_f, "if <expression> then <commands> [else <commands>]");
 	Cmd_AddD("set_calc", SetCalc_f, "set_calc <cvar> <expression>: set a cvar to a computed value");
 	Cmd_AddD("seta_calc", SetCalc_f, "seta_calc <cvar> <expression>: set_calc, and archive the cvar");

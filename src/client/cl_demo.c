@@ -119,6 +119,8 @@ static void demo_path(const char *name, char *out, size_t size)
 	snprintf(out, size, "%s%s", name, strstr(name, ".dem") ? "" : ".dem");
 }
 
+static char last_record[256]; /* for rerecord */
+
 static bool start_recording(const char *name, bool ask_update)
 {
 	char rel[256], path[1024];
@@ -136,6 +138,7 @@ static bool start_recording(const char *name, bool ask_update)
 	fwrite(DEMO_MAGIC, 1, 4, demo.rec);
 	fwrite(&ver, sizeof(ver), 1, demo.rec);
 	Str_Copy(demo.rec_name, rel, sizeof(demo.rec_name));
+	Str_Copy(last_record, name, sizeof(last_record));
 	demo.waiting = true;
 	if (!ask_update)
 		return true;
@@ -147,6 +150,41 @@ static bool start_recording(const char *name, bool ask_update)
 		Con_Printf("%s will start recording when a game starts\n", rel);
 	}
 	return true;
+}
+
+/* rerecord: record again under the name last used, from the start of the map */
+static void Rerecord_f(int argc, const char **argv)
+{
+	if (!last_record[0]) {
+		Con_Printf("nothing recorded yet\n");
+		return;
+	}
+	if (start_recording(last_record, false) && cl.mapname[0])
+		Cbuf_InsertText(va("map_restart\n"));
+}
+
+/* rmdemo <name>: delete a demo */
+static void Rmdemo_f(int argc, const char **argv)
+{
+	char rel[256], path[1024];
+	if (argc < 2 || !FS_SafeName(argv[1])) {
+		Con_Printf("usage: rmdemo <demoname>\n");
+		return;
+	}
+	demo_path(argv[1], rel, sizeof(rel));
+	if (!FS_WritePath(rel, path, sizeof(path)) || remove(path))
+		Con_Printf("no demo %s\n", rel);
+	else
+		Con_Printf("deleted %s\n", rel);
+}
+
+static void DemoSetspeed_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("demo speed is %g\n", demo_timescale->value);
+		return;
+	}
+	Cvar_Set("demo_timescale", argv[1]);
 }
 
 /* record <name> [map]: records from now (or from the given map) */
@@ -527,4 +565,7 @@ void CL_InitDemos(void)
 	Cmd_AddD("startdemos", Startdemos_f, "startdemos <demo1> [demo2...]: play demos in a loop");
 	Cmd_AddD("demos", Demos_f, "Back to the startdemos loop");
 	Cmd_AddD("demos_next", DemosNext_f, NULL);
+	Cmd_AddD("rerecord", Rerecord_f, "Record again under the last name, from the start of the map");
+	Cmd_AddD("rmdemo", Rmdemo_f, "rmdemo <name>: delete a demo");
+	Cmd_AddD("demo_setspeed", DemoSetspeed_f, "demo_setspeed <scale>: playback speed (demo_timescale)");
 }

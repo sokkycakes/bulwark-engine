@@ -248,6 +248,17 @@ static void Serverinfo_f(int argc, const char **argv)
 	CL_PrintServerinfo();
 }
 
+/* game commands the server handles (cheats, kill, joining a team); listed
+ * here so they show in cmdlist and complete in the console */
+static void ForwardToServer_f(int argc, const char **argv)
+{
+	if (cl.state < ca_loading) {
+		Con_Printf("%s needs a game running\n", argv[0]);
+		return;
+	}
+	CL_SendStringCmd(argc > 1 ? va("%s %s", argv[0], Cmd_Args()) : argv[0]);
+}
+
 /* cl_cmd and menu_cmd: a command for the client game or the menu, even one
  * it didn't register */
 static void ClCmd_f(int argc, const char **argv)
@@ -263,6 +274,18 @@ static void ClCmd_f(int argc, const char **argv)
 
 void CL_InitCommands(void)
 {
+	{
+		static const char *const fwd[][2] = {
+			{"god", "Toggle invulnerability (cheat)"}, {"buddha", "Take damage but don't die (cheat)"},
+			{"noclip", "Toggle flying through walls (cheat)"}, {"notarget", "Toggle being ignored by monsters (cheat)"},
+			{"fly", "Toggle flying (cheat)"}, {"give", "give <item or health> [amount]: (cheat)"},
+			{"setpos", "setpos <x> <y> <z> [pitch yaw roll]: move yourself (cheat)"}, {"kill", "Kill yourself"},
+			{"join", "Join the game from spectating"}, {"observe", "Spectate"},
+		};
+		for (size_t i = 0; i < sizeof(fwd) / sizeof(fwd[0]); i++)
+			if (!Cmd_Exists(fwd[i][0]))
+				Cmd_AddD(fwd[i][0], ForwardToServer_f, fwd[i][1]);
+	}
 	Cmd_AddD("cl_cmd", ClCmd_f, "cl_cmd <command>: run a command of the client game (CSQC_ConsoleCommand)");
 	Cmd_AddD("menu_cmd", ClCmd_f, "menu_cmd <command>: run a command of the menu (m_consolecommand)");
 	CL_InitDemos();
