@@ -72,6 +72,25 @@ static inline void VectorCopy(const float *a, float *b) { b[0] = a[0]; b[1] = a[
 static inline void VectorClear(float *a) { a[0] = a[1] = a[2] = 0; }
 static inline float DotProduct(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 static inline float VectorLength(const float *a) { return sqrtf(DotProduct(a, a)); }
+static inline void VectorSubtract(const float *a, const float *b, float *c)
+{
+	c[0] = a[0] - b[0];
+	c[1] = a[1] - b[1];
+	c[2] = a[2] - b[2];
+}
+static inline void VectorScale(const float *a, float s, float *b)
+{
+	b[0] = a[0] * s;
+	b[1] = a[1] * s;
+	b[2] = a[2] * s;
+}
+/* c = a + b * s */
+static inline void VectorMA(const float *a, float s, const float *b, float *c)
+{
+	c[0] = a[0] + b[0] * s;
+	c[1] = a[1] + b[1] * s;
+	c[2] = a[2] + b[2] * s;
+}
 static inline void CrossProduct(const float *a, const float *b, float *c)
 {
 	c[0] = a[1] * b[2] - a[2] * b[1];

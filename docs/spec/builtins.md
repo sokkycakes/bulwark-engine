@@ -25,6 +25,12 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `rotate_axis`-style helpers (`rotatevectorsbyangle`, `rotatevectorsbyvectors`)
   follow the doc comments, but have not been checked against content that
   depends on them. *Unverified.*
+- `tokenize_console` treats line breaks as spaces and keeps up to 256
+  tokens. Nuclide's entityDef code splits whole entity blocks with it
+  (`__fullspawndata`, one key per line); stopping at the first line break,
+  as a console command line does, left every key of def-spawned map
+  entities unread. Found on a Source map whose TF2 entities are all
+  entityDefs.
 - `physics_supported` returns 0: there is no rigid-body physics yet.
 - Networking (`Write*`, `multicast`, `stuffcmd`, …) builtins are accepted and
   do nothing until the network layer exists.

@@ -142,6 +142,7 @@ typedef struct {
 	int type;         /* BSP surface type */
 	int orig;         /* index in the file, before sorting */
 	int visframe;     /* marked visible in this frame */
+	bool novis;       /* in no leaf's face list (Source displacements): always drawn */
 } rsurface_t;
 
 struct alias_s;
@@ -203,6 +204,7 @@ void R_FreeWorld(void);
 void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numidx);
 bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size);
 void R_FreeQ1World(void);
+bool R_LoadSourceWorld(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size);
 bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
 
 /* --- decals and surface queries (r_decal.c) -------------------------------- */
@@ -359,5 +361,8 @@ void AnglesToAxis(const float *angles, float axis[3][3]);
 
 extern cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 extern cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
+extern cvar_t *r_showclip, *r_debugview, *r_draw2d;
+void R_DrawClipBrushes(void);
+void R_DebugView(void);
 
 #endif

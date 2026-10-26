@@ -4,7 +4,7 @@
 
 #include "common.h"
 
-#define CMD_MAX_ARGS 80
+#define CMD_MAX_ARGS 256
 
 typedef void (*cmd_fn)(int argc, const char **argv);
 

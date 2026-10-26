@@ -92,6 +92,19 @@ static bool ent_brush_model(int e, brushref_t *out)
 	return true;
 }
 
+/* e's box, where e is now, overlaps the brushes of the brush entity pusher */
+bool SV_InsideBrushEntity(int pusher, int e)
+{
+	brushref_t m;
+	bsptrace_t bt;
+	float *org = evec(e, F.origin), *mins = evec(e, F.mins), *maxs = evec(e, F.maxs);
+	if (!org || !mins || !maxs || !ent_brush_model(pusher, &m))
+		return false;
+	BSP_TraceModel(m.bsp, m.submodel, evec(pusher, F.origin), org, mins, maxs, org,
+	               CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_MONSTERCLIP, &bt);
+	return bt.startsolid;
+}
+
 int SV_PointContentsBits(const float *p)
 {
 	float zero[3] = {0, 0, 0};

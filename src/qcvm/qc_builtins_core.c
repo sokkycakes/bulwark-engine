@@ -918,12 +918,19 @@ static void bi_tokenize(qcvm_t *vm)
 	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
 }
 
+/* Line breaks count as spaces: Nuclide splits whole entity blocks
+ * (__fullspawndata, one key per line) with it. docs/spec/builtins.md */
 static void bi_tokenize_console(qcvm_t *vm)
 {
 	const char *src = QC_PSTR(vm, 0);
 	cmd_tokens_t *ct = Mem_Alloc(sizeof(*ct));
+	size_t len = strlen(src);
+	char *flat = Mem_Alloc(len + 1);
+	for (size_t i = 0; i < len; i++)
+		flat[i] = (src[i] == '\n' || src[i] == '\r') ? ' ' : src[i];
 	tokens_reset(vm);
-	Cmd_TokenizeInto(ct, src);
+	Cmd_TokenizeInto(ct, flat);
+	Mem_Free(flat);
 	for (int i = 0; i < ct->argc; i++)
 		token_add(vm, src, ct->argv[i], strlen(ct->argv[i]), src + ct->argstart[i], src + ct->argend[i]);
 	Mem_Free(ct);

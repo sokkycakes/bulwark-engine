@@ -204,6 +204,7 @@ void SV_LinkEdict(int e, bool touch_triggers);
 void SV_UnlinkEdict(int e);
 void SV_Move(const float *start, const float *mins, const float *maxs, const float *end, int type, int passent, svtrace_t *tr);
 int SV_PointContentsBits(const float *p);
+bool SV_InsideBrushEntity(int pusher, int e);
 int SV_ContentsToQuake(int bits);
 void SV_TouchTriggers(int e);
 void SV_SetTraceGlobals(const svtrace_t *tr);
