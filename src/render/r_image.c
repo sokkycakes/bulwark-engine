@@ -75,17 +75,17 @@ static uint8_t *decode_lmp(const uint8_t *d, size_t len, int *w, int *h)
  * additive flag. Layout checked on CSO's 640hud7.spr (66,366 bytes). */
 static const uint8_t *spr_frame(const uint8_t *d, size_t len, size_t *ofs, int *fw, int *fh)
 {
-	int32_t fr[5];
-	if (*ofs + 20 > len)
+	int32_t fr[4]; /* origin x, origin y, width, height */
+	if (*ofs + 16 > len)
 		return NULL;
-	memcpy(fr, d + *ofs, 20);
-	if (fr[3] <= 0 || fr[4] <= 0 || fr[3] > 4096 || fr[4] > 4096 ||
-	    *ofs + 20 + (size_t)fr[3] * fr[4] > len)
+	memcpy(fr, d + *ofs, 16);
+	if (fr[2] <= 0 || fr[3] <= 0 || fr[2] > 4096 || fr[3] > 4096 ||
+	    *ofs + 16 + (size_t)fr[2] * fr[3] > len)
 		return NULL;
-	*fw = fr[3];
-	*fh = fr[4];
-	*ofs += 20 + (size_t)fr[3] * fr[4];
-	return d + *ofs - (size_t)fr[3] * fr[4];
+	*fw = fr[2];
+	*fh = fr[3];
+	*ofs += 16 + (size_t)fr[2] * fr[3];
+	return d + *ofs - (size_t)fr[2] * fr[3];
 }
 
 static uint8_t *decode_spr(const uint8_t *d, size_t len, int frame, int *w, int *h)
