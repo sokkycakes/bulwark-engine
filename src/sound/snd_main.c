@@ -37,6 +37,7 @@ typedef struct {
 } channel_t;
 
 static channel_t channels[MAX_CHANNELS];
+static bool media_playing; /* a playlist track is on, so its end moves on */
 static bool snd_active;  /* a device is open */
 static bool snd_started; /* S_Init ran */
 static int snd_rate = 44100;
@@ -45,6 +46,19 @@ static float master_volume = 0.7f, music_volume = 0.5f, dsp_level = 1; /* copies
 static cvar_t *s_volume, *s_bgmvolume, *s_nominaldist, *s_show;
 static float *mixbuf;
 static int mixbuf_frames;
+static float listener_forward[3] = {1, 0, 0};
+static bool capturing;           /* the capture mixes; the device plays silence */
+static int speaker_mode;         /* soundcontrol: 0 stereo, 1 mono */
+static bool speakers_back;       /* soundcontrol cardN back: the speakers face the listener's back */
+static bool sound_off;           /* soundcontrol off */
+
+/* the raw stream (video soundtracks): a ring of stereo frames at its rate */
+#define RAW_FRAMES (1 << 17)
+static int16_t *raw;
+static unsigned raw_head, raw_tail; /* in frames, wrapping */
+static int raw_rate;
+static float raw_volume = 1;
+static double raw_frac;
 
 /* --- channels ----------------------------------------------------------------- */
 
@@ -97,8 +111,16 @@ static void spatialise(channel_t *ch)
 	}
 	/* the far ear loses up to 70% for a sound fully to one side */
 	pan = DotProduct(d, listener_right) / dist * 0.7f;
+	if (speakers_back) {
+		/* rear speakers: sides swap, and what's in front is quieter */
+		float front = DotProduct(d, listener_forward) / dist;
+		pan = -pan;
+		gain *= BW_CLAMP(0.65f - 0.35f * front, 0.3f, 1.0f);
+	}
 	ch->left = gain * (1 - BW_MAX(0.0f, pan));
 	ch->right = gain * (1 - BW_MAX(0.0f, -pan));
+	if (speaker_mode == 1)
+		ch->left = ch->right = (ch->left + ch->right) * 0.5f;
 }
 
 static channel_t *pick_channel(int ent, int entchannel, int flags)
@@ -224,10 +246,12 @@ bool S_PrecacheSound(const char *name)
 	return s && !s->failed;
 }
 
+static void media_frame(void);
+
 void S_Update(const float *origin, const float *forward, const float *right, const float *up)
 {
-	(void)forward;
 	(void)up;
+	media_frame();
 	if (!snd_started)
 		return;
 	SNDDMA_Lock();
@@ -235,6 +259,8 @@ void S_Update(const float *origin, const float *forward, const float *right, con
 		memcpy(listener_origin, origin, sizeof(listener_origin));
 	if (right)
 		memcpy(listener_right, right, sizeof(listener_right));
+	if (forward)
+		memcpy(listener_forward, forward, sizeof(listener_forward));
 	master_volume = BW_MAX(0.0f, s_volume->value);
 	dsp_level = S_DSPVolume();
 	music_volume = BW_MAX(0.0f, s_bgmvolume->value);
@@ -293,7 +319,92 @@ static void mix_channel(channel_t *ch, float *out, int frames)
 	}
 }
 
+static void mix_raw(float *out, int frames)
+{
+	double step = (double)raw_rate / snd_rate;
+	for (int i = 0; i < frames && raw_tail != raw_head; i++) {
+		const int16_t *a = raw + (raw_tail % RAW_FRAMES) * 2;
+		const int16_t *b = raw_tail + 1 != raw_head ? raw + ((raw_tail + 1) % RAW_FRAMES) * 2 : a;
+		float t = (float)raw_frac;
+		out[i * 2] += (a[0] + (b[0] - a[0]) * t) * raw_volume;
+		out[i * 2 + 1] += (a[1] + (b[1] - a[1]) * t) * raw_volume;
+		raw_frac += step;
+		while (raw_frac >= 1 && raw_tail != raw_head) {
+			raw_frac -= 1;
+			raw_tail++;
+		}
+	}
+}
+
+static void paint(int16_t *out, int frames);
+
 void S_PaintAudio(int16_t *out, int frames)
+{
+	/* while capturing, the capture paints; the device hears nothing */
+	if (capturing || sound_off) {
+		memset(out, 0, (size_t)frames * 4);
+		return;
+	}
+	paint(out, frames);
+}
+
+void S_CaptureMix(int16_t *out, int frames)
+{
+	if (!snd_started || !mixbuf) {
+		memset(out, 0, (size_t)frames * 4);
+		return;
+	}
+	SNDDMA_Lock();
+	for (int done = 0; done < frames;) {
+		int n = BW_MIN(frames - done, mixbuf_frames);
+		paint(out + done * 2, n);
+		done += n;
+	}
+	SNDDMA_Unlock();
+}
+
+void S_SetCapture(bool on)
+{
+	SNDDMA_Lock();
+	capturing = on;
+	SNDDMA_Unlock();
+}
+
+int S_Rate(void) { return snd_rate; }
+
+void S_RawSamples(const int16_t *frames, int count, int rate, float volume)
+{
+	if (!snd_started || !mixbuf)
+		return;
+	SNDDMA_Lock();
+	if (!raw)
+		raw = Mem_Alloc(sizeof(int16_t) * 2 * RAW_FRAMES);
+	if (raw_rate != rate || raw_head == raw_tail)
+		raw_frac = 0;
+	raw_rate = rate;
+	raw_volume = volume;
+	for (int i = 0; i < count && raw_head - raw_tail < RAW_FRAMES - 1; i++, raw_head++) {
+		raw[(raw_head % RAW_FRAMES) * 2] = frames[i * 2];
+		raw[(raw_head % RAW_FRAMES) * 2 + 1] = frames[i * 2 + 1];
+	}
+	SNDDMA_Unlock();
+}
+
+void S_RawClear(void)
+{
+	SNDDMA_Lock();
+	raw_head = raw_tail = 0;
+	SNDDMA_Unlock();
+}
+
+int S_RawQueued(void)
+{
+	if (!raw_rate || !snd_rate)
+		return 0;
+	return (int)((double)(raw_head - raw_tail) * snd_rate / raw_rate);
+}
+
+static void paint(int16_t *out, int frames)
 {
 	if (frames > mixbuf_frames) {
 		memset(out, 0, (size_t)frames * 4);
@@ -309,6 +420,8 @@ void S_PaintAudio(int16_t *out, int frames)
 	}
 	S_ApplyDSP(mixbuf, frames, dsp_level); /* music stays out of the room */
 	S_MixMusic(mixbuf, frames, snd_rate, music_volume);
+	if (raw && raw_head != raw_tail)
+		mix_raw(mixbuf, frames);
 	for (int i = 0; i < frames * 2; i++) {
 		float v = mixbuf[i];
 		out[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
@@ -330,6 +443,7 @@ static void Music_f(int argc, const char **argv)
 		Con_Printf("usage: music <file or track number> [-]\n");
 		return;
 	}
+	media_playing = false; /* this replaces the playlist's track */
 	if (atoi(argv[1]) > 0 && strspn(argv[1], "0123456789") == strlen(argv[1]))
 		snprintf(base, sizeof(base), "music/track%02d", atoi(argv[1]));
 	else
@@ -354,6 +468,7 @@ static void StopMusic_f(int argc, const char **argv)
 {
 	(void)argc;
 	(void)argv;
+	media_playing = false;
 	if (!snd_started)
 		return;
 	SNDDMA_Lock();
@@ -432,6 +547,132 @@ static void SndRestart_f(int argc, const char **argv)
 	SNDDMA_Unlock();
 }
 
+/* --- the media player: a playlist of music tracks ------------------------------------ */
+
+static char *playlist[256];
+static int numtracks, curtrack = -1;
+
+static bool play_track(int i)
+{
+	bool ok;
+	if (i < 0 || i >= numtracks || !snd_started)
+		return false;
+	curtrack = i;
+	SNDDMA_Lock();
+	ok = S_OpenMusic(playlist[i], false);
+	SNDDMA_Unlock();
+	media_playing = ok;
+	Con_Printf(ok ? "playing %s\n" : "^3can't play %s\n", playlist[i]);
+	return ok;
+}
+
+static void next_track(void)
+{
+	for (int tries = 0; tries < numtracks; tries++)
+		if (play_track((curtrack + 1) % numtracks))
+			return;
+	media_playing = false;
+}
+
+static void media_frame(void)
+{
+	if (media_playing && snd_started && !S_MusicActive())
+		next_track();
+}
+
+/* media_add <track>: adds a music file to the playlist */
+static void MediaAdd_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("media_add <track>\n");
+		for (int i = 0; i < numtracks; i++)
+			Con_Printf("%s%d: %s\n", i == curtrack ? "^2" : "", i + 1, playlist[i]);
+		return;
+	}
+	for (int i = 1; i < argc && numtracks < (int)BW_ARRAY_COUNT(playlist); i++)
+		playlist[numtracks++] = Mem_Strdup(argv[i]);
+	if (!media_playing && !S_MusicActive())
+		play_track(numtracks - 1);
+}
+
+/* media_remove <track>: by name or number */
+static void MediaRemove_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("media_remove <track>\n");
+		return;
+	}
+	for (int i = 0; i < numtracks; i++) {
+		if (strcmp(playlist[i], argv[1]) && atoi(argv[1]) != i + 1)
+			continue;
+		Mem_Free(playlist[i]);
+		memmove(playlist + i, playlist + i + 1, (size_t)(numtracks - i - 1) * sizeof(playlist[0]));
+		numtracks--;
+		if (curtrack == i) {
+			media_playing = false;
+			SNDDMA_Lock();
+			S_CloseMusic();
+			SNDDMA_Unlock();
+			curtrack = i - 1;
+		} else if (curtrack > i)
+			curtrack--;
+		return;
+	}
+	Con_Printf("no track %s\n", argv[1]);
+}
+
+/* media_next, music_next: the next track */
+static void MediaNext_f(int argc, const char **argv)
+{
+	if (numtracks)
+		next_track();
+	else
+		Con_Printf("the playlist is empty (media_add <track>)\n");
+}
+
+/* music_fforward / music_rewind [seconds]: moves through the playing track */
+static void MusicSeek_f(int argc, const char **argv)
+{
+	double secs = argc > 1 ? atof(argv[1]) : 10;
+	if (!snd_started)
+		return;
+	if (strstr(argv[0], "rewind"))
+		secs = -secs;
+	SNDDMA_Lock();
+	S_SeekMusic(secs);
+	SNDDMA_Unlock();
+}
+
+/* soundcontrol off|single|multi|cardN mono|stereo|front|back */
+static void SoundControl_f(int argc, const char **argv)
+{
+	const char *a = argc > 1 ? argv[1] : "";
+	if (!strcmp(a, "off")) {
+		sound_off = true;
+	} else if (!strcmp(a, "single")) {
+		sound_off = false;
+	} else if (!strcmp(a, "multi")) {
+		Con_Printf("only one sound device is supported\n");
+	} else if (!strncmp(a, "card", 4) && argc > 2) {
+		if (atoi(a + 4) != 0) {
+			Con_Printf("there is only card0\n");
+			return;
+		}
+		SNDDMA_Lock();
+		if (!strcmp(argv[2], "mono"))
+			speaker_mode = 1;
+		else if (!strcmp(argv[2], "stereo"))
+			speaker_mode = 0;
+		else if (!strcmp(argv[2], "front"))
+			speakers_back = false;
+		else if (!strcmp(argv[2], "back"))
+			speakers_back = true;
+		SNDDMA_Unlock();
+	} else {
+		Con_Printf("valid commands are: off, single, multi, cardX mono, cardX stereo, cardX front, cardX back\n");
+	}
+}
+
 /* --- setup -------------------------------------------------------------------------- */
 
 void S_Init(bool headless)
@@ -449,6 +690,13 @@ void S_Init(bool headless)
 	Cmd_AddD("soundinfo", SoundInfo_f, "Sound device and mixer state");
 	Cmd_Add("stopsound", StopSound_f);
 	Cmd_Add("snd_restart", SndRestart_f);
+	Cmd_AddD("media_add", MediaAdd_f, "media_add <track>: add music to the playlist (lists it without one)");
+	Cmd_AddD("media_remove", MediaRemove_f, "media_remove <track>: take music off the playlist");
+	Cmd_AddD("media_next", MediaNext_f, "Play the next track of the playlist");
+	Cmd_AddD("music_next", MediaNext_f, "Play the next track of the playlist");
+	Cmd_AddD("music_fforward", MusicSeek_f, "music_fforward [seconds]: skip ahead in the music (10 seconds)");
+	Cmd_AddD("music_rewind", MusicSeek_f, "music_rewind [seconds]: go back in the music (10 seconds)");
+	Cmd_AddD("soundcontrol", SoundControl_f, "soundcontrol off|single|multi|card0 mono|stereo|front|back");
 	S_InitDSPCvars();
 	if (headless)
 		return;

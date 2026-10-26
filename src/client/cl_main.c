@@ -880,6 +880,7 @@ void CL_Frame(double dt)
 	check_connect();
 	CL_MasterFrame();
 	CL_DownloadFrame();
+	CL_CaptureFrame();
 	update_clock(dt);
 	check_userinfo();
 
@@ -1006,5 +1007,7 @@ void CL_Init(void)
 	Cmd_Add("netstats", CL_Netstats_f);
 	CL_InitMaster();
 	CL_InitDownloads();
+	CL_InitCapture();
+	CL_InitCinematics();
 	IN_Init();
 }

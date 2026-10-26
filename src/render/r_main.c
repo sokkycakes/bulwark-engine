@@ -19,6 +19,7 @@ static cvar_t *scr_scale, *r_screenshot_format, *jpeg_quality;
 static bool cursor_mode;
 static char screenshot_pending[256];
 static r_capture_fn capture_fn; /* wants the next frame as a JPEG */
+static r_grab_fn grab_fn;       /* wants every frame (video capture) */
 static void capture_jpeg(r_capture_fn fn);
 
 bool R_Active(void) { return r_active; }
@@ -137,6 +138,11 @@ void R_EndFrame(void)
 	}
 	R_DrawOverlays(r_vwidth, r_vheight);
 	R_DrawToolsOverlay(r_vwidth, r_vheight);
+	CL_DrawCinematic(r_vwidth, r_vheight);
+	if (CL_Capturing() && Cvar_String("capturemessage")[0]) {
+		static const float white[3] = {1, 1, 1};
+		R_DrawString(8, (float)r_vheight - 16, Cvar_String("capturemessage"), 8, 8, white, 1, 0, true);
+	}
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
 	R_ToolsEndFrame();
@@ -149,6 +155,16 @@ void R_EndFrame(void)
 		r_capture_fn fn = capture_fn;
 		capture_fn = NULL;
 		capture_jpeg(fn);
+	}
+	if (grab_fn) {
+		static uint8_t *px;
+		static size_t pxsize;
+		size_t need = (size_t)r_pwidth * r_pheight * 3;
+		if (need > pxsize)
+			px = Mem_Realloc(px, pxsize = need);
+		qglPixelStorei(GL_PACK_ALIGNMENT, 1);
+		qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+		grab_fn(px, r_pwidth, r_pheight);
 	}
 	VID_Swap();
 }
@@ -226,6 +242,23 @@ static void capture_jpeg(r_capture_fn fn)
 	Mem_Free(px);
 	fn(sb.data, sb.len);
 	SB_Free(&sb);
+}
+
+void R_SetFrameGrab(r_grab_fn fn) { grab_fn = fn; }
+
+/* rgb rows bottom up, as read from the screen; ext picks the format */
+bool R_EncodeImage(const char *ext, const uint8_t *rgb, int w, int h, int quality, strbuf_t *out)
+{
+	stbi_flip_vertically_on_write(1);
+	if (!Str_ICmp(ext, "jpg") || !Str_ICmp(ext, "jpeg"))
+		return stbi_write_jpg_to_func(sb_write, out, w, h, 3, rgb, BW_CLAMP(quality, 1, 100)) != 0;
+	if (!Str_ICmp(ext, "tga"))
+		return stbi_write_tga_to_func(sb_write, out, w, h, 3, rgb) != 0;
+	if (!Str_ICmp(ext, "bmp"))
+		return stbi_write_bmp_to_func(sb_write, out, w, h, 3, rgb) != 0;
+	if (!Str_ICmp(ext, "png"))
+		return stbi_write_png_to_func(sb_write, out, w, h, 3, rgb, w * 3) != 0;
+	return false;
 }
 
 bool R_CaptureScreen(r_capture_fn fn)

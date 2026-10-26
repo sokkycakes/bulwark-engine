@@ -259,6 +259,48 @@ bool S_OpenMusic(const char *path, bool loop)
 	return true;
 }
 
+bool S_MusicActive(void) { return mus.active; }
+
+/* seconds into the current track */
+double S_MusicTime(void)
+{
+	if (!mus.active || mus.rate <= 0)
+		return 0;
+	int left = mus.buffered - mus.bufpos;
+	if (mus.vorbis)
+		return (double)(stb_vorbis_get_sample_offset(mus.vorbis) - left) / mus.rate;
+	return (double)(mus.wavpos - left) / mus.rate;
+}
+
+/* moves the current track by seconds (either way) */
+void S_SeekMusic(double seconds)
+{
+	if (!mus.active)
+		return;
+	double t = S_MusicTime() + seconds;
+	if (t < 0)
+		t = 0;
+	unsigned frame = (unsigned)(t * mus.rate);
+	if (mus.vorbis) {
+		unsigned total = stb_vorbis_stream_length_in_samples(mus.vorbis);
+		if (frame >= total) {
+			/* past the end: the track is over */
+			if (!mus.loop) {
+				S_CloseMusic();
+				return;
+			}
+			frame = 0;
+		}
+		stb_vorbis_seek(mus.vorbis, frame);
+	} else {
+		if ((int)frame >= mus.wav.frames)
+			frame = mus.loop ? 0 : (unsigned)mus.wav.frames;
+		mus.wavpos = (int)frame;
+	}
+	mus.buffered = mus.bufpos = 0;
+	mus.frac = 0;
+}
+
 /* refills the decode buffer; false at the end of a stream that doesn't loop */
 static bool refill(void)
 {

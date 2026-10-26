@@ -89,6 +89,8 @@ endif()
 add_library(bwclient STATIC
 	src/client/cl_master.c
 	src/client/cl_download.c
+	src/client/cl_capture.c
+	src/client/cl_cinematic.c
 	src/client/cl_main.c
 	src/client/cl_input.c
 	src/client/cl_csqc.c

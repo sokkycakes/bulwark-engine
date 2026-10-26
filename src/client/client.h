@@ -215,6 +215,16 @@ bool CSQC_CenterPrint(const char *text);
 void CSQC_ServerInfoChanged(void);
 void CSQC_PlayerInfoChanged(int slot);
 /* menu progs (cl_menu.c) */
+/* cl_capture.c */
+void CL_InitCapture(void);
+void CL_CaptureFrame(void);
+bool CL_Capturing(void);
+/* cl_cinematic.c */
+void CL_InitCinematics(void);
+void CL_DrawCinematic(int w, int h); /* the renderer calls it as the frame ends */
+bool CIN_KeyEvent(int key, bool down);
+bool CIN_Playing(void);
+void CIN_Stop(void);
 /* cl_download.c */
 void CL_InitDownloads(void);
 bool CL_StartMissingDownloads(void); /* true: the signon waits for them */

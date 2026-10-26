@@ -32,6 +32,9 @@ bool S_OpenMusic(const char *path, bool loop);
 void S_CloseMusic(void);
 /* adds the music into a stereo float buffer at the device rate */
 void S_MixMusic(float *out, int frames, int rate, float volume);
+bool S_MusicActive(void);
+double S_MusicTime(void);
+void S_SeekMusic(double seconds);
 
 /* --- room effects (snd_dsp.c) ---------------------------------------------- */
 

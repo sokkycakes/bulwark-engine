@@ -17,6 +17,11 @@ bool R_Init(bool headless);
 /* fn gets the next frame as a JPEG; false when nothing is drawn (headless) */
 typedef void (*r_capture_fn)(const void *jpeg, size_t len);
 bool R_CaptureScreen(r_capture_fn fn);
+/* fn gets every frame's pixels (RGB, rows bottom up) until set to NULL */
+typedef void (*r_grab_fn)(const uint8_t *rgb, int w, int h);
+void R_SetFrameGrab(r_grab_fn fn);
+/* encodes RGB rows bottom up as png, jpg, tga or bmp; false for others */
+bool R_EncodeImage(const char *ext, const uint8_t *rgb, int w, int h, int quality, strbuf_t *out);
 void R_Shutdown(void);
 bool R_Active(void);           /* true when there is a window to draw into */
 void R_GetSize(int *w, int *h);

@@ -363,6 +363,9 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		if (down || !held_command[key])
 			return;
 	} else if (down || !held_command[key]) {
+		/* a film takes every key while it plays */
+		if (CIN_KeyEvent(key, down))
+			return;
 		/* a showpic picture with a command takes clicks on it */
 		if (key == K_MOUSE1 && down && R_ShowpicTouch(in_mouse_x / R_Get2DScale(), in_mouse_y / R_Get2DScale()))
 			return;
