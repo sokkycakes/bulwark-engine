@@ -66,6 +66,14 @@ Return in globals 1–3, parameters at 4 + 3n for n < 8. Arguments past the
 eighth live in globals named `$parm8`, `$parm9`, … (found by name). The
 `CALLnH` opcodes pass the first two arguments in operands b and c instead.
 
+Open issue: the fteqcc used to build Nuclide (both Rad-Therapy's progs and
+the rules progs) gives those extra-argument globals no definitions. A
+probe with a nine-argument `sprintf` stored the ninth argument in an
+unnamed global right after the constants, so the VM can't find it and a
+builtin reads 0 or an empty string there. Builtin calls with more than
+eight arguments lose the extra ones until the compiler's convention is
+known from its documentation or more probes.
+
 ## Multiprogs
 
 FTEQW's `specs/multiprogs.txt` describes `addprogs`: extra progs files

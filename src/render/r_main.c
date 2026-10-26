@@ -6,6 +6,7 @@
 #include "../client/vid.h"
 #include "../common/cmd.h"
 #include "../common/fs.h"
+#include "../common/studio.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -741,11 +742,46 @@ static void r_getlight(qcvm_t *vm)
 
 static rmodel_t *model_arg(qcvm_t *vm, int n) { return R_ModelForIndex((int)QC_PFLOAT(vm, n)); }
 
-static void r_modelframecount(qcvm_t *vm) { QC_ReturnFloat(vm, (float)R_ModelNumFrames(model_arg(vm, 0))); }
-static void r_frameforname(qcvm_t *vm) { QC_ReturnFloat(vm, (float)R_FrameForName(model_arg(vm, 0), QC_PSTR(vm, 1))); }
-static void r_frametoname(qcvm_t *vm) { QC_ReturnString(vm, R_FrameToName(model_arg(vm, 0), (int)QC_PFLOAT(vm, 1))); }
-static void r_frameduration(qcvm_t *vm) { QC_ReturnFloat(vm, R_FrameDuration(model_arg(vm, 0), (int)QC_PFLOAT(vm, 1))); }
-static void r_minus1(qcvm_t *vm) { QC_ReturnFloat(vm, -1); }
+/* GoldSrc studio models aren't drawn yet, but the game still asks about
+   their sequences: those answers come from the model file */
+static const studio_model_t *studio_arg(qcvm_t *vm)
+{
+	return R_ModelNumFrames(model_arg(vm, 0)) ? NULL : QC_StudioModel(vm, (int)QC_PFLOAT(vm, 0));
+}
+
+static void r_modelframecount(qcvm_t *vm)
+{
+	const studio_model_t *sm = studio_arg(vm);
+	QC_ReturnFloat(vm, sm ? (float)sm->numseqs : (float)R_ModelNumFrames(model_arg(vm, 0)));
+}
+
+static void r_frameforname(qcvm_t *vm)
+{
+	const studio_model_t *sm = studio_arg(vm);
+	for (int i = 0; sm && i < sm->numseqs; i++)
+		if (!Str_ICmp(sm->seqs[i].label, QC_PSTR(vm, 1))) {
+			QC_ReturnFloat(vm, (float)i);
+			return;
+		}
+	QC_ReturnFloat(vm, sm ? -1 : (float)R_FrameForName(model_arg(vm, 0), QC_PSTR(vm, 1)));
+}
+
+static void r_frametoname(qcvm_t *vm)
+{
+	const studio_model_t *sm = studio_arg(vm);
+	int f = (int)QC_PFLOAT(vm, 1);
+	if (sm)
+		QC_ReturnString(vm, f >= 0 && f < sm->numseqs ? sm->seqs[f].label : "");
+	else
+		QC_ReturnString(vm, R_FrameToName(model_arg(vm, 0), f));
+}
+
+static void r_frameduration(qcvm_t *vm)
+{
+	const studio_model_t *sm = studio_arg(vm);
+	int f = (int)QC_PFLOAT(vm, 1);
+	QC_ReturnFloat(vm, sm ? Studio_SeqDuration(sm, f) : R_FrameDuration(model_arg(vm, 0), f));
+}
 static void r_zero(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 static void r_nop(qcvm_t *vm) { (void)vm; }
 
@@ -948,7 +984,7 @@ const qc_builtin_t r_builtins[] = {
 	{"R_BeginPolygon", r_beginpolygon}, {"R_PolygonVertex", r_polygonvertex}, {"R_EndPolygon", r_endpolygon},
 	{"project", r_project}, {"unproject", r_unproject}, {"shaderforname", r_shaderforname},
 	{"getlight", r_getlight}, {"modelframecount", r_modelframecount}, {"frameforname", r_frameforname},
-	{"frametoname", r_frametoname}, {"frameduration", r_frameduration}, {"frameforaction", r_minus1},
+	{"frametoname", r_frametoname}, {"frameduration", r_frameduration},
 	{"setcursormode", r_setcursormode},
 	{"getcursormode", r_getcursormode}, {"getmousepos", r_getmousepos}, {"setwindowcaption", r_setwindowcaption},
 	{"spriteframe", r_spriteframe},
@@ -963,7 +999,7 @@ const qc_builtin_t r_builtins[] = {
 	{"remapshader", r_nop}, {"setcustomskin", r_nop}, {"loadcustomskin", r_zero},
 	{"applycustomskin", r_nop}, {"releasecustomskin", r_nop}, {"dynamiclight_get", r_zero},
 	{"dynamiclight_set", r_nop}, {"dynamiclight_spawnstatic", r_zero}, {"boxparticles", r_nop},
-	{"getmodeleventidx", r_zero}, {"getnextmodelevent", r_zero}, {"processmodelevents", r_nop},
+
 	{"skinforname", r_zero}, {"cin_open", r_zero}, {"cin_close", r_nop}, {"cin_setstate", r_nop},
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
 	{"r_uploadimage", r_uploadimage}, {"r_readimage", r_zero},

@@ -81,5 +81,43 @@ spawning a viewer-facing variant with Nuclide's `sv propSpawn` and a
 expected.
 
 Not done: ragdolls (`skel_ragupdate`), `skel_set_bone_world`,
-`skel_build_ptr`, `frame3`/`frame4` blending, model events, and frame
-queries for MDL models on the server.
+`skel_build_ptr`, `frame3`/`frame4` blending, and model events for IQM.
+
+## Studio model frames and events
+
+On GoldSrc studio models (format in [studio-mdl.md](studio-mdl.md)) a
+"frame" in QC is a sequence number, as Nuclide's Half-Life code expects.
+Both VMs answer the frame queries from the parsed model when the model is
+not IQM: `frameforname` (sequence label), `frametoname`, `modelframecount`
+(sequence count) and `frameduration`. A sequence lasts
+`(frames - 1) / fps` seconds, or `1 / fps` for a one-frame sequence: a
+sequence whose last frame is shown at its end time has `frames - 1`
+intervals. `frameforaction(model, activity)` picks among the sequences
+whose activity number matches, weighted by their activity weight, and
+gives -1 if none does.
+
+The model event builtins follow their fteextensions doc comments. An
+event's time is its frame divided by the sequence's fps.
+
+- `processmodelevents(model, frame, basetime, targettime, callback)` calls
+  the callback for each event with a time in `(basetime, targettime]`, in
+  time order, and writes `targettime` back into `basetime` (the argument is
+  `__inout`, so the caller copies the parameter slot back after the call:
+  the write has to happen after the callbacks, which reuse the slots).
+  A window starting at 0 or earlier also takes events on frame 0, so an
+  event on the first frame fires once when the animation starts. A target
+  before the base means the animation was restarted: the window becomes
+  `[0, target]`.
+- Sequences with the looping flag (bit 0 of the sequence flags) repeat
+  their events every duration, so a walk cycle's footstep events keep
+  firing; after a long gap only the last four laps are replayed.
+- `self` is put back after each callback.
+- `getnextmodelevent` returns the first event of the same window (writing
+  its time into `basetime`), and `getmodeleventidx` reads an event by
+  index.
+
+Checked by running Rad-Therapy's monsters on Bulwark: zombie and headcrab
+sequences report the durations their schedules wait for, and the events in
+the attack and death sequences reach the monsters' event handler at the
+frames the model lists (`? event 2 in "attack1"` is logged by Nuclide for
+the codes it does not handle, at 1.27 s into the sequence).

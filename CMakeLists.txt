@@ -38,7 +38,8 @@ add_library(bwqcvm STATIC
 	src/qcvm/qc_strings.c
 	src/qcvm/qc_builtins_core.c
 	src/qcvm/qc_extra.c
-	src/qcvm/qc_skel.c)
+	src/qcvm/qc_skel.c
+	src/qcvm/qc_modelevents.c)
 target_link_libraries(bwqcvm PUBLIC bwcommon)
 
 add_executable(qcrun tools/qcrun.c)

@@ -90,7 +90,7 @@ typedef struct {
 	studio_submodel_t *models;
 } studio_bodypart_t;
 
-typedef struct {
+typedef struct studio_model_s {
 	char name[65];
 	int version;
 	int flags;
@@ -126,5 +126,19 @@ bool Studio_DecodeFrame(const studio_model_t *m, int seq, int blend, int frame, 
 /* number of triangles a mesh's command lists describe, or -1 if malformed */
 int Studio_CountTris(const studio_model_t *m, const studio_mesh_t *mesh, int numverts, int numnorms);
 void Studio_Free(studio_model_t *m);
+
+/* sequence flag: the sequence loops (public descriptions of the format;
+ * also set on looping CSO shop sequences, see studio-mdl.md) */
+#define STUDIO_LOOPING 0x0001
+
+/* a model loaded through the file system and kept for the rest of the run,
+ * by name; NULL if the file is missing or isn't an IDST v10 model. Failures
+ * are remembered too, so asking again is cheap. */
+const studio_model_t *Studio_Cached(const char *name);
+/* length of a sequence in seconds (0 if it has no frames or no rate) */
+float Studio_SeqDuration(const studio_model_t *m, int seq);
+/* a sequence tagged with the activity, picked at random by actweight;
+ * rnd is any random number. -1 if no sequence has that activity. */
+int Studio_SeqForActivity(const studio_model_t *m, int activity, unsigned rnd);
 
 #endif

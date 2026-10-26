@@ -221,6 +221,9 @@ static qc_builtin_fn lookup_builtin(const qc_builtin_t *const *tables, const cha
 	for (const qc_builtin_t *b = qc_builtins_skel; b->name; b++)
 		if (!strcmp(b->name, name))
 			return b->fn;
+	for (const qc_builtin_t *b = qc_builtins_modelevents; b->name; b++)
+		if (!strcmp(b->name, name))
+			return b->fn;
 	return NULL;
 }
 

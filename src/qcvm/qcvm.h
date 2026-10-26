@@ -349,6 +349,11 @@ extern const qc_builtin_t qc_builtins_core[];
 extern const qc_builtin_t qc_builtins_extra[];
 /* skeleton objects and tags; every VM falls back to these */
 extern const qc_builtin_t qc_builtins_skel[];
+/* model events and frameforaction on studio models (qc_modelevents.c) */
+extern const qc_builtin_t qc_builtins_modelevents[];
+struct studio_model_s;
+/* the GoldSrc studio model behind a model index, or NULL */
+const struct studio_model_s *QC_StudioModel(qcvm_t *vm, int modelindex);
 
 struct skelmodel_s;
 /* the bones of skeleton object id, for drawing */
