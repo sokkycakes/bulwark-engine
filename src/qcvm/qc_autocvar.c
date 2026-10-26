@@ -43,6 +43,7 @@ void QC_BindAutocvars(qcvm_t *vm, int progs)
 		qcdef_t *d = &p->globaldefs[i];
 		int type = (int)(d->type & ~DEF_SAVEGLOBAL);
 		char def[128];
+		const char *defstr = def;	/* strings are used as they are, at any length */
 		qc_autocvar_t *a;
 		if (!d->name || strncmp(d->name, "autocvar_", 9) || !d->name[9])
 			continue;
@@ -53,14 +54,14 @@ void QC_BindAutocvars(qcvm_t *vm, int progs)
 		case ev_vector: snprintf(def, sizeof(def), "%g %g %g", g[d->ofs].f, g[d->ofs + 1].f, g[d->ofs + 2].f); break;
 		case ev_string: {
 			const char *s = QC_GetString(vm, (string_t)g[d->ofs].i);
-			Str_Copy(def, s ? s : "", sizeof(def));
+			defstr = s ? s : "";
 			break;
 		}
 		default: continue;
 		}
 		vm->autocvars = Mem_Realloc(vm->autocvars, sizeof(qc_autocvar_t) * (vm->numautocvars + 1));
 		a = &vm->autocvars[vm->numautocvars++];
-		a->cvar = Cvar_Get(d->name + 9, def, CVAR_USERCREATED, NULL);
+		a->cvar = Cvar_Get(d->name + 9, defstr, CVAR_USERCREATED, NULL);
 		a->progs = progs;
 		a->ofs = d->ofs;
 		a->type = type;
