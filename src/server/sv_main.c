@@ -4,6 +4,7 @@
 #include "../common/cvar.h"
 #include "../common/cmd.h"
 #include "../common/fs.h"
+#include "../scene/scene.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -274,6 +275,8 @@ bool SV_SpawnServer(const char *mapname)
 	char *progs;
 	qcvm_t *vm;
 	char keep_serverinfo[8192], keep_localinfo[8192];
+	scenefile_t *scene = NULL;
+	scene_entinfo_t sceneinfo;
 
 	Str_Copy(keep_serverinfo, sv.serverinfo, sizeof(keep_serverinfo));
 	Str_Copy(keep_localinfo, sv.localinfo, sizeof(keep_localinfo));
@@ -281,18 +284,47 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.serverinfo, keep_serverinfo, sizeof(sv.serverinfo));
 	Str_Copy(sv.localinfo, keep_localinfo, sizeof(sv.localinfo));
 
-	snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
 	Host_Loading("server_world", mapname, 0.0f);
-	if (!FS_FileExists(path)) {
-		/* a void map: entities only, the level is built from voxels */
-		char vpath[160];
-		snprintf(vpath, sizeof(vpath), "maps/%s.vxmap", mapname);
-		if (FS_FileExists(vpath))
-			Str_Copy(path, vpath, sizeof(path));
+	/* maps/<name>.scene wins over maps/<name>.bsp; its MapInstance names the world */
+	snprintf(path, sizeof(path), "maps/%s.scene", mapname);
+	if (FS_FileExists(path)) {
+		scenefile_t *sf = Scene_Load(path);
+		scene_prefabcache_t *prefabs = Scene_NewPrefabCache();
+		if (!sf) {
+			Scene_FreePrefabCache(prefabs);
+			Host_Loading(NULL, NULL, 0);
+			return false;
+		}
+		scene = Scene_Resolve(sf, Scene_PrefabCacheLoad, prefabs);
+		Scene_Free(sf);
+		Scene_FreePrefabCache(prefabs);
+		Scene_MapInfo(scene, &sceneinfo);
+		if (!sceneinfo.mapname[0]) {
+			Con_Printf("%s has no MapInstance naming a BSP\n", path);
+			Scene_Free(scene);
+			Host_Loading(NULL, NULL, 0);
+			return false;
+		}
+		Str_Copy(path, sceneinfo.mapname, sizeof(path));
+	} else {
+		/* then a BSP, then a void voxel map, then an FTEW world */
+		snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
+		if (!FS_FileExists(path)) {
+			char alt[160];
+			snprintf(alt, sizeof(alt), "maps/%s.vxmap", mapname);
+			if (FS_FileExists(alt))
+				Str_Copy(path, alt, sizeof(path));
+			else {
+				snprintf(alt, sizeof(alt), "maps/%s.ftew", mapname);
+				if (FS_FileExists(alt))
+					Str_Copy(path, alt, sizeof(path));
+			}
+		}
 	}
 	sv.world = BSP_Load(path);
 	if (!sv.world) {
 		Con_Printf("couldn't load map %s\n", path);
+		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
@@ -306,6 +338,7 @@ bool SV_SpawnServer(const char *mapname)
 	progs = FS_LoadFile(sv_progs->string, &len);
 	if (!progs) {
 		Con_Printf("couldn't load %s\n", sv_progs->string);
+		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
@@ -313,6 +346,7 @@ bool SV_SpawnServer(const char *mapname)
 	             (size_t)BW_MAX(1, pr_heapsize->ivalue) * 1024 * 1024);
 	Mem_Free(progs);
 	if (!vm) {
+		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
@@ -374,7 +408,17 @@ bool SV_SpawnServer(const char *mapname)
 	}
 
 	Host_Loading("server_entities", mapname, 0.15f);
-	spawn_map_entities(sv.world->entities);
+	if (scene) {
+		strbuf_t ents = {0};
+		Scene_BuildEntities(scene, sv.world->entities, &ents, &sceneinfo);
+		Scene_Free(scene);
+		Con_Printf("scene %s: %d entities from the scene, %d components with no entity\n", mapname,
+		           sceneinfo.numentities, sceneinfo.numskipped);
+		spawn_map_entities(ents.data ? ents.data : "");
+		SB_Free(&ents);
+	} else {
+		spawn_map_entities(sv.world->entities);
+	}
 	sv.spawning = false;
 	SV_ClientsMapChanged();
 	QC_CollectGarbage(vm, true);

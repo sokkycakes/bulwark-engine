@@ -39,7 +39,14 @@ new games.
   locomotion with climbing and gap jumps, vision, waypoint paths and chasing,
   and player bots that play as fake clients through player input), with
   headless scenario tests in `tests/bots`, including a TF2-style match.
-- Not yet: ragdolls, the menu progs.
+- **Scenes** (`bwscene`, `src/scene`): s&box's `.scene` and `.prefab` JSON
+  format. Loads and saves s&box files, expands prefab instances, and spawns
+  `Bulwark.Entity` components as QuakeC entities. `map foo` loads
+  `maps/foo.scene` when it exists. See [docs/spec/scene-format.md](docs/spec/scene-format.md).
+- **FTEW worlds**: the compiled world format from the Godot-based Stiletto
+  exporter, loaded wherever a BSP is (collision, drawing, entities), and
+  nameable from a scene's `MapInstance`. See [docs/spec/ftew.md](docs/spec/ftew.md).
+- Not yet: ragdolls.
 
 ## Building
 
@@ -72,12 +79,28 @@ calls to QC functions whose names contain it), `music <file>`, `play
 Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 `-frames n`, `-developer`, and `+command args` for console commands.
 
+## Scenes
+
+```sh
+./build/bwscene -basedir /path/to/nuclide -game base frombsp maps/ai.bsp ai.scene   # BSP entities into a scene
+./build/bwscene -basedir /path/to/nuclide -game base check ai.scene                 # expand prefabs, count entities
+./build/bwscene ents ai.scene                                                      # the entity text it spawns
+./build/bwscene resave old.scene new.scene                                         # upgrade to the current format
+```
+
+Scenes are edited in Godot with the addon in [tools/godot](tools/godot/README.md):
+an entity browser and typed key editor built from Nuclide's entity
+definitions, previews of BSP and FTEW worlds, Hammer-style views and grid,
+and export straight to `.scene` and `.prefab` with a Run map button.
+
 ## Docs
 
 - [docs/spec/progs-format.md](docs/spec/progs-format.md)
 - [docs/spec/opcodes.md](docs/spec/opcodes.md)
 - [docs/spec/builtins.md](docs/spec/builtins.md)
 - [docs/spec/bsp.md](docs/spec/bsp.md)
+- [docs/spec/scene-format.md](docs/spec/scene-format.md)
+- [docs/spec/ftew.md](docs/spec/ftew.md)
 - [docs/spec/materials.md](docs/spec/materials.md)
 - [docs/spec/client-game.md](docs/spec/client-game.md)
 - [docs/spec/particles.md](docs/spec/particles.md)

@@ -26,8 +26,16 @@ add_library(bwcommon STATIC
 	src/common/voxel.c
 	src/common/vbsp.c
 	src/thirdparty/lzma/LzmaDec.c
-	src/common/stb_image_impl.c)
+	src/common/stb_image_impl.c
+	src/common/json.c
+	src/common/ftew.c)
 target_link_libraries(bwcommon PUBLIC m)
+
+add_library(bwscene STATIC
+	src/scene/scene.c
+	src/scene/scene_prefab.c
+	src/scene/scene_ents.c)
+target_link_libraries(bwscene PUBLIC bwcommon)
 
 add_library(bwnet STATIC
 	src/net/msg.c
@@ -60,7 +68,7 @@ add_library(bwserver STATIC
 	src/server/bspfile.c
 	src/server/bsp_source.c
 	src/server/bsp_props.c)
-target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
+target_link_libraries(bwserver PUBLIC bwqcvm bwnet bwscene)
 
 add_executable(bulwark-ded src/main_ded.c)
 target_link_libraries(bulwark-ded bwserver)
@@ -77,6 +85,13 @@ add_executable(vguitest tools/vguitest.c)
 target_link_libraries(vguitest bwcommon)
 
 enable_testing()
+add_executable(bwscene-tool tools/bwscene.c src/server/bspfile.c src/server/bsp_source.c src/server/bsp_props.c)
+set_target_properties(bwscene-tool PROPERTIES OUTPUT_NAME bwscene)
+target_link_libraries(bwscene-tool bwscene)
+
+add_executable(scenetest tests/scene/scenetest.c)
+target_link_libraries(scenetest bwscene)
+
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
 add_test(NAME studio COMMAND studiotest)
 add_executable(voxeltest tools/voxeltest.c)
@@ -91,6 +106,11 @@ add_executable(bsptest tests/bsp/bsptest.c)
 target_link_libraries(bsptest bwserver)
 add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 add_test(NAME bots COMMAND ${CMAKE_SOURCE_DIR}/tests/bots/run.sh $<TARGET_FILE:bulwark-ded>)
+add_test(NAME scene COMMAND scenetest ${CMAKE_SOURCE_DIR}/tests/scene)
+
+add_executable(ftewtest tests/ftew/ftewtest.c src/server/bspfile.c src/server/bsp_source.c src/server/bsp_props.c)
+target_link_libraries(ftewtest bwcommon)
+add_test(NAME ftew COMMAND ftewtest ${CMAKE_SOURCE_DIR}/tests/ftew)
 
 # game client with a listen server
 find_package(SDL2 QUIET)

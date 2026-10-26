@@ -4,6 +4,7 @@
 #include "bspfile.h"
 #include "bsp_source.h"
 #include "../common/fs.h"
+#include "../common/ftew.h"
 
 #include <math.h>
 
@@ -398,6 +399,207 @@ static void load_void(bspmap_t *m, const uint8_t *d, size_t size)
 	}
 }
 
+/* --- FTEW worlds ----------------------------------------------------- */
+
+/* FTEW (docs/spec/ftew.md) stores convex colliders as planes, which are
+ * brushes already, and marks mesh instances collidable. Each collidable
+ * triangle becomes a thin brush: its face, a back face, three edge planes
+ * and axial bevels so box sweeps do not catch on its corners. */
+
+#define FTEW_TRI_THICKNESS 2.0f
+
+typedef struct {
+	bspmap_t *m;
+	int maxplanes, maxsides, maxbrushes;
+} brushbuild_t;
+
+static int add_plane(brushbuild_t *bb, const float *n, float d)
+{
+	bspmap_t *m = bb->m;
+	if (m->numplanes == bb->maxplanes) {
+		bb->maxplanes = bb->maxplanes ? bb->maxplanes * 2 : 1024;
+		m->planes = Mem_Realloc(m->planes, sizeof(cplane_t) * (size_t)bb->maxplanes);
+	}
+	VectorCopy(n, m->planes[m->numplanes].normal);
+	m->planes[m->numplanes].dist = d;
+	return m->numplanes++;
+}
+
+static void add_side(brushbuild_t *bb, const float *n, float d)
+{
+	bspmap_t *m = bb->m;
+	if (m->numbrushsides == bb->maxsides) {
+		bb->maxsides = bb->maxsides ? bb->maxsides * 2 : 1024;
+		m->brushsides = Mem_Realloc(m->brushsides, sizeof(cbrushside_t) * (size_t)bb->maxsides);
+	}
+	m->brushsides[m->numbrushsides].plane = add_plane(bb, n, d);
+	m->brushsides[m->numbrushsides].shader = 0;
+	m->numbrushsides++;
+}
+
+static cbrush_t *begin_brush(brushbuild_t *bb)
+{
+	bspmap_t *m = bb->m;
+	cbrush_t *b;
+	if (m->numbrushes == bb->maxbrushes) {
+		bb->maxbrushes = bb->maxbrushes ? bb->maxbrushes * 2 : 256;
+		m->brushes = Mem_Realloc(m->brushes, sizeof(cbrush_t) * (size_t)bb->maxbrushes);
+	}
+	b = &m->brushes[m->numbrushes++];
+	memset(b, 0, sizeof(*b));
+	b->firstside = m->numbrushsides;
+	b->contents = CONTENTS_SOLID;
+	return b;
+}
+
+static void cross(const float *a, const float *b, float *out)
+{
+	out[0] = a[1] * b[2] - a[2] * b[1];
+	out[1] = a[2] * b[0] - a[0] * b[2];
+	out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static void add_triangle_brush(brushbuild_t *bb, const float *a, const float *b, const float *c)
+{
+	const float *v[3] = {a, b, c};
+	float e1[3], e2[3], n[3], back[3], d;
+	cbrush_t *br;
+	for (int k = 0; k < 3; k++) {
+		e1[k] = c[k] - a[k];
+		e2[k] = b[k] - a[k];
+	}
+	/* clockwise front faces: the front normal is (c - a) x (b - a) */
+	cross(e1, e2, n);
+	if (VectorNormalize(n) < 1e-4f)
+		return; /* degenerate */
+	br = begin_brush(bb);
+	d = DotProduct(n, a);
+	add_side(bb, n, d);
+	for (int k = 0; k < 3; k++)
+		back[k] = -n[k];
+	add_side(bb, back, -(d - FTEW_TRI_THICKNESS));
+	for (int i = 0; i < 3; i++) {
+		const float *p0 = v[i], *p1 = v[(i + 1) % 3], *p2 = v[(i + 2) % 3];
+		float edge[3], en[3];
+		for (int k = 0; k < 3; k++)
+			edge[k] = p1[k] - p0[k];
+		cross(edge, n, en);
+		if (VectorNormalize(en) < 1e-6f)
+			continue;
+		if (DotProduct(en, p2) > DotProduct(en, p0)) /* face away from the opposite corner */
+			for (int k = 0; k < 3; k++)
+				en[k] = -en[k];
+		add_side(bb, en, DotProduct(en, p0));
+	}
+	for (int k = 0; k < 3; k++) {
+		br->mins[k] = BW_MIN(BW_MIN(a[k], b[k]), c[k]);
+		br->maxs[k] = BW_MAX(BW_MAX(a[k], b[k]), c[k]);
+		/* the back face sits behind the triangle */
+		if (n[k] > 0)
+			br->mins[k] -= n[k] * FTEW_TRI_THICKNESS;
+		else
+			br->maxs[k] -= n[k] * FTEW_TRI_THICKNESS;
+	}
+	for (int k = 0; k < 3; k++) {
+		float ax[3] = {0, 0, 0};
+		ax[k] = 1;
+		add_side(bb, ax, br->maxs[k]);
+		ax[k] = -1;
+		add_side(bb, ax, -br->mins[k]);
+	}
+	br->numsides = bb->m->numbrushsides - br->firstside;
+}
+
+static void add_collider_brush(brushbuild_t *bb, const ftew_collider_t *c)
+{
+	cbrush_t *br = begin_brush(bb);
+	for (uint32_t i = 0; i < c->numplanes; i++) {
+		float n[3], d;
+		FTEW_Plane(c, i, n, &d);
+		add_side(bb, n, d);
+	}
+	VectorCopy(c->mins, br->mins);
+	VectorCopy(c->maxs, br->maxs);
+	br->numsides = bb->m->numbrushsides - br->firstside;
+}
+
+static bool load_ftew(bspmap_t *m, const uint8_t *d, size_t size)
+{
+	ftew_t w;
+	char err[128];
+	brushbuild_t bb = {m, 0, 0, 0};
+	if (!FTEW_Parse(d, size, &w, err, sizeof(err))) {
+		Con_Printf("%s: %s\n", m->name, err);
+		return false;
+	}
+	m->entities = Mem_Strdup(w.entities);
+	m->numshaders = 1;
+	m->shaders = Mem_Alloc(sizeof(cshader_t) * 2);
+	Str_Copy(m->shaders[0].name, "ftew/solid", sizeof(m->shaders[0].name));
+	m->shaders[0].contents = CONTENTS_SOLID;
+	m->nummodels = (int)w.nummodels;
+	m->models = Mem_Alloc(sizeof(cmodel_t) * (w.nummodels + 1));
+
+	/* brushes grouped by model, so each model is one range */
+	for (uint32_t mi = 0; mi < w.nummodels; mi++) {
+		cmodel_t *cm = &m->models[mi];
+		cm->firstbrush = m->numbrushes;
+		for (int i = 0; i < w.numcolliders; i++)
+			if (w.colliders[i].model == mi)
+				add_collider_brush(&bb, &w.colliders[i]);
+		for (int i = 0; i < w.numinstances; i++) {
+			const ftew_instance_t *in = &w.instances[i];
+			const ftew_mesh_t *mesh;
+			if (in->model != mi || !(in->flags & FTEW_INST_COLLIDE))
+				continue;
+			mesh = &w.meshes[in->mesh];
+			for (uint32_t t = 0; t + 2 < mesh->numindexes; t += 3) {
+				float p[3][3];
+				for (int k = 0; k < 3; k++) {
+					FTEW_Vertex(mesh, FTEW_Index(mesh, t + k), p[k], NULL, NULL);
+					FTEW_Transform(in, p[k], p[k]);
+				}
+				if (FTEW_Mirrored(in))
+					add_triangle_brush(&bb, p[0], p[2], p[1]);
+				else
+					add_triangle_brush(&bb, p[0], p[1], p[2]);
+			}
+		}
+		cm->numbrushes = m->numbrushes - cm->firstbrush;
+		/* bounds: collision and visible geometry */
+		for (int k = 0; k < 3; k++) {
+			cm->mins[k] = 1e30f;
+			cm->maxs[k] = -1e30f;
+		}
+		for (int i = cm->firstbrush; i < m->numbrushes; i++)
+			for (int k = 0; k < 3; k++) {
+				cm->mins[k] = BW_MIN(cm->mins[k], m->brushes[i].mins[k]);
+				cm->maxs[k] = BW_MAX(cm->maxs[k], m->brushes[i].maxs[k]);
+			}
+		for (int i = 0; i < w.numinstances; i++) {
+			const ftew_instance_t *in = &w.instances[i];
+			const ftew_mesh_t *mesh = &w.meshes[in->mesh];
+			if (in->model != mi)
+				continue;
+			for (uint32_t v = 0; v < mesh->numverts; v++) {
+				float p[3];
+				FTEW_Vertex(mesh, v, p, NULL, NULL);
+				FTEW_Transform(in, p, p);
+				for (int k = 0; k < 3; k++) {
+					cm->mins[k] = BW_MIN(cm->mins[k], p[k]);
+					cm->maxs[k] = BW_MAX(cm->maxs[k], p[k]);
+				}
+			}
+		}
+		if (cm->mins[0] > cm->maxs[0])
+			for (int k = 0; k < 3; k++)
+				cm->mins[k] = cm->maxs[k] = 0;
+	}
+	FTEW_Free(&w);
+	m->type = BSP_Q3; /* brush collision, like Q3-family maps */
+	return true;
+}
+
 bspmap_t *BSP_Load(const char *path)
 {
 	size_t size;
@@ -417,6 +619,8 @@ bspmap_t *BSP_Load(const char *path)
 		ok = load_q3(m, d, size);
 	else if (size >= 8 && !memcmp(d, "VBSP", 4))
 		ok = BSP_LoadSource(m, d, size);
+	else if (FTEW_IsFTEW(d, size))
+		ok = load_ftew(m, d, size);
 	else if (size >= 4) {
 		int32_t v = rd32(d);
 		if (v == 29 || v == 30 || !memcmp(d, "BSP2", 4))

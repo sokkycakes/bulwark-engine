@@ -18,6 +18,12 @@ writing engine code here reads those engines' source.
   plus inspection of real content (Nuclide's progs, maps and decls).
 - **Game code.** Nuclide's QC source is read to learn what it expects from the
   engine. It is a client of the engine, not part of it.
+- **Permissively licensed engines.** Code under MIT, BSD, ISC or zlib terms
+  may be read, and may be reused if its copyright notice and licence travel
+  with it. So far this is s&box ([Facepunch/sbox-public](https://github.com/Facepunch/sbox-public),
+  MIT), whose scene format Bulwark follows; see `docs/spec/scene-format.md`.
+  Nothing from it has been copied into `src/` yet. Its sample files in
+  `tests/scene/sbox/` carry its licence.
 
 ## Not allowed
 
