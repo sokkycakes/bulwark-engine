@@ -294,6 +294,15 @@ static image_t *white_cube(void)
 	return img;
 }
 
+/* the Quake palette, or a grey ramp when the game has none */
+const uint8_t *R_Palette(void)
+{
+	if (!have_palette)
+		for (int i = 0; i < 768; i++)
+			q1palette[i] = (uint8_t)(i / 3);
+	return q1palette;
+}
+
 void R_InitImages(void)
 {
 	uint8_t check[64 * 64 * 4];

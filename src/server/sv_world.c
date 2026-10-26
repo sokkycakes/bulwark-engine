@@ -85,7 +85,7 @@ typedef struct {
 static bool ent_brush_model(int e, brushref_t *out)
 {
 	int mi = (int)QC_EFloat(cur()->vm, e, F.modelindex);
-	if (!cur()->brushmodel(mi, &out->bsp, &out->submodel) || out->bsp->type != BSP_Q3)
+	if (!cur()->brushmodel(mi, &out->bsp, &out->submodel) || out->bsp->type == BSP_NONE)
 		return false;
 	return true;
 }

@@ -1,6 +1,7 @@
 /* Bulwark engine - BSP map loading for collision and entity data.
- * Q3-family BSPs (IBSP v46 and the FBSP variant) load brush collision; Q1
- * family BSPs only provide entities and model bounds for now.
+ * Q3-family BSPs (IBSP v46, RBSP and FBSP) collide with brushes; Q1-family
+ * BSPs (BSP29 and BSP2) with their clipping hulls. Both carry the node tree
+ * and the potentially visible sets.
  * ISC licence, see LICENSE. */
 #ifndef BW_BSPFILE_H
 #define BW_BSPFILE_H
@@ -45,7 +46,33 @@ typedef struct {
 typedef struct {
 	float mins[3], maxs[3];
 	int firstbrush, numbrushes;
+	/* Q1: the root of each clipping hull (0 the node tree, 1 and 2 player
+	 * and large hulls) and the faces drawn for the model */
+	int headnode[4];
+	int firstface, numfaces;
 } cmodel_t;
+
+/* children: >= 0 a node, < 0 the leaf -(child + 1) */
+typedef struct {
+	int plane;
+	int children[2];
+	float mins[3], maxs[3];
+} cnode_t;
+
+typedef struct {
+	int contents;      /* Q3 content bits */
+	int cluster;       /* row of the visibility data, -1 for none */
+	int area;
+	float mins[3], maxs[3];
+	int firstface, numfaces;   /* into leaffaces */
+	int firstbrush, numbrushes; /* into leafbrushes (Q3) */
+} cleaf_t;
+
+/* Q1 clipping hull nodes: children >= 0 a node, < 0 Q1 contents */
+typedef struct {
+	int plane;
+	int children[2];
+} cclipnode_t;
 
 typedef enum { BSP_NONE, BSP_Q1, BSP_Q3 } bsptype_t;
 
@@ -63,6 +90,21 @@ typedef struct {
 	int numshaders;
 	cmodel_t *models;
 	int nummodels;
+	cnode_t *nodes;
+	int numnodes;
+	cleaf_t *leafs;
+	int numleafs;
+	int *leaffaces;
+	int numleaffaces;
+	int *leafbrushes;
+	int numleafbrushes;
+	/* one uncompressed row of numclusters bits per cluster; NULL sees all */
+	uint8_t *vis;
+	int numclusters, clusterbytes;
+	/* Q1 hulls: hull 0 is the node tree turned into clip nodes */
+	cclipnode_t *clipnodes, *hull0;
+	int numclipnodes;
+	bool bsp2;
 } bspmap_t;
 
 bspmap_t *BSP_Load(const char *path);
@@ -86,5 +128,11 @@ typedef struct {
 void BSP_TraceModel(const bspmap_t *map, int model, const float *origin, const float *start,
                     const float *mins, const float *maxs, const float *end, int mask, bsptrace_t *tr);
 int BSP_PointContents(const bspmap_t *map, int model, const float *origin, const float *p);
+
+/* visibility: the leaf holding p, its cluster's potentially visible set
+ * (NULL when everything is visible) and a point-to-point check */
+int BSP_PointLeaf(const bspmap_t *map, const float *p);
+const uint8_t *BSP_ClusterPVS(const bspmap_t *map, int cluster);
+bool BSP_CheckPVS(const bspmap_t *map, const float *a, const float *b);
 
 #endif

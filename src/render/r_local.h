@@ -32,6 +32,7 @@ image_t *R_FindImage(const char *name, int flags); /* never NULL */
 image_t *R_ImageFromPixels(const char *name, const uint8_t *rgba, int w, int h, int flags);
 image_t *R_LoadCubemap(const char *basename);    /* basename_rt.tga ... or NULL */
 bool R_ImageExists(const char *name);
+const uint8_t *R_Palette(void);
 void R_InitImages(void);
 void R_ShutdownImages(void);
 extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal, *r_whitecube;
@@ -79,6 +80,7 @@ typedef struct material_s {
 #define MATF_2D 1    /* defaults suit a HUD picture: no lightmap */
 #define MATF_MODEL 2 /* defaults suit a model skin */
 material_t *R_FindMaterial(const char *name, int flags);
+bool R_MaterialFileExists(const char *name);
 /* numeric handles for shaderforname and .forceshader; 0 is none */
 int R_MaterialHandle(material_t *m);
 material_t *R_MaterialForHandle(int h);
@@ -136,6 +138,8 @@ typedef struct {
 	int firstindex, numindexes;
 	float mins[3], maxs[3];
 	int type;         /* BSP surface type */
+	int orig;         /* index in the file, before sorting */
+	int visframe;     /* marked visible in this frame */
 } rsurface_t;
 
 struct alias_s;
@@ -183,11 +187,21 @@ typedef struct {
 	image_t *skybox;
 	float fog[4];
 	bool hasfog;
+	/* visibility: the collision map's tree and leafs, and each file surface's
+	 * place in the sorted list */
+	bspmap_t *bsp;
+	int *surfmap;
+	int visframe;
+	int viewcluster;
 } rworld_t;
 
 extern rworld_t r_world;
 void R_LoadWorld(bspmap_t *bsp, const char *path);
 void R_FreeWorld(void);
+void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numidx);
+bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size);
+void R_FreeQ1World(void);
+bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);
 void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
