@@ -517,7 +517,7 @@ void CSQC_Frame(int width, int height)
 	QC_SetGVec(vm, CS.view_angles, cl.viewangles);
 	vm->globals[OFS_PARM(0)].f = (float)width;
 	vm->globals[OFS_PARM(1)].f = (float)height;
-	vm->globals[OFS_PARM(2)].f = 1; /* "notmenu": no menu progs yet */
+	vm->globals[OFS_PARM(2)].f = MQC_Active() ? 0 : 1; /* "notmenu" */
 	vm->argc = 3;
 	{
 		float before[3];

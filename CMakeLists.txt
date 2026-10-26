@@ -92,6 +92,7 @@ add_library(bwclient STATIC
 	src/client/cl_main.c
 	src/client/cl_input.c
 	src/client/cl_csqc.c
+	src/client/cl_menu.c
 	src/client/console.c
 	src/render/r_main.c
 	src/render/r_gl.c
