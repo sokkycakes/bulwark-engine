@@ -23,11 +23,58 @@ the brushes' side counts sum exactly to the lump's record count.
 Collision sweeps an axis-aligned box through each brush by clipping against
 its planes (offset by the box's extents), with a 1/32 unit epsilon.
 
-## Q1 family (29, 30, BSP2)
+## Q1 family (29, BSP2)
 
-Version int, then 15 lumps. Only the entity lump (0) and the model lump (14,
-64-byte records starting with mins and maxs) are read. Q1 clipping hulls are
-not loaded yet, so Q1 maps currently have no world collision.
+Version int (29) or the magic "BSP2", then 15 lumps: entities, planes,
+textures, vertexes, visibility, nodes, texinfo, faces, lighting, clipnodes,
+leafs, marksurfaces, edges, surfedges, models. Layouts follow the public
+"Unofficial Quake Specs"; BSP2 widens the 16-bit fields to 32 bits.
+
+| record | BSP29 | BSP2 |
+| --- | --- | --- |
+| plane | 20 (normal, dist, type) | same |
+| node | 24: plane int, children short[2], bounds short[6], firstface ushort, numfaces ushort | 44: children int, bounds float, face fields int |
+| leaf | 28: contents, visofs, bounds short[6], firstmark ushort, nummarks ushort, ambient[4] | 44 |
+| clipnode | 8: plane int, children short[2] | 12 |
+| marksurface | ushort | uint |
+| face | 20: plane ushort, side short, firstedge int, numedges short, texinfo short, styles[4], lightofs int | 28 |
+| edge | ushort[2] | uint[2] |
+| texinfo | 40: s[4], t[4], miptex, flags (1 = special: sky and liquids, unlit) | same |
+| model | 64: mins, maxs, origin, headnode[4], visleafs, firstface, numfaces | same |
+
+- Children >= 0 are nodes; negative children are leaf -(child + 1) in the
+  node tree, or Q1 contents (-1 empty, -2 solid, -3 water, -4 slime, -5 lava,
+  -6 sky) in clip hulls.
+- Leaf 0 is the shared solid leaf. Leaf n's visibility row is cluster n - 1.
+- Visibility rows are run-length coded: a zero byte is followed by a count of
+  zero bytes.
+- Collision uses the hulls: hull 0 is the node tree with leaf children turned
+  into contents, hull 1 is (-16,-16,-24)..(16,16,32) and hull 2
+  (-32,-32,-24)..(32,32,64). A box picks hull 0 when it is under 3 units
+  wide, hull 1 when up to 32, else hull 2. The box's offset into the hull is
+  hull_mins - box_mins.
+- Lightmaps: s and t from texinfo, divided by 16; extents are floor(min/16)
+  to ceil(max/16), inclusive. Up to four styles follow each other. Light
+  values are overbright: 128 is full brightness, so they are drawn with
+  `r_lightmapscale` 2 like Q3 maps. A `.lit` file next to the map ("QLIT",
+  version 1, then RGB triples) gives coloured light.
+- Textures come from the map's miptex lump through the Quake palette.
+  Names starting `sky` are sky, `*` (or `!`) liquids, `{` fences (index 255
+  transparent). Palette entries 224 to 254 are fullbright. A material file or
+  image with the texture's name replaces the map's pixels.
+- `tools/mkq1map_test.py` writes `tests/data/maps/q1test.bsp`, a two-room
+  map checked by `tests/bsp/bsptest.c`.
+
+Half-Life's version 30 keeps a palette per texture and is not drawn yet.
+
+## Visibility
+
+Both families load the node tree, leafs (with bounding boxes and their
+face lists) and uncompressed visibility rows. Each frame the renderer finds
+the view's leaf, takes its cluster's row and marks the faces of visible
+leafs whose boxes are in the frustum; other world surfaces are skipped.
+`r_novis 1` turns this off. A view outside the map (cluster -1) draws
+everything.
 
 ## Contents
 

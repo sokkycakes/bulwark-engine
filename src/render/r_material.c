@@ -444,6 +444,14 @@ material_t *R_MaterialForImage(const char *name, image_t *img, int flags)
 	return m;
 }
 
+/* a .mat file or a shader script describes this material */
+bool R_MaterialFileExists(const char *name)
+{
+	char base[128];
+	strip_ext(name, base, sizeof(base));
+	return FS_FileExists(va("%s.mat", base)) || find_script(base) || find_script(name);
+}
+
 material_t *R_FindMaterial(const char *name, int flags)
 {
 	material_t *m;

@@ -1,5 +1,6 @@
 /* Bulwark engine - drawing BSP worlds: Q3-family draw surfaces (planar,
- * triangle soup, Bezier patches), lightmap pages and the light grid.
+ * triangle soup, Bezier patches), lightmap pages and the light grid, and
+ * culling by the potentially visible sets. Q1 worlds load in r_q1world.c.
  * Record layouts are in docs/spec/bsp.md. ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
@@ -202,6 +203,52 @@ static void load_lightgrid(const uint8_t *d, size_t size, const int32_t *lumps, 
 	}
 }
 
+void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numidx)
+{
+	if (!R_Active() || !numverts || !numidx)
+		return;
+	qglGenVertexArrays(1, &r_world.vao);
+	qglGenBuffers(1, &r_world.vbo);
+	qglGenBuffers(1, &r_world.ebo);
+	qglBindVertexArray(r_world.vao);
+	qglBindBuffer(GL_ARRAY_BUFFER, r_world.vbo);
+	qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * numverts), v, GL_STATIC_DRAW);
+	qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, r_world.ebo);
+	qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * numidx), idx, GL_STATIC_DRAW);
+	R_SetupVertexAttribs();
+	qglBindVertexArray(0);
+}
+
+/* worldspawn keys both formats share, and the surface map for culling */
+static void finish_world(bspmap_t *bsp)
+{
+	char buf[128];
+	if (bsp && entity_key(bsp->entities, "fog", buf, sizeof(buf))[0]) {
+		/* "fog" "density r g b" */
+		float f[4] = {0};
+		if (sscanf(buf, "%f %f %f %f", &f[3], &f[0], &f[1], &f[2]) == 4) {
+			memcpy(r_world.fog, f, sizeof(f));
+			r_world.hasfog = f[3] > 0;
+		}
+	}
+	if (bsp && (entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0] ||
+	            entity_key(bsp->entities, "sky", buf, sizeof(buf))[0]) &&
+	    Str_ICmp(buf, r_world.skyname)) {
+		Str_Copy(r_world.skyname, buf, sizeof(r_world.skyname));
+		r_world.skybox = NULL;
+	}
+	r_world.bsp = bsp;
+	r_world.surfmap = Mem_Alloc(sizeof(int) * (r_world.numsurfaces + 1));
+	for (int i = 0; i < r_world.numsurfaces; i++)
+		r_world.surfmap[i] = -1;
+	for (int i = 0; i < r_world.numsurfaces; i++) {
+		int o = r_world.surfaces[i].orig;
+		if (o >= 0 && o < r_world.numsurfaces)
+			r_world.surfmap[o] = i;
+	}
+	r_world.loaded = true;
+}
+
 void R_LoadWorld(bspmap_t *bsp, const char *path)
 {
 	size_t size;
@@ -215,17 +262,23 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 	idxbuf_t ib = {0};
 	int lmsize, npages;
 	bool oddlm = false;
-	char buf[128];
 
 	R_FreeWorld();
 	Str_Copy(r_world.name, path, sizeof(r_world.name));
 	d = (uint8_t *)FS_LoadFile(path, &size);
 	if (!d || size < 8 + 17 * 8)
 		goto fail;
+	if (rd32(d) == 29 || !memcmp(d, "BSP2", 4)) {
+		if (!R_LoadQ1World(bsp, path, d, size))
+			goto fail;
+		Mem_Free(d);
+		finish_world(bsp);
+		return;
+	}
 	rbsp = !memcmp(d, "RBSP", 4) || !memcmp(d, "FBSP", 4);
 	fbsp = !memcmp(d, "FBSP", 4);
 	if (memcmp(d, "IBSP", 4) && !rbsp) {
-		Con_Printf("%s: only Q3-family maps can be drawn so far\n", path);
+		Con_Printf("%s: not a map format that can be drawn\n", path);
 		goto fail;
 	}
 	memset(lumps, 0, sizeof(lumps));
@@ -290,6 +343,7 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 		int pw = rd32(s + surfsize - 8), ph = rd32(s + surfsize - 4);
 		rs->material = shader >= 0 && shader < nshaders ? mats[shader] : R_FindMaterial("$default", 0);
 		rs->type = type;
+		rs->orig = i;
 		rs->lightmap = lm >= 0 ? lm : -1;
 		if (lm >= 0 && (lm & 1))
 			oddlm = true;
@@ -382,31 +436,7 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 
 	if (nmodels > 0)
 		load_lightgrid(d, size, lumps, rbsp, r_world.submodels[0].mins, r_world.submodels[0].maxs, bsp ? bsp->entities : NULL);
-	if (bsp && entity_key(bsp->entities, "fog", buf, sizeof(buf))[0]) {
-		/* "fog" "density r g b" */
-		float f[4] = {0};
-		if (sscanf(buf, "%f %f %f %f", &f[3], &f[0], &f[1], &f[2]) == 4) {
-			memcpy(r_world.fog, f, sizeof(f));
-			r_world.hasfog = f[3] > 0;
-		}
-	}
-	if (bsp && entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0] && Str_ICmp(buf, r_world.skyname)) {
-		Str_Copy(r_world.skyname, buf, sizeof(r_world.skyname));
-		r_world.skybox = NULL;
-	}
-
-	if (R_Active() && vb.num && ib.num) {
-		qglGenVertexArrays(1, &r_world.vao);
-		qglGenBuffers(1, &r_world.vbo);
-		qglGenBuffers(1, &r_world.ebo);
-		qglBindVertexArray(r_world.vao);
-		qglBindBuffer(GL_ARRAY_BUFFER, r_world.vbo);
-		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * vb.num), vb.v, GL_STATIC_DRAW);
-		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, r_world.ebo);
-		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * ib.num), ib.i, GL_STATIC_DRAW);
-		R_SetupVertexAttribs();
-		qglBindVertexArray(0);
-	}
+	R_WorldUpload(vb.v, vb.num, ib.i, ib.num);
 	Con_DPrintf("%s: %d surfaces, %d vertices, %d triangles, %d lightmaps%s\n", path, nsurfs, vb.num, ib.num / 3,
 	            r_world.numlightmaps, r_world.deluxe ? " (with deluxemaps)" : "");
 	Mem_Free(vb.v);
@@ -414,7 +444,7 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 	Mem_Free(fileverts);
 	Mem_Free(mats);
 	Mem_Free(d);
-	r_world.loaded = true;
+	finish_world(bsp);
 	return;
 
 fail:
@@ -438,6 +468,8 @@ void R_FreeWorld(void)
 	Mem_Free(r_world.lightmaps);
 	Mem_Free(r_world.submodels);
 	Mem_Free(r_world.lightgrid);
+	Mem_Free(r_world.surfmap);
+	R_FreeQ1World();
 	{
 		image_t *sky = r_world.skybox;
 		char skyname[64];
@@ -456,6 +488,8 @@ void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 	int c[3];
 	const uint8_t *g;
 	float lat, lng, scale = r_lightmapscale ? r_lightmapscale->value : 2;
+	if (!r_world.lightgrid && R_Q1LightPoint(p, ambient, diffuse, dir))
+		return;
 	if (!r_world.lightgrid) {
 		ambient[0] = ambient[1] = ambient[2] = 0.6f;
 		diffuse[0] = diffuse[1] = diffuse[2] = 0.4f;
@@ -531,16 +565,51 @@ static void set_lights(const glprog_t *p, const float *model)
 	}
 }
 
+/* marks the surfaces in leafs the view's cluster can see and the frustum
+ * holds; false when there is nothing to cull with, so everything draws */
+static bool mark_visible(const float *planes)
+{
+	bspmap_t *bsp = r_world.bsp;
+	const uint8_t *row;
+	int leaf;
+	if (!bsp || bsp != cl.world || !bsp->vis || !r_world.surfmap || r_novis->ivalue)
+		return false;
+	leaf = BSP_PointLeaf(bsp, r_scene.origin);
+	r_world.viewcluster = leaf >= 0 ? bsp->leafs[leaf].cluster : -1;
+	/* outside the map (noclip): no cluster to see from */
+	if (r_world.viewcluster < 0 || !(row = BSP_ClusterPVS(bsp, r_world.viewcluster)))
+		return false;
+	r_world.visframe++;
+	for (int i = 0; i < bsp->numleafs; i++) {
+		const cleaf_t *lf = &bsp->leafs[i];
+		int c = lf->cluster;
+		if (c < 0 || c >= bsp->numclusters || !((row[c >> 3] >> (c & 7)) & 1))
+			continue;
+		if (cull_box(planes, lf->mins, lf->maxs)) {
+			r_stats.culled += lf->numfaces;
+			continue;
+		}
+		for (int k = 0; k < lf->numfaces; k++) {
+			int f = bsp->leaffaces[lf->firstface + k];
+			if (f >= 0 && f < r_world.numsurfaces && r_world.surfmap[f] >= 0)
+				r_world.surfaces[r_world.surfmap[f]].visframe = r_world.visframe;
+		}
+	}
+	return true;
+}
+
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass)
 {
 	const glprog_t *p = &r_progs[PROG_WORLD];
 	material_t *cur = NULL;
 	int curlm = -2;
 	float planes[16];
-	bool isworld = m == &r_world.submodels[0];
+	bool isworld = m == &r_world.submodels[0], usevis = false;
 	if (!r_world.loaded || !r_world.vao || !m)
 		return;
 	frustum_planes(mvp, planes);
+	if (isworld)
+		usevis = mark_visible(planes);
 	R_UseProgram(PROG_WORLD);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
@@ -556,6 +625,10 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 		bool trans = mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER;
 		if (!s->numindexes || mat->nodraw || mat->sky || trans != translucentpass)
 			continue;
+		if (usevis && s->visframe != r_world.visframe) {
+			r_stats.culled++;
+			continue;
+		}
 		if (isworld && cull_box(planes, s->mins, s->maxs)) {
 			r_stats.culled++;
 			continue;

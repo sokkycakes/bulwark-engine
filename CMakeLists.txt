@@ -54,6 +54,9 @@ target_link_libraries(bulwark-ded bwserver)
 
 enable_testing()
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
+add_executable(bsptest tests/bsp/bsptest.c)
+target_link_libraries(bsptest bwserver)
+add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # game client with a listen server
 find_package(SDL2 QUIET)
@@ -74,6 +77,7 @@ add_library(bwclient STATIC
 	src/render/r_image.c
 	src/render/r_material.c
 	src/render/r_world.c
+	src/render/r_q1world.c
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c
