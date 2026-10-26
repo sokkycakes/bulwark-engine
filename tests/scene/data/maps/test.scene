@@ -1,0 +1,201 @@
+{
+  "__guid": "00000000-0000-4000-8000-0000000000ff",
+  "GameObjects": [
+    {
+      "__guid": "00000000-0000-4000-8000-000000000001",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Map",
+      "Enabled": true,
+      "Components": [
+        {
+          "__type": "Sandbox.MapInstance",
+          "__guid": "00000000-0000-4000-8000-000000000002",
+          "__enabled": true,
+          "Flags": 0,
+          "MapName": "testmap",
+          "EnableCollision": true
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "aaaaaaaa-0000-4000-8000-000000000001",
+      "__version": 2,
+      "__Prefab": "prefabs/crate.prefab",
+      "__PrefabInstancePatch": {
+        "AddedObjects": [
+          {
+            "Id": { "Type": "GameObject", "IdValue": "cccccccc-0000-4000-8000-000000000001" },
+            "Parent": { "Type": "GameObject", "IdValue": "11111111-0000-4000-8000-000000000001" },
+            "PreviousElement": { "Type": "GameObject", "IdValue": "11111111-0000-4000-8000-000000000003" },
+            "ContainerProperty": "Children",
+            "IsContainerArray": true,
+            "Data": {
+              "__guid": "cccccccc-0000-4000-8000-000000000001",
+              "__version": 2,
+              "Flags": 0,
+              "Name": "glow",
+              "Position": "0,0,8",
+              "Enabled": true,
+              "Components": [
+                {
+                  "__type": "Bulwark.Entity",
+                  "__guid": "cccccccc-0000-4000-8000-000000000002",
+                  "__enabled": true,
+                  "Flags": 0,
+                  "classname": "light_dynamic",
+                  "_light": [255, 128, 0, 200]
+                }
+              ],
+              "Children": []
+            }
+          }
+        ],
+        "RemovedObjects": [
+          { "Id": { "Type": "GameObject", "IdValue": "11111111-0000-4000-8000-000000000005" } }
+        ],
+        "PropertyOverrides": [
+          {
+            "Target": { "Type": "GameObject", "IdValue": "11111111-0000-4000-8000-000000000001" },
+            "Property": "Position",
+            "Value": "100,0,0"
+          },
+          {
+            "Target": { "Type": "Component", "IdValue": "11111111-0000-4000-8000-000000000002" },
+            "Property": "model",
+            "Value": "models/crate_big.iqm"
+          }
+        ],
+        "MovedObjects": []
+      },
+      "__PrefabIdToInstanceId": {
+        "11111111-0000-4000-8000-000000000001": "aaaaaaaa-0000-4000-8000-000000000001",
+        "11111111-0000-4000-8000-000000000002": "aaaaaaaa-0000-4000-8000-000000000002"
+      }
+    },
+    {
+      "__guid": "bbbbbbbb-0000-4000-8000-000000000001",
+      "__version": 2,
+      "__Prefab": "prefabs/crate.prefab",
+      "__PrefabInstancePatch": {
+        "AddedObjects": [],
+        "RemovedObjects": [],
+        "PropertyOverrides": [
+          {
+            "Target": { "Type": "GameObject", "IdValue": "11111111-0000-4000-8000-000000000001" },
+            "Property": "Position",
+            "Value": "-100,0,0"
+          }
+        ],
+        "MovedObjects": []
+      },
+      "__PrefabIdToInstanceId": {}
+    },
+    {
+      "__guid": "dddddddd-0000-4000-8000-000000000001",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "door",
+      "Position": "0,0,64",
+      "Rotation": "0,0,0.7071068,0.7071068",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "Components": [
+        {
+          "__type": "Bulwark.Entity",
+          "__guid": "dddddddd-0000-4000-8000-000000000011",
+          "__enabled": true,
+          "Flags": 0,
+          "classname": "func_door",
+          "speed": 100,
+          "spawnflags": 1,
+          "locked": false,
+          "message": "say \"hi\""
+        }
+      ],
+      "Children": [
+        {
+          "__guid": "dddddddd-0000-4000-8000-000000000002",
+          "__version": 2,
+          "Flags": 0,
+          "Name": "button",
+          "Position": "32,0,0",
+          "Enabled": true,
+          "Components": [
+            {
+              "__type": "Bulwark.Entity",
+              "__guid": "dddddddd-0000-4000-8000-000000000012",
+              "__enabled": true,
+              "Flags": 0,
+              "classname": "func_button",
+              "targetname": "door_button",
+              "target": {
+                "_type": "component",
+                "component_id": "dddddddd-0000-4000-8000-000000000011",
+                "go": "dddddddd-0000-4000-8000-000000000001",
+                "component_type": "Entity"
+              }
+            }
+          ],
+          "Children": []
+        }
+      ]
+    },
+    {
+      "__guid": "eeeeeeee-0000-4000-8000-000000000001",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "hidden",
+      "Enabled": false,
+      "Components": [
+        {
+          "__type": "Bulwark.Entity",
+          "__guid": "eeeeeeee-0000-4000-8000-000000000002",
+          "__enabled": true,
+          "Flags": 0,
+          "classname": "should_not_spawn"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "ffffffff-0000-4000-8000-000000000001",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "barrel",
+      "Position": "0,200,0",
+      "Scale": "2,2,2",
+      "Enabled": true,
+      "Components": [
+        {
+          "__type": "Sandbox.ModelRenderer",
+          "__guid": "ffffffff-0000-4000-8000-000000000002",
+          "__enabled": true,
+          "Flags": 0,
+          "Model": "models/barrel.iqm",
+          "Tint": "1,0,0,1"
+        },
+        {
+          "__type": "Sandbox.Rigidbody",
+          "__guid": "ffffffff-0000-4000-8000-000000000003",
+          "__enabled": true,
+          "Flags": 0,
+          "Gravity": true
+        }
+      ],
+      "Children": []
+    }
+  ],
+  "SceneProperties": {
+    "Metadata": {
+      "Title": "Bulwark test scene"
+    }
+  },
+  "ResourceVersion": 3,
+  "Title": null,
+  "Description": null,
+  "__references": [],
+  "__version": 3
+}
