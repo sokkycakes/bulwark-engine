@@ -126,6 +126,7 @@ void R_StreamDraw(GLenum mode, const rvert_t *verts, int numverts, const uint16_
 
 /* GL state, cached */
 void GL_SetBlend(int blend, GLenum src, GLenum dst);
+int R_SpriteFormat(const char *name);
 void GL_SetDepth(bool test, bool write);
 void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);

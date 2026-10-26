@@ -1,5 +1,6 @@
 /* Bulwark engine - game client entry point, with a listen server in the same
  * process. ISC licence, see LICENSE. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,6 +21,35 @@ static bool quit_requested;
 static void Path_f(int argc, const char **argv) { FS_PrintPath(); }
 
 static void Quit_f(int argc, const char **argv) { quit_requested = true; }
+
+/* config.cfg in the writable game directory: key bindings, then every
+ * archived cvar (engine ones and those made with "seta") that differs from
+ * its default. It runs on quit, and menus run it after applying settings. */
+static void WriteConfig_f(int argc, const char **argv)
+{
+	strbuf_t sb = {0};
+	char path[1024];
+	FILE *f;
+	SB_AppendStr(&sb, "// written by Bulwark; edit autoexec.cfg instead\n");
+	Key_WriteBindings(&sb);
+	for (cvar_t *v = Cvar_First(); v; v = v->next) {
+		if (!(v->flags & CVAR_ARCHIVE) || (v->flags & CVAR_READONLY))
+			continue;
+		if (!(v->flags & CVAR_USERCREATED) && !strcmp(v->string, v->defstring))
+			continue;
+		SB_Printf(&sb, "seta %s \"%s\"\n", v->name, v->string);
+	}
+	if (!FS_WritePath("config.cfg", path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "wb"))) {
+		Con_Printf("couldn't write config.cfg\n");
+		SB_Free(&sb);
+		return;
+	}
+	fwrite(sb.data, 1, sb.len, f);
+	fclose(f);
+	SB_Free(&sb);
+	if (argc > 0)
+		Con_DPrintf("wrote %s\n", path);
+}
 
 /* commands the game modules registered come before the engine's own */
 static bool GamePreHook(const char *line, int argc, const char **argv)
@@ -105,6 +135,7 @@ int main(int argc, char **argv)
 	R_Init(headless);
 	S_Init(headless);
 	Cmd_Add("quit", Quit_f);
+	Cmd_Add("writeconfig", WriteConfig_f);
 	Cmd_Add("path", Path_f);
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
@@ -177,6 +208,8 @@ int main(int argc, char **argv)
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("netstats");
+	if (!headless)
+		WriteConfig_f(0, NULL);
 	CL_Disconnect("quit");
 	MQC_Shutdown();
 	SV_Shutdown();

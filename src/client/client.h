@@ -167,6 +167,7 @@ void MQC_Shutdown(void);
 bool MQC_Active(void);
 void MQC_Toggle(int mode);
 void MQC_Frame(int width, int height);
+bool MQC_Loading(void);   /* a map load is in progress */
 bool MQC_InputEvent(int type, float a, float b, int device);
 bool MQC_ConsoleCommand(const char *line);
 void CSQC_SetInputGlobals(qcvm_t *vm, const usercmd_t *u);

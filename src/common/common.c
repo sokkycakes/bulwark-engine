@@ -12,6 +12,16 @@ static con_hook_fn con_hook;
 
 void Con_SetHook(con_hook_fn fn) { con_hook = fn; }
 
+static loading_hook_fn loading_hook;
+
+void Host_SetLoadingHook(loading_hook_fn fn) { loading_hook = fn; }
+
+void Host_Loading(const char *stage, const char *map, float frac)
+{
+	if (loading_hook)
+		loading_hook(stage, map, frac);
+}
+
 void Con_Print(const char *text)
 {
 	if (con_hook)

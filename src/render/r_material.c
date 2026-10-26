@@ -494,6 +494,9 @@ material_t *R_FindMaterial(const char *name, int flags)
 		m->fromfile = true;
 	} else {
 		m->diffuse = R_FindImage(name, image_flags(m, flags));
+		/* additive sprites (HUD numbers, icons) add onto the screen */
+		if (m->diffuse && strstr(name, ".spr") && R_SpriteFormat(name) == 1)
+			m->blend = BLEND_ADD, m->src = GL_ONE, m->dst = GL_ONE;
 	}
 	finish(m, flags);
 	return m;

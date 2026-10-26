@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define STBI_NO_STDIO
 #include "../thirdparty/stb_image.h" /* built in src/common/stb_image_impl.c */
@@ -63,6 +64,143 @@ static uint8_t *decode_lmp(const uint8_t *d, size_t len, int *w, int *h)
 	return out;
 }
 
+/* GoldSrc sprites (IDSP version 2), one frame as an image.
+ * Header: ident, version, type, texture format, radius (float), max width,
+ * max height, frame count, beam length (float), sync type; then a 16-bit
+ * palette size and that many RGB triples; then the frames, each a 32-bit
+ * frame type (0 single, otherwise a group of N frames with N intervals),
+ * origin x/y, width, height and width*height palette indices. Texture
+ * formats: 0 normal, 1 additive, 2 index-alpha, 3 alpha-test (index 255
+ * clear). An additive frame keeps full alpha; the caller draws it with the
+ * additive flag. Layout checked on CSO's 640hud7.spr (66,366 bytes). */
+static const uint8_t *spr_frame(const uint8_t *d, size_t len, size_t *ofs, int *fw, int *fh)
+{
+	int32_t fr[5];
+	if (*ofs + 20 > len)
+		return NULL;
+	memcpy(fr, d + *ofs, 20);
+	if (fr[3] <= 0 || fr[4] <= 0 || fr[3] > 4096 || fr[4] > 4096 ||
+	    *ofs + 20 + (size_t)fr[3] * fr[4] > len)
+		return NULL;
+	*fw = fr[3];
+	*fh = fr[4];
+	*ofs += 20 + (size_t)fr[3] * fr[4];
+	return d + *ofs - (size_t)fr[3] * fr[4];
+}
+
+static uint8_t *decode_spr(const uint8_t *d, size_t len, int frame, int *w, int *h)
+{
+	int32_t hdr[10];
+	int16_t npal;
+	const uint8_t *pal, *px = NULL;
+	size_t ofs;
+	uint8_t *out;
+	int format, count = 0;
+	if (len < 42 || memcmp(d, "IDSP", 4))
+		return NULL;
+	memcpy(hdr, d, 40);
+	if (hdr[1] != 2)
+		return NULL;
+	format = hdr[3];
+	memcpy(&npal, d + 40, 2);
+	if (npal <= 0 || npal > 256 || 42 + (size_t)npal * 3 > len)
+		return NULL;
+	pal = d + 42;
+	ofs = 42 + (size_t)npal * 3;
+	for (int f = 0; f < hdr[7] && !px; f++) {
+		int32_t type;
+		if (ofs + 4 > len)
+			return NULL;
+		memcpy(&type, d + ofs, 4);
+		ofs += 4;
+		if (type == 0) {
+			const uint8_t *p = spr_frame(d, len, &ofs, w, h);
+			if (!p)
+				return NULL;
+			if (count++ == frame)
+				px = p;
+		} else {
+			int32_t n;
+			if (ofs + 4 > len)
+				return NULL;
+			memcpy(&n, d + ofs, 4);
+			if (n <= 0 || n > 1024)
+				return NULL;
+			ofs += 4 + (size_t)n * 4;
+			for (int g = 0; g < n && !px; g++) {
+				const uint8_t *p = spr_frame(d, len, &ofs, w, h);
+				if (!p)
+					return NULL;
+				if (count++ == frame)
+					px = p;
+			}
+		}
+	}
+	if (!px)
+		return NULL;
+	out = Mem_Alloc((size_t)*w * *h * 4);
+	for (int i = 0; i < *w * *h; i++) {
+		uint8_t c = px[i];
+		const uint8_t *rgb = c < npal ? pal + c * 3 : pal;
+		out[i * 4 + 0] = rgb[0];
+		out[i * 4 + 1] = rgb[1];
+		out[i * 4 + 2] = rgb[2];
+		out[i * 4 + 3] = 255;
+		if (format == 2) { /* index-alpha: the last palette colour, alpha from the index */
+			const uint8_t *last = pal + (npal - 1) * 3;
+			out[i * 4 + 0] = last[0];
+			out[i * 4 + 1] = last[1];
+			out[i * 4 + 2] = last[2];
+			out[i * 4 + 3] = c;
+		} else if (format == 3 && c == 255) {
+			out[i * 4 + 0] = out[i * 4 + 1] = out[i * 4 + 2] = out[i * 4 + 3] = 0;
+		}
+	}
+	return out;
+}
+
+/* "sprites/x.spr" or "sprites/x.spr:N" (frame N), as spriteframe returns */
+static uint8_t *load_spr(const char *name, int *w, int *h)
+{
+	char path[180];
+	const char *colon = strstr(name, ".spr:");
+	int frame = colon ? atoi(colon + 5) : 0;
+	size_t len;
+	uint8_t *data, *out;
+	Str_Copy(path, name, sizeof(path));
+	if (colon && (size_t)(colon - name) + 4 < sizeof(path))
+		path[colon - name + 4] = 0;
+	data = (uint8_t *)FS_LoadFile(path, &len);
+	if (!data)
+		return NULL;
+	out = decode_spr(data, len, frame, w, h);
+	if (!out)
+		Con_DPrintf("couldn't decode sprite %s frame %d\n", path, frame);
+	Mem_Free(data);
+	return out;
+}
+
+/* the texture format of a sprite file (0 normal, 1 additive, 2 index-alpha,
+ * 3 alpha-test), or -1 if it isn't one */
+int R_SpriteFormat(const char *name)
+{
+	char path[180];
+	const char *colon = strstr(name, ".spr");
+	size_t len;
+	uint8_t *data;
+	int fmt = -1;
+	if (!colon)
+		return -1;
+	Str_Copy(path, name, sizeof(path));
+	if ((size_t)(colon - name) + 4 < sizeof(path))
+		path[colon - name + 4] = 0;
+	data = (uint8_t *)FS_LoadFile(path, &len);
+	if (data && len >= 16 && !memcmp(data, "IDSP", 4))
+		memcpy(&fmt, data + 12, 4);
+	Mem_Free(data);
+	return fmt;
+}
+
 static uint8_t *decode_file(const char *path, int *w, int *h)
 {
 	size_t len;
@@ -95,6 +233,8 @@ uint8_t *R_LoadPixels(const char *name, int *w, int *h)
 	uint8_t *p;
 	if (!name || !*name)
 		return NULL;
+	if (strstr(name, ".spr"))
+		return load_spr(name, w, h);
 	if (has_ext(name) && (p = decode_file(name, w, h)))
 		return p;
 	strip_ext(name, base, sizeof(base));
@@ -110,6 +250,13 @@ bool R_ImageExists(const char *name)
 {
 	static const char *exts[] = {".tga", ".png", ".jpg", ".jpeg", ".bmp", ".lmp"};
 	char base[160], path[180];
+	const char *spr = strstr(name, ".spr");
+	if (spr) {
+		Str_Copy(path, name, sizeof(path));
+		if ((size_t)(spr - name) + 4 < sizeof(path))
+			path[spr - name + 4] = 0;
+		return FS_FileExists(path);
+	}
 	if (has_ext(name) && FS_FileExists(name))
 		return true;
 	strip_ext(name, base, sizeof(base));

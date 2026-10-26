@@ -71,10 +71,14 @@ void R_ClearMap(void)
 
 void R_NewMap(void)
 {
+	Host_Loading("world_render", cl.mapname, 0.40f);
 	if (cl.world && cl.worldpath[0])
 		R_LoadWorld(cl.world, cl.worldpath);
-	for (int i = 1; i < cl.nummodels; i++)
+	for (int i = 1; i < cl.nummodels; i++) {
+		if ((i & 3) == 1)
+			Host_Loading("models", cl.mapname, 0.60f + 0.25f * (float)i / (float)cl.nummodels);
 		R_PrecacheModel(i);
+	}
 }
 
 /* --- frames ------------------------------------------------------------------ */
@@ -918,7 +922,17 @@ static void r_getmousepos(qcvm_t *vm)
 
 static void r_setwindowcaption(qcvm_t *vm) { VID_SetCaption(QC_PSTR(vm, 0)); }
 
-static void r_spriteframe(qcvm_t *vm) { QC_ReturnString(vm, QC_PSTR(vm, 0)); }
+/* string(string model, int frame, float time): a name drawpic accepts. Sprite
+ * frames past the first are named "model:N" (frame groups count each member) */
+static void r_spriteframe(qcvm_t *vm)
+{
+	const char *model = QC_PSTR(vm, 0);
+	int frame = QC_PINT(vm, 1);
+	if (frame > 0 && strstr(model, ".spr"))
+		QC_ReturnString(vm, va("%s:%d", model, frame));
+	else
+		QC_ReturnString(vm, model);
+}
 
 const qc_builtin_t r_builtins[] = {
 	{"drawpic", r_drawpic}, {"drawsubpic", r_drawsubpic}, {"drawfill", r_drawfill}, {"drawstring", r_drawstring},
