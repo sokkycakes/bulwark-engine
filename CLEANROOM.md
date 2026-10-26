@@ -49,3 +49,7 @@ unmodified, with their licence text kept at the end of each file:
 - `lzma/` (LzmaDec.c, LzmaDec.h, 7zTypes.h, Compiler.h, Precomp.h) by Igor
   Pavlov, from the LZMA SDK: public domain. Used to decode compressed Source
   BSP lumps.
+## Third-party libraries
+
+Libraries under `third_party/` are used as they are and listed with their
+licences in `third_party/README.md`. Only permissive licences are allowed.

@@ -7,6 +7,7 @@
 #include "../common/cmd.h"
 #include "../common/fs.h"
 #include "../common/studio.h"
+#include "../ui/ui.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -133,7 +134,7 @@ void R_EndFrame(void)
 	bool game = cl.state == ca_active && cl.csqc;
 	if (!r_active)
 		return;
-	if (!game && !Con_IsActive() && !MQC_Active() && !MQC_Loading()) {
+	if (!game && !Con_IsActive() && !MQC_Active() && !MQC_Loading() && !UI_WantsInput()) {
 		/* nothing else on screen: show the console */
 		static const float black[3] = {0, 0, 0};
 		R_DrawFill(0, 0, (float)r_vwidth, (float)r_vheight, black, 1, 0);
@@ -141,7 +142,7 @@ void R_EndFrame(void)
 	}
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
-	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode);
+	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode && !UI_WantsInput());
 	if (screenshot_pending[0]) {
 		take_screenshot(screenshot_pending);
 		screenshot_pending[0] = 0;

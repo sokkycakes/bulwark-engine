@@ -15,6 +15,7 @@
 #include "render/render.h"
 #include "server/sv_local.h"
 #include "sound/sound.h"
+#include "ui/ui.h"
 
 static bool quit_requested;
 
@@ -144,6 +145,8 @@ int main(int argc, char **argv)
 	}
 	R_Init(headless);
 	S_Init(headless);
+	UI_Init();
+	UI_InitQC();
 	Cmd_Add("quit", Quit_f);
 	Cmd_Add("writeconfig", WriteConfig_f);
 	Cmd_Add("path", Path_f);
@@ -214,6 +217,8 @@ int main(int argc, char **argv)
 			CSQC_Frame(w, h);
 			MQC_Frame(w, h);
 		}
+		UI_Frame(dt);
+		UI_Draw();
 		R_EndFrame();
 		S_Update(NULL, NULL, NULL, NULL);
 	}
@@ -224,6 +229,7 @@ int main(int argc, char **argv)
 	CL_Disconnect("quit");
 	MQC_Shutdown();
 	SV_Shutdown();
+	UI_Shutdown();
 	S_Shutdown();
 	R_Shutdown();
 	VID_Shutdown();

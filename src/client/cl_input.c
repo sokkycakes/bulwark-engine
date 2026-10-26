@@ -5,6 +5,7 @@
 #include "keys.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../ui/ui.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -270,6 +271,8 @@ void IN_KeyEvent(int key, bool down, int unicode)
 			Con_KeyEvent(key, unicode);
 		if (down || !held_command[key])
 			return;
+	} else if ((down || !held_command[key]) && UI_KeyEvent(key, down, unicode)) {
+		return; /* a menu or other input view is open */
 	} else if (down || !held_command[key]) {
 		/* an open menu, then the game, get first look at keys */
 		if (MQC_InputEvent(down ? 0 : 1, (float)key, (float)unicode, 0))
@@ -551,6 +554,7 @@ void IN_MouseAbs(float x, float y)
 {
 	in_mouse_x = x;
 	in_mouse_y = y;
+	UI_MouseMove(x, y);
 	if (!Con_IsActive() && !MQC_InputEvent(3, x, y, 0))
 		CSQC_InputEvent(3, x, y, 0);
 }
