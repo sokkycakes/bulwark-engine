@@ -450,6 +450,8 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_print: {
 			int level = MSG_ReadByte(m);
 			const char *s = MSG_ReadString(m);
+			if (!CL_ChatAllowed(s, level))
+				break;
 			if (!CSQC_Print(s, level))
 				Con_Print(s);
 			break;
@@ -951,6 +953,7 @@ void CL_Init(void)
 	Cvar_Get("team", "", CVAR_USERINFO, NULL);
 	Cvar_Get("model", "", CVAR_ARCHIVE | CVAR_USERINFO, NULL);
 	Cmd_Add("connect", CL_Connect_f);
+	CL_InitChat();
 	Cmd_Add("setinfo", CL_SetInfo_f);
 	Cmd_AddD("fullinfo", CL_FullInfo_f, "fullinfo \\key\\value...: set several userinfo keys");
 	Cmd_AddD("color", CL_Color_f, "color <top> [bottom]: player colours");

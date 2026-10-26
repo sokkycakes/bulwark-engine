@@ -20,6 +20,7 @@
 #define FL_GODMODE 64
 #define FL_NOTARGET 128
 
+static cvar_t *rcon_level;
 static cvar_t *sv_password, *rcon_password, *sv_cheats, *sv_rcon_maxfailures;
 
 static bool need_server(void)
@@ -512,7 +513,7 @@ bool SV_HandleRcon(const netadr_t *from, const char *text)
 {
 	cmd_tokens_t *t = Mem_Alloc(sizeof(*t));
 	strbuf_t out = {0};
-	int slot = -1;
+	int slot = -1, level;
 	double now = Sys_Seconds();
 	Cmd_TokenizeInto(t, text);
 	if (t->argc < 2 || Str_ICmp(t->argv[0], "rcon")) {
@@ -526,7 +527,11 @@ bool SV_HandleRcon(const netadr_t *from, const char *text)
 		Mem_Free(t);
 		return true;
 	}
-	if (!rcon_password->string[0] || strcmp(t->argv[1], rcon_password->string)) {
+	if (rcon_password->string[0] && !strcmp(t->argv[1], rcon_password->string))
+		level = rcon_level->ivalue;
+	else
+		level = SV_RankRconLevel(t->argv[1]); /* "<ranked name>:<password>" */
+	if (level < 0) {
 		if (slot < 0) {
 			slot = 0;
 			for (int i = 1; i < 16; i++)
@@ -546,7 +551,8 @@ bool SV_HandleRcon(const netadr_t *from, const char *text)
 	}
 	Con_Printf("rcon from %s: %s\n", NET_AdrToString(from), text + t->argend[1]);
 	Con_Redirect(&out);
-	Cmd_ExecuteString(text + t->argend[1]);
+	SV_LogRcon(from, text + t->argend[1]);
+	Cmd_ExecuteStringAtLevel(text + t->argend[1], level);
 	Con_Redirect(NULL);
 	/* in pieces that fit a packet */
 	for (size_t ofs = 0; ofs < out.len || (!out.len && !ofs); ofs += 1200) {
@@ -935,6 +941,7 @@ void SV_InitCommands(void)
 {
 	sv_password = Cvar_Get("sv_password", "", 0, "Password players must set (setinfo password) to join");
 	rcon_password = Cvar_Get("rcon_password", "", 0, "Remote console password; empty turns rcon off");
+	rcon_level = Cvar_Get("rcon_level", "50", 0, "The execution level rcon_password gives (see restrict)");
 	sv_rcon_maxfailures = Cvar_Get("sv_rcon_maxfailures", "5", 0, "Wrong rcon passwords before an address is locked out for a minute");
 	sv_cheats = Cvar_Find("sv_cheats");
 	Cvar_Get("pausable", "1", CVAR_SERVERINFO, "Players may pause the game");

@@ -84,7 +84,7 @@ static bool cheats_ok(client_t *c)
 	return false;
 }
 
-static client_t *client_by_name(const char *s)
+client_t *SV_FindClient(const char *s)
 {
 	int n = atoi(s);
 	if (n > 0 && n <= svs.maxclients && svs.clients[n - 1].state != CS_FREE)
@@ -102,7 +102,7 @@ bool SV_ClientCompatCommand(client_t *c, int argc, const char **argv)
 	if (!Str_ICmp(cmd, "sayone")) {
 		client_t *to;
 		char text[1024] = "";
-		if (argc < 3 || !(to = client_by_name(argv[1]))) {
+		if (argc < 3 || !(to = SV_FindClient(argv[1]))) {
 			SV_ClientPrint(c, 2, argc < 3 ? "usage: sayone <player> <text>\n" : "no such player\n");
 			return true;
 		}
@@ -226,7 +226,7 @@ static void SvImpulse_f(int argc, const char **argv)
 		Con_Printf("sv_impulse <player> <impulse>\n");
 		return;
 	}
-	if (!sv.active || !(c = client_by_name(argv[1]))) {
+	if (!sv.active || !(c = SV_FindClient(argv[1]))) {
 		Con_Printf("no player %s\n", argv[1]);
 		return;
 	}

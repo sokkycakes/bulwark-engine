@@ -11,6 +11,7 @@
 #include <stdlib.h>
 
 static char *bindings[K_MAX];
+static uint8_t bindlevel[K_MAX]; /* the level a binding runs at, less than RESTRICT_MAX after bindlevel */
 static bool keydown[K_MAX];
 
 static cvar_t *cl_forwardspeed, *cl_backspeed, *cl_sidespeed, *cl_upspeed, *cl_yawspeed, *cl_pitchspeed;
@@ -93,6 +94,7 @@ void Key_SetBinding(int key, const char *b)
 		return;
 	Mem_Free(bindings[key]);
 	bindings[key] = b && *b ? Mem_Strdup(b) : NULL;
+	bindlevel[key] = RESTRICT_MAX;
 }
 
 bool Key_IsDown(int key) { return key >= 0 && key < K_MAX && keydown[key]; }
@@ -100,8 +102,38 @@ bool Key_IsDown(int key) { return key >= 0 && key < K_MAX && keydown[key]; }
 void Key_WriteBindings(strbuf_t *sb)
 {
 	for (int k = 0; k < K_MAX; k++)
-		if (bindings[k])
+		if (bindings[k] && bindlevel[k] < RESTRICT_MAX)
+			SB_Printf(sb, "bindlevel %s %d \"%s\"\n", Key_NameForNum(k), bindlevel[k], bindings[k]);
+		else if (bindings[k])
 			SB_Printf(sb, "bind %s \"%s\"\n", Key_NameForNum(k), bindings[k]);
+}
+
+/* bindlevel <key> <level> [command]: a binding that runs at a lower
+ * execution level, so it can't reach restricted commands */
+static void Bindlevel_f(int argc, const char **argv)
+{
+	int k;
+	if (argc < 3) {
+		Con_Printf("%s <key> <level> [command] : attach a command to a key\n", argv[0]);
+		return;
+	}
+	k = Key_NumForName(argv[1]);
+	if (k < 0 || k >= K_MAX) {
+		Con_Printf("\"%s\" isn't a valid key\n", argv[1]);
+		return;
+	}
+	if (argc > 3) {
+		char cmd[1024] = "";
+		for (int i = 3; i < argc; i++) {
+			if (i > 3)
+				Str_Cat(cmd, " ", sizeof(cmd));
+			Str_Cat(cmd, argv[i], sizeof(cmd));
+		}
+		Key_SetBinding(k, cmd);
+	}
+	if (bindings[k])
+		bindlevel[k] = (uint8_t)BW_CLAMP(atoi(argv[2]), 0, BW_MIN(RESTRICT_MAX, Cmd_ExecLevel()));
+	Con_Printf("\"%s\" (level %d) = \"%s\"\n", argv[1], bindings[k] ? bindlevel[k] : RESTRICT_MAX, Key_GetBinding(k));
 }
 
 static void Bind_f(int argc, const char **argv)
@@ -358,10 +390,9 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		Mem_Free(held_command[key]);
 		held_command[key] = Mem_Strdup(b);
 		snprintf(cmd, sizeof(cmd), "%s %d\n", b, key);
-		Cbuf_AddText(cmd);
+		Cbuf_AddTextAtLevel(cmd, bindlevel[key]);
 	} else {
-		Cbuf_AddText(b);
-		Cbuf_AddText("\n");
+		Cbuf_AddTextAtLevel(va("%s\n", b), bindlevel[key]);
 	}
 }
 
@@ -577,6 +608,7 @@ void IN_Init(void)
 	Cmd_Add("unbind", Unbind_f);
 	Cmd_Add("unbindall", Unbindall_f);
 	Cmd_Add("bindlist", Bindlist_f);
+	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
 	Cmd_Add("impulse", Impulse_f);
 #define ADD(n)                                                                                                         \
 	Cmd_Add("+" #n, n##_down);                                                                                         \

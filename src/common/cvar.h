@@ -21,6 +21,7 @@ typedef struct cvar_s {
 	char *defstring;
 	char *engdefault; /* the default the engine or game registered; defstring can be relocked */
 	char *description;
+	int restriction; /* the execution level needed to change it ("restrict") */
 	float value;
 	int ivalue;
 	int flags;
@@ -49,6 +50,7 @@ void Cvar_Reset(cvar_t *var);
 void Cvar_WriteArchived(strbuf_t *sb);
 /* the flags as words, for listings */
 const char *Cvar_FlagNames(int flags);
+int Cvar_Restriction(const char *name); /* -1 if no such cvar */
 void Cvar_Init(void);
 
 #endif

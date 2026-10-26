@@ -83,6 +83,10 @@ void Cvar_Set(const char *name, const char *value)
 		Con_Printf("%s is read-only\n", name);
 		return;
 	}
+	if (v->restriction > Cmd_ExecLevel() && strcmp(v->string, value)) {
+		Con_Printf("%s was restricted (level %d, you have %d)\n", name, v->restriction, Cmd_ExecLevel());
+		return;
+	}
 	if ((v->flags & CVAR_CHEAT) && sv_cheats && !sv_cheats->ivalue && strcmp(v->string, value)) {
 		Con_Printf("%s is cheat protected, set sv_cheats 1 first\n", name);
 		return;
@@ -269,4 +273,10 @@ void Cvar_Init(void)
 	developer_cvar = Cvar_Get("developer", developer ? "1" : "0", 0, "Print developer messages (2 and up for more)");
 	sv_cheats = Cvar_Get("sv_cheats", "0", CVAR_SERVERINFO, "Allow cheat commands and cheat-protected cvars");
 	Cmd_Add("cvarlist", Cvar_List_f);
+}
+
+int Cvar_Restriction(const char *name)
+{
+	cvar_t *v = Cvar_Find(name);
+	return v ? v->restriction : -1;
 }

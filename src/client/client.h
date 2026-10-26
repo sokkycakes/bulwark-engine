@@ -140,6 +140,9 @@ const infoblob_t *CL_GetLocalBlob(const char *key);
 void CL_SendEvent(const msg_t *m); /* clc_event body, written by sendevent */
 bool CL_ForwardToServer(const char *line, int argc, const char **argv);
 const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size);
+/* cl_chat.c: ignore lists and message filters */
+void CL_InitChat(void);
+bool CL_ChatAllowed(const char *text, int level);
 int CL_ModelIndex(const char *name, bool add);
 void CL_SetModelBounds(int index);
 void CL_PrintServerinfo(void);

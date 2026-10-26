@@ -55,6 +55,7 @@ add_library(bwserver STATIC
 	src/server/sv_cmds.c
 	src/server/sv_save.c
 	src/server/sv_compat.c
+	src/server/sv_admin.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 
@@ -83,6 +84,7 @@ add_library(bwclient STATIC
 	src/client/cl_menu.c
 	src/client/console.c
 	src/client/cl_cmds.c
+	src/client/cl_chat.c
 	src/client/cl_demo.c
 	src/render/r_main.c
 	src/render/r_overlay.c

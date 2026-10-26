@@ -414,6 +414,7 @@ void CL_InitCommands(void)
 			{"bestweapon", "bestweapon <impulse> [impulse...]: switch to the first of these weapons you have"},
 			{"6dof", "Toggle six-degrees-of-freedom movement: no pitch limit, roll with +rollleft/+rollright (cheat)"},
 			{"spiderpig", "Toggle walking up walls (cheat)"},
+			{"topten", "The server's ten best ranked players"},
 		};
 		for (size_t i = 0; i < sizeof(fwd) / sizeof(fwd[0]); i++)
 			if (!Cmd_Exists(fwd[i][0]))

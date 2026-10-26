@@ -103,10 +103,11 @@ static void client_print(client_t *c, int level, const char *text)
 	MSG_WriteByte(&m, svc_print);
 	MSG_WriteByte(&m, level);
 	MSG_WriteString(&m, text);
-	if (c->bot)
+	if (c->bot || (sv_chat_only && c != sv_chat_only))
 		return;
 	client_reliable(c, &m);
 }
+
 
 void SV_ClientPrint(client_t *c, int level, const char *text) { client_print(c, level, text); }
 
@@ -175,6 +176,8 @@ static void broadcast_playerinfo(client_t *c, const char *key, const char *value
 	broadcast_reliable(&m, false);
 }
 
+client_t *sv_chat_only;
+
 static void set_playerkey(client_t *c, const char *key, const char *value, bool broadcast)
 {
 	char old[1024];
@@ -182,11 +185,15 @@ static void set_playerkey(client_t *c, const char *key, const char *value, bool 
 	if (!strcmp(old, value))
 		return;
 	SV_InfoSet(c->userinfo, sizeof(c->userinfo), key, value);
-	if (!strcmp(key, "name"))
+	if (!strcmp(key, "name")) {
 		Str_Copy(c->name, value, sizeof(c->name));
+		SV_AdminRenamed(c, old);
+	}
 	if (broadcast)
 		broadcast_playerinfo(c, key, value);
 }
+
+void SV_SetPlayerKey(client_t *c, const char *key, const char *value, bool broadcast) { set_playerkey(c, key, value, broadcast); }
 
 /* --- entity send state ------------------------------------------------- */
 
@@ -644,6 +651,7 @@ void SV_DropClient(client_t *c, const char *reason)
 		Netchan_Free(&c->chan);
 	}
 	Con_Printf("%s disconnected%s%s\n", c->name[0] ? c->name : "client", reason ? ": " : "", reason ? reason : "");
+	SV_AdminDisconnected(c);
 	if (vm && c->edict < vm->max_edicts) {
 		QC_ClearEdict(vm, c->edict);
 	}
@@ -753,6 +761,10 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 			NET_OutOfBandPrint(NS_SERVER, from, "reject server needs a password (setinfo password ...)");
 			return;
 		}
+		if (!SV_AdminCheckConnect(argv[4], why, sizeof(why))) {
+			NET_OutOfBandPrint(NS_SERVER, from, "reject %s", why);
+			return;
+		}
 	}
 	/* a reconnect from the same address takes over its old slot */
 	for (int i = 0; i < svs.maxclients; i++) {
@@ -791,6 +803,7 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 	c->state = CS_CONNECTED;
 	NET_OutOfBandPrint(NS_SERVER, from, "accept %d", svs.spawncount);
 	Con_Printf("%s connected from %s\n", c->name, NET_AdrToString(from));
+	SV_AdminConnected(c);
 	broadcast_playerinfo(c, "", c->userinfo);
 	reset_entity_state(c);
 	send_serverdata(c);
@@ -975,6 +988,7 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 		cmd.impulse = (uint8_t)c->forced_impulse;
 		c->forced_impulse = 0;
 	}
+	SV_AdminFilterMove(c, &cmd);
 
 	set_input_globals(&cmd);
 	QC_SetGFloat(vm, G.time, (float)sv.time);
@@ -1105,9 +1119,16 @@ static void parse_stringcmd(client_t *c, const char *s)
 	}
 	if (c->state != CS_SPAWNED)
 		goto done;
-	/* everything else is the game's to handle */
+	/* everything else is the game's to handle, chat after moderation */
 	{
 		func_t f = QC_FindFunction(sv.vm, "SV_ParseClientCommand");
+		int chat = CHAT_PASS;
+		if (!strcmp(t->argv[0], "say") || !strcmp(t->argv[0], "say_team"))
+			chat = SV_AdminFilterChat(c);
+		if (chat == CHAT_DROP)
+			goto done;
+		if (chat == CHAT_ONLY_SENDER)
+			sv_chat_only = c;
 		if (f) {
 			QC_SetGInt(sv.vm, G.self, c->edict);
 			QC_SetGFloat(sv.vm, G.time, (float)sv.time);
@@ -1116,6 +1137,7 @@ static void parse_stringcmd(client_t *c, const char *s)
 			QC_Execute(sv.vm, f);
 		} else
 			execute_clientcommand(c, s);
+		sv_chat_only = NULL;
 	}
 done:
 	Mem_Free(t);
@@ -1151,6 +1173,8 @@ static void execute_clientcommand(client_t *c, const char *s)
 		/* sayone, bestweapon, 6dof, spiderpig */
 	} else if (!strcmp(t->argv[0], "setinfo") || !strcmp(t->argv[0], "begin") || !strcmp(t->argv[0], "disconnect")) {
 		/* handled by parse_stringcmd */
+	} else if (SV_AdminClientCommand(c, t->argc, t->argv, s)) {
+		/* topten, and console commands from ranked players */
 	} else {
 		Con_DPrintf("unknown client command from %s: %s\n", c->name, s);
 	}
@@ -1505,6 +1529,8 @@ static void bi_multicast(qcvm_t *vm)
 		if (c->state != CS_SPAWNED || c->bot)
 			continue;
 		if (one && c->edict != target)
+			continue;
+		if (sv_chat_only && c != sv_chat_only)
 			continue;
 		if ((to == 2 || to == 5) && !client_sees(c, QC_PVEC(vm, 0)))
 			continue;

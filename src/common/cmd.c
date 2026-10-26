@@ -10,11 +10,13 @@ typedef struct cmd_s {
 	char *name;
 	char *description;
 	cmd_fn fn;
+	int level; /* the lowest execution level allowed to run it ("restrict") */
 	struct cmd_s *next;
 } cmd_t;
 
 typedef struct alias_s {
 	char *name, *text;
+	int level; /* the level its text runs at, -1 for its caller's ("aliaslevel") */
 	struct alias_s *next;
 } alias_t;
 
@@ -25,6 +27,82 @@ static cmd_fallback_fn cmd_prehook;
 static strbuf_t cbuf;
 static const char *cmd_args = "";
 static int cbuf_wait;
+
+/* Execution levels: the local console runs at RESTRICT_MAX, rcon and ranked
+ * players lower. Text queued at a level other than the buffer's is fenced
+ * with "__lvl <key> <level>" lines, so it runs at the level that queued it;
+ * the key is secret so other text can't raise its own level. cbuf_level is
+ * the level the buffer is at as it runs, tail_level the one at its end. */
+static int cmd_execlevel = RESTRICT_MAX;
+static int cbuf_level = RESTRICT_MAX, tail_level = RESTRICT_MAX;
+static char lvl_key[24];
+
+int Cmd_ExecLevel(void) { return cmd_execlevel; }
+
+static const char *lvl_fence(int level)
+{
+	if (!lvl_key[0])
+		snprintf(lvl_key, sizeof(lvl_key), "%08x%08x", (unsigned)rand() ^ (unsigned)(Sys_Seconds() * 1000003),
+		         (unsigned)(size_t)&cmd_execlevel ^ (unsigned)rand());
+	return va("__lvl %s %d\n", lvl_key, level);
+}
+
+/* a buffer line that sets the level; true if the line was one */
+static bool lvl_line(const char *line)
+{
+	size_t n = strlen(lvl_key);
+	if (strncmp(line, "__lvl ", 6))
+		return false;
+	if (n && !strncmp(line + 6, lvl_key, n) && line[6 + n] == ' ')
+		cbuf_level = BW_CLAMP(atoi(line + 7 + n), 0, RESTRICT_MAX);
+	return true;
+}
+
+int Cmd_Restriction(const char *name)
+{
+	for (cmd_t *c = cmd_list; c; c = c->next)
+		if (!Str_ICmp(c->name, name))
+			return c->level;
+	return -1;
+}
+
+bool Cmd_SetRestriction(const char *name, int level)
+{
+	for (cmd_t *c = cmd_list; c; c = c->next)
+		if (!Str_ICmp(c->name, name)) {
+			c->level = BW_CLAMP(level, 0, RESTRICT_MAX);
+			return true;
+		}
+	return false;
+}
+
+bool Cmd_AliasLevel(const char *name, int *level)
+{
+	for (alias_t *a = alias_list; a; a = a->next)
+		if (!Str_ICmp(a->name, name)) {
+			*level = a->level;
+			return true;
+		}
+	return false;
+}
+
+bool Cmd_SetAliasLevel(const char *name, int level)
+{
+	for (alias_t *a = alias_list; a; a = a->next)
+		if (!Str_ICmp(a->name, name)) {
+			a->level = level < 0 ? -1 : BW_MIN(level, RESTRICT_MAX);
+			return true;
+		}
+	return false;
+}
+
+void Cmd_ExecuteStringAtLevel(const char *line, int level)
+{
+	int saved = cmd_execlevel;
+	cmd_execlevel = BW_CLAMP(level, 0, saved);
+	Cmd_ExecuteString(line);
+	cmd_execlevel = saved;
+}
 
 void Cmd_TokenizeInto(cmd_tokens_t *t, const char *text)
 {
@@ -275,6 +353,8 @@ void Cmd_ExecuteString(const char *line)
 		depth--;
 		return;
 	}
+	if (!strcmp(local.argv[0], "__lvl"))
+		return; /* only the buffer acts on these */
 	cmd_args = local.argc > 1 ? line + local.argstart[1] : "";
 
 	/* commands the game registered come first, so it can override ours */
@@ -284,7 +364,10 @@ void Cmd_ExecuteString(const char *line)
 	}
 	for (cmd_t *c = cmd_list; c; c = c->next) {
 		if (!Str_ICmp(c->name, local.argv[0])) {
-			c->fn(local.argc, local.argv);
+			if (c->level > cmd_execlevel)
+				Con_Printf("%s was restricted (level %d, you have %d)\n", c->name, c->level, cmd_execlevel);
+			else
+				c->fn(local.argc, local.argv);
 			cmd_args = saved_args;
 			return;
 		}
@@ -292,14 +375,21 @@ void Cmd_ExecuteString(const char *line)
 	/* an alias runs its text in place of the line */
 	for (alias_t *a = alias_list; a; a = a->next) {
 		if (!Str_ICmp(a->name, local.argv[0])) {
-			if (local.argc > 1 && strchr(a->text, '$')) {
-				strbuf_t sb = {0};
+			strbuf_t sb = {0};
+			if (local.argc > 1 && strchr(a->text, '$'))
 				alias_args(a->text, &local, line, &sb);
+			else
+				SB_AppendStr(&sb, a->text);
+			if (a->level >= 0 && a->level < cmd_execlevel) {
+				/* its own level, never above the caller's */
+				int saved = cmd_execlevel;
+				cmd_execlevel = a->level;
 				Cbuf_InsertText(sb.data ? sb.data : "");
-				SB_Free(&sb);
+				cmd_execlevel = saved;
 			} else {
-				Cbuf_InsertText(a->text);
+				Cbuf_InsertText(sb.data ? sb.data : "");
 			}
+			SB_Free(&sb);
 			cmd_args = saved_args;
 			return;
 		}
@@ -313,14 +403,36 @@ void Cmd_ExecuteString(const char *line)
 	cmd_args = saved_args;
 }
 
-void Cbuf_AddText(const char *text) { SB_AppendStr(&cbuf, text); }
+void Cbuf_AddText(const char *text)
+{
+	if (cmd_execlevel != tail_level) {
+		SB_AppendStr(&cbuf, lvl_fence(cmd_execlevel));
+		tail_level = cmd_execlevel;
+	}
+	SB_AppendStr(&cbuf, text);
+}
+
+void Cbuf_AddTextAtLevel(const char *text, int level)
+{
+	int saved = cmd_execlevel;
+	cmd_execlevel = BW_CLAMP(level, 0, saved);
+	Cbuf_AddText(text);
+	cmd_execlevel = saved;
+}
 
 void Cbuf_InsertText(const char *text)
 {
 	strbuf_t n = {0};
+	bool fence = cmd_execlevel != cbuf_level;
+	if (fence)
+		SB_AppendStr(&n, lvl_fence(cmd_execlevel));
 	SB_AppendStr(&n, text);
 	if (n.len && n.data[n.len - 1] != '\n')
 		SB_Append(&n, "\n", 1);
+	if (fence)
+		SB_AppendStr(&n, lvl_fence(cbuf_level));
+	if (!cbuf.len)
+		tail_level = cbuf_level;
 	if (cbuf.len)
 		SB_Append(&n, cbuf.data, cbuf.len);
 	SB_Free(&cbuf);
@@ -329,6 +441,7 @@ void Cbuf_InsertText(const char *text)
 
 typedef struct deferred_s {
 	double when;
+	int level;
 	char *text;
 	struct deferred_s *next;
 } deferred_t;
@@ -339,6 +452,7 @@ void Cbuf_AddDeferred(double seconds, const char *text)
 	deferred_t *d = Mem_Alloc(sizeof(*d));
 	d->when = Sys_Seconds() + seconds;
 	d->text = Mem_Strdup(text);
+	d->level = cmd_execlevel;
 	d->next = deferred;
 	deferred = d;
 }
@@ -353,8 +467,13 @@ static void run_deferred(void)
 			continue;
 		}
 		*l = d->next;
-		Cbuf_AddText(d->text);
-		Cbuf_AddText("\n");
+		{
+			int saved = cmd_execlevel;
+			cmd_execlevel = d->level;
+			Cbuf_AddText(d->text);
+			Cbuf_AddText("\n");
+			cmd_execlevel = saved;
+		}
 		Mem_Free(d->text);
 		Mem_Free(d);
 	}
@@ -388,8 +507,15 @@ void Cbuf_Execute(void)
 		memmove(cbuf.data, cbuf.data + i, cbuf.len - i);
 		cbuf.len -= i;
 		cbuf.data[cbuf.len] = 0;
-		Cmd_ExecuteString(line);
+		if (!lvl_line(line)) {
+			int saved = cmd_execlevel;
+			cmd_execlevel = cbuf_level;
+			Cmd_ExecuteString(line);
+			cmd_execlevel = saved;
+		}
 	}
+	if (!cbuf.len)
+		tail_level = cbuf_level;
 	/* "wait" paused the buffer: this frame counts as the first one waited */
 	if (cbuf_wait > 0)
 		cbuf_wait--;
@@ -446,6 +572,7 @@ static void Cmd_Alias_f(int argc, const char **argv)
 	}
 	if (!a) {
 		a = Mem_Alloc(sizeof(*a));
+		a->level = -1;
 		a->name = Mem_Strdup(argv[1]);
 		a->next = alias_list;
 		alias_list = a;

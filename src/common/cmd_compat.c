@@ -177,6 +177,63 @@ static void Colorize_f(int argc, const char **argv)
 	Con_Printf("%s\n", out);
 }
 
+/* restrict <command or cvar> [level]: the execution level needed to run a
+ * command or change a cvar. The local console has 50, rcon rcon_level,
+ * ranked players their rights. */
+static void Restrict_f(int argc, const char **argv)
+{
+	int cur;
+	bool cmd;
+	if (argc < 2) {
+		Con_Printf("restrict <command or cvar> [level 0-%d]\n", RESTRICT_MAX);
+		return;
+	}
+	cmd = (cur = Cmd_Restriction(argv[1])) >= 0;
+	if (!cmd && (cur = Cvar_Restriction(argv[1])) < 0) {
+		Con_Printf("%s is not a command or cvar\n", argv[1]);
+		return;
+	}
+	if (argc < 3) {
+		Con_Printf("%s is restricted to level %d\n", argv[1], cur);
+		return;
+	}
+	if (cur > Cmd_ExecLevel()) {
+		Con_Printf("You can't change the restriction of %s\n", argv[1]);
+		return;
+	}
+	{
+		int level = BW_CLAMP(atoi(argv[2]), 0, BW_MIN(RESTRICT_MAX, Cmd_ExecLevel()));
+		if (cmd)
+			Cmd_SetRestriction(argv[1], level);
+		else
+			Cvar_Find(argv[1])->restriction = level;
+	}
+}
+
+/* aliaslevel <alias> [level]: the level an alias's text runs at (never
+ * above the level of what runs it) */
+static void Aliaslevel_f(int argc, const char **argv)
+{
+	int level;
+	if (argc < 2) {
+		Con_Printf("aliaslevel <var> [execlevel]\n");
+		return;
+	}
+	if (!Cmd_AliasLevel(argv[1], &level)) {
+		Con_Printf("Alias not defined\n");
+		return;
+	}
+	if (argc < 3) {
+		if (level < 0)
+			Con_Printf("alias %s runs at its caller's level\n", argv[1]);
+		else
+			Con_Printf("alias %s is set to run at level %d\n", argv[1], level);
+		return;
+	}
+	level = atoi(argv[2]);
+	Cmd_SetAliasLevel(argv[1], level < 0 ? -1 : BW_MIN(level, Cmd_ExecLevel()));
+}
+
 /* commands FTE keeps only to say they no longer do anything */
 static void Obsolete_f(int argc, const char **argv)
 {
@@ -200,6 +257,9 @@ void Cmd_InitCompat(void)
 	Cmd_AddD("fs_showmanifest", FsShowmanifest_f, "The base directory, game directories and config name");
 	Cmd_AddD("colorize", Colorize_f, "colorize <text>: print text with &cRGB colours");
 	Cmd_AddD("colourise", Colorize_f, "colourise <text>: print text with &cRGB colours");
+	Cvar_Get("cmd_gamecodelevel", "29", 0, "The execution level of commands the game's QC runs (localcmd)");
+	Cmd_AddD("restrict", Restrict_f, "restrict <command or cvar> [level]: the execution level needed to use it");
+	Cmd_AddD("aliaslevel", Aliaslevel_f, "aliaslevel <alias> [level]: the execution level an alias runs at");
 	for (size_t i = 0; i < BW_ARRAY_COUNT(obsolete); i++)
 		Cmd_AddD(obsolete[i], Obsolete_f, "Obsolete in FTE; does nothing");
 }

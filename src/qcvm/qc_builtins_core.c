@@ -1142,7 +1142,8 @@ static void bi_localcmd(qcvm_t *vm)
 {
 	strbuf_t sb = {0};
 	concat_args(vm, 0, &sb);
-	Cbuf_AddText(sb.data);
+	/* game code runs at cmd_gamecodelevel, so restricted commands stay out of its reach */
+	Cbuf_AddTextAtLevel(sb.data ? sb.data : "", (int)Cvar_Value("cmd_gamecodelevel"));
 	SB_Free(&sb);
 }
 

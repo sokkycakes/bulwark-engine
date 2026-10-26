@@ -127,6 +127,12 @@ typedef struct client_s {
 	bool fullupdate;  /* resent the signon for a demo recording; "begin" doesn't respawn */
 	bool sixdof, spiderpig; /* the 6dof and spiderpig cheats */
 	int forced_impulse;     /* from bestweapon or sv_impulse, for the next move */
+	int rank;               /* ranking entry + 1, 0 for none (sv_admin.c) */
+	float rank_frags;       /* frags already counted into the ranking */
+	double rank_since;      /* when time on the server was last counted */
+	double chat_times[16];  /* recent chat, for flood protection */
+	int chat_head;
+	double silenced_until;
 } client_t;
 
 typedef struct {
@@ -181,6 +187,29 @@ extern const qc_builtin_t sv_client_builtins[];
 /* sv_compat.c: FTE and QuakeWorld server commands */
 void SV_InitCompat(void);
 bool SV_ClientCompatCommand(client_t *c, int argc, const char **argv);
+client_t *SV_FindClient(const char *name_or_slot);
+void SV_SetPlayerKey(client_t *c, const char *key, const char *value, bool broadcast);
+
+/* sv_admin.c: moderation, logs and rankings */
+enum { PEN_KIND_MUTE, PEN_KIND_STEALTH, PEN_KIND_CUFF, PEN_KIND_CRIPPLE, PEN_KINDS };
+#define PEN_MUTE (1 << PEN_KIND_MUTE)
+#define PEN_STEALTH (1 << PEN_KIND_STEALTH)
+#define PEN_CUFF (1 << PEN_KIND_CUFF)
+#define PEN_CRIPPLE (1 << PEN_KIND_CRIPPLE)
+enum { CHAT_PASS, CHAT_DROP, CHAT_ONLY_SENDER };
+extern client_t *sv_chat_only; /* while set, prints and multicasts reach only this client */
+void SV_InitAdmin(void);
+int SV_Penalties(const client_t *c);
+void SV_AdminFilterMove(client_t *c, usercmd_t *cmd);
+int SV_AdminFilterChat(client_t *c);
+bool SV_AdminCheckConnect(const char *userinfo, char *why, size_t whysize);
+void SV_AdminConnected(client_t *c);
+void SV_AdminDisconnected(client_t *c);
+void SV_AdminRenamed(client_t *c, const char *oldname);
+bool SV_AdminClientCommand(client_t *c, int argc, const char **argv, const char *line);
+int SV_RankRconLevel(const char *login);
+void SV_LogRcon(const netadr_t *from, const char *command);
+void SV_LogFrag(int killer, int victim);
 void SV_CompatPostThink(client_t *c);
 void SV_CompatFrame(void);
 bool SV_CompatConnectionless(const netadr_t *from, int argc, const char **argv);

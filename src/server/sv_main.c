@@ -784,4 +784,5 @@ void SV_Init(void)
 	SV_InitCommands();
 	SV_InitSaves();
 	SV_InitCompat();
+	SV_InitAdmin();
 }
