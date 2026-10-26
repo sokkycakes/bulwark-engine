@@ -25,6 +25,15 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `rotate_axis`-style helpers (`rotatevectorsbyangle`, `rotatevectorsbyvectors`)
   follow the doc comments, but have not been checked against content that
   depends on them. *Unverified.*
+- `tokenize_console` splits on any whitespace, newlines included; double
+  quotes group and `//` comments run to the end of their line. Nuclide's
+  `ncDict` keeps decl bodies as one `"key" "value"` line per pair and reads
+  them back with `tokenize_console`, adding keys by rebuilding the body from
+  the tokens. A tokenizer that stopped at the first newline (as the console
+  does for a command line) dropped every key after the first line: hitscan
+  damage dicts lost their `damage` key and every bullet did 0 damage. Found
+  by a probe (`Add` three keys, read one back) and by running Rad-Therapy's
+  weapons against monsters. Up to 1024 tokens are kept.
 - `physics_supported` returns 0: there is no rigid-body physics yet.
 - Networking (`Write*`, `multicast`, `stuffcmd`, …) builtins are accepted and
   do nothing until the network layer exists.

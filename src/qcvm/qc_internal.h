@@ -7,7 +7,7 @@
 #include "opcodes.h"
 #include <stdio.h>
 
-#define QC_MAX_TOKENS 256
+#define QC_MAX_TOKENS 1024
 typedef struct qc_tokens_s {
 	int count;
 	string_t argv[QC_MAX_TOKENS];
