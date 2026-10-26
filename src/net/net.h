@@ -16,6 +16,8 @@ typedef struct {
 	netadrtype_t type;
 	uint8_t ip[16];
 	uint16_t port; /* host order */
+	bool tcp;      /* packets go over a TCP stream ("tcp://" addresses) */
+	uint8_t sock;  /* which local port it came in on: 0 the main one, else an added one */
 } netadr_t;
 
 /* Which end of the loopback pair a socket is. */
@@ -31,6 +33,16 @@ bool NET_OpenClient(void);
 void NET_CloseServer(void);
 int NET_ServerPort(void);
 
+/* more UDP ports for one side (sv_addport, cl_addport); each listening
+ * port is listed through fn */
+bool NET_AddPort(netsrc_t src, int port);
+void NET_ListPorts(netsrc_t src, void (*fn)(const char *desc, void *ctx), void *ctx);
+/* the server's TCP port for "tcp://" clients, 0 to close it */
+bool NET_OpenServerTCP(int port);
+/* broadcasts are allowed on the client's socket (localservers) */
+void NET_EnableBroadcast(void);
+
+/* "tcp://host:port" gives a TCP address */
 bool NET_StringToAdr(const char *s, netadr_t *a, int defport);
 const char *NET_AdrToString(const netadr_t *a);
 bool NET_CompareAdr(const netadr_t *a, const netadr_t *b);

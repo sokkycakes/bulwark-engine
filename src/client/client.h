@@ -215,6 +215,10 @@ bool CSQC_CenterPrint(const char *text);
 void CSQC_ServerInfoChanged(void);
 void CSQC_PlayerInfoChanged(int slot);
 /* menu progs (cl_menu.c) */
+/* cl_master.c */
+void CL_InitMaster(void);
+bool CL_MasterConnectionless(const netadr_t *from, const uint8_t *data, size_t len);
+void CL_MasterFrame(void);
 void MQC_Init(void);
 bool MQC_Load(void);
 void MQC_LoadWhenActive(void); /* once the game being started is in */

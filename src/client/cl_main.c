@@ -273,6 +273,8 @@ static void check_connect(void)
 
 static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 {
+	if (CL_MasterConnectionless(from, data, len))
+		return;
 	cmd_tokens_t *t = Mem_Alloc(sizeof(*t));
 	char *text = Mem_Alloc(len - 3);
 	memcpy(text, data + 4, len - 4);
@@ -862,6 +864,7 @@ void CL_Frame(double dt)
 	NET_SetFakeConditions(net_fakelag->value, net_fakeloss->value);
 	read_packets();
 	check_connect();
+	CL_MasterFrame();
 	update_clock(dt);
 	check_userinfo();
 
@@ -986,5 +989,6 @@ void CL_Init(void)
 	Cmd_Add("cmd", CL_Cmd_f);
 	Cmd_Add("pingserver", CL_Ping_f);
 	Cmd_Add("netstats", CL_Netstats_f);
+	CL_InitMaster();
 	IN_Init();
 }

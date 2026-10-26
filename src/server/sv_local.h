@@ -309,6 +309,13 @@ void SV_ClientReliable(client_t *c, const void *data, size_t len);
 
 /* sv_mvd.c: server demos and QTV streams */
 void SV_InitMVD(void);
+/* sv_master.c */
+void SV_InitMaster(void);
+bool SV_MasterConnectionless(const netadr_t *from, int argc, const char **argv);
+void SV_MasterPortsOpened(void);
+void SV_MasterMapSpawned(void);
+void SV_MasterFrame(void);
+void SV_GreetPins(client_t *c);
 void SV_MVDFrame(void);
 void SV_MVDMapChanged(void);
 void SV_MVDMapSpawned(void);

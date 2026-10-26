@@ -381,6 +381,7 @@ bool SV_SpawnServer(const char *mapname)
 	sv.spawning = false;
 	SV_ClientsMapChanged();
 	SV_MVDMapSpawned();
+	SV_MasterMapSpawned();
 	QC_CollectGarbage(vm, true);
 	Con_Printf("map %s: %d entities in use, %d models, %d sounds precached\n", mapname,
 	           vm->num_edicts, sv.nummodels - 1, sv.numsounds - 1);
@@ -789,4 +790,5 @@ void SV_Init(void)
 	SV_InitAdmin();
 	SV_InitRoutes();
 	SV_InitMVD();
+	SV_InitMaster();
 }

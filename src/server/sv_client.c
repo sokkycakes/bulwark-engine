@@ -694,6 +694,8 @@ static void spawn_client(client_t *c)
 		MSG_WriteByte(&p, 2);
 		client_reliable(c, &p);
 	}
+	if (!c->bot)
+		SV_GreetPins(c);
 	Con_Printf("%s entered the game\n", c->name);
 }
 
@@ -876,17 +878,6 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 	send_serverdata(c);
 }
 
-static void cl_info(const netadr_t *from)
-{
-	char info[2048];
-	int n = 0;
-	for (int i = 0; i < svs.maxclients; i++)
-		n += svs.clients[i].state != CS_FREE;
-	snprintf(info, sizeof(info), "\\hostname\\%s\\map\\%s\\clients\\%d\\maxclients\\%d\\protocol\\%d\\engine\\%s",
-	         hostname->string, sv.mapname, n, svs.maxclients, PROTOCOL_VERSION, PROTOCOL_NAME);
-	NET_OutOfBandPrint(NS_SERVER, from, "infoResponse\n%s", info);
-}
-
 static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 {
 	cmd_tokens_t *t = Mem_Alloc(sizeof(*t));
@@ -899,8 +890,8 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 			cl_getchallenge(from);
 		else if (!strcmp(c, "connect"))
 			cl_connect(from, t->argc, t->argv);
-		else if (!strcmp(c, "getinfo") || !strcmp(c, "info"))
-			cl_info(from);
+		else if (SV_MasterConnectionless(from, t->argc, t->argv))
+			;
 		else if (SV_CompatConnectionless(from, t->argc, t->argv))
 			;
 		else if (!strcmp(c, "rcon"))
@@ -1463,6 +1454,7 @@ void SV_SendClientMessages(void)
 	double now = host_time;
 	SV_SyncServerinfoCvars(true);
 	SV_MVDFrame();
+	SV_MasterFrame();
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		float rate;
@@ -2041,8 +2033,8 @@ void SV_SetupClientSlots(void)
 		svs.clients = Mem_Alloc(sizeof(client_t) * (size_t)want);
 		svs.maxclients = want;
 	}
-	if (svs.maxclients > 1 && !NET_ServerPort())
-		NET_OpenServer(sv_port->ivalue);
+	if (svs.maxclients > 1 && !NET_ServerPort() && NET_OpenServer(sv_port->ivalue))
+		SV_MasterPortsOpened();
 	/* single player games run over loopback only */
 	if (svs.maxclients == 1 && NET_ServerPort())
 		NET_CloseServer();
