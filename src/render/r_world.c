@@ -553,8 +553,11 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 		bool trans = mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER;
 		if (!s->numindexes || mat->nodraw || mat->sky || trans != translucentpass)
 			continue;
-		if (isworld && cull_box(planes, s->mins, s->maxs))
+		if (isworld && cull_box(planes, s->mins, s->maxs)) {
+			r_stats.culled++;
 			continue;
+		}
+		r_stats.worldsurfs++;
 		if (mat != cur) {
 			float a = alpha * (mat->program == MP_WATER && mat->blend == BLEND_OPAQUE ? 0.6f : 1.0f);
 			cur = mat;

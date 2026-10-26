@@ -613,6 +613,19 @@ int R_UploadImage(const char *name, const uint8_t *rgba, int w, int h)
 	return handle_for(R_ImageFromPixels(name, rgba, w, h, IMG_NOMIP | IMG_CLAMP));
 }
 
+void R_UpdateImage(int handle, int x, int y, int w, int h, const uint8_t *rgba)
+{
+	image_t *img = handle > 0 && handle < numimagehandles ? imagehandles[handle] : NULL;
+	if (!img || !R_Active() || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > img->width || y + h > img->height)
+		return;
+	R_Flush2D(); /* the batch may still use the old pixels */
+	GL_BindTexture(0, GL_TEXTURE_2D, img->tex);
+	qglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	qglTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+}
+
+float R_Get2DScale(void) { return r_2dscale; }
+
 void R_ImageSize(int handle, int *w, int *h)
 {
 	image_t *img = handle > 0 && handle < numimagehandles ? imagehandles[handle] : NULL;
@@ -641,6 +654,8 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 		GL_SetBlend(BLEND_ADD, 0, 0);
 	else if (blend == R2D_PREMULTIPLIED)
 		GL_SetBlend(BLEND_CUSTOM, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	else if (blend == R2D_MULTIPLY) /* premultiplied source times destination */
+		GL_SetBlend(BLEND_CUSTOM, GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA);
 	else
 		GL_SetBlend(BLEND_ALPHA, 0, 0);
 	qglUniform4f(r_progs[PROG_2D].u_tcmod, 0, 0, 1, 1);

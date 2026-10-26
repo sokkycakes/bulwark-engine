@@ -8,6 +8,7 @@
 #include <stdlib.h>
 
 rscene_t r_scene;
+rstats_t r_stats;
 static cvar_t *fov, *r_nearclip;
 
 /* entity fields addentity reads, looked up once per client game */
@@ -383,6 +384,7 @@ void R_RenderScene(void)
 	h = (int)(r_scene.vh * sy);
 	y = r_pheight - (int)(r_scene.vy * sy) - h;
 	qglViewport(x, y, w, h);
+	memset(&r_stats, 0, sizeof(r_stats));
 	qglEnable(GL_SCISSOR_TEST);
 	qglScissor(x, y, w, h);
 	GL_SetDepth(true, true);
@@ -412,11 +414,17 @@ void R_RenderScene(void)
 		for (int i = 0; i < nsorted; i++)
 			R_DrawModelEntity(sorted[i], true);
 	}
+	r_stats.polys = numpolys;
 	R_DrawPolygons(false);
 	numpolys = 0;
 	numpolyverts = 0;
 	poly_start = 0;
 
+	if (r_speeds->ivalue)
+		Con_Printf("view %dx%d at %.0f %.0f %.0f (%.0f %.0f): %d world surfaces, %d culled, %d entities, %d polys%s\n", w,
+		           h, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2], r_scene.angles[0], r_scene.angles[1],
+		           r_stats.worldsurfs, r_stats.culled, r_scene.numents, r_stats.polys,
+		           r_scene.drawworld ? "" : ", no world");
 	qglDisable(GL_SCISSOR_TEST);
 	GL_SetBlend(BLEND_OPAQUE, 0, 0);
 	/* back to 2D for whatever the client game draws next */

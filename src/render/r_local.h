@@ -244,6 +244,12 @@ typedef struct {
 } rscene_t;
 
 extern rscene_t r_scene;
+
+/* counters for r_speeds, per view */
+typedef struct {
+	int worldsurfs, culled, entities, polys;
+} rstats_t;
+extern rstats_t r_stats;
 extern double r_time;
 
 void R_ClearScene(void);

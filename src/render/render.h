@@ -35,11 +35,13 @@ typedef struct {
 	uint8_t rgba[4];
 } r2dvert_t;
 
-enum { R2D_ALPHA, R2D_ADD, R2D_PREMULTIPLIED };
+enum { R2D_ALPHA, R2D_ADD, R2D_PREMULTIPLIED, R2D_MULTIPLY };
 
 int R_ImageHandle(const char *name);    /* image or material by name, 0 if none */
 int R_UploadImage(const char *name, const uint8_t *rgba, int w, int h); /* creates or replaces */
+void R_UpdateImage(int handle, int x, int y, int w, int h, const uint8_t *rgba); /* a region, tightly packed */
 void R_ImageSize(int handle, int *w, int *h);
+float R_Get2DScale(void); /* framebuffer pixels per virtual pixel: lay out at R_GetSize * scale for sharp text */
 void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const uint16_t *idx, int numidx,
                        int blend);      /* image 0 draws untextured */
 void R_Set2DClip(float x, float y, float w, float h);
