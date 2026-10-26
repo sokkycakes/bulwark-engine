@@ -96,7 +96,8 @@ game's `ConsoleCmd`, as Nuclide's tools expect.
 A global named `autocvar_<name>` (float, int, vector or string) reads the
 cvar `<name>`. When the progs is loaded and the cvar doesn't exist yet, it
 is created with the global's initial value as its default. Once any cvar
-changes, globals are refreshed before the next top-level QC call. A write
+changes, globals are refreshed before the next top-level QC call and
+after any builtin call that changed one (so `cvar_set` is seen at once). A write
 from QC changes only the global. Bound in `src/qcvm/qc_autocvar.c`.
 
 `random()` is seeded from the clock when a VM loads, so each run differs.

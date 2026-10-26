@@ -2,6 +2,7 @@
  * Operand roles for every opcode are documented in docs/spec/opcodes.md.
  * ISC licence, see LICENSE. */
 #include "qc_internal.h"
+#include "../common/cvar.h"
 
 #include <math.h>
 #include <setjmp.h>
@@ -647,6 +648,9 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 				f->builtin(vm);
 				if (vm->curprogs != caller)
 					QC_SwitchProgs(vm, caller);
+				/* a builtin may have changed a cvar the progs reads as an autocvar */
+				if (vm->autocvar_gen != cvar_generation)
+					QC_SyncAutocvars(vm);
 				G = vm->globals;
 				break;
 			}
