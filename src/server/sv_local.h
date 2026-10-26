@@ -145,6 +145,7 @@ void SV_InitClients(void);
 void SV_ClientsMapChanged(void); /* after a new map is spawned */
 void SV_ReadPackets(void);
 void SV_ClientsPreThink(void);
+void SV_RunBotCommands(void);
 void SV_ClientsPostThink(void);
 void SV_SendClientMessages(void);
 void SV_ClientsAfterPhysics(void);
@@ -213,6 +214,11 @@ bool SV_DropToFloor(int e);
 void SV_Physics(void);
 
 extern const qc_builtin_t sv_builtins[];
+
+/* sv_route.c */
+void bi_route_calculate(qcvm_t *vm);
+void SV_RunRoutes(void);
+void SV_ClearRoutes(void);
 const char *SV_ModelName(qcvm_t *vm, int index);
 
 /* world builtins that work on whichever VM and world context is current;

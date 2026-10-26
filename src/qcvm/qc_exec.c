@@ -644,6 +644,8 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 				f->builtin(vm);
 				if (vm->curprogs != caller)
 					QC_SwitchProgs(vm, caller);
+				/* a builtin may have changed a cvar the progs reads as an autocvar */
+				QC_SyncAutocvars(vm);
 				G = vm->globals;
 				break;
 			}
@@ -689,6 +691,8 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 		return false;
 	}
 	const int idx = QC_FUNC_INDEX(fnum);
+	if (vm->exec_depth == 0)
+		QC_SyncAutocvars(vm);
 	executing_count++;
 	vm->exec_depth++;
 	if (setjmp(jb)) {

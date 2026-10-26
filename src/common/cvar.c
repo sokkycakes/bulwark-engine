@@ -6,8 +6,10 @@
 #include <stdlib.h>
 
 static cvar_t *cvar_list;
+static int cvar_generation;
 
 cvar_t *Cvar_First(void) { return cvar_list; }
+int Cvar_Generation(void) { return cvar_generation; }
 
 cvar_t *Cvar_Find(const char *name)
 {
@@ -24,6 +26,7 @@ static void Cvar_Assign(cvar_t *v, const char *value)
 	v->value = (float)atof(value);
 	v->ivalue = atoi(value);
 	v->modified++;
+	cvar_generation++;
 	Mem_Free(old);
 }
 

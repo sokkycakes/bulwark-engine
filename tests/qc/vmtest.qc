@@ -340,6 +340,26 @@ void() test_skeletons = {
 	remove(e);
 };
 
+float(string name) cvar = #0:cvar;
+string(string name) cvar_string = #0:cvar_string;
+void(string name, string value) cvar_set = #0:cvar_set;
+var float autocvar_bw_test_af = 5;
+var string autocvar_bw_test_as = "abc";
+var vector autocvar_bw_test_av = '1 2 3';
+
+/* autocvar_<name> globals create cvar <name> with their value as the
+   default and follow it when it changes */
+void() test_autocvars = {
+	check(cvar("bw_test_af") == 5 && cvar_string("bw_test_as") == "abc", "autocvar creates the cvar");
+	check(cvar_string("bw_test_av") == "1 2 3", "vector autocvar default");
+	cvar_set("bw_test_af", "7.5");
+	cvar_set("bw_test_as", "hello");
+	cvar_set("bw_test_av", "4 5 6");
+	check(autocvar_bw_test_af == 7.5, "autocvar follows a float cvar");
+	check(autocvar_bw_test_as == "hello", "autocvar follows a string cvar");
+	check(autocvar_bw_test_av == '4 5 6', "autocvar follows a vector cvar");
+};
+
 void() main = {
 	test_float();
 	test_int();
@@ -350,6 +370,7 @@ void() main = {
 	test_entities();
 	test_builtin_state();
 	test_skeletons();
+	test_autocvars();
 	print(sprintf("%d checks, %d failures\n", checks, failures));
 	if (failures)
 		error("vm test failed");

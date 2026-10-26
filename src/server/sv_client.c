@@ -1218,6 +1218,32 @@ void SV_ClientsPreThink(void)
 	}
 }
 
+/* Bots send no packets, so they get one empty command per frame. The
+ * progs fills in the input_* globals itself (its AI runs from inside
+ * SV_RunClientCommand) and then moves the bot like any other player. */
+void SV_RunBotCommands(void)
+{
+	qcvm_t *vm = sv.vm;
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		usercmd_t cmd;
+		if (c->state != CS_SPAWNED || !c->bot)
+			continue;
+		memset(&cmd, 0, sizeof(cmd));
+		cmd.sequence = c->lastcmd + 1;
+		cmd.msec = sv.frametime;
+		cmd.clienttime = sv.time;
+		{
+			qcval_t *v = QC_EField(vm, c->edict, F.v_angle);
+			if (v)
+				for (int k = 0; k < 3; k++)
+					cmd.angles[k] = v[k].f;
+		}
+		c->cmd_budget = BW_MAX(c->cmd_budget, sv.frametime);
+		run_usercmd(c, &cmd);
+	}
+}
+
 void SV_ClientsPostThink(void)
 {
 	qcvm_t *vm = sv.vm;

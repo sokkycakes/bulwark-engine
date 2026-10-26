@@ -243,6 +243,7 @@ static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins,
 
 void SV_Shutdown(void)
 {
+	SV_ClearRoutes();
 	if (sv.vm) {
 		if (QC_FindFunction(sv.vm, "SV_Shutdown"))
 			QC_ExecuteByName(sv.vm, "SV_Shutdown");
@@ -580,12 +581,14 @@ void SV_Physics(void)
 	qcvm_t *vm = sv.vm;
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGFloat(vm, G.frametime, sv.frametime);
+	SV_RunRoutes();
 	if (QC_FindFunction(vm, "StartFrame")) {
 		QC_SetGInt(vm, G.self, 0);
 		QC_SetGInt(vm, G.other, 0);
 		QC_ExecuteByName(vm, "StartFrame");
 	}
 	SV_ClientsPreThink();
+	SV_RunBotCommands();
 	for (int e = 1; e < vm->num_edicts; e++) {
 		if (vm->edicts[e].free)
 			continue;

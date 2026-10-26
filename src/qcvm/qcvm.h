@@ -102,6 +102,13 @@ typedef struct {
 
 /* the parts of a VM that belong to one progs; the VM's own copies of these
  * fields are those of the progs that is running now */
+/* a global named autocvar_<name>, kept equal to cvar <name> */
+typedef struct {
+	struct cvar_s *var;
+	int ofs;
+	int type;
+} qcautocvar_t;
+
 typedef struct {
 	char name[64];
 	uint8_t *progsdata;
@@ -127,6 +134,8 @@ typedef struct {
 	int extparm_ofs[QC_MAX_EXTPARMS];
 	uint8_t *missing_reported;
 	qc_namehash_t globalhash, fieldhash, funchash;
+	qcautocvar_t *autocvars;
+	int numautocvars;
 } qcprogs_t;
 
 
@@ -207,6 +216,7 @@ struct qcvm_s {
 	qcprogs_t progs[QC_MAX_PROGS];
 	int numprogs;
 	int curprogs;
+	int autocvar_gen; /* Cvar_Generation() when the autocvars were last copied */
 	const qc_builtin_t *const *tables;
 
 	/* the model name behind a modelindex, for skeletons and tags */
@@ -245,6 +255,8 @@ const char *QC_FunctionName(qcvm_t *vm, func_t f);
 /* execution; returns false if QC raised an error (already reported) */
 bool QC_Execute(qcvm_t *vm, func_t fnum);
 bool QC_ExecuteByName(qcvm_t *vm, const char *name);
+/* copies changed cvars into autocvar_ globals; QC_Execute does this on entry */
+void QC_SyncAutocvars(qcvm_t *vm);
 BW_NORETURN void QC_RunError(qcvm_t *vm, const char *fmt, ...) BW_PRINTF(2, 3);
 void QC_StackTrace(qcvm_t *vm);
 extern char qc_tracefilter[64]; /* non-empty: print entries to matching functions */

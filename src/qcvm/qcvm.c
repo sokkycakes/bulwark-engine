@@ -2,6 +2,7 @@
  * The interpreter loop lives in qc_exec.c. ISC licence, see LICENSE. */
 #include "qcvm.h"
 #include "qc_internal.h"
+#include "../common/cvar.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -289,6 +290,7 @@ static void free_progs(qcprogs_t *p)
 	Mem_Free(p->globalhash.slots);
 	Mem_Free(p->fieldhash.slots);
 	Mem_Free(p->funchash.slots);
+	Mem_Free(p->autocvars);
 	memset(p, 0, sizeof(*p));
 }
 
@@ -544,6 +546,65 @@ static bool link_progs(qcvm_t *vm, int n)
 	return true;
 }
 
+/* Globals named autocvar_<name> mirror cvar <name>. A missing cvar is
+ * created with the global's initial value as its default; an existing one
+ * (from the command line or a config) keeps its value and overrides the
+ * global. Runs with progs n active. */
+static void bind_autocvars(qcvm_t *vm, int n)
+{
+	qcprogs_t *p = &vm->progs[n];
+	char def[128];
+
+	for (int i = 0; i < p->numglobaldefs; i++) {
+		const qcdef_t *d = &p->globaldefs[i];
+		int t = d->type & ~DEF_SAVEGLOBAL;
+		const qcval_t *g = p->globals + d->ofs;
+		if (!d->name || strncmp(d->name, "autocvar_", 9) || !d->name[9])
+			continue;
+		switch (t) {
+		case ev_float: snprintf(def, sizeof(def), "%g", g->f); break;
+		case ev_integer: case ev_uint: case ev_bool: snprintf(def, sizeof(def), "%d", g->i); break;
+		case ev_vector: snprintf(def, sizeof(def), "%g %g %g", g[0].f, g[1].f, g[2].f); break;
+		case ev_string: Str_Copy(def, QC_GetString(vm, g->i), sizeof(def)); break;
+		default: continue;
+		}
+		p->autocvars = Mem_Realloc(p->autocvars, sizeof(qcautocvar_t) * (p->numautocvars + 1));
+		p->autocvars[p->numautocvars].var = Cvar_Get(d->name + 9, def, CVAR_USERCREATED, NULL);
+		p->autocvars[p->numautocvars].ofs = (int)d->ofs;
+		p->autocvars[p->numautocvars].type = t;
+		p->numautocvars++;
+	}
+	vm->autocvar_gen = Cvar_Generation() - 1; /* force a copy on the next call */
+}
+
+void QC_SyncAutocvars(qcvm_t *vm)
+{
+	if (vm->autocvar_gen == Cvar_Generation())
+		return;
+	vm->autocvar_gen = Cvar_Generation();
+	for (int n = 0; n < vm->numprogs; n++) {
+		qcprogs_t *p = &vm->progs[n];
+		for (int i = 0; i < p->numautocvars; i++) {
+			const qcautocvar_t *a = &p->autocvars[i];
+			qcval_t *g = p->globals + a->ofs;
+			switch (a->type) {
+			case ev_float: g->f = a->var->value; break;
+			case ev_integer: case ev_uint: case ev_bool: g->i = a->var->ivalue; break;
+			case ev_vector: {
+				float v[3] = {0, 0, 0};
+				sscanf(a->var->string, "%f %f %f", &v[0], &v[1], &v[2]);
+				g[0].f = v[0]; g[1].f = v[1]; g[2].f = v[2];
+				break;
+			}
+			case ev_string:
+				if (strcmp(QC_GetString(vm, g->i), a->var->string))
+					g->i = QC_NewString(vm, a->var->string);
+				break;
+			}
+		}
+	}
+}
+
 qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kind,
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize)
 {
@@ -616,6 +677,7 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	resolve_globals(vm);
 	bind_builtins(vm, tables);
 	store_derived(vm, 0);
+	bind_autocvars(vm, 0);
 
 	vm_list[vm_count++] = vm;
 	Con_DPrintf("%s: %d functions, %d statements, %d globals, %d entity words\n", name,
@@ -666,6 +728,7 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	resolve_globals(vm);
 	bind_builtins(vm, vm->tables);
 	store_derived(vm, n);
+	bind_autocvars(vm, n);
 	activate(vm, prev);
 	Con_DPrintf("%s: added to %s as progs %d, %d functions\n", name, vm->name, n, p->numfunctions);
 

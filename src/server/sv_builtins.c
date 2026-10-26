@@ -465,5 +465,5 @@ const qc_builtin_t sv_builtins[] = {
 	{"frameforname", bi_frameforname}, {"frameduration", bi_frameduration}, {"frametoname", bi_frametoname},
 	{"modelframecount", bi_modelframecount}, {"frameforaction", bi_minus1},
 	{"setattachment", bi_dropped}, {"logfrag", bi_dropped},
-	{"openportal", bi_dropped},
+	{"openportal", bi_dropped}, {"route_calculate", bi_route_calculate},
 	{NULL, NULL}};
