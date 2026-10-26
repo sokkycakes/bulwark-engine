@@ -167,13 +167,26 @@ int SV_Spawn(void)
  * fields named by its keys are filled in, __fullspawndata is set to the
  * entity's raw text, and the progs' CheckSpawn(spawnfunc) is called if it
  * has one; otherwise the function named by the classname is called. */
+static int spawn_entities(const char *data, bool world, int *first);
+
 static void spawn_map_entities(const char *data)
+{
+	spawn_entities(data, true, NULL);
+}
+
+/* entity text spawned into the running map, as ent_create does; returns
+ * how many blocks were spawned and the first one's number */
+int SV_SpawnEntitiesFromText(const char *data, int *first) { return spawn_entities(data, false, first); }
+
+static int spawn_entities(const char *data, bool world, int *first)
 {
 	qcvm_t *vm = sv.vm;
 	int checkspawn = QC_FindFunction(vm, "CheckSpawn");
 	int fullspawn = QC_GlobalOfs(vm, "__fullspawndata");
 	int count = 0, failed = 0;
-	bool world = true;
+	bool map = world;
+	if (first)
+		*first = 0;
 
 	for (;;) {
 		char token[64];
@@ -192,6 +205,8 @@ static void spawn_map_entities(const char *data)
 		e = world ? 0 : SV_Spawn();
 		if (world)
 			init_edict_defaults(0);
+		if (first && !*first)
+			*first = e;
 		next = QC_ParseEdict(vm, e, data, &ok);
 		if (!ok || !next) {
 			Con_Printf("^3entity lump: parse error\n");
@@ -234,7 +249,9 @@ static void spawn_map_entities(const char *data)
 		count++;
 		world = false;
 	}
-	Con_Printf("%d map entities parsed, %d with no QC function for their classname\n", count, failed);
+	if (map)
+		Con_Printf("%d map entities parsed, %d with no QC function for their classname\n", count, failed);
+	return count;
 }
 
 /* --- lifecycle ------------------------------------------------------- */
@@ -762,4 +779,5 @@ void SV_Init(void)
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);
+	SV_InitCommands();
 }

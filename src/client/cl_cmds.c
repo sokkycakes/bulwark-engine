@@ -8,6 +8,7 @@
 #include "keys.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../server/sv_local.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -194,6 +195,59 @@ static void Say_f(int argc, const char **argv)
 	Con_Printf("not connected\n");
 }
 
+/* pause: the local server's, or asked of the server we're on */
+static void Pause_f(int argc, const char **argv)
+{
+	if (sv.active) {
+		if (!SV_RequestPause(0, !Str_ICmp(argv[0], "unpause") ? false : !Str_ICmp(argv[0], "setpause") ? true : !sv.paused))
+			Con_Printf("the game didn't allow that\n");
+	} else if (cl.state >= ca_loading) {
+		CL_SendStringCmd("pause");
+	} else {
+		Con_Printf("not playing\n");
+	}
+}
+
+static cvar_t *rcon_address, *rcon_password_cl;
+
+/* rcon <command>: run a command on a server we have the password for */
+static void Rcon_f(int argc, const char **argv)
+{
+	netadr_t to;
+	if (argc < 2) {
+		Con_Printf("usage: rcon <command> (set rcon_password, and rcon_address when not connected)\n");
+		return;
+	}
+	if (!Cvar_String("rcon_password")[0]) {
+		Con_Printf("set rcon_password first\n");
+		return;
+	}
+	if (rcon_address->string[0]) {
+		if (!NET_StringToAdr(rcon_address->string, &to, PORT_SERVER)) {
+			Con_Printf("bad rcon_address\n");
+			return;
+		}
+	} else if (cl.state >= ca_connecting) {
+		to = cl.server;
+	} else {
+		Con_Printf("not connected; set rcon_address\n");
+		return;
+	}
+	NET_OpenClient();
+	NET_OutOfBandPrint(NS_CLIENT, &to, "rcon \"%s\" %s", Cvar_String("rcon_password"), Cmd_Args());
+}
+
+/* serverinfo [key value]: lists the server's keys, or sets one on ours */
+static void Serverinfo_f(int argc, const char **argv)
+{
+	if (argc >= 3) {
+		if (!SV_SetServerinfoKey(argv[1], argv[2]))
+			Con_Printf("no local server to set it on\n");
+		return;
+	}
+	CL_PrintServerinfo();
+}
+
 void CL_InitCommands(void)
 {
 	cfg_write_hook = write_binds;
@@ -228,6 +282,14 @@ void CL_InitCommands(void)
 	Cmd_AddD("conecho_center", CPrint_f, "conecho_center <text>: print in the middle of the screen");
 	Cmd_AddD("centerprint", CPrint_f, "centerprint <text>: print in the middle of the screen");
 	Cmd_AddD("conecho", ConEcho_f, "conecho <text>: print to the console");
+	rcon_address = Cvar_Get("rcon_address", "", 0, "Server for rcon when not connected to it");
+	rcon_password_cl = Cvar_Get("rcon_password", "", 0, "Remote console password");
+	(void)rcon_password_cl;
+	Cmd_AddD("pause", Pause_f, "Pause or unpause the game");
+	Cmd_AddD("setpause", Pause_f, "Pause the game");
+	Cmd_AddD("unpause", Pause_f, "Unpause the game");
+	Cmd_AddD("rcon", Rcon_f, "rcon <command>: run a command on the server (needs rcon_password)");
+	Cmd_AddD("serverinfo", Serverinfo_f, "serverinfo [key value]: the server's settings, or set one on a local server");
 	Cmd_AddD("say", Say_f, "say <text>: chat to everyone");
 	Cmd_AddD("say_team", Say_f, "say_team <text>: chat to your team");
 }

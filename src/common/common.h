@@ -66,6 +66,8 @@ void SB_Append(strbuf_t *sb, const char *s, size_t n);
 void SB_AppendStr(strbuf_t *sb, const char *s);
 void SB_Printf(strbuf_t *sb, const char *fmt, ...) BW_PRINTF(2, 3);
 void SB_Free(strbuf_t *sb);
+/* while set, console output is also collected into sb (rcon replies) */
+void Con_Redirect(strbuf_t *sb);
 
 /* tokeniser shared by the console and the entity parser: handles quotes and
  * // comments, and returns the next token or NULL at end of input. */

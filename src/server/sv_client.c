@@ -108,6 +108,35 @@ static void client_print(client_t *c, int level, const char *text)
 	client_reliable(c, &m);
 }
 
+void SV_ClientPrint(client_t *c, int level, const char *text) { client_print(c, level, text); }
+
+void SV_StuffText(client_t *c, const char *text)
+{
+	LOCALMSG(m, 4200);
+	if (!c || c->state == CS_FREE || c->bot)
+		return;
+	MSG_WriteByte(&m, svc_stufftext);
+	MSG_WriteString(&m, text);
+	client_reliable(c, &m);
+}
+
+void SV_BroadcastPrint(int level, const char *text)
+{
+	for (int i = 0; i < svs.maxclients; i++)
+		if (svs.clients[i].state == CS_SPAWNED)
+			client_print(&svs.clients[i], level, text);
+	Con_Print(text);
+}
+
+void SV_SetPaused(bool paused)
+{
+	LOCALMSG(m, 4);
+	sv.paused = paused;
+	MSG_WriteByte(&m, svc_setpause);
+	MSG_WriteByte(&m, sv.paused);
+	broadcast_reliable(&m, true);
+}
+
 void SV_BroadcastPrecache(int kind, int index, const char *name)
 {
 	LOCALMSG(m, 512);
@@ -705,6 +734,19 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 		NET_OutOfBandPrint(NS_SERVER, from, "reject no map running");
 		return;
 	}
+	{
+		char why[96], pass[128];
+		if (SV_CheckBanned(from, why, sizeof(why))) {
+			NET_OutOfBandPrint(NS_SERVER, from, "reject %s", why);
+			return;
+		}
+		/* a server password is matched against the "password" userinfo key */
+		if (Cvar_String("sv_password")[0] && strcmp(Cvar_String("sv_password"), "none") && from->type != NA_LOOPBACK &&
+		    strcmp(SV_InfoGet(argv[4], "password", pass, sizeof(pass)), Cvar_String("sv_password"))) {
+			NET_OutOfBandPrint(NS_SERVER, from, "reject server needs a password (setinfo password ...)");
+			return;
+		}
+	}
 	/* a reconnect from the same address takes over its old slot */
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *o = &svs.clients[i];
@@ -772,6 +814,8 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 			cl_connect(from, t->argc, t->argv);
 		else if (!strcmp(c, "getinfo") || !strcmp(c, "info"))
 			cl_info(from);
+		else if (!strcmp(c, "rcon"))
+			SV_HandleRcon(from, text);
 	}
 	Mem_Free(text);
 	Mem_Free(t);
@@ -1063,6 +1107,11 @@ static void execute_clientcommand(client_t *c, const char *s)
 		}
 	} else if (!strcmp(t->argv[0], "name") && t->argc > 1) {
 		set_playerkey(c, "name", t->argv[1], true);
+	} else if (!strcmp(t->argv[0], "pause")) {
+		if (!SV_RequestPause(c->edict, !sv.paused))
+			client_print(c, 2, "Pausing isn't allowed now.\n");
+	} else if (SV_ClientCheatCommand(c, t->argc, t->argv)) {
+		/* god, noclip and the other cheats */
 	} else if (!strcmp(t->argv[0], "setinfo") || !strcmp(t->argv[0], "begin") || !strcmp(t->argv[0], "disconnect")) {
 		/* handled by parse_stringcmd */
 	} else {
@@ -1728,14 +1777,7 @@ static void bi_pointsound(qcvm_t *vm)
 		write_sound(0, 0, idx, QC_PFLOAT(vm, 2), QC_PFLOAT(vm, 3), 100, 0, QC_PVEC(vm, 0));
 }
 
-static void bi_setpause(qcvm_t *vm)
-{
-	LOCALMSG(m, 4);
-	sv.paused = QC_PFLOAT(vm, 0) != 0;
-	MSG_WriteByte(&m, svc_setpause);
-	MSG_WriteByte(&m, sv.paused);
-	broadcast_reliable(&m, true);
-}
+static void bi_setpause(qcvm_t *vm) { SV_SetPaused(QC_PFLOAT(vm, 0) != 0); }
 
 void SV_RunStandardPlayerPhysics(int e);
 static void bi_runstandardplayerphysics(qcvm_t *vm) { SV_RunStandardPlayerPhysics(QC_PENT(vm, 0)); }

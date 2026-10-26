@@ -285,6 +285,10 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 		const char *why = strchr(text, ' ');
 		Con_Printf("server refused connection:%s\n", why ? why : "");
 		cl.state = ca_disconnected;
+	} else if (!strcmp(t->argv[0], "print")) {
+		/* rcon replies and other server messages */
+		const char *body = strchr(text, '\n');
+		Con_Printf("%s", body ? body + 1 : "");
 	} else if (!strcmp(t->argv[0], "infoResponse")) {
 		Con_Printf("%s: %s\n", NET_AdrToString(from), text + strlen("infoResponse"));
 	}
@@ -832,7 +836,7 @@ static void CL_Cmd_f(int argc, const char **argv)
 	CL_SendStringCmd(Cmd_Args());
 }
 
-static void CL_Serverinfo_f(int argc, const char **argv)
+void CL_PrintServerinfo(void)
 {
 	const char *p = cl.serverinfo;
 	while (*p == '\\') {
@@ -893,7 +897,6 @@ void CL_Init(void)
 	Cmd_Add("disconnect", CL_Disconnect_f);
 	Cmd_Add("reconnect", CL_Reconnect_f);
 	Cmd_Add("cmd", CL_Cmd_f);
-	Cmd_Add("serverinfo", CL_Serverinfo_f);
 	Cmd_Add("pingserver", CL_Ping_f);
 	Cmd_Add("netstats", CL_Netstats_f);
 	IN_Init();

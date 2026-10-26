@@ -9,6 +9,9 @@
 
 int developer = 0;
 static con_hook_fn con_hook, con_log_hook;
+static strbuf_t *con_redirect;
+
+void Con_Redirect(strbuf_t *sb) { con_redirect = sb; }
 
 void Con_SetHook(con_hook_fn fn) { con_hook = fn; }
 void Con_SetLogHook(con_hook_fn fn) { con_log_hook = fn; }
@@ -19,6 +22,8 @@ void Con_Print(const char *text)
 		con_hook(text);
 	if (con_log_hook)
 		con_log_hook(text);
+	if (con_redirect)
+		SB_AppendStr(con_redirect, text);
 	fputs(text, stdout);
 	fflush(stdout);
 }

@@ -141,6 +141,7 @@ bool CL_ForwardToServer(const char *line, int argc, const char **argv);
 const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size);
 int CL_ModelIndex(const char *name, bool add);
 void CL_SetModelBounds(int index);
+void CL_PrintServerinfo(void);
 
 /* cl_input.c */
 void IN_Init(void);

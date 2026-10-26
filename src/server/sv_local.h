@@ -149,6 +149,18 @@ void SV_ClientsPostThink(void);
 void SV_SendClientMessages(void);
 void SV_ClientsAfterPhysics(void);
 void SV_BroadcastPrecache(int kind, int index, const char *name);
+void SV_ClientPrint(client_t *c, int level, const char *text);
+void SV_BroadcastPrint(int level, const char *text); /* to every player and the console */
+void SV_StuffText(client_t *c, const char *text);    /* console text for the client to run */
+void SV_SetPaused(bool paused);
+/* sv_cmds.c: server console and admin commands, client fallbacks */
+void SV_InitCommands(void);
+bool SV_ClientCheatCommand(client_t *c, int argc, const char **argv);
+bool SV_CheckBanned(const netadr_t *from, char *reason, size_t reasonsize);
+bool SV_HandleRcon(const netadr_t *from, const char *text);
+int SV_SpawnEntitiesFromText(const char *data, int *first);
+bool SV_RequestPause(int requester, bool want); /* asks SV_ShouldPause first */
+bool SV_SetServerinfoKey(const char *key, const char *value);
 void SV_BroadcastLightstyle(int index, const char *style);
 void SV_BroadcastServerinfo(const char *key, const char *value);
 client_t *SV_ClientForEdict(int e);

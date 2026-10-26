@@ -50,6 +50,7 @@ add_library(bwserver STATIC
 	src/server/sv_client.c
 	src/server/sv_pmove.c
 	src/server/sv_route.c
+	src/server/sv_cmds.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 
