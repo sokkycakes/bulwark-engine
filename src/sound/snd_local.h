@@ -32,6 +32,19 @@ void S_CloseMusic(void);
 /* adds the music into a stereo float buffer at the device rate */
 void S_MixMusic(float *out, int frames, int rate, float volume);
 
+/* --- room effects (snd_dsp.c) ---------------------------------------------- */
+
+void S_InitDSPCvars(void);
+void S_InitDSP(int rate);
+void S_ShutdownDSP(void);
+/* the listener moved: picks the room effect for there (main thread) */
+void S_UpdateDSP(const float *origin);
+void S_SetReverbSlot(int slot);
+float S_DSPVolume(void);
+/* runs the room effect over mixed stereo frames (mixer thread) */
+void S_ApplyDSP(float *buf, int frames, float volume);
+void S_BI_SetupReverb(qcvm_t *vm);
+
 /* --- device -------------------------------------------------------------- */
 
 /* opens the device; it then calls S_PaintAudio from its own thread */

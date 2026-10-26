@@ -85,6 +85,7 @@ add_library(bwclient STATIC
 	src/render/r_model.c
 	src/render/r_scene.c
 	src/sound/snd_main.c
+	src/sound/snd_dsp.c
 	src/sound/snd_mem.c)
 target_link_libraries(bwclient PUBLIC bwserver)
 

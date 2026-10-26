@@ -41,7 +41,7 @@ static bool snd_active;  /* a device is open */
 static bool snd_started; /* S_Init ran */
 static int snd_rate = 44100;
 static float listener_origin[3], listener_right[3] = {0, -1, 0};
-static float master_volume = 0.7f, music_volume = 0.5f; /* copies the mixer reads */
+static float master_volume = 0.7f, music_volume = 0.5f, dsp_level = 1; /* copies the mixer reads */
 static cvar_t *s_volume, *s_bgmvolume, *s_nominaldist, *s_show;
 static float *mixbuf;
 static int mixbuf_frames;
@@ -236,11 +236,13 @@ void S_Update(const float *origin, const float *forward, const float *right, con
 	if (right)
 		memcpy(listener_right, right, sizeof(listener_right));
 	master_volume = BW_MAX(0.0f, s_volume->value);
+	dsp_level = S_DSPVolume();
 	music_volume = BW_MAX(0.0f, s_bgmvolume->value);
 	for (int i = 0; i < MAX_CHANNELS; i++)
 		if (channel_live(&channels[i]))
 			spatialise(&channels[i]);
 	SNDDMA_Unlock();
+	S_UpdateDSP(listener_origin);
 	if (s_show->ivalue) {
 		int n = 0;
 		for (int i = 0; i < MAX_CHANNELS; i++)
@@ -305,6 +307,7 @@ void S_PaintAudio(int16_t *out, int frames)
 		else if (channel_live(ch) && ch->sfx->loaded)
 			ch->pos += (double)ch->sfx->rate / snd_rate * ch->pitch * frames; /* silent, keep time */
 	}
+	S_ApplyDSP(mixbuf, frames, dsp_level); /* music stays out of the room */
 	S_MixMusic(mixbuf, frames, snd_rate, music_volume);
 	for (int i = 0; i < frames * 2; i++) {
 		float v = mixbuf[i];
@@ -395,6 +398,7 @@ void S_Init(bool headless)
 	Cmd_Add("play", Play_f);
 	Cmd_Add("stopsound", StopSound_f);
 	Cmd_Add("snd_restart", SndRestart_f);
+	S_InitDSPCvars();
 	if (headless)
 		return;
 	mixbuf_frames = 8192;
@@ -404,13 +408,18 @@ void S_Init(bool headless)
 	if (!snd_active) {
 		Con_Printf("no sound device: sound is off\n");
 		snd_started = false;
+		return;
 	}
+	SNDDMA_Lock();
+	S_InitDSP(snd_rate);
+	SNDDMA_Unlock();
 }
 
 void S_Shutdown(void)
 {
 	if (snd_active)
 		SNDDMA_Shutdown();
+	S_ShutdownDSP();
 	snd_active = snd_started = false;
 	S_CloseMusic();
 	S_FreeAllSfx();
@@ -492,8 +501,10 @@ static void bi_ambientsound(qcvm_t *vm)
 	start_ambient(QC_PVEC(vm, 0), S_FindSfx(QC_PSTR(vm, 1), true), QC_PFLOAT(vm, 2), QC_PFLOAT(vm, 3));
 }
 
+/* SetListener(origin, forward, right, up, reverbslot) */
 static void bi_setlistener(qcvm_t *vm)
 {
+	S_SetReverbSlot(vm->argc > 4 ? (int)QC_PFLOAT(vm, 4) : 0);
 	S_Update(QC_PVEC(vm, 0), QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3));
 }
 
@@ -522,4 +533,4 @@ const qc_builtin_t s_builtins[] = {
 	{"soundupdate", bi_soundupdate}, {"stopsound", bi_stopsound}, {"pointsound", bi_pointsound},
 	{"pointsound_proper", bi_pointsound}, {"localsound", bi_localsound}, {"ambientsound", bi_ambientsound},
 	{"SetListener", bi_setlistener}, {"getsoundtime", bi_getsoundtime}, {"soundlength", bi_soundlength},
-	{NULL, NULL}};
+	{"setup_reverb", S_BI_SetupReverb}, {NULL, NULL}};

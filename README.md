@@ -14,7 +14,8 @@ new games.
   opcode set, runtime strings with garbage collection, memalloc heap, and
   about 260 builtins. Self-tests in `tests/qc`.
 - **Dedicated server** (`bulwark-ded`): loads Q3-family BSPs (IBSP, RBSP,
-  FBSP) with brush collision, and Q1 BSPs for entities only. Runs Nuclide's
+  FBSP) with brush collision, and Q1 (BSP29, BSP2) and GoldSrc (BSP30) maps
+  with hull collision, including Half-Life's four hulls. Runs Nuclide's
   server progs, including the multiprogs it adds (game rules).
 - **Networking**: UDP with a reliable/unreliable channel, delta-compressed
   snapshots of `SendEntity` entities, client input with prediction, and
@@ -25,11 +26,16 @@ new games.
   patches) with lightmaps, sky boxes, `.mat` and shader-script materials,
   Quake MDL and IQM models with the light grid, skeletal IQM animation
   with the `skel_*` and tag builtins, a batched 2D layer with
-  TrueType fonts, screenshots. Nuclide's maps draw with its HUD.
+  TrueType fonts, screenshots. Nuclide's maps draw with its HUD. Q1 and
+  GoldSrc worlds (per-texture palettes, WAD3 textures, RGB lightmaps),
+  PVS culling, r_part particle scripts, decals and player sprays.
 - **Sound**: a software mixer over SDL audio with entity channels,
-  spatialisation, WAV and Ogg Vorbis samples, and streamed music.
-- Not yet: ragdolls, particles, decals, PVS, pk3 files, Q1 BSP
-  rendering and collision, the menu progs.
+  spatialisation, WAV and Ogg Vorbis samples, and streamed music. Room
+  effects: the game's reverb slots (`setup_reverb`), GoldSrc room types
+  (`room_type`), underwater muffling, and an automatic room guess.
+- **Input**: keyboard, mouse and SDL game controllers. Packages: `.pk3`
+  and Quake `.pak`.
+- Not yet: ragdolls, the menu progs.
 
 ## Building
 
@@ -70,3 +76,5 @@ Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 - [docs/spec/bsp.md](docs/spec/bsp.md)
 - [docs/spec/materials.md](docs/spec/materials.md)
 - [docs/spec/client-game.md](docs/spec/client-game.md)
+- [docs/spec/particles.md](docs/spec/particles.md)
+- [docs/spec/sound.md](docs/spec/sound.md)
