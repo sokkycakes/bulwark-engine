@@ -214,7 +214,8 @@ typedef struct {
 	int drawflags;
 	material_t *forceshader;
 	struct qcvm_s *vm;
-	int qcent;        /* entity in that vm, for skeletal state later */
+	int qcent;        /* entity in that vm */
+	int skeletonindex; /* a skeleton object of that vm posing the model, 0 for none */
 } rentity_t;
 
 typedef struct {

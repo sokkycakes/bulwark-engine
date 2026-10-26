@@ -238,6 +238,11 @@ static void set_frame_globals(qcvm_t *vm)
 	QC_SetGInt(vm, G.world, 0);
 }
 
+static const char *CL_ModelName(qcvm_t *vm, int index)
+{
+	return index > 0 && index < cl.nummodels ? cl.models[index].name : NULL;
+}
+
 bool CSQC_Load(void)
 {
 	static const qc_builtin_t *tables[8];
@@ -267,6 +272,7 @@ bool CSQC_Load(void)
 	if (!vm)
 		return false;
 	cl.csqc = vm;
+	vm->modelname = CL_ModelName;
 
 	memset(&CS, -1, sizeof(CS));
 	CS.player_localentnum = QC_GlobalOfs(vm, "player_localentnum");

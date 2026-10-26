@@ -23,11 +23,12 @@ new games.
   `hud.dat`, the console.
 - **Renderer**: OpenGL 3.3 core. Q3-family world surfaces (including
   patches) with lightmaps, sky boxes, `.mat` and shader-script materials,
-  Quake MDL and IQM models with the light grid, a batched 2D layer with
+  Quake MDL and IQM models with the light grid, skeletal IQM animation
+  with the `skel_*` and tag builtins, a batched 2D layer with
   TrueType fonts, screenshots. Nuclide's maps draw with its HUD.
 - **Sound**: a software mixer over SDL audio with entity channels,
   spatialisation, WAV and Ogg Vorbis samples, and streamed music.
-- Not yet: skeletal animation, particles, decals, PVS, pk3 files, Q1 BSP
+- Not yet: ragdolls, particles, decals, PVS, pk3 files, Q1 BSP
   rendering and collision, the menu progs.
 
 ## Building

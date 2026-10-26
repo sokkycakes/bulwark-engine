@@ -302,6 +302,7 @@ bool SV_SpawnServer(const char *mapname)
 	if (!vm)
 		return false;
 	vm->host = &sv;
+	vm->modelname = SV_ModelName;
 	sv.vm = vm;
 	SV_SetupClientSlots();
 	vm->reserved_edicts = svs.maxclients;
@@ -659,6 +660,22 @@ bool SV_ConsoleCommand(const char *line)
 	return sv.vm->globals[OFS_RETURN].f != 0;
 }
 
+/* "sv <command>": hands the rest of the line to the progs' ConsoleCmd,
+ * registered or not, as Nuclide's tools do with localcmd("sv ...") */
+static void SV_Cmd_f(int argc, const char **argv)
+{
+	int f;
+	if (argc < 2 || !sv.active || !sv.vm || !(f = QC_FindFunction(sv.vm, "ConsoleCmd"))) {
+		Con_Printf("sv <command>: runs a command of the server game\n");
+		return;
+	}
+	sv.vm->globals[OFS_PARM(0)].i = QC_NewString(sv.vm, Cmd_Args());
+	sv.vm->argc = 1;
+	QC_SetGInt(sv.vm, G.self, 0);
+	if (QC_Execute(sv.vm, f) && sv.vm->globals[OFS_RETURN].f == 0)
+		Con_Printf("server game: unknown command \"%s\"\n", argv[1]);
+}
+
 static void SV_Map_f(int argc, const char **argv)
 {
 	if (argc < 2) {
@@ -729,6 +746,7 @@ static void PrTrace_f(int argc, const char **argv)
 void SV_Init(void)
 {
 	Cmd_Add("pr_trace", PrTrace_f);
+	Cmd_Add("sv", SV_Cmd_f);
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");

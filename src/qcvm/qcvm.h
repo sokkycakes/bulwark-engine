@@ -208,6 +208,9 @@ struct qcvm_s {
 	int numprogs;
 	int curprogs;
 	const qc_builtin_t *const *tables;
+
+	/* the model name behind a modelindex, for skeletons and tags */
+	const char *(*modelname)(qcvm_t *vm, int modelindex);
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs
@@ -332,5 +335,12 @@ static inline void QC_SetEInt(qcvm_t *vm, int e, int ofs, int32_t v)
 /* builtin tables shared by every module */
 extern const qc_builtin_t qc_builtins_core[];
 extern const qc_builtin_t qc_builtins_extra[];
+/* skeleton objects and tags; every VM falls back to these */
+extern const qc_builtin_t qc_builtins_skel[];
+
+struct skelmodel_s;
+/* the bones of skeleton object id, for drawing */
+bool QC_SkelBones(qcvm_t *vm, int id, struct skelmodel_s **model, const float (**bones)[12], bool *absolute);
+void QC_SkelFreeVM(qcvm_t *vm);
 
 #endif

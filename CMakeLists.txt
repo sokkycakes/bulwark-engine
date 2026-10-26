@@ -17,7 +17,8 @@ add_library(bwcommon STATIC
 	src/common/cvar.c
 	src/common/cmd.c
 	src/common/fs.c
-	src/common/pmove.c)
+	src/common/pmove.c
+	src/common/skel.c)
 target_link_libraries(bwcommon PUBLIC m)
 
 add_library(bwnet STATIC
@@ -31,7 +32,8 @@ add_library(bwqcvm STATIC
 	src/qcvm/qc_exec.c
 	src/qcvm/qc_strings.c
 	src/qcvm/qc_builtins_core.c
-	src/qcvm/qc_extra.c)
+	src/qcvm/qc_extra.c
+	src/qcvm/qc_skel.c)
 target_link_libraries(bwqcvm PUBLIC bwcommon)
 
 add_executable(qcrun tools/qcrun.c)

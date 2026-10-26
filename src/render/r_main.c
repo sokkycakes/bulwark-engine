@@ -670,15 +670,6 @@ static void r_minus1(qcvm_t *vm) { QC_ReturnFloat(vm, -1); }
 static void r_zero(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 static void r_nop(qcvm_t *vm) { (void)vm; }
 
-static void r_gettaginfo(qcvm_t *vm)
-{
-	/* no tags yet: the entity's own origin */
-	int e = QC_PENT(vm, 0);
-	float *o = vm->fofs.origin >= 0 ? &QC_EdictFields(vm, e)[vm->fofs.origin].f : NULL;
-	float zero[3] = {0, 0, 0};
-	QC_ReturnVector(vm, o ? o : zero);
-}
-
 static void r_setcursormode(qcvm_t *vm) { cursor_mode = QC_PFLOAT(vm, 0) != 0; }
 static void r_getcursormode(qcvm_t *vm) { QC_ReturnFloat(vm, cursor_mode ? 1 : 0); }
 
@@ -707,7 +698,7 @@ const qc_builtin_t r_builtins[] = {
 	{"project", r_project}, {"unproject", r_unproject}, {"shaderforname", r_shaderforname},
 	{"getlight", r_getlight}, {"modelframecount", r_modelframecount}, {"frameforname", r_frameforname},
 	{"frametoname", r_frametoname}, {"frameduration", r_frameduration}, {"frameforaction", r_minus1},
-	{"gettagindex", r_zero}, {"gettaginfo", r_gettaginfo}, {"setcursormode", r_setcursormode},
+	{"setcursormode", r_setcursormode},
 	{"getcursormode", r_getcursormode}, {"getmousepos", r_getmousepos}, {"setwindowcaption", r_setwindowcaption},
 	{"spriteframe", r_spriteframe},
 	/* not done yet: accepted so games carry on */
@@ -716,11 +707,6 @@ const qc_builtin_t r_builtins[] = {
 	{"dynamiclight_set", r_nop}, {"dynamiclight_spawnstatic", r_zero}, {"pointparticles", r_nop},
 	{"trailparticles", r_nop}, {"boxparticles", r_nop}, {"particleeffectquery", r_zero},
 	{"getmodeleventidx", r_zero}, {"getnextmodelevent", r_zero}, {"processmodelevents", r_nop},
-	{"skel_create", r_zero}, {"skel_build", r_zero}, {"skel_delete", r_nop}, {"skel_get_numbones", r_zero},
-	{"skel_get_bonename", r_zero}, {"skel_get_boneparent", r_zero}, {"skel_find_bone", r_zero},
-	{"skel_get_bonerel", r_zero}, {"skel_get_boneabs", r_zero}, {"skel_set_bone", r_nop},
-	{"skel_premul_bone", r_nop}, {"skel_premul_bones", r_nop}, {"skel_postmul_bone", r_nop},
-	{"skel_copybones", r_nop}, {"skel_ragupdate", r_zero}, {"skel_mmap", r_zero}, {"skel_set_bone_world", r_nop},
 	{"skinforname", r_zero}, {"cin_open", r_zero}, {"cin_close", r_nop}, {"cin_setstate", r_nop},
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
 	{"r_uploadimage", r_nop}, {"r_readimage", r_zero}, {"getsurfacenumpoints", r_zero},

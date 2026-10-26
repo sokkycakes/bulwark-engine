@@ -13,4 +13,5 @@ mkdir -p "$OUT"
 (cd "$HERE/qc" && "$FTEQCC" -Tfte progs.src > "$OUT/vmtest.log" 2>&1) || { cat "$OUT/vmtest.log"; exit 1; }
 mv "$HERE/qc/vmtest.dat" "$OUT/vmtest.dat"
 rm -f "$HERE/qc/vmtest.lno"
+cd "$HERE/.."
 "$QCRUN" "$OUT/vmtest.dat" main

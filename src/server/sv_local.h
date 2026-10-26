@@ -210,6 +210,7 @@ bool SV_DropToFloor(int e);
 void SV_Physics(void);
 
 extern const qc_builtin_t sv_builtins[];
+const char *SV_ModelName(qcvm_t *vm, int index);
 
 /* world builtins that work on whichever VM and world context is current;
  * the client calls them with its own context set */

@@ -35,6 +35,9 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 ## Still missing for Nuclide's server
 
 Seen while running all 42 maps in Nuclide's `base` game:
-`frameforaction`, `gettagindex`, `processmodelevents` and the `skel_*`
-family (need skeletal models on the server). `runstandardplayerphysics` is
-in place now that there are clients.
+`processmodelevents` and ragdolls (`skel_ragupdate`). The `skel_*` family,
+`gettagindex`/`gettaginfo` and the frame queries now work on IQM models in
+both VMs (see [models.md](models.md)); `frameforaction` returns -1.
+`runstandardplayerphysics` is in place now that there are clients. The `sv`
+console command hands a line to the server game's `ConsoleCmd`, as
+Nuclide's tools expect.

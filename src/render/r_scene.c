@@ -16,6 +16,7 @@ static struct {
 	qcvm_t *vm;
 	int modelindex, origin, angles, frame, frame2, lerpfrac, frame1time, frame2time, skin, scale, alpha;
 	int colormod, glowmod, renderflags, effects, drawmask, predraw, forceshader, entnum, drawflags;
+	int skeletonindex;
 } EF;
 
 static void lookup_fields(qcvm_t *vm)
@@ -27,6 +28,7 @@ static void lookup_fields(qcvm_t *vm)
 	FLD(modelindex); FLD(origin); FLD(angles); FLD(frame); FLD(frame2); FLD(lerpfrac); FLD(frame1time);
 	FLD(frame2time); FLD(skin); FLD(scale); FLD(alpha); FLD(colormod); FLD(glowmod); FLD(renderflags);
 	FLD(effects); FLD(drawmask); FLD(predraw); FLD(forceshader); FLD(entnum); FLD(drawflags);
+	FLD(skeletonindex);
 #undef FLD
 }
 
@@ -223,6 +225,7 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	e->frame1time = efloat(vm, ent, EF.frame1time, 0);
 	e->frame2time = efloat(vm, ent, EF.frame2time, 0);
 	e->skin = (int)efloat(vm, ent, EF.skin, 0);
+	e->skeletonindex = (int)efloat(vm, ent, EF.skeletonindex, 0);
 	e->scale = efloat(vm, ent, EF.scale, 1);
 	if (e->scale == 0)
 		e->scale = 1;

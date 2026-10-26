@@ -8,6 +8,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* model 1 is the skeletal test model, found from the source tree's root */
+static const char *test_modelname(qcvm_t *vm, int index)
+{
+	return index == 1 ? "tests/data/skeltest.iqm" : NULL;
+}
+
 int main(int argc, char **argv)
 {
 	static const qc_builtin_t *const tables[] = {qc_builtins_core, qc_builtins_extra, NULL};
@@ -44,6 +50,7 @@ int main(int argc, char **argv)
 	free(data);
 	if (!vm)
 		return 2;
+	vm->modelname = test_modelname;
 	if (!QC_FindFunction(vm, func)) {
 		fprintf(stderr, "no function %s\n", func);
 		return 2;

@@ -15,6 +15,8 @@ void end_sys_globals;
 .int ival;
 .float flags;
 void end_sys_fields;
+.float modelindex, frame2, lerpfrac, frame1time, frame2time, skeletonindex, scale;
+.vector angles;
 
 void(string s, ...) print = #0:print;
 void(string s, ...) error = #0:error;
@@ -55,6 +57,22 @@ void(string name, ...) callfunction = #0:callfunction;
 float(string s) isfunction = #0:isfunction;
 float(__variant f) checkbuiltin = #0:checkbuiltin;
 void() not_a_real_builtin = #0:not_a_real_builtin;
+void(vector ang) makevectors = #0:makevectors;
+float(float modlindex, optional float useabstransforms) skel_create = #0:skel_create;
+float(float skel, entity ent, float modelindex, float retainfrac, float firstbone, float lastbone, optional float addfrac) skel_build = #0:skel_build;
+float(float skel) skel_get_numbones = #0:skel_get_numbones;
+string(float skel, float bonenum) skel_get_bonename = #0:skel_get_bonename;
+float(float skel, float bonenum) skel_get_boneparent = #0:skel_get_boneparent;
+float(float skel, string tagname) skel_find_bone = #0:skel_find_bone;
+vector(float skel, float bonenum) skel_get_bonerel = #0:skel_get_bonerel;
+vector(float skel, float bonenum) skel_get_boneabs = #0:skel_get_boneabs;
+void(float skel, float bonenum, vector org, optional vector fwd, optional vector right, optional vector up) skel_set_bone = #0:skel_set_bone;
+void(float skel, float bonenum, vector org, optional vector fwd, optional vector right, optional vector up) skel_premul_bone = #0:skel_premul_bone;
+void(float skel, float bonenum, vector org, optional vector fwd, optional vector right, optional vector up) skel_postmul_bone = #0:skel_postmul_bone;
+void(float skeldst, float skelsrc, float startbone, float entbone) skel_copybones = #0:skel_copybones;
+void(float skel) skel_delete = #0:skel_delete;
+float(entity ent, string tagname) gettagindex = #0:gettagindex;
+vector(entity ent, float tagindex) gettaginfo = #0:gettaginfo;
 
 float failures;
 float checks;
@@ -262,6 +280,66 @@ void() test_builtin_state = {
 	check(json_get_float(json_find_object_child(j, "c")) == 2.5, "json number");
 };
 
+float(vector a, vector b) near = { vector d = a - b; return d * d < 0.01; };
+
+/* tests/data/skeltest.iqm (tools/mkiqm_test.py): joint "tip" at x=32 turns
+ * about +Z by 90 degrees per raw frame; animation 1 ("bend") runs at 10 fps */
+void() test_skeletons = {
+	float s = skel_create(1), s2;
+	entity e = spawn();
+	vector o;
+	check(s > 0, "skel_create");
+	check(skel_create(2) == 0, "skel_create without a model");
+	check(skel_get_numbones(s) == 2, "skel_get_numbones");
+	check(skel_get_bonename(s, 2) == "tip" && skel_get_boneparent(s, 2) == 1, "bone name and parent");
+	check(skel_find_bone(s, "tip") == 2 && skel_find_bone(s, "nope") == 0, "skel_find_bone");
+	o = skel_get_boneabs(s, 2);
+	check(near(o, '32 0 0') && near(v_forward, '1 0 0') && near(v_right, '0 -1 0'), "bind pose");
+	e.modelindex = 1;
+	e.frame = 1;
+	e.frame1time = 0.1;
+	skel_build(s, e, 1, 0, 0, 0, 1);
+	o = skel_get_boneabs(s, 2);
+	check(near(o, '32 0 0') && near(v_forward, '0 1 0') && near(v_up, '0 0 1'), "skel_build frame");
+	e.frame1time = 0.05;
+	skel_build(s, e, 1, 0, 0, 0, 1);
+	skel_get_bonerel(s, 2);
+	check(near(v_forward, '0.7071 0.7071 0'), "skel_build between frames");
+	e.frame = 0;
+	e.frame2 = 1;
+	e.frame2time = 0.1;
+	e.lerpfrac = 1;
+	skel_build(s, e, 1, 0, 0, 0, 1);
+	skel_get_bonerel(s, 2);
+	check(near(v_forward, '0 1 0'), "skel_build lerpfrac");
+	e.lerpfrac = 0;
+	e.frame2 = 0;
+	skel_build(s, e, 1, 0, 0, 0, 1);
+	makevectors('0 0 0');
+	skel_premul_bone(s, 2, '0 0 10');
+	check(near(skel_get_boneabs(s, 2), '32 0 10'), "skel_premul_bone");
+	skel_set_bone(s, 1, '0 0 5', '0 1 0', '1 0 0', '0 0 1');
+	o = skel_get_boneabs(s, 2);
+	check(near(o, '0 32 15') && near(v_forward, '0 1 0'), "skel_set_bone moves children");
+	s2 = skel_create(1, 1);
+	skel_copybones(s2, s, 0, 0);
+	check(near(skel_get_boneabs(s2, 2), '0 32 15') && near(skel_get_bonerel(s2, 2), '32 0 10'), "skel_copybones into absolute");
+	skel_delete(s2);
+
+	check(gettagindex(e, "tip") == 2 && gettagindex(e, "nope") == 0, "gettagindex");
+	e.origin = '100 0 0';
+	e.angles = '0 90 0';
+	e.frame = 1;
+	e.frame1time = 0.1;
+	o = gettaginfo(e, 2);
+	check(near(o, '100 32 0') && near(v_forward, '-1 0 0'), "gettaginfo from frames");
+	e.skeletonindex = s;
+	e.angles = '0 0 0';
+	o = gettaginfo(e, 2);
+	check(near(o, '100 32 15'), "gettaginfo from the skeleton object");
+	remove(e);
+};
+
 void() main = {
 	test_float();
 	test_int();
@@ -271,6 +349,7 @@ void() main = {
 	test_arrays();
 	test_entities();
 	test_builtin_state();
+	test_skeletons();
 	print(sprintf("%d checks, %d failures\n", checks, failures));
 	if (failures)
 		error("vm test failed");

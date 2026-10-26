@@ -217,6 +217,9 @@ static qc_builtin_fn lookup_builtin(const qc_builtin_t *const *tables, const cha
 		for (const qc_builtin_t *b = tables[t]; b->name; b++)
 			if (!strcmp(b->name, name))
 				return b->fn;
+	for (const qc_builtin_t *b = qc_builtins_skel; b->name; b++)
+		if (!strcmp(b->name, name))
+			return b->fn;
 	return NULL;
 }
 
@@ -685,6 +688,7 @@ void QC_Free(qcvm_t *vm)
 			vm_list[i] = vm_list[--vm_count];
 			break;
 		}
+	QC_SkelFreeVM(vm);
 	if (vm->extra)
 		QC_ExtraFree(vm);
 	Mem_Free(vm->extra);

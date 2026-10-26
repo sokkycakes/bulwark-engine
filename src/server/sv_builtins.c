@@ -4,6 +4,7 @@
 #include "sv_local.h"
 #include "../common/cvar.h"
 #include "../common/cmd.h"
+#include "../common/skel.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -355,8 +356,57 @@ static void bi_getentitytoken(qcvm_t *vm)
 	QC_ReturnString(vm, tok);
 }
 
-static void bi_frameforname(qcvm_t *vm) { QC_ReturnFloat(vm, -1); /* TODO: model framegroups */ }
-static void bi_zero(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
+/* frame queries: skeletal models only so far (alias models need their
+ * frame names read on the server too) */
+static skelmodel_t *skel_arg(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	return i > 0 && i < sv.nummodels ? Skel_LoadModel(sv.models[i]) : NULL;
+}
+
+static framegroup_t *group_arg(qcvm_t *vm, int n)
+{
+	skelmodel_t *m = skel_arg(vm);
+	int f = (int)QC_PFLOAT(vm, n);
+	return m && f >= 0 && f < m->numanims ? &m->anims[f] : NULL;
+}
+
+static void bi_frameforname(qcvm_t *vm)
+{
+	skelmodel_t *m = skel_arg(vm);
+	const char *name = QC_PSTR(vm, 1);
+	for (int i = 0; m && i < m->numanims; i++)
+		if (!Str_ICmp(m->anims[i].name, name)) {
+			QC_ReturnFloat(vm, (float)i);
+			return;
+		}
+	QC_ReturnFloat(vm, -1);
+}
+
+static void bi_frameduration(qcvm_t *vm)
+{
+	framegroup_t *g = group_arg(vm, 1);
+	QC_ReturnFloat(vm, g ? g->count / g->fps : 0);
+}
+
+static void bi_frametoname(qcvm_t *vm)
+{
+	framegroup_t *g = group_arg(vm, 1);
+	QC_ReturnString(vm, g ? g->name : "");
+}
+
+static void bi_modelframecount(qcvm_t *vm)
+{
+	skelmodel_t *m = skel_arg(vm);
+	QC_ReturnFloat(vm, m ? (float)m->numanims : 0);
+}
+
+static void bi_minus1(qcvm_t *vm) { QC_ReturnFloat(vm, -1); }
+
+const char *SV_ModelName(qcvm_t *vm, int index)
+{
+	return index > 0 && index < sv.nummodels ? sv.models[index] : NULL;
+}
 
 
 
@@ -385,7 +435,8 @@ const qc_builtin_t sv_builtins[] = {
 	{"setserverkey", bi_setserverkey}, {"setlocalinfo", bi_setlocalinfo},
 	{"getlocalinfo", bi_getlocalinfo}, {"changelevel", bi_changelevel},
 	{"makestatic", bi_makestatic}, {"registercommand", bi_registercommand}, {"getentitytoken", bi_getentitytoken},
-	{"frameforname", bi_frameforname}, {"frameduration", bi_zero}, {"modelframecount", bi_zero},
+	{"frameforname", bi_frameforname}, {"frameduration", bi_frameduration}, {"frametoname", bi_frametoname},
+	{"modelframecount", bi_modelframecount}, {"frameforaction", bi_minus1},
 	{"setattachment", bi_dropped}, {"logfrag", bi_dropped},
 	{"openportal", bi_dropped},
 	{NULL, NULL}};

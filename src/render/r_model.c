@@ -3,6 +3,7 @@
  * docs/spec/models.md. ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/skel.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -15,63 +16,6 @@ static float rdf(const uint8_t *p)
 	int32_t i = rd32(p);
 	memcpy(&f, &i, 4);
 	return f;
-}
-
-/* --- framegroups ------------------------------------------------------------ */
-
-typedef struct {
-	int first, count;
-	float fps;
-	bool loop;
-	char name[32];
-} framegroup_t;
-
-/* "first count fps loop // name" per line */
-static framegroup_t *load_framegroups(const char *model, int *count)
-{
-	char path[160];
-	size_t len;
-	char *text, *p;
-	framegroup_t *g = NULL;
-	int n = 0, cap = 0;
-	snprintf(path, sizeof(path), "%s.framegroups", model);
-	text = FS_LoadFile(path, &len);
-	*count = 0;
-	if (!text)
-		return NULL;
-	for (p = text; *p;) {
-		char line[256];
-		size_t l = 0;
-		int first, cnt, loop = 1;
-		float fps;
-		while (*p && *p != '\n' && l < sizeof(line) - 1)
-			line[l++] = *p++;
-		line[l] = 0;
-		if (*p)
-			p++;
-		if (sscanf(line, "%d %d %f %d", &first, &cnt, &fps, &loop) >= 3) {
-			char *c = strstr(line, "//");
-			if (n == cap) {
-				cap = cap ? cap * 2 : 32;
-				g = Mem_Realloc(g, sizeof(*g) * cap);
-			}
-			memset(&g[n], 0, sizeof(g[n]));
-			g[n].first = first;
-			g[n].count = cnt > 0 ? cnt : 1;
-			g[n].fps = fps > 0 ? fps : 10;
-			g[n].loop = loop != 0;
-			if (c) {
-				c += 2;
-				while (*c == ' ')
-					c++;
-				Str_Copy(g[n].name, c, sizeof(g[n].name));
-			}
-			n++;
-		}
-	}
-	Mem_Free(text);
-	*count = n;
-	return g;
 }
 
 /* --- alias models (.mdl) ----------------------------------------------------- */
@@ -360,7 +304,7 @@ static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 			if (v > mod->maxs[k])
 				mod->maxs[k] = v;
 		}
-	a->groups = load_framegroups(mod->name, &a->numgroups);
+	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
 	mod->alias = a;
 	mod->type = MOD_ALIAS;
 	mod->numframes = a->numgroups ? a->numgroups : a->numframes;
@@ -386,18 +330,21 @@ typedef struct iqm_s {
 	iqmmesh_t *meshes;
 	int nummeshes;
 	GLuint vao, vbo, ebo;
-	framegroup_t *anims;
+	framegroup_t *anims;  /* points into skel when there is one */
 	int numanims;
+	/* skinning: up to four joints per vertex */
+	skelmodel_t *skel;
+	uint8_t (*blendidx)[4];
+	float (*blendw)[4];
 } iqm_t;
 
-enum { IQM_POSITION = 0, IQM_TEXCOORD = 1, IQM_NORMAL = 2, IQM_COLOR = 6 };
+enum { IQM_POSITION = 0, IQM_TEXCOORD = 1, IQM_NORMAL = 2, IQM_BLENDINDEXES = 4, IQM_BLENDWEIGHTS = 5, IQM_COLOR = 6 };
 enum { IQM_UBYTE = 1, IQM_FLOAT = 7 };
 
 static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 {
 	iqm_t *q;
 	uint32_t num_text, ofs_text, num_meshes, ofs_meshes, num_va, num_verts, ofs_va, num_tris, ofs_tris;
-	uint32_t num_anims, ofs_anims;
 	const char *text;
 	if (size < 124 || memcmp(d, "INTERQUAKEMODEL", 16) || rd32(d + 16) != 2)
 		return false;
@@ -410,11 +357,9 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	ofs_va = (uint32_t)rd32(d + 52);
 	num_tris = (uint32_t)rd32(d + 56);
 	ofs_tris = (uint32_t)rd32(d + 60);
-	num_anims = (uint32_t)rd32(d + 88);
-	ofs_anims = (uint32_t)rd32(d + 92);
 	if ((uint64_t)ofs_text + num_text > size || (uint64_t)ofs_meshes + num_meshes * 24ull > size ||
 	    (uint64_t)ofs_va + num_va * 20ull > size || (uint64_t)ofs_tris + num_tris * 12ull > size ||
-	    (uint64_t)ofs_anims + num_anims * 20ull > size || num_verts > (1u << 24))
+	    num_verts > (1u << 24))
 		return false;
 	text = (const char *)d + ofs_text;
 	q = Mem_Alloc(sizeof(*q));
@@ -422,6 +367,13 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	q->verts = Mem_Alloc(sizeof(rvert_t) * (num_verts + 1));
 	for (uint32_t i = 0; i < num_verts; i++)
 		memset(q->verts[i].color, 255, 4);
+	q->skel = Skel_LoadModel(mod->name);
+	if (q->skel) {
+		q->blendidx = Mem_Alloc(sizeof(*q->blendidx) * (num_verts + 1));
+		q->blendw = Mem_Alloc(sizeof(*q->blendw) * (num_verts + 1));
+		for (uint32_t i = 0; i < num_verts; i++)
+			q->blendw[i][0] = 1;
+	}
 	for (uint32_t a = 0; a < num_va; a++) {
 		const uint8_t *va = d + ofs_va + a * 20;
 		uint32_t type = (uint32_t)rd32(va), fmt = (uint32_t)rd32(va + 8), comps = (uint32_t)rd32(va + 12);
@@ -442,6 +394,12 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 					v->normal[k] = rdf(src + k * 4);
 			else if (type == IQM_COLOR && fmt == IQM_UBYTE && comps >= 4)
 				memcpy(v->color, src, 4);
+			else if (type == IQM_BLENDINDEXES && q->skel && fmt == IQM_UBYTE && comps >= 4)
+				for (int k = 0; k < 4; k++)
+					q->blendidx[i][k] = src[k] < q->skel->numjoints ? src[k] : 0;
+			else if (type == IQM_BLENDWEIGHTS && q->skel && (fmt == IQM_UBYTE || fmt == IQM_FLOAT) && comps >= 4)
+				for (int k = 0; k < 4; k++)
+					q->blendw[i][k] = fmt == IQM_UBYTE ? src[k] / 255.0f : rdf(src + k * 4);
 		}
 	}
 	q->numindexes = (int)num_tris * 3;
@@ -477,17 +435,11 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		q->meshes[m].firstindex = (int)ft * 3;
 		q->meshes[m].numindexes = (int)nt * 3;
 	}
-	/* animations, as framegroups for frameforname and friends */
-	q->numanims = (int)num_anims;
-	q->anims = Mem_Alloc(sizeof(framegroup_t) * (num_anims + 1));
-	for (uint32_t i = 0; i < num_anims; i++) {
-		const uint8_t *an = d + ofs_anims + i * 20;
-		uint32_t name = (uint32_t)rd32(an);
-		q->anims[i].first = rd32(an + 4);
-		q->anims[i].count = rd32(an + 8);
-		q->anims[i].fps = rdf(an + 12);
-		q->anims[i].loop = (rd32(an + 16) & 1) != 0;
-		Str_Copy(q->anims[i].name, name < num_text ? text + name : "", sizeof(q->anims[i].name));
+	/* animations, as framegroups for frameforname and friends; a
+	 * .framegroups file next to the model was already applied */
+	if (q->skel) {
+		q->anims = q->skel->anims;
+		q->numanims = q->skel->numanims;
 	}
 	for (int k = 0; k < 3; k++) {
 		mod->mins[k] = 1e30f;
@@ -508,7 +460,8 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		qglGenBuffers(1, &q->ebo);
 		qglBindVertexArray(q->vao);
 		qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
-		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * num_verts), q->verts, GL_STATIC_DRAW);
+		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * num_verts), q->verts,
+		              q->skel ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, q->ebo);
 		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * q->numindexes), q->indices, GL_STATIC_DRAW);
 		R_SetupVertexAttribs();
@@ -516,14 +469,9 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	}
 	mod->iqm = q;
 	mod->type = MOD_IQM;
-	{
-		int ng;
-		framegroup_t *g = load_framegroups(mod->name, &ng);
-		if (g) {
-			Mem_Free(q->anims);
-			q->anims = g;
-			q->numanims = ng;
-		}
+	if (!q->skel) {
+		/* a static mesh can still name poses of nothing, as some tools write */
+		q->anims = Skel_LoadFramegroups(mod->name, &q->numanims);
 	}
 	mod->numframes = q->numanims;
 	return true;
@@ -559,7 +507,10 @@ static void free_model(rmodel_t *m)
 		Mem_Free(q->verts);
 		Mem_Free(q->indices);
 		Mem_Free(q->meshes);
-		Mem_Free(q->anims);
+		if (!q->skel)
+			Mem_Free(q->anims);
+		Mem_Free(q->blendidx);
+		Mem_Free(q->blendw);
 		Mem_Free(q);
 	}
 	Mem_Free(m);
@@ -671,6 +622,62 @@ float R_FrameDuration(rmodel_t *m, int frame)
 }
 
 /* --- drawing ---------------------------------------------------------------- */
+
+/* poses a skeletal IQM for e and uploads the skinned vertices: the bones
+ * come from the entity's skeleton object when it has one, otherwise from
+ * its frame fields */
+static void skin_iqm(iqm_t *q, rentity_t *e)
+{
+	static bonemat_t *bones, *skin;
+	static int maxbones;
+	static rvert_t *out;
+	static int maxverts;
+	skelmodel_t *m = q->skel, *sm;
+	const float(*sb)[12];
+	bool absolute;
+	int n = m->numjoints;
+	if (n > maxbones) {
+		maxbones = n;
+		bones = Mem_Realloc(bones, sizeof(bonemat_t) * n);
+		skin = Mem_Realloc(skin, sizeof(bonemat_t) * n);
+	}
+	if (q->numverts > maxverts) {
+		maxverts = q->numverts;
+		out = Mem_Realloc(out, sizeof(rvert_t) * maxverts);
+	}
+	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
+		int k = BW_MIN(n, sm->numjoints);
+		Skel_SampleRelative(m, -1, 0, bones); /* any bones the object lacks */
+		if (absolute) {
+			Skel_ToAbsolute(m, bones, bones);
+			memcpy(bones, sb, sizeof(bonemat_t) * k);
+		} else {
+			memcpy(bones, sb, sizeof(bonemat_t) * k);
+			Skel_ToAbsolute(m, bones, bones);
+		}
+	} else {
+		Skel_EntityPose(m, e->frame, e->frame1time, e->frame2, e->frame2time, e->lerpfrac, bones);
+		Skel_ToAbsolute(m, bones, bones);
+	}
+	for (int j = 0; j < n; j++)
+		Bone_Multiply(skin[j], bones[j], m->invbind[j]);
+	for (int i = 0; i < q->numverts; i++) {
+		const rvert_t *v = &q->verts[i];
+		rvert_t *o = &out[i];
+		bonemat_t mat;
+		const float *w = q->blendw[i];
+		const uint8_t *b = q->blendidx[i];
+		*o = *v;
+		for (int k = 0; k < 12; k++)
+			mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
+		Bone_Transform(mat, v->xyz, o->xyz);
+		for (int r = 0; r < 3; r++)
+			o->normal[r] = mat[r * 4] * v->normal[0] + mat[r * 4 + 1] * v->normal[1] + mat[r * 4 + 2] * v->normal[2];
+		VectorNormalize(o->normal);
+	}
+	qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
+	qglBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(sizeof(rvert_t) * q->numverts), out);
+}
 
 /* the pose an animation frame shows at a time into it */
 static int alias_pose(alias_t *a, int frame, float t)
@@ -813,6 +820,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		R_StreamDraw(GL_TRIANGLES, buf, a->numoutverts, a->indices, a->numtris * 3);
 	} else if (m->type == MOD_IQM && m->iqm->vao) {
 		iqm_t *q = m->iqm;
+		if (q->skel)
+			skin_iqm(q, e);
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
