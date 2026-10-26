@@ -30,7 +30,7 @@ static void WriteConfig_f(int argc, const char **argv)
 	strbuf_t sb = {0};
 	char path[1024];
 	FILE *f;
-	SB_AppendStr(&sb, "// written by Bulwark; edit autoexec.cfg instead\n");
+	SB_AppendStr(&sb, "// written by Bulwark: put your own settings in autoexec.cfg\n");
 	Key_WriteBindings(&sb);
 	for (cvar_t *v = Cvar_First(); v; v = v->next) {
 		if (!(v->flags & CVAR_ARCHIVE) || (v->flags & CVAR_READONLY))
