@@ -41,3 +41,13 @@ both VMs (see [models.md](models.md)); `frameforaction` returns -1.
 `runstandardplayerphysics` is in place now that there are clients. The `sv`
 console command hands a line to the server game's `ConsoleCmd`, as
 Nuclide's tools expect.
+
+## Autocvars
+
+A global named `autocvar_<name>` (float, int, vector or string) reads the
+cvar `<name>`. When the progs is loaded and the cvar doesn't exist yet, it
+is created with the global's initial value as its default. Once any cvar
+changes, globals are refreshed before the next top-level QC call. A write
+from QC changes only the global. Bound in `src/qcvm/qc_autocvar.c`.
+
+`random()` is seeded from the clock when a VM loads, so each run differs.

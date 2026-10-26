@@ -24,6 +24,9 @@ typedef struct cvar_s {
 	struct cvar_s *next;
 } cvar_t;
 
+/* bumped by every change to any cvar */
+extern int cvar_generation;
+
 cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *description);
 cvar_t *Cvar_Find(const char *name);
 void Cvar_Set(const char *name, const char *value);

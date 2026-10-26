@@ -689,6 +689,8 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 		return false;
 	}
 	const int idx = QC_FUNC_INDEX(fnum);
+	if (!vm->exec_depth)
+		QC_SyncAutocvars(vm);
 	executing_count++;
 	vm->exec_depth++;
 	if (setjmp(jb)) {
