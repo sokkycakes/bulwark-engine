@@ -342,19 +342,41 @@ static void r_stringwidth(qcvm_t *vm)
 	QC_ReturnFloat(vm, R_StringWidth(QC_PSTR(vm, 0), sx, sy, QC_PFLOAT(vm, 1) != 0));
 }
 
+/* drawfontscale scales all text: 1 is an 8 pixel cell */
+static void text_scale(qcvm_t *vm, float *sx, float *sy)
+{
+	static qcvm_t *last;
+	static int ofs = -1;
+	if (vm != last) {
+		last = vm;
+		ofs = QC_GlobalOfs(vm, "drawfontscale");
+	}
+	*sx = *sy = 8;
+	if (ofs >= 0) {
+		const float *s = &vm->globals[ofs].f;
+		if (s[0] > 0)
+			*sx = 8 * s[0];
+		if (s[1] > 0)
+			*sy = 8 * s[1];
+	}
+}
+
 static void r_drawtextfield(qcvm_t *vm)
 {
-	/* word wrapped text in a box; alignment bits are right, top, left, bottom */
+	/* word wrapped text in a box. Alignment bits: 1 left, 2 top, 4 right,
+	 * 8 bottom; an axis with both or neither bit set is centred */
+	enum { MAX_LINES = 256 };
 	float *pos = QC_PVEC(vm, 0), *size = QC_PVEC(vm, 1);
 	int align = (int)QC_PFLOAT(vm, 2);
 	const char *text = QC_PSTR(vm, 3);
 	static const float white[3] = {1, 1, 1};
-	float lineh = 8, y = pos[1];
-	int lines = 0;
-	char line[1024];
+	static char lines[MAX_LINES][1024];
+	float sx, sy, y;
+	int nlines = 0, shown;
 	size_t n = 0;
 	const char *p = text, *lastspace = NULL;
-	(void)align;
+	char line[1024];
+	text_scale(vm, &sx, &sy);
 	use_drawfont(vm);
 	while (*p || n) {
 		bool flush = !*p || *p == '\n';
@@ -363,7 +385,7 @@ static void r_drawtextfield(qcvm_t *vm)
 			line[n + 1] = 0;
 			if (*p == ' ')
 				lastspace = p;
-			if (R_StringWidth(line, lineh, lineh, true) > size[0] && lastspace) {
+			if (R_StringWidth(line, sx, sy, true) > size[0] && lastspace) {
 				/* break at the last space */
 				n -= (size_t)(p - lastspace);
 				p = lastspace;
@@ -374,10 +396,9 @@ static void r_drawtextfield(qcvm_t *vm)
 		}
 		if (flush) {
 			line[n] = 0;
-			if (y + lineh <= pos[1] + size[1] + 0.5f)
-				R_DrawString(pos[0], y, line, lineh, lineh, white, 1, 0, true);
-			y += lineh;
-			lines++;
+			if (nlines < MAX_LINES)
+				memcpy(lines[nlines], line, n + 1);
+			nlines++;
 			n = 0;
 			lastspace = NULL;
 			if (!*p)
@@ -385,7 +406,25 @@ static void r_drawtextfield(qcvm_t *vm)
 		}
 		p++;
 	}
-	QC_ReturnFloat(vm, (float)lines);
+	shown = nlines < MAX_LINES ? nlines : MAX_LINES;
+	/* only whole lines that fit are drawn */
+	while (shown > 0 && shown * sy > size[1] + 0.5f)
+		shown--;
+	switch (align & (2 | 8)) {
+	case 2: y = pos[1]; break;
+	case 8: y = pos[1] + size[1] - shown * sy; break;
+	default: y = pos[1] + (size[1] - shown * sy) / 2; break;
+	}
+	for (int i = 0; i < shown; i++, y += sy) {
+		float w = R_StringWidth(lines[i], sx, sy, true), x;
+		switch (align & (1 | 4)) {
+		case 1: x = pos[0]; break;
+		case 4: x = pos[0] + size[0] - w; break;
+		default: x = pos[0] + (size[0] - w) / 2; break;
+		}
+		R_DrawString(x, y, lines[i], sx, sy, white, 1, 0, true);
+	}
+	QC_ReturnFloat(vm, (float)nlines);
 }
 
 static void r_drawsetcliparea(qcvm_t *vm)
