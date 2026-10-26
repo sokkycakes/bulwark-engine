@@ -116,6 +116,7 @@ add_library(bwclient STATIC
 	src/render/r_decal.c
 	src/render/r_part.c
 	src/render/r_tools.c
+	src/render/r_rtlights.c
 	src/render/r_hud.c
 	src/render/r_draw.c
 	src/render/r_model.c

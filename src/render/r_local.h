@@ -296,6 +296,7 @@ typedef struct {
 	/* the last view that filled most of the screen, for console tests and
 	 * the screenshots that redraw it */
 	float mainorigin[3], mainforward[3], mainangles[3], mainfov[2];
+	float mainviewproj[16], mainvp[4]; /* its matrix and viewport (virtual pixels) */
 	bool havemain, maindrawworld;
 	/* VF_SKYROOM_CAMERA: where the skyroom is seen from, through the sky */
 	bool skyroom;
@@ -387,6 +388,13 @@ void R_DrawToolsWorld(void);   /* pointfile and route lines, in the 3D pass */
 void R_DrawToolsOverlay(int w, int h); /* showpic pictures */
 void R_ToolsEndFrame(void);    /* the cubemap, 360, stereo and mega screenshots */
 void R_InitTools(void);
+
+/* r_rtlights.c */
+void R_InitRTLights(void);
+void R_LoadRTLights(void);
+void R_ClearRTLights(void);
+void R_AddRTLights(void);
+void R_DrawRTLightsOverlay(int w, int h);
 void R_DrawHud(int w, int h); /* r_hud.c */
 void R_ReloadImage(const char *name);
 void R_ToolsMapLoaded(void);  /* skygroup overrides */

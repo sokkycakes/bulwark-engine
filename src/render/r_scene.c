@@ -452,9 +452,13 @@ void R_RenderScene(void)
 		VectorCopy(r_scene.angles, r_scene.mainangles);
 		r_scene.mainfov[0] = fx, r_scene.mainfov[1] = fy;
 		r_scene.maindrawworld = r_scene.drawworld;
+		memcpy(r_scene.mainviewproj, r_scene.viewproj, sizeof(r_scene.mainviewproj));
+		r_scene.mainvp[0] = r_scene.vx, r_scene.mainvp[1] = r_scene.vy;
+		r_scene.mainvp[2] = r_scene.vw, r_scene.mainvp[3] = r_scene.vh;
 		r_scene.havemain = true;
 	}
 	R_UpdateParticles();
+	R_AddRTLights();
 	R_AddParticleLights();
 	Mat4_Identity(model);
 	/* the skyroom first, seen through the sky: then the sky itself isn't drawn */

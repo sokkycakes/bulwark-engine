@@ -68,6 +68,7 @@ void R_ClearMap(void)
 	R_ClearParticles();
 	R_FreeWorld();
 	R_FreeModels();
+	R_ClearRTLights();
 	for (int i = 0; i < cl.nummodels; i++)
 		cl.models[i].render = NULL;
 }
@@ -76,6 +77,7 @@ void R_NewMap(void)
 {
 	if (cl.world && cl.worldpath[0])
 		R_LoadWorld(cl.world, cl.worldpath);
+	R_LoadRTLights();
 	for (int i = 1; i < cl.nummodels; i++)
 		R_PrecacheModel(i);
 }
@@ -137,6 +139,7 @@ void R_EndFrame(void)
 		Con_SetActive(true);
 	}
 	R_DrawOverlays(r_vwidth, r_vheight);
+	R_DrawRTLightsOverlay(r_vwidth, r_vheight);
 	R_DrawToolsOverlay(r_vwidth, r_vheight);
 	CL_DrawCinematic(r_vwidth, r_vheight);
 	if (CL_Capturing() && Cvar_String("capturemessage")[0]) {
@@ -357,6 +360,7 @@ bool R_Init(bool headless)
 	r_fog_linear = Cvar_Get("r_fog_linear", "0", 0, "fog's first number is the full-fog distance instead of a density");
 	Cmd_AddD("fog", Fog_f, "fog <density> [r g b]: set the fog (0 turns it off)");
 	R_InitTools();
+	R_InitRTLights();
 	R_InitScene();
 	r_active = false;
 	if (!headless && VID_Active()) {
