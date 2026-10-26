@@ -11,6 +11,7 @@
 #include "common/cvar.h"
 #include "common/fs.h"
 #include "common/manifest.h"
+#include "common/worker.h"
 #include "net/net.h"
 #include "net/pkg.h"
 #include "render/render.h"
@@ -185,6 +186,8 @@ int main(int argc, char **argv)
 		double gdt = sv.active && host_timescale->value > 0 ? dt * BW_CLAMP(host_timescale->value, 0.01f, 10) : dt;
 		NET_RunDelayed();
 		PKG_Frame();
+		Worker_Frame();
+		Plug_Frame();
 		SV_Frame(gdt);
 		CL_Frame(gdt);
 		R_BeginFrame();
@@ -204,6 +207,7 @@ int main(int argc, char **argv)
 		Cfg_SaveIfModified();
 	CL_Disconnect("quit");
 	MQC_Shutdown();
+	Plug_Shutdown();
 	SV_Shutdown();
 	S_Shutdown();
 	R_Shutdown();

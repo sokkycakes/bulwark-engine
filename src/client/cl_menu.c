@@ -259,6 +259,8 @@ void MQC_Init(void)
 {
 	Cmd_Add("togglemenu", Menu_Toggle_f);
 	Cmd_Add("menu_restart", Menu_Restart_f);
+	/* FTE's reloads a Quake 3 ui.qvm; the menu module here is menu.dat */
+	Cmd_AddD("ui_restart", Menu_Restart_f, "Reload the menu module (menu.dat; there is no Quake 3 ui.qvm)");
 }
 
 bool MQC_ForceCommand(const char *line)

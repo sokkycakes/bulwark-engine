@@ -31,6 +31,7 @@ enum {
 	svc_trailparticles, /* varuint effect, entity, coord x3 start, coord x3 end */
 	svc_playerblob,   /* byte slot, string key, varuint length, bytes */
 	svc_stats,        /* varuint count, then per stat: byte index, byte type (EV_FLOAT 2, EV_STRING 1, EV_INTEGER 8), value */
+	svc_voice,        /* byte sender slot, then a clc_voice body */
 	svc_count
 };
 
@@ -44,6 +45,7 @@ enum {
 	clc_event,     /* string function, then typed arguments */
 	clc_userblob,  /* string key, varuint length, bytes */
 	clc_upload,    /* byte op (UL_), then by op: see below */
+	clc_voice,     /* byte codec (VOICE_), byte generation, varuint sequence, byte frames, per frame short length + bytes */
 	clc_count
 };
 
@@ -53,6 +55,9 @@ enum { DL_START, DL_DATA, DL_DONE, DL_REFUSED };
 /* clc_upload ops: START string name, long size; DATA long offset, short
  * length, bytes; WINDOW (waiting for "nextul"); DONE */
 enum { UL_START, UL_DATA, UL_WINDOW, UL_DONE };
+
+/* voice codecs, numbered as FTE's cl_voip_codec */
+enum { VOICE_SPEEX11 = 0, VOICE_RAW, VOICE_OPUS, VOICE_SPEEX8, VOICE_SPEEX16, VOICE_SPEEX32, VOICE_PCMA, VOICE_PCMU };
 
 /* svc_precache kinds */
 enum { PRECACHE_MODEL = 0, PRECACHE_SOUND = 1, PRECACHE_PARTICLE = 2 };

@@ -137,6 +137,8 @@ typedef struct client_s {
 	uint8_t stattype[MAX_CL_STATS]; /* what the client was last sent (sv_stats.c), 0 none */
 	uint32_t statval[MAX_CL_STATS];
 	char *statstr[MAX_CL_STATS];
+	uint32_t vignore[8];    /* players whose voice this one doesn't want (sv_voip.c) */
+	strbuf_t voicegram;     /* voice for the next packet, kept out of recordings */
 } client_t;
 
 typedef struct {
@@ -322,6 +324,16 @@ bool SV_DownloadCommand(client_t *c, int argc, const char **argv);
 void SV_DownloadFrame(client_t *c);
 void SV_ParseUpload(client_t *c, msg_t *m);
 void SV_FreeTransfers(client_t *c);
+
+/* sv_sql.c */
+extern const qc_builtin_t sv_sql_builtins[];
+void SV_InitSQL(void);
+void SV_SQLShutdown(void);
+
+/* sv_voip.c */
+void SV_InitVoip(void);
+void SV_ParseVoice(client_t *c, msg_t *m);
+bool SV_VoipCommand(client_t *c, int argc, const char **argv);
 void SV_MVDFrame(void);
 void SV_MVDMapChanged(void);
 void SV_MVDMapSpawned(void);

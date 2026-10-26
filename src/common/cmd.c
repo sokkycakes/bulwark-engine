@@ -1,6 +1,7 @@
 /* Bulwark engine - console commands and the command buffer. ISC licence, see LICENSE. */
 #include "cmd.h"
 #include "manifest.h"
+#include "worker.h"
 #include "cvar.h"
 #include "fs.h"
 
@@ -642,4 +643,6 @@ void Cmd_Init(void)
 	Cmd_InitExtra();
 	Cmd_InitCompat();
 	Mf_Init();
+	Worker_Init();
+	Plug_Init();
 }

@@ -52,13 +52,18 @@ static int speaker_mode;         /* soundcontrol: 0 stereo, 1 mono */
 static bool speakers_back;       /* soundcontrol cardN back: the speakers face the listener's back */
 static bool sound_off;           /* soundcontrol off */
 
-/* the raw stream (video soundtracks): a ring of stereo frames at its rate */
+/* raw streams: video soundtracks (0) and voices; each a ring of stereo
+ * frames at its own rate */
 #define RAW_FRAMES (1 << 17)
-static int16_t *raw;
-static unsigned raw_head, raw_tail; /* in frames, wrapping */
-static int raw_rate;
-static float raw_volume = 1;
-static double raw_frac;
+typedef struct {
+	int16_t *ring;
+	unsigned head, tail; /* in frames, wrapping */
+	int rate;
+	float volume;
+	double frac;
+} rawstream_t;
+static rawstream_t rawstreams[S_MAX_STREAMS];
+static float duck = 1; /* game sound scale while a voice talks */
 
 /* --- channels ----------------------------------------------------------------- */
 
@@ -319,19 +324,19 @@ static void mix_channel(channel_t *ch, float *out, int frames)
 	}
 }
 
-static void mix_raw(float *out, int frames)
+static void mix_raw(rawstream_t *r, float *out, int frames)
 {
-	double step = (double)raw_rate / snd_rate;
-	for (int i = 0; i < frames && raw_tail != raw_head; i++) {
-		const int16_t *a = raw + (raw_tail % RAW_FRAMES) * 2;
-		const int16_t *b = raw_tail + 1 != raw_head ? raw + ((raw_tail + 1) % RAW_FRAMES) * 2 : a;
-		float t = (float)raw_frac;
-		out[i * 2] += (a[0] + (b[0] - a[0]) * t) * raw_volume;
-		out[i * 2 + 1] += (a[1] + (b[1] - a[1]) * t) * raw_volume;
-		raw_frac += step;
-		while (raw_frac >= 1 && raw_tail != raw_head) {
-			raw_frac -= 1;
-			raw_tail++;
+	double step = (double)r->rate / snd_rate;
+	for (int i = 0; i < frames && r->tail != r->head; i++) {
+		const int16_t *a = r->ring + (r->tail % RAW_FRAMES) * 2;
+		const int16_t *b = r->tail + 1 != r->head ? r->ring + ((r->tail + 1) % RAW_FRAMES) * 2 : a;
+		float t = (float)r->frac;
+		out[i * 2] += (a[0] + (b[0] - a[0]) * t) * r->volume;
+		out[i * 2 + 1] += (a[1] + (b[1] - a[1]) * t) * r->volume;
+		r->frac += step;
+		while (r->frac >= 1 && r->tail != r->head) {
+			r->frac -= 1;
+			r->tail++;
 		}
 	}
 }
@@ -372,36 +377,53 @@ void S_SetCapture(bool on)
 
 int S_Rate(void) { return snd_rate; }
 
-void S_RawSamples(const int16_t *frames, int count, int rate, float volume)
+void S_StreamSamples(int stream, const int16_t *frames, int count, int rate, float volume)
 {
-	if (!snd_started || !mixbuf)
+	if (!snd_started || !mixbuf || stream < 0 || stream >= S_MAX_STREAMS)
 		return;
+	rawstream_t *r = &rawstreams[stream];
 	SNDDMA_Lock();
-	if (!raw)
-		raw = Mem_Alloc(sizeof(int16_t) * 2 * RAW_FRAMES);
-	if (raw_rate != rate || raw_head == raw_tail)
-		raw_frac = 0;
-	raw_rate = rate;
-	raw_volume = volume;
-	for (int i = 0; i < count && raw_head - raw_tail < RAW_FRAMES - 1; i++, raw_head++) {
-		raw[(raw_head % RAW_FRAMES) * 2] = frames[i * 2];
-		raw[(raw_head % RAW_FRAMES) * 2 + 1] = frames[i * 2 + 1];
+	if (!r->ring)
+		r->ring = Mem_Alloc(sizeof(int16_t) * 2 * RAW_FRAMES);
+	if (r->rate != rate || r->head == r->tail)
+		r->frac = 0;
+	r->rate = rate;
+	r->volume = volume;
+	for (int i = 0; i < count && r->head - r->tail < RAW_FRAMES - 1; i++, r->head++) {
+		r->ring[(r->head % RAW_FRAMES) * 2] = frames[i * 2];
+		r->ring[(r->head % RAW_FRAMES) * 2 + 1] = frames[i * 2 + 1];
 	}
 	SNDDMA_Unlock();
 }
 
-void S_RawClear(void)
+void S_StreamClear(int stream)
 {
+	if (stream < 0 || stream >= S_MAX_STREAMS)
+		return;
 	SNDDMA_Lock();
-	raw_head = raw_tail = 0;
+	rawstreams[stream].head = rawstreams[stream].tail = 0;
 	SNDDMA_Unlock();
 }
 
-int S_RawQueued(void)
+int S_StreamQueued(int stream)
 {
-	if (!raw_rate || !snd_rate)
+	if (stream < 0 || stream >= S_MAX_STREAMS || !rawstreams[stream].rate || !snd_rate)
 		return 0;
-	return (int)((double)(raw_head - raw_tail) * snd_rate / raw_rate);
+	const rawstream_t *r = &rawstreams[stream];
+	return (int)((double)(r->head - r->tail) * snd_rate / r->rate);
+}
+
+void S_RawSamples(const int16_t *frames, int count, int rate, float volume)
+{
+	S_StreamSamples(0, frames, count, rate, volume);
+}
+
+void S_RawClear(void) { S_StreamClear(0); }
+int S_RawQueued(void) { return S_StreamQueued(0); }
+
+void S_SetDucking(float scale)
+{
+	duck = scale < 0 ? 0 : scale > 1 ? 1 : scale;
 }
 
 static void paint(int16_t *out, int frames)
@@ -420,8 +442,12 @@ static void paint(int16_t *out, int frames)
 	}
 	S_ApplyDSP(mixbuf, frames, dsp_level); /* music stays out of the room */
 	S_MixMusic(mixbuf, frames, snd_rate, music_volume);
-	if (raw && raw_head != raw_tail)
-		mix_raw(mixbuf, frames);
+	if (duck < 1)
+		for (int i = 0; i < frames * 2; i++)
+			mixbuf[i] *= duck;
+	for (int i = 0; i < S_MAX_STREAMS; i++)
+		if (rawstreams[i].ring && rawstreams[i].head != rawstreams[i].tail)
+			mix_raw(&rawstreams[i], mixbuf, frames);
 	for (int i = 0; i < frames * 2; i++) {
 		float v = mixbuf[i];
 		out[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);

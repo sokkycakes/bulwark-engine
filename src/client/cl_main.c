@@ -85,6 +85,12 @@ const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size)
 	out[0] = 0;
 	if (slot < 0 || slot >= CL_MAX_PLAYERS)
 		return out;
+	if (CL_VoipPlayerKey(slot, key, out, size))
+		return out;
+	if (!strcmp(key, "ignored")) {
+		snprintf(out, size, "%d", CL_PlayerIgnored(slot) ? 1 : 0);
+		return out;
+	}
 	return info_get(cl.playerinfo[slot], key, out, size);
 }
 
@@ -226,6 +232,7 @@ void CL_Disconnect(const char *reason)
 		Con_Printf("disconnected%s%s\n", reason ? ": " : "", reason ? reason : "");
 	CL_DemoDisconnected();
 	CL_DownloadsReset();
+	CL_VoipDisconnected();
 	clear_map_state();
 	S_StopAllSounds();
 	cl.state = ca_disconnected;
@@ -603,6 +610,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 			R_TrailParticles(fx, start, end);
 			break;
 		}
+		case svc_voice:
+			CL_ParseVoice(m);
+			break;
 		case svc_setangle:
 			for (int i = 0; i < 3; i++)
 				cl.viewangles[i] = MSG_ReadAngle(m);
@@ -862,6 +872,7 @@ static void send_move(void)
 			MSG_WriteEntity(&m, u->cursor_entity);
 		}
 	}
+	CL_VoipWrite(&m);
 	Netchan_Transmit(&cl.chan, m.data, m.cursize);
 }
 
@@ -881,6 +892,7 @@ void CL_Frame(double dt)
 	CL_MasterFrame();
 	CL_DownloadFrame();
 	CL_CaptureFrame();
+	CL_VoipFrame();
 	update_clock(dt);
 	check_userinfo();
 
@@ -1009,5 +1021,6 @@ void CL_Init(void)
 	CL_InitDownloads();
 	CL_InitCapture();
 	CL_InitCinematics();
+	CL_InitVoip();
 	IN_Init();
 }

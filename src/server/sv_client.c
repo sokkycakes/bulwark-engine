@@ -250,6 +250,8 @@ static void free_client_state(client_t *c)
 	}
 	SB_Free(&c->qcrel);
 	SB_Free(&c->datagram);
+	SB_Free(&c->voicegram);
+	memset(c->vignore, 0, sizeof(c->vignore));
 	Blob_Clear(c->blobs);
 	SV_ResetStats(c);
 	SV_FreeTransfers(c);
@@ -462,6 +464,9 @@ static void send_snapshot(client_t *c)
 		MSG_WriteData(&m, c->datagram.data, c->datagram.len);
 	SV_MVDSnapshot(c, (const uint8_t *)c->datagram.data, c->datagram.len);
 	c->datagram.len = 0;
+	if (c->voicegram.len && m.cursize + c->voicegram.len < budget * 3 / 4)
+		MSG_WriteData(&m, c->voicegram.data, c->voicegram.len);
+	c->voicegram.len = 0;
 
 	rec = &c->snaps[seq % SNAP_HISTORY];
 	rec->seq = seq;
@@ -1179,7 +1184,7 @@ static void parse_stringcmd(client_t *c, const char *s)
 		goto done;
 	}
 	/* downloads happen while loading, before the client spawns */
-	if (SV_DownloadCommand(c, t->argc, t->argv))
+	if (SV_DownloadCommand(c, t->argc, t->argv) || SV_VoipCommand(c, t->argc, t->argv))
 		goto done;
 	if (c->state != CS_SPAWNED)
 		goto done;
@@ -1337,6 +1342,9 @@ static void parse_client_message(client_t *c, msg_t *m)
 			break;
 		case clc_upload:
 			SV_ParseUpload(c, m);
+			break;
+		case clc_voice:
+			SV_ParseVoice(c, m);
 			break;
 		default:
 			Con_DPrintf("bad message %d from %s\n", cmd, c->name);

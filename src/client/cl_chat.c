@@ -66,7 +66,15 @@ static void print_lists(void)
 			Con_Printf("%s\"%s\"", i ? ", " : "", ignored_teams[i]);
 		Con_Printf("\n");
 	}
-	Con_Printf("User Mute List: empty\n");
+	CL_VoipPrintMutes();
+}
+
+/* the "ignored" player key */
+bool CL_PlayerIgnored(int slot)
+{
+	char name[64];
+	CL_PlayerKey(slot, "name", name, sizeof(name));
+	return name[0] && in_list(ignored, numignored, name);
 }
 
 /* the name of player <number>, as "users" and the scoreboard number them */
@@ -150,13 +158,13 @@ static void UnignoreTeam_f(int argc, const char **argv)
 static void UnignoreAll_f(int argc, const char **argv)
 {
 	numignored = 0;
-	Con_Printf("ignore list cleared\n");
+	Con_Printf("User ignore list cleared\n");
 }
 
 static void UnignoreAllTeam_f(int argc, const char **argv)
 {
 	numignored_teams = 0;
-	Con_Printf("team ignore list cleared\n");
+	Con_Printf("Team ignore list cleared\n");
 }
 
 /* filter [#tag...|clear]: with filters set, chat ending in "#tag" shows
@@ -253,7 +261,7 @@ void CL_InitChat(void)
 	Cmd_AddD("unignore", Unignore_f, "unignore <name>: show a player's chat again");
 	Cmd_AddD("unignore_id", UnignoreId_f, "unignore_id <player number>: show a player's chat again");
 	Cmd_AddD("unignore_team", UnignoreTeam_f, "unignore_team <team>: show a team's chat again");
-	Cmd_AddD("unignoreall", UnignoreAll_f, "Clear the ignore list");
-	Cmd_AddD("unignoreall_team", UnignoreAllTeam_f, "Clear the team ignore list");
+	Cmd_AddD("unignoreAll", UnignoreAll_f, "Clear the ignore list");
+	Cmd_AddD("unignoreAll_team", UnignoreAllTeam_f, "Clear the team ignore list");
 	Cmd_AddD("filter", Filter_f, "filter [#tag...|clear]: only show tagged chat with these tags");
 }

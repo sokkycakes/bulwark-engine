@@ -617,8 +617,25 @@ bool CL_GetInputState(uint32_t seq, usercmd_t *out)
 	return out->sequence == seq;
 }
 
+/* +p1 <button> .. -p4 <button>: a button for one player of a split screen.
+ * There is one view here, so player 1's run as plain +button and the
+ * others' have no one to go to. */
+static void Seat_f(int argc, const char **argv)
+{
+	int seat = argv[0][2] - '1';
+	if (seat != 0) {
+		Con_DPrintf("%s: there is only one player view (seat 1)\n", argv[0]);
+		return;
+	}
+	Cmd_ExecuteString(va("%c%s", argv[0][0], Cmd_Args()));
+}
+
 void IN_Init(void)
 {
+	for (int i = 1; i <= 4; i++) {
+		Cmd_AddD(va("+p%d", i), Seat_f, "+pN <button>: press a button for split screen player N");
+		Cmd_AddD(va("-p%d", i), Seat_f, "-pN <button>: release a button for split screen player N");
+	}
 	cl_forwardspeed = Cvar_Get("cl_forwardspeed", "450", CVAR_ARCHIVE, "Forward move value at full speed");
 	cl_backspeed = Cvar_Get("cl_backspeed", "450", CVAR_ARCHIVE, "Backward move value");
 	cl_sidespeed = Cvar_Get("cl_sidespeed", "450", CVAR_ARCHIVE, "Strafe move value");

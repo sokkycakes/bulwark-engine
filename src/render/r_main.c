@@ -143,6 +143,16 @@ void R_EndFrame(void)
 		static const float white[3] = {1, 1, 1};
 		R_DrawString(8, (float)r_vheight - 16, Cvar_String("capturemessage"), 8, 8, white, 1, 0, true);
 	}
+	{
+		float level = CL_VoipMeter();
+		if (level >= 0) {
+			/* the microphone's loudness, above the hud */
+			static const float back[3] = {0, 0, 0}, bar[3] = {0.2f, 0.9f, 0.3f};
+			float w = 128, x = (r_vwidth - w) / 2, y = (float)r_vheight - 64;
+			R_DrawFill(x - 1, y - 1, w + 2, 6, back, 0.6f, 0);
+			R_DrawFill(x, y, w * level, 4, bar, 0.9f, 0);
+		}
+	}
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
 	R_ToolsEndFrame();

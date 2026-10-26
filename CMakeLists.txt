@@ -11,6 +11,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 	add_compile_definitions(_GNU_SOURCE)
 endif()
 
+find_package(Threads REQUIRED)
+
 add_library(bwcommon STATIC
 	src/common/common.c
 	src/common/digest.c
@@ -24,8 +26,10 @@ add_library(bwcommon STATIC
 	src/common/pmove.c
 	src/common/skel.c
 	src/common/infoblob.c
+	src/common/worker.c
+	src/common/plugin.c
 	src/common/stb_image_impl.c)
-target_link_libraries(bwcommon PUBLIC m)
+target_link_libraries(bwcommon PUBLIC m Threads::Threads ${CMAKE_DL_LIBS})
 
 add_library(bwnet STATIC
 	src/net/msg.c
@@ -33,7 +37,6 @@ add_library(bwnet STATIC
 	src/net/http.c
 	src/net/pkg.c
 	src/net/netchan.c)
-find_package(Threads REQUIRED)
 target_link_libraries(bwnet PUBLIC bwcommon Threads::Threads ${CMAKE_DL_LIBS})
 
 add_library(bwqcvm STATIC
@@ -64,6 +67,8 @@ add_library(bwserver STATIC
 	src/server/sv_mvd.c
 	src/server/sv_master.c
 	src/server/sv_download.c
+	src/server/sv_voip.c
+	src/server/sv_sql.c
 	src/server/sv_stats.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
@@ -91,6 +96,7 @@ add_library(bwclient STATIC
 	src/client/cl_download.c
 	src/client/cl_capture.c
 	src/client/cl_cinematic.c
+	src/client/cl_voip.c
 	src/client/cl_main.c
 	src/client/cl_input.c
 	src/client/cl_csqc.c

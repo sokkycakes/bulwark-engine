@@ -7,6 +7,7 @@
 #include "common/cvar.h"
 #include "common/fs.h"
 #include "common/manifest.h"
+#include "common/worker.h"
 #include "net/net.h"
 #include "net/pkg.h"
 #include "server/sv_local.h"
@@ -99,10 +100,13 @@ int main(int argc, char **argv)
 		host_time += dt;
 		NET_RunDelayed();
 		PKG_Frame();
+		Worker_Frame();
+		Plug_Frame();
 		SV_Frame(dt);
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("status");
+	Plug_Shutdown();
 	SV_Shutdown();
 	return 0;
 }

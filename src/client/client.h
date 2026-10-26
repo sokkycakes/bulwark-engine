@@ -226,6 +226,17 @@ bool CIN_KeyEvent(int key, bool down);
 bool CIN_Playing(void);
 void CIN_Stop(void);
 /* cl_download.c */
+/* cl_voip.c */
+void CL_InitVoip(void);
+void CL_VoipFrame(void);
+void CL_VoipWrite(msg_t *m); /* adds the voice waiting to go to a clc_move packet */
+void CL_ParseVoice(msg_t *m);
+void CL_VoipDisconnected(void);
+void CL_VoipPrintMutes(void);
+const char *CL_VoipPlayerKey(int slot, const char *key, char *out, size_t size);
+float CL_VoipMeter(void);
+bool CL_PlayerIgnored(int slot); /* cl_chat.c */
+
 void CL_InitDownloads(void);
 bool CL_StartMissingDownloads(void); /* true: the signon waits for them */
 void CL_ParseDownload(msg_t *m);
