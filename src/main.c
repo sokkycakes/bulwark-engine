@@ -24,6 +24,8 @@ static void Quit_f(int argc, const char **argv) { quit_requested = true; }
 /* commands the game modules registered come before the engine's own */
 static bool GamePreHook(const char *line, int argc, const char **argv)
 {
+	if (MQC_ConsoleCommand(line))
+		return true;
 	if (CSQC_ConsoleCommand(line))
 		return true;
 	return SV_ConsoleCommand(line);
@@ -94,6 +96,7 @@ int main(int argc, char **argv)
 	NET_Init();
 	SV_Init();
 	CL_Init();
+	MQC_Init();
 	IN_Init();
 	if (!headless && !VID_Init(width, height, fullscreen)) {
 		Con_Printf("no video, running headless\n");
@@ -114,9 +117,17 @@ int main(int argc, char **argv)
 		Cbuf_AddText("exec config.cfg\n");
 	if (FS_FileExists("autoexec.cfg"))
 		Cbuf_AddText("exec autoexec.cfg\n");
+	/* the front end starts on its menu unless the command line starts a game */
+	bool starts_game = false;
+	for (const char *l = cmds.data; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : "") {
+		if (!strncmp(l, "map ", 4) || !strncmp(l, "connect ", 8) || !strncmp(l, "playdemo ", 9))
+			starts_game = true;
+	}
 	if (cmds.data)
 		Cbuf_AddText(cmds.data);
 	SB_Free(&cmds);
+	if (MQC_Load() && !starts_game)
+		MQC_Toggle(1);
 
 	double last = Sys_Seconds();
 	long frames = 0;
@@ -159,6 +170,7 @@ int main(int argc, char **argv)
 			int w, h;
 			R_GetSize(&w, &h);
 			CSQC_Frame(w, h);
+			MQC_Frame(w, h);
 		}
 		R_EndFrame();
 		S_Update(NULL, NULL, NULL, NULL);
@@ -166,6 +178,7 @@ int main(int argc, char **argv)
 	if (maxframes >= 0)
 		Cmd_ExecuteString("netstats");
 	CL_Disconnect("quit");
+	MQC_Shutdown();
 	SV_Shutdown();
 	S_Shutdown();
 	R_Shutdown();

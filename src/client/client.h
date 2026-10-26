@@ -160,6 +160,15 @@ bool CSQC_Print(const char *text, int level);
 bool CSQC_CenterPrint(const char *text);
 void CSQC_ServerInfoChanged(void);
 void CSQC_PlayerInfoChanged(int slot);
+/* menu progs (cl_menu.c) */
+void MQC_Init(void);
+bool MQC_Load(void);
+void MQC_Shutdown(void);
+bool MQC_Active(void);
+void MQC_Toggle(int mode);
+void MQC_Frame(int width, int height);
+bool MQC_InputEvent(int type, float a, float b, int device);
+bool MQC_ConsoleCommand(const char *line);
 void CSQC_SetInputGlobals(qcvm_t *vm, const usercmd_t *u);
 void CSQC_ReadInputGlobals(qcvm_t *vm, usercmd_t *u);
 extern msg_t *csqc_readmsg;
