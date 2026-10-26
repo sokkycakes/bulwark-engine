@@ -32,6 +32,13 @@ typedef struct {
 	bool inuse;
 } qc_search_t;
 
+/* a string buffer (buf_create): a growable array of strings, NULL for unset */
+typedef struct {
+	char **strs;
+	int count, cap;
+	bool inuse;
+} qc_strbuf_t;
+
 struct qc_hashtab_s;
 struct qc_json_s;
 
@@ -43,6 +50,8 @@ struct qc_extra_s {
 	int numhashtabs;
 	struct qc_json_s **json;
 	int numjson;
+	qc_strbuf_t *strbufs;
+	int numstrbufs;
 	qc_tokens_t tokens;
 };
 

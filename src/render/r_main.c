@@ -131,7 +131,7 @@ void R_EndFrame(void)
 	bool game = cl.state == ca_active && cl.csqc;
 	if (!r_active)
 		return;
-	if (!game && !Con_IsActive() && !MQC_Active()) {
+	if (!game && !Con_IsActive() && !MQC_Active() && !MQC_Loading()) {
 		/* nothing else on screen: show the console */
 		static const float black[3] = {0, 0, 0};
 		R_DrawFill(0, 0, (float)r_vwidth, (float)r_vheight, black, 1, 0);
