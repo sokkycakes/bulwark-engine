@@ -253,6 +253,11 @@ image_t *R_LoadCubemap(const char *basename)
 		snprintf(path, sizeof(path), "%s_%s", basename, suffix[f]);
 		pix = R_LoadPixels(path, &w, &h);
 		if (!pix) {
+			/* GoldSrc names its faces without the underscore: desertrt */
+			snprintf(path, sizeof(path), "%s%s", basename, suffix[f]);
+			pix = R_LoadPixels(path, &w, &h);
+		}
+		if (!pix) {
 			Con_DPrintf("sky %s: missing %s\n", basename, path);
 			img->missing = true;
 			return NULL;

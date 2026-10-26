@@ -23,9 +23,9 @@ the brushes' side counts sum exactly to the lump's record count.
 Collision sweeps an axis-aligned box through each brush by clipping against
 its planes (offset by the box's extents), with a 1/32 unit epsilon.
 
-## Q1 family (29, BSP2)
+## Q1 family (29, BSP2, GoldSrc 30)
 
-Version int (29) or the magic "BSP2", then 15 lumps: entities, planes,
+Version int (29, or 30 for GoldSrc) or the magic "BSP2", then 15 lumps: entities, planes,
 textures, vertexes, visibility, nodes, texinfo, faces, lighting, clipnodes,
 leafs, marksurfaces, edges, surfedges, models. Layouts follow the public
 "Unofficial Quake Specs"; BSP2 widens the 16-bit fields to 32 bits.
@@ -65,7 +65,31 @@ leafs, marksurfaces, edges, surfedges, models. Layouts follow the public
 - `tools/mkq1map_test.py` writes `tests/data/maps/q1test.bsp`, a two-room
   map checked by `tests/bsp/bsptest.c`.
 
-Half-Life's version 30 keeps a palette per texture and is not drawn yet.
+### GoldSrc (version 30)
+
+Same lumps and record sizes as BSP29. The differences, from the public
+format descriptions and checked on `tests/data/maps/hltest.bsp`:
+
+- Four hulls: 1 standing (-16,-16,-36)..(16,16,36), 2 large
+  (-32,-32,-32)..(32,32,32), 3 crouching (-16,-16,-18)..(16,16,18); the
+  model's headnode[3] is hull 3. A box up to 8 units wide uses hull 0; up to
+  36 wide, hull 3 when it is at most 36 tall, else hull 1; wider, hull 2.
+- Each miptex carries its own palette after the smallest mip: a short count
+  (256), then 768 bytes of RGB. No fullbright range.
+- A miptex whose offsets are 0 has its pixels in a WAD. Worldspawn's `wad`
+  key lists them by the mapper's paths, split by `;`; only the file name is
+  used, looked up in the game directories and then `wads/`. WAD3 (and WAD2):
+  "WAD3", lump count, directory offset; 32-byte entries of file offset, disk
+  size, size, type (0x43 miptex, 0x44 in WAD2), compression, 2 pad bytes,
+  name[16]. A miptex lump is laid out as in the map, palette included.
+- Lighting is RGB: lightofs counts bytes, and each style's block is
+  w*h*3. 255 is full brightness, so values are halved on load to share Q1's
+  overbright scale. `.lit` files are ignored.
+- Sky comes from worldspawn's `skyname`, faces named without the underscore
+  under `gfx/env/` (`gfx/env/desertrt.tga`); either spelling is accepted.
+- `aaatrigger`, `null` and `origin` are not drawn.
+- `tools/mkq1map_test.py --hl` writes the BSP30 twin of the test map and
+  `tests/data/hltest.wad` with its floor texture.
 
 ## Visibility
 

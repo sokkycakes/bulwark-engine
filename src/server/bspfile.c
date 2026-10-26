@@ -225,6 +225,7 @@ static bool load_q1(bspmap_t *m, const uint8_t *d, size_t size)
 {
 	lump_t l[Q1_NUMLUMPS];
 	bool b2 = !memcmp(d, "BSP2", 4);
+	m->hl = rd32(d) == 30;
 	int nodesize = b2 ? 44 : 24, leafsize = b2 ? 44 : 28, clipsize = b2 ? 12 : 8, marksize = b2 ? 4 : 2;
 	int visleafs;
 	if (size < 4 + Q1_NUMLUMPS * 8)
@@ -514,6 +515,8 @@ static void trace_brush(const bspmap_t *m, int bnum, tracework_t *w)
 
 /* the player and large hulls are the world grown by these boxes */
 static const float hull_mins[3][3] = {{0, 0, 0}, {-16, -16, -24}, {-32, -32, -24}};
+/* GoldSrc: standing player, large, crouching player */
+static const float hl_hull_mins[4][3] = {{0, 0, 0}, {-16, -16, -36}, {-32, -32, -32}, {-16, -16, -18}};
 
 static int hull_contents(const cclipnode_t *nodes, const cplane_t *planes, int num, const float *p)
 {
@@ -603,6 +606,11 @@ static void q1_trace(const bspmap_t *map, int model, const float *origin, const 
 	hullwork_t w;
 	float off[3], p1[3], p2[3], size = maxs[0] - mins[0];
 	int hull = size < 3 ? 0 : size <= 32 ? 1 : 2;
+	const float (*hm)[3] = hull_mins;
+	if (map->hl) {
+		hull = size <= 8 ? 0 : size <= 36 ? (maxs[2] - mins[2] <= 36 ? 3 : 1) : 2;
+		hm = hl_hull_mins;
+	}
 	memset(&w, 0, sizeof(w));
 	w.nodes = hull ? map->clipnodes : map->hull0;
 	w.planes = map->planes;
@@ -613,7 +621,7 @@ static void q1_trace(const bspmap_t *map, int model, const float *origin, const 
 		return;
 	/* the hull's box stands in for the mover's; line up their bottoms */
 	for (int k = 0; k < 3; k++) {
-		off[k] = (hull ? hull_mins[hull][k] : 0) - (hull ? mins[k] : 0) + origin[k];
+		off[k] = (hull ? hm[hull][k] : 0) - (hull ? mins[k] : 0) + origin[k];
 		p1[k] = start[k] - off[k];
 		p2[k] = end[k] - off[k];
 	}

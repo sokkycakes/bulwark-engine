@@ -105,6 +105,8 @@ typedef struct {
 	cclipnode_t *clipnodes, *hull0;
 	int numclipnodes;
 	bool bsp2;
+	/* GoldSrc BSP30: four hulls, sized for Half-Life players */
+	bool hl;
 } bspmap_t;
 
 bspmap_t *BSP_Load(const char *path);
