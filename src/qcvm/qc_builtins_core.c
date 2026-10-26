@@ -5,6 +5,7 @@
 #include "qc_internal.h"
 #include "../common/cvar.h"
 #include "../common/cmd.h"
+#include "../common/digest.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -365,6 +366,29 @@ static void bi_htos(qcvm_t *vm)
 static void bi_strlen(qcvm_t *vm) { QC_ReturnFloat(vm, (float)strlen(QC_PSTR(vm, 0))); }
 static void bi_memstrsize(qcvm_t *vm) { QC_ReturnFloat(vm, (float)strlen(QC_PSTR(vm, 0))); }
 static void bi_strcat(qcvm_t *vm) { return_concat(vm, 0); }
+
+static void bi_digest_hex(qcvm_t *vm)
+{
+	strbuf_t sb = {0};
+	char hex[65];
+	concat_args(vm, 1, &sb);
+	if (Digest_Hex(QC_PSTR(vm, 0), sb.data, sb.len, hex, sizeof(hex)))
+		QC_ReturnString(vm, hex);
+	else
+		QC_ReturnInt(vm, 0);
+	SB_Free(&sb);
+}
+
+static void bi_crc16(qcvm_t *vm)
+{
+	strbuf_t sb = {0};
+	concat_args(vm, 1, &sb);
+	if (QC_PFLOAT(vm, 0))
+		for (size_t i = 0; i < sb.len; i++)
+			sb.data[i] = (char)tolower((unsigned char)sb.data[i]);
+	QC_ReturnFloat(vm, Digest_CRC16(sb.data, sb.len));
+	SB_Free(&sb);
+}
 static void bi_strunzone(qcvm_t *vm) { (void)vm; }
 
 static void bi_substring(qcvm_t *vm)
@@ -1454,7 +1478,7 @@ const qc_builtin_t qc_builtins_core[] = {
 	{"vectorvectors", bi_vectorvectors}, {"ftoi", bi_ftoi}, {"itof", bi_itof},
 
 	{"ftos", bi_ftos}, {"vtos", bi_vtos}, {"etos", bi_etos}, {"stof", bi_stof}, {"stov", bi_stov},
-	{"stoi", bi_stoi}, {"stoh", bi_stoh}, {"itos", bi_itos}, {"htos", bi_htos}, {"strlen", bi_strlen},
+	{"digest_hex", bi_digest_hex}, {"crc16", bi_crc16}, {"stoi", bi_stoi}, {"stoh", bi_stoh}, {"itos", bi_itos}, {"htos", bi_htos}, {"strlen", bi_strlen},
 	{"memstrsize", bi_memstrsize}, {"strcat", bi_strcat}, {"strzone", bi_strcat},
 	{"strunzone", bi_strunzone}, {"substring", bi_substring}, {"strstrofs", bi_strstrofs},
 	{"str2chr", bi_str2chr}, {"chr2str", bi_chr2str}, {"strtolower", bi_strtolower},

@@ -13,6 +13,7 @@ endif()
 
 add_library(bwcommon STATIC
 	src/common/common.c
+	src/common/digest.c
 	src/common/cvar.c
 	src/common/cmd.c
 	src/common/fs.c)
