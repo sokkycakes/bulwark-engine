@@ -168,7 +168,9 @@ static int blend_factor(const char *s)
 
 static int image_flags(const material_t *m, int flags)
 {
-	return (flags & MATF_2D) ? IMG_NOMIP : 0; /* clampmap asks for clamping */
+	/* 2D pics clamp: a scaled pic would otherwise blend its far edge into a
+	   thin line along the near one */
+	return (flags & MATF_2D) ? IMG_NOMIP | IMG_CLAMP : 0; /* clampmap asks for clamping */
 }
 
 static int program_for(const char *name)
