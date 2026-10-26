@@ -23,6 +23,10 @@ static qcstr_t *strs;
 static uint32_t nstrs, capstrs;
 static uint32_t *freelist;
 static uint32_t nfree, capfree;
+/* every slot in use, so a collection only visits live and new strings:
+ * a map load can leave millions of slots, almost all of them free */
+static uint32_t *usedlist;
+static uint32_t nused, capused;
 static uint32_t live, threshold = 8192;
 
 #define SLOT_MASK 0x7fffffffu
@@ -84,6 +88,11 @@ string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len)
 	strs[slot].len = (uint32_t)len;
 	strs[slot].used = 1;
 	strs[slot].mark = 0;
+	if (nused >= capused) {
+		capused = capused ? capused * 2 : 4096;
+		usedlist = Mem_Realloc(usedlist, sizeof(uint32_t) * capused);
+	}
+	usedlist[nused++] = slot;
 	live++;
 	return (string_t)(QC_STRING_RUNTIME | slot);
 }
@@ -141,24 +150,32 @@ void QC_CollectGarbage(qcvm_t *vm, bool force)
 		return;
 	if (QC_AnyExecuting())
 		return;
-	for (uint32_t i = 1; i < nstrs; i++)
-		strs[i].mark = 0;
+	for (uint32_t i = 0; i < nused; i++)
+		strs[usedlist[i]].mark = 0;
 	for (int i = 0; i < QC_VMCount(); i++)
 		mark_vm(QC_VMAt(i));
-	for (uint32_t i = 1; i < nstrs; i++) {
-		if (strs[i].used && !strs[i].mark) {
-			Mem_Free(strs[i].data);
-			strs[i].data = NULL;
-			strs[i].used = 0;
-			if (nfree >= capfree) {
-				capfree = capfree ? capfree * 2 : 4096;
-				freelist = Mem_Realloc(freelist, sizeof(uint32_t) * capfree);
-			}
-			freelist[nfree++] = i;
-			freed++;
-			live--;
+	uint32_t kept = 0;
+	for (uint32_t i = 0; i < nused; i++) {
+		uint32_t slot = usedlist[i];
+		if (strs[slot].mark) {
+			usedlist[kept++] = slot;
+			continue;
 		}
+		Mem_Free(strs[slot].data);
+		strs[slot].data = NULL;
+		strs[slot].used = 0;
+		if (nfree >= capfree) {
+			capfree = capfree ? capfree * 2 : 4096;
+			freelist = Mem_Realloc(freelist, sizeof(uint32_t) * capfree);
+		}
+		freelist[nfree++] = slot;
+		freed++;
+		live--;
 	}
-	threshold = BW_MAX(8192u, live * 2);
+	nused = kept;
+	/* a collection costs about the same however much it frees, so let
+	 * garbage build up: Nuclide makes tens of thousands of temporary
+	 * strings a frame */
+	threshold = BW_MAX(65536u, live * 2);
 	Con_DPrintf("qc gc: freed %u strings, %u live\n", freed, live);
 }

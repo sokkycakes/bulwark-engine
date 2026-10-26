@@ -105,6 +105,12 @@ int SV_PointContentsBits(const float *p)
 		solid = (int)QC_EFloat(cur()->vm, e, F.solid);
 		if (solid != SOLID_BSP && solid != SOLID_BSPTRIGGER)
 			continue;
+		if (F.absmin >= 0) {
+			const float *amin = evec(e, F.absmin), *amax = evec(e, F.absmax);
+			if (p[0] < amin[0] || p[1] < amin[1] || p[2] < amin[2] ||
+			    p[0] > amax[0] || p[1] > amax[1] || p[2] > amax[2])
+				continue;
+		}
 		if (!ent_brush_model(e, &m))
 			continue;
 		bits |= BSP_PointContents(m.bsp, m.submodel, evec(e, F.origin), p);

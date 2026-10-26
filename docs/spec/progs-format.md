@@ -60,6 +60,17 @@ collector scans globals, entity fields, the local stack, heap blocks, the
 tokenizer and hash tables; it runs only while no VM is executing. `strzone`
 behaves like `strcat` and `strunzone` does nothing.
 
+A collection runs once 65536 strings, or twice the number that survived the
+last one, are live. It visits only slots in use (they are kept in a list),
+not the whole table: a map load runs without collections and can leave
+millions of slots behind, and sweeping all of them each time cost a 32-bot
+co-op server 15 ms a frame. Nuclide makes about 25,000 temporary strings a
+frame in that test, so collecting every frame was most of the server's time.
+
+`pr_profile start` counts the statements each server QC function runs, and
+`pr_profile [n]` prints the n busiest and starts over. Builtins are not
+timed; their cost shows up in the engine's own profile instead.
+
 ## Calling convention
 
 Return in globals 1–3, parameters at 4 + 3n for n < 8. Arguments past the

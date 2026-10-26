@@ -784,13 +784,6 @@ qcval_t *QC_Parm(qcvm_t *vm, int n)
 
 bool QC_ValidEdict(qcvm_t *vm, int e) { return e >= 0 && e < vm->max_edicts; }
 
-qcval_t *QC_EdictFields(qcvm_t *vm, int e)
-{
-	if (e < 0 || e >= vm->max_edicts)
-		QC_RunError(vm, "entity %d out of range", e);
-	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * vm->edict_words * 4);
-}
-
 void QC_ClearEdict(qcvm_t *vm, int e)
 {
 	memset(QC_EdictFields(vm, e), 0, (size_t)vm->edict_words * 4);
