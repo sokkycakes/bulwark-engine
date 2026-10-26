@@ -43,6 +43,12 @@ count, then records. Version 10 records are 72 bytes:
 Record size is checked as (lump size - header) / count, so other versions
 of the same layout prefix are read too.
 
+### Entities (lump 0)
+
+Text, as in Q1/Q3. Outputs are "target,input,parameter,delay,times";
+version 21 maps (seen in pl_circle_a9a) use ESC (0x1b) instead of the
+commas. The loader turns ESC into commas so game code sees one format.
+
 ## Records used
 
 | lump | record | size |

@@ -439,6 +439,11 @@ bool BSP_LoadSource(bspmap_t *m, const uint8_t *d, size_t size)
 	if (lump)
 		memcpy(m->entities, lump, len);
 	Mem_Free(lump);
+	/* newer maps separate the fields of an output with ESC instead of
+	   commas; game code splits on commas (docs/spec/vbsp.md) */
+	for (size_t i = 0; i < len; i++)
+		if (m->entities[i] == 0x1b)
+			m->entities[i] = ',';
 
 	/* shaders: one per texinfo, named after its texdata's material */
 	texinfo = VBSP_Lump(&v, VL_TEXINFO, &ntexinfo);

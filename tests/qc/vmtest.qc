@@ -28,6 +28,7 @@ string(string s, float start, float len) substring = #0:substring;
 string(string fmt, ...) sprintf = #0:sprintf;
 float(string s) tokenize = #0:tokenize;
 float(string s, string sep, ...) tokenizebyseparator = #0:tokenizebyseparator;
+float(string s) tokenize_console = #0:tokenize_console;
 string(float n) argv = #0:argv;
 entity() spawn = #0:spawn;
 void(entity e) remove = #0:remove;
@@ -177,6 +178,9 @@ void() test_strings = {
 	check(!"" && !(string)0 && s, "string truth");
 	float n = tokenize("give \"two words\" { x }");
 	check(n == 5 && argv(1) == "two words" && argv(2) == "{" && argv(-1) == "}", "tokenize");
+	/* an entity block, as __fullspawndata holds it */
+	n = tokenize_console("{\n\"classname\" \"team_round_timer\"\n\"setup_length\" \"70\"\n}");
+	check(n == 6 && argv(3) == "setup_length" && argv(4) == "70" && argv(5) == "}", "tokenize_console spans lines");
 	n = tokenizebyseparator("a,b;;c", ",", ";");
 	check(n == 4 && argv(2) == "" && argv(3) == "c", "tokenizebyseparator");
 	switch (s) {
