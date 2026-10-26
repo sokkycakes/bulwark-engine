@@ -201,7 +201,7 @@ float BWLocomotion::IsPotentiallyTraversable(vector from, vector to, float event
 float BWLocomotion::HasGap(vector from, vector to)
 {
 	vector d = bw_flat(to - from), p;
-	float len = vlen(d), s, ground = from_z;
+	float len = vlen(d), s, ground = from_z + m_bot.mins_z;	/* the feet */
 	if (len < 1)
 		return FALSE;
 	d = normalize(d);

@@ -61,9 +61,12 @@ float bw_console_command(string line)
 		}
 		return TRUE;
 	case "bot_debug_filter":
+		for (i = 0; i < bw_debug_nfilter; i++)
+			strunzone(bw_debug_filter[i]);
 		bw_debug_nfilter = 0;
+		/* argv() strings are temporary: keep copies */
 		for (i = 1; i < argc && bw_debug_nfilter < 8; i++)
-			bw_debug_filter[bw_debug_nfilter++] = argv(i);
+			bw_debug_filter[bw_debug_nfilter++] = strzone(argv(i));
 		return TRUE;
 	case "bot_status":
 		bw_status();

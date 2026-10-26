@@ -146,7 +146,7 @@ vector BWPathFollower::Avoid(BWBot bot, vector goal)
 	fwd = normalize(fwd);
 	left = [-fwd_y, fwd_x, 0];
 	range = 40 + bot.m_loco.GetSpeed() * 0.4;
-	base = bot.origin + [0, 0, bot.m_loco.m_step + 4];
+	base = bot.origin + [0, 0, bot.mins_z + bot.m_loco.m_step + 4];	/* just above a step */
 
 	traceline(base + left * bot.maxs_x, base + left * bot.maxs_x + fwd * range, MOVE_NORMAL, bot);
 	lf = trace_fraction;

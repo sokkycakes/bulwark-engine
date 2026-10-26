@@ -98,6 +98,17 @@ vector bw_snap_down(vector pos, entity ignore)
 	return trace_endpos;
 }
 
+/* where the bot's origin is when it stands on the ground under pos: the
+ * same as the ground for a bot whose origin is at its feet, higher for a
+ * player whose origin is in the middle of its box */
+vector bw_stand_at(BWBot bot, vector pos)
+{
+	traceline(pos + '0 0 8', pos - '0 0 256', MOVE_NOMONSTERS, bot);
+	if (trace_fraction == 1 || trace_startsolid)
+		return pos;
+	return trace_endpos - [0, 0, bot.mins_z];
+}
+
 /* walks the bot's box from a to b and adds the points needed to get
  * there: plain ground, a climb at the foot of a ledge, a jump over a gap or
  * a drop off an edge. b is added last. */
@@ -210,6 +221,7 @@ float BWPath::Compute(BWBot bot, vector goal, float forbid)
 	float s, g, i, n;
 
 	Invalidate();
+	goal = bw_stand_at(bot, goal);
 	m_goal = goal;
 
 	/* trivial path: close enough in height and directly walkable */
@@ -234,7 +246,7 @@ float BWPath::Compute(BWBot bot, vector goal, float forbid)
 	bw_npts = 0;
 	bw_pts[bw_npts++] = start;
 	for (i = 0; i < bw_route_len && bw_npts < BWPATH_MAXSEGS; i++)
-		bw_pts[bw_npts++] = bw_snap_down(bw_wps[bw_route_nodes[i]].pos, bot);
+		bw_pts[bw_npts++] = bw_stand_at(bot, bw_wps[bw_route_nodes[i]].pos);
 	if (!m_partial)
 		bw_pts[bw_npts++] = goal;
 

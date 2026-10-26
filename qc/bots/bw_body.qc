@@ -37,7 +37,8 @@ void BWBody::Reset(void)
 	m_look_prio = -1;
 	m_look_until = 0;
 	m_activity = BWACT_NONE;
-	m_bot.v_angle = [0, m_bot.angles_y, 0];
+	m_view = [0, m_bot.angles_y, 0];
+	m_bot.v_angle = m_view;
 }
 
 /* the feet stay put (origin is at the feet); refuses if the new box would
@@ -74,7 +75,7 @@ vector BWBody::GetEyePosition(void) { return m_bot.origin + m_bot.view_ofs; }
 
 vector BWBody::GetViewVector(void)
 {
-	makevectors(m_bot.v_angle);
+	makevectors(m_view);
 	return v_forward;
 }
 
@@ -209,7 +210,7 @@ float BWBody::IsAimingAt(vector pos, float radius)
 
 void BWBody::FrameUpdate(float dt)
 {
-	vector eye = GetEyePosition(), target, want, ang = m_bot.v_angle;
+	vector eye = GetEyePosition(), target, want, ang = m_view;
 	float dy, dp, err, rate, k;
 
 	/* activities */
@@ -279,6 +280,7 @@ void BWBody::FrameUpdate(float dt)
 	ang_y = anglemod(ang_y + dy);
 	ang_x = bound(-89, ang_x + dp, 89);
 	ang_z = 0;
+	m_view = ang;
 	m_bot.v_angle = ang;
 	m_bot.angles_x = -ang_x / 3;	/* the model leans a third of the way */
 

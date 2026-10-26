@@ -155,11 +155,15 @@ addition; the behaviour description doesn't cover it.
   `IsAimingAt(pos, radius)` tells a game whether to pull the trigger. Firing
   at `m_aim_pos` rather than the true target lets the error show in the
   shot. Reaction time is the Vision's `m_reaction`.
+- The Body keeps the view angles itself (`m_view`) and writes them to
+  `v_angle` each frame. A game may reset a player's `v_angle` from the
+  command it is running, as Nuclide does before every input frame, and the
+  Body would otherwise only ever turn one frame's worth from there.
 - A game whose players must be its own class (Nuclide's `ncPlayer`/`ncBot`)
   defines `BW_PAWN_BASE` as that class before including the framework, and
-  `BWBot` then derives from it. The pawn class's own `IsAlive` is used. This
-  compiles inside Nuclide's base server progs with `ncBot`; it has not yet
-  been run in a Nuclide game.
+  `BWBot` then derives from it. The pawn class's own `IsAlive` is used.
+  Nuclide's tftemplate (sokkycakes/nuclide) runs its bots this way, with
+  `BW_PAWN_BASE` set to its `tfPlayer`; see its README, "Bots".
 
 ## Learned by probing
 

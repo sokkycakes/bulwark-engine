@@ -331,6 +331,7 @@ class BWBody : BWComponent {
 	BWAimReply m_look_reply;
 	string m_look_reason;
 	vector m_track;
+	vector m_view;		/* the view angles; a player's v_angle can be reset by the game each input frame */
 	float m_on_target;
 	/* aiming skill; 0 means the default */
 	float m_head_rate;	/* degrees per second when far off target */

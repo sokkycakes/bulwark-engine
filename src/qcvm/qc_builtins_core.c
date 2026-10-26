@@ -918,15 +918,23 @@ static void bi_tokenize(qcvm_t *vm)
 	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
 }
 
+/* console rules for quotes and comments, but the whole string is one line:
+ * QC tokenizes multi-line text with it, such as an entity's spawn data */
 static void bi_tokenize_console(qcvm_t *vm)
 {
 	const char *src = QC_PSTR(vm, 0);
+	size_t len = strlen(src);
+	char *line = Mem_Alloc(len + 1);
 	cmd_tokens_t *ct = Mem_Alloc(sizeof(*ct));
+	for (size_t i = 0; i < len; i++)
+		line[i] = (src[i] == '\n' || src[i] == '\r') ? ' ' : src[i];
+	line[len] = 0;
 	tokens_reset(vm);
-	Cmd_TokenizeInto(ct, src);
+	Cmd_TokenizeInto(ct, line);
 	for (int i = 0; i < ct->argc; i++)
 		token_add(vm, src, ct->argv[i], strlen(ct->argv[i]), src + ct->argstart[i], src + ct->argend[i]);
 	Mem_Free(ct);
+	Mem_Free(line);
 	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
 }
 
