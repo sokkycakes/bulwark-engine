@@ -497,7 +497,96 @@ static void physics_toss(int e, int movetype)
 	impact(e, tr.ent);
 }
 
-/* brush movers: move without collision for now and advance ltime */
+/* Moves what rides on or stands in the way of a brush mover by the same
+ * amount. Riders are entities on the ground of the pusher; anything else is
+ * pushed when the moved brushes now overlap it. If a pushed entity would
+ * end up inside something, everything goes back and the pusher's blocked
+ * function runs. Only translation pushes; turning movers carry nothing. */
+static bool push_entities(int pusher, const float *move)
+{
+	qcvm_t *vm = sv.vm;
+	int moved[512], nmoved = 0;
+	float saved[512][3];
+	float *porg = ev(pusher, F.origin), *pmin = ev(pusher, F.absmin), *pmax = ev(pusher, F.absmax);
+	float lo[3], hi[3];
+	for (int i = 0; i < 3; i++) {
+		lo[i] = pmin[i] + BW_MIN(move[i], 0);
+		hi[i] = pmax[i] + BW_MAX(move[i], 0);
+	}
+	for (int i = 0; i < 3; i++)
+		porg[i] += move[i];
+	SV_LinkEdict(pusher, false);
+	for (int e = 1; e < vm->num_edicts; e++) {
+		int mt, solid, flags;
+		float *org, *amin, *amax;
+		bool riding;
+		svtrace_t tr;
+		if (vm->edicts[e].free || e == pusher)
+			continue;
+		mt = (int)QC_EFloat(vm, e, F.movetype);
+		solid = (int)QC_EFloat(vm, e, F.solid);
+		if (mt == MOVETYPE_PUSH || mt == MOVETYPE_NONE || mt == MOVETYPE_NOCLIP || mt == MOVETYPE_FOLLOW)
+			continue;
+		if (solid == SOLID_NOT || solid == SOLID_TRIGGER || solid == SOLID_BSP || solid == SOLID_BSPTRIGGER)
+			continue;
+		org = ev(e, F.origin);
+		amin = ev(e, F.absmin);
+		amax = ev(e, F.absmax);
+		if (!org || !amin || !amax)
+			continue;
+		if (amin[0] > hi[0] || amin[1] > hi[1] || amin[2] > hi[2] || amax[0] < lo[0] || amax[1] < lo[1] ||
+		    amax[2] < lo[2])
+			continue;
+		flags = (int)QC_EFloat(vm, e, F.flags);
+		riding = (flags & FL_ONGROUND) && QC_EInt(vm, e, F.groundentity) == pusher;
+		if (!riding && !SV_InsideBrushEntity(pusher, e))
+			continue;
+		if (nmoved < 512) {
+			moved[nmoved] = e;
+			VectorCopy(org, saved[nmoved]);
+			nmoved++;
+		}
+		for (int i = 0; i < 3; i++)
+			org[i] += move[i];
+		if (!riding)
+			QC_SetEFloat(vm, e, F.flags, (float)(flags & ~FL_ONGROUND));
+		SV_LinkEdict(e, false);
+		SV_Move(org, ev(e, F.mins), ev(e, F.maxs), org, MOVE_NORMAL, e, &tr);
+		if (!tr.startsolid)
+			continue;
+		/* a rider pressed against something only stays behind */
+		if (riding && !SV_InsideBrushEntity(pusher, e)) {
+			VectorCopy(saved[nmoved - 1], org);
+			SV_LinkEdict(e, false);
+			continue;
+		}
+		/* blocked: put everything back */
+		for (int k = 0; k < nmoved; k++) {
+			VectorCopy(saved[k], ev(moved[k], F.origin));
+			SV_LinkEdict(moved[k], false);
+		}
+		for (int i = 0; i < 3; i++)
+			porg[i] -= move[i];
+		SV_LinkEdict(pusher, false);
+		{
+			func_t b = QC_EInt(vm, pusher, F.blocked);
+			if (b) {
+				int oldself = QC_GInt(vm, G.self), oldother = QC_GInt(vm, G.other);
+				QC_SetGInt(vm, G.self, pusher);
+				QC_SetGInt(vm, G.other, e);
+				QC_Execute(vm, b);
+				QC_SetGInt(vm, G.self, oldself);
+				QC_SetGInt(vm, G.other, oldother);
+			}
+		}
+		return false;
+	}
+	for (int k = 0; k < nmoved; k++)
+		SV_LinkEdict(moved[k], true);
+	return true;
+}
+
+/* brush movers: move, pushing what is in the way, and advance ltime */
 static void physics_pusher(int e)
 {
 	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
@@ -510,14 +599,22 @@ static void physics_pusher(int e)
 			movetime = 0;
 	}
 	if (movetime > 0 && org && vel) {
-		/* TODO: push and block entities that are in the way */
-		for (int i = 0; i < 3; i++) {
-			org[i] += vel[i] * movetime;
+		float move[3];
+		bool pushed = true;
+		for (int i = 0; i < 3; i++)
+			move[i] = vel[i] * movetime;
+		if ((move[0] || move[1] || move[2]) && QC_EFloat(sv.vm, e, F.solid) == SOLID_BSP)
+			pushed = push_entities(e, move);
+		else
+			for (int i = 0; i < 3; i++)
+				org[i] += move[i];
+		if (pushed) {
 			if (ang && avel)
-				ang[i] += avel[i] * movetime;
+				for (int i = 0; i < 3; i++)
+					ang[i] += avel[i] * movetime;
+			QC_SetEFloat(sv.vm, e, F.ltime, ltime + movetime);
+			SV_LinkEdict(e, false);
 		}
-		QC_SetEFloat(sv.vm, e, F.ltime, ltime + movetime);
-		SV_LinkEdict(e, false);
 	}
 	thinktime = QC_EFloat(sv.vm, e, F.nextthink);
 	if (thinktime > oldltime && thinktime <= QC_EFloat(sv.vm, e, F.ltime)) {

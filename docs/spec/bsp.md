@@ -91,6 +91,10 @@ format descriptions and checked on `tests/data/maps/hltest.bsp`:
 - `tools/mkq1map_test.py --hl` writes the BSP30 twin of the test map and
   `tests/data/hltest.wad` with its floor texture.
 
+## Source (VBSP)
+
+See [vbsp.md](vbsp.md).
+
 ## Visibility
 
 Both families load the node tree, leafs (with bounding boxes and their

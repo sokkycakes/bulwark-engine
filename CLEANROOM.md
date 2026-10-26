@@ -40,3 +40,6 @@ unmodified, with their licence text kept at the end of each file:
   Sean Barrett and contributors: public domain (or MIT, at your choice).
 - `font8x8_basic.h` by Daniel Hepper, from Marcel Sondaar's and IBM's 8x8
   fonts: public domain.
+- `lzma/` (LzmaDec.c, LzmaDec.h, 7zTypes.h, Compiler.h, Precomp.h) by Igor
+  Pavlov, from the LZMA SDK: public domain. Used to decode compressed Source
+  BSP lumps.

@@ -276,6 +276,13 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 		finish_world(bsp);
 		return;
 	}
+	if (!memcmp(d, "VBSP", 4)) {
+		if (!R_LoadSourceWorld(bsp, path, d, size))
+			goto fail;
+		Mem_Free(d);
+		finish_world(bsp);
+		return;
+	}
 	rbsp = !memcmp(d, "RBSP", 4) || !memcmp(d, "FBSP", 4);
 	fbsp = !memcmp(d, "FBSP", 4);
 	if (memcmp(d, "IBSP", 4) && !rbsp) {
@@ -627,7 +634,7 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 		bool trans = mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER;
 		if (!s->numindexes || mat->nodraw || mat->sky || trans != translucentpass)
 			continue;
-		if (usevis && s->visframe != r_world.visframe) {
+		if (usevis && !s->novis && s->visframe != r_world.visframe) {
 			r_stats.culled++;
 			continue;
 		}

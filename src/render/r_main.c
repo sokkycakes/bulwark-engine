@@ -227,6 +227,9 @@ bool R_Init(bool headless)
 	gl_texturemode = Cvar_Get("gl_texturemode", "linear", CVAR_ARCHIVE, "Texture filtering: linear or nearest");
 	r_wireframe = Cvar_Get("r_wireframe", "0", 0, NULL);
 	r_speeds = Cvar_Get("r_speeds", "0", 0, NULL);
+	r_showclip = Cvar_Get("r_showclip", "0", 0, "Draw collision brushes: 1 the ones added for props and displacements, 2 all");
+	r_draw2d = Cvar_Get("r_draw2d", "1", 0, "Draw the HUD, menus and console (0 for clean screenshots)");
+	r_debugview = Cvar_Get("r_debugview", "", 0, "Put the camera at \"x y z pitch yaw\", whatever the game says");
 	scr_scale = Cvar_Get("scr_scale", "0", CVAR_ARCHIVE, "2D scale: virtual pixels per screen pixel, 0 for automatic");
 	r_screenshot_format = Cvar_Get("r_screenshot_format", "png", CVAR_ARCHIVE, NULL);
 	Cmd_Add("screenshot", Screenshot_f);
