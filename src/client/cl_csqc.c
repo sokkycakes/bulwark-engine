@@ -268,7 +268,8 @@ bool CSQC_Load(void)
 	tables[2] = s_builtins;
 	tables[3] = qc_builtins_core;
 	tables[4] = qc_builtins_extra;
-	tables[5] = NULL;
+	tables[5] = cl_hostcache_builtins;
+	tables[6] = NULL;
 	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)

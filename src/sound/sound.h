@@ -28,6 +28,10 @@ int S_StreamQueued(int stream);
 /* scales game sounds and music (not the streams), for voice ducking */
 void S_SetDucking(float scale);
 
+/* the media player's playlist: track i (NULL past the end), the one playing (-1 none) */
+const char *S_MediaTrack(int i);
+int S_MediaCurrent(void);
+
 /* the microphone (the device layer): mono 16-bit samples at the asked rate */
 int S_MicDevices(char names[][128], int max);
 bool S_MicOpen(const char *device, int rate); /* NULL or "" for the default */

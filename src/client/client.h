@@ -226,6 +226,21 @@ bool CIN_KeyEvent(int key, bool down);
 bool CIN_Playing(void);
 void CIN_Stop(void);
 /* cl_download.c */
+/* cl_emenu.c: the engine's own menus */
+void EM_Init(void);
+bool EM_Active(void);
+void EM_Draw(int w, int h);
+bool EM_KeyEvent(int key, bool down, int unicode);
+void EM_Close(void);
+void EM_OpenMain(void);
+
+/* cl_master.c: the server list, as the browsers see it */
+extern const qc_builtin_t cl_hostcache_builtins[];
+void CL_HostcacheRefresh(bool purge);
+int CL_HostcacheCount(void);
+const char *CL_HostcacheField(int n, const char *key, char *out, size_t size);
+void CL_HostcacheSort(const char *key, bool descending);
+
 /* cl_voip.c */
 void CL_InitVoip(void);
 void CL_VoipFrame(void);

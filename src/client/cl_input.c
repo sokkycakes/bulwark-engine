@@ -362,6 +362,10 @@ void IN_KeyEvent(int key, bool down, int unicode)
 			Con_KeyEvent(key, unicode);
 		if (down || !held_command[key])
 			return;
+	} else if (EM_Active() && (down || !held_command[key])) {
+		/* the engine's menus take every key while open */
+		EM_KeyEvent(key, down, unicode);
+		return;
 	} else if (down || !held_command[key]) {
 		/* a film takes every key while it plays */
 		if (CIN_KeyEvent(key, down))
@@ -407,7 +411,7 @@ void IN_MouseMove(float dx, float dy)
 {
 	static float olddx, olddy;
 	float mx = dx, my = dy;
-	if (Con_IsActive())
+	if (Con_IsActive() || EM_Active())
 		return;
 	if (MQC_InputEvent(2, dx, dy, 0))
 		return;

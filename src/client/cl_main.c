@@ -1022,5 +1022,6 @@ void CL_Init(void)
 	CL_InitCapture();
 	CL_InitCinematics();
 	CL_InitVoip();
+	EM_Init();
 	IN_Init();
 }

@@ -62,6 +62,14 @@ void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const ui
 void R_Set2DClip(float x, float y, float w, float h);
 void R_Reset2DClip(void);
 
+/* simple 2D drawing in virtual pixels, for the engine's own menus: text
+ * in the console font at a size (8 is the font's own), boxes, pictures */
+float R_Text(float x, float y, const char *text, float size, const float *rgb, float alpha);
+float R_TextWidth(const char *text, float size);
+void R_Rect(float x, float y, float w, float h, const float *rgb, float alpha);
+bool R_Picture(float x, float y, float w, float h, const char *name, float alpha); /* false if there's no such picture */
+bool R_PictureSize(const char *name, int *w, int *h);
+
 /* the main view's origin and forward direction, from the last frame */
 void R_MainView(float origin[3], float forward[3]);
 /* $r_editlights_current_* macros (r_editlights); NULL for other names */

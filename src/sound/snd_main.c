@@ -592,6 +592,9 @@ static bool play_track(int i)
 	return ok;
 }
 
+const char *S_MediaTrack(int i) { return i >= 0 && i < numtracks ? playlist[i] : NULL; }
+int S_MediaCurrent(void) { return media_playing ? curtrack : -1; }
+
 static void next_track(void)
 {
 	for (int tries = 0; tries < numtracks; tries++)

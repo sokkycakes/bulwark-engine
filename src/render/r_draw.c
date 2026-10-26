@@ -682,3 +682,34 @@ bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *nu
 		sizes[i] = f->sizes[i].pixelsize;
 	return true;
 }
+
+/* --- the plain interface (render.h) ------------------------------------------------- */
+
+float R_Text(float x, float y, const char *text, float size, const float *rgb, float alpha)
+{
+	return R_DrawString(x, y, text, size, size, rgb, alpha, 0, true);
+}
+
+float R_TextWidth(const char *text, float size) { return R_StringWidth(text, size, size, true); }
+
+void R_Rect(float x, float y, float w, float h, const float *rgb, float alpha) { R_DrawFill(x, y, w, h, rgb, alpha, 0); }
+
+bool R_PictureSize(const char *name, int *w, int *h)
+{
+	int handle = R_ImageHandle(name);
+	*w = *h = 0;
+	if (!handle)
+		return false;
+	R_ImageSize(handle, w, h);
+	return *w > 0;
+}
+
+bool R_Picture(float x, float y, float w, float h, const char *name, float alpha)
+{
+	static const float white[3] = {1, 1, 1};
+	material_t *m = R_FindMaterial(name, MATF_2D);
+	if (!m)
+		return false;
+	R_DrawPic(x, y, w, h, m, 0, 0, 1, 1, white, alpha, 0);
+	return true;
+}

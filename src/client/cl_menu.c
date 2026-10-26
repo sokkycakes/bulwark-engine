@@ -120,7 +120,8 @@ bool MQC_Load(void)
 	tables[3] = qc_builtins_core;
 	tables[4] = qc_builtins_extra;
 	tables[5] = cl_builtins; /* clientstate, key bindings and the like */
-	tables[6] = NULL;
+	tables[6] = cl_hostcache_builtins;
+	tables[7] = NULL;
 	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, 4096, 16 * 1024 * 1024);
 	Mem_Free(data);
 	if (!M.vm)
@@ -158,8 +159,14 @@ void MQC_RendererRestarted(void)
 /* mode 1 shows the menu, 0 hides it, -1 flips it */
 void MQC_Toggle(int mode)
 {
-	if (!M.vm || !M.toggle)
+	if (!M.vm || !M.toggle) {
+		/* no menu module: the engine's own menu */
+		if (mode != 0 && !EM_Active())
+			EM_OpenMain();
+		else if (mode != 1)
+			EM_Close();
 		return;
+	}
 	if (mode < 0)
 		mode = !MQC_Active();
 	set_time();

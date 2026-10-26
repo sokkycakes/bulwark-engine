@@ -156,10 +156,11 @@ void R_EndFrame(void)
 			R_DrawFill(x, y, w * level, 4, bar, 0.9f, 0);
 		}
 	}
+	EM_Draw(r_vwidth, r_vheight);
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
 	R_ToolsEndFrame();
-	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode);
+	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode && !EM_Active());
 	if (screenshot_pending[0]) {
 		take_screenshot(screenshot_pending);
 		screenshot_pending[0] = 0;
