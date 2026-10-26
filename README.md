@@ -31,6 +31,9 @@ new games.
   format. Loads and saves s&box files, expands prefab instances, and spawns
   `Bulwark.Entity` components as QuakeC entities. `map foo` loads
   `maps/foo.scene` when it exists. See [docs/spec/scene-format.md](docs/spec/scene-format.md).
+- **FTEW worlds**: the compiled world format from the Godot-based Stiletto
+  exporter, loaded wherever a BSP is (collision, drawing, entities), and
+  nameable from a scene's `MapInstance`. See [docs/spec/ftew.md](docs/spec/ftew.md).
 - Not yet: skeletal animation, particles, decals, PVS, pk3 files, Q1 BSP
   rendering and collision, the menu progs.
 
@@ -81,5 +84,6 @@ Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 - [docs/spec/builtins.md](docs/spec/builtins.md)
 - [docs/spec/bsp.md](docs/spec/bsp.md)
 - [docs/spec/scene-format.md](docs/spec/scene-format.md)
+- [docs/spec/ftew.md](docs/spec/ftew.md)
 - [docs/spec/materials.md](docs/spec/materials.md)
 - [docs/spec/client-game.md](docs/spec/client-game.md)

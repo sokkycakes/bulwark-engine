@@ -102,8 +102,8 @@ void Scene_MapInfo(const scenefile_t *resolved, scene_entinfo_t *info)
 		const char *slash = strrchr(name, '/');
 		const char *dot = strrchr(slash ? slash : name, '.');
 		snprintf(info->mapname, sizeof(info->mapname), "%s%s%s", slash ? "" : "maps/", name, dot ? "" : ".bsp");
-		if (dot && Str_ICmp(dot, ".bsp"))
-			Con_Printf("^3MapInstance names %s; only BSP maps are supported\n", name);
+		if (dot && Str_ICmp(dot, ".bsp") && Str_ICmp(dot, ".ftew"))
+			Con_Printf("^3MapInstance names %s; only BSP and FTEW maps are supported\n", name);
 	}
 }
 

@@ -198,20 +198,20 @@ Other components are kept in the file and skipped at spawn.
 
 ### Maps
 
-A `MapInstance` component (s&box's own map component) names the BSP that
-provides the world:
+A `MapInstance` component (s&box's own map component) names the BSP or
+[FTEW world](ftew.md) that provides the world:
 
 ```json
 { "__type": "Sandbox.MapInstance", "MapName": "ai", "EnableCollision": true, "SpawnMapEntities": true }
 ```
 
 `MapName` without a folder gets `maps/` in front, and without an extension
-gets `.bsp`. The BSP's entities spawn first, worldspawn first of all, then
+gets `.bsp`; name `foo.ftew` for an FTEW world. The BSP's entities spawn first, worldspawn first of all, then
 the scene's. `SpawnMapEntities` is a Bulwark addition: `false` spawns only
 the BSP's worldspawn, for scenes that hold the map's entities themselves.
 
-`map <name>` loads `maps/<name>.scene` if there is one, and otherwise
-`maps/<name>.bsp`. A scene needs a `MapInstance` for now, because the
+`map <name>` loads `maps/<name>.scene` if there is one, otherwise
+`maps/<name>.bsp`, otherwise `maps/<name>.ftew`. A scene needs a `MapInstance` for now, because the
 server needs a world model. The map name the progs see is the scene's name,
 and Nuclide uses it to find per-map files such as `maps/<name>.way`. So
 name a scene after its BSP to keep those working.

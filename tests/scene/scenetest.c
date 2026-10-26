@@ -454,6 +454,16 @@ static void test_from_entities(void)
 	Scene_Free(sf);
 	SB_Free(&text);
 	SB_Free(&ents);
+
+	/* MapInstance may name an FTEW world */
+	{
+		scenefile_t *f = Scene_Parse("{\"GameObjects\": [{\"Name\": \"Map\", \"Components\": [{\"__type\": \"Sandbox.MapInstance\","
+		                             " \"MapName\": \"editor_lab.ftew\"}]}], \"__version\": 3}",
+		                             "ftew.scene");
+		Scene_MapInfo(f, &info);
+		CHECK(!strcmp(info.mapname, "maps/editor_lab.ftew"));
+		Scene_Free(f);
+	}
 }
 
 int main(int argc, char **argv)

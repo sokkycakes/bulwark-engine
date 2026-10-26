@@ -282,7 +282,7 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.serverinfo, keep_serverinfo, sizeof(sv.serverinfo));
 	Str_Copy(sv.localinfo, keep_localinfo, sizeof(sv.localinfo));
 
-	/* maps/<name>.scene wins over maps/<name>.bsp; its MapInstance names the BSP */
+	/* maps/<name>.scene wins over maps/<name>.bsp; its MapInstance names the world */
 	snprintf(path, sizeof(path), "maps/%s.scene", mapname);
 	if (FS_FileExists(path)) {
 		scenefile_t *sf = Scene_Load(path);
@@ -302,7 +302,14 @@ bool SV_SpawnServer(const char *mapname)
 		}
 		Str_Copy(path, sceneinfo.mapname, sizeof(path));
 	} else {
+		/* then a BSP, then an FTEW world */
 		snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
+		if (!FS_FileExists(path)) {
+			char ftew[160];
+			snprintf(ftew, sizeof(ftew), "maps/%s.ftew", mapname);
+			if (FS_FileExists(ftew))
+				Str_Copy(path, ftew, sizeof(path));
+		}
 	}
 	sv.world = BSP_Load(path);
 	if (!sv.world) {

@@ -18,7 +18,8 @@ add_library(bwcommon STATIC
 	src/common/cmd.c
 	src/common/fs.c
 	src/common/pmove.c
-	src/common/json.c)
+	src/common/json.c
+	src/common/ftew.c)
 target_link_libraries(bwcommon PUBLIC m)
 
 add_library(bwscene STATIC
@@ -66,6 +67,10 @@ target_link_libraries(scenetest bwscene)
 
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
 add_test(NAME scene COMMAND scenetest ${CMAKE_SOURCE_DIR}/tests/scene)
+
+add_executable(ftewtest tests/ftew/ftewtest.c src/server/bspfile.c)
+target_link_libraries(ftewtest bwcommon)
+add_test(NAME ftew COMMAND ftewtest ${CMAKE_SOURCE_DIR}/tests/ftew)
 
 # game client with a listen server
 find_package(SDL2 QUIET)
