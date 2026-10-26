@@ -172,6 +172,7 @@ typedef struct {
 	GLuint *lightmaps;
 	int numlightmaps;
 	int lightmapsize;
+	bool deluxe;       /* odd pages hold light directions */
 	rmodel_t *submodels;
 	int numsubmodels;
 	/* light grid for lighting models (Q3 BSP) */

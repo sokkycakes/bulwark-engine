@@ -30,3 +30,13 @@ writing engine code here reads those engines' source.
 Whenever behaviour was learned from a probe or from content rather than a
 written spec, write it down in `docs/spec/` with how it was established. Code
 comments point at those files. If something is a guess, say so.
+
+## Third-party code
+
+Only public domain (or equally permissive) libraries go in `src/thirdparty/`,
+unmodified, with their licence text kept at the end of each file:
+
+- `stb_image.h`, `stb_image_write.h`, `stb_truetype.h`, `stb_vorbis.c` by
+  Sean Barrett and contributors: public domain (or MIT, at your choice).
+- `font8x8_basic.h` by Daniel Hepper, from Marcel Sondaar's and IBM's 8x8
+  fonts: public domain.

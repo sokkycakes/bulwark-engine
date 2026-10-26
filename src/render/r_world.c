@@ -213,8 +213,8 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 	rvert_t *fileverts;
 	vertbuf_t vb = {0};
 	idxbuf_t ib = {0};
-	int maxlm = -1, lmsize, npages;
-	bool deluxe;
+	int lmsize, npages;
+	bool oddlm = false;
 	char buf[128];
 
 	R_FreeWorld();
@@ -291,8 +291,8 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 		rs->material = shader >= 0 && shader < nshaders ? mats[shader] : R_FindMaterial("$default", 0);
 		rs->type = type;
 		rs->lightmap = lm >= 0 ? lm : -1;
-		if (lm > maxlm)
-			maxlm = lm;
+		if (lm >= 0 && (lm & 1))
+			oddlm = true;
 		rs->firstindex = ib.num;
 		if (firstvert < 0 || numverts < 0 || firstvert + numverts > nverts)
 			type = ST_BAD;
@@ -330,21 +330,22 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 			}
 	}
 
-	/* lightmap pages: 128x128 in IBSP/RBSP, 512x512 in FBSP. When a map has
-	 * twice as many pages as its surfaces use, every other page is a
-	 * deluxemap (light direction), see docs/spec/bsp.md */
+	/* lightmap pages: 128x128 in IBSP/RBSP, 512x512 in FBSP. Surfaces name
+	 * pages directly; in maps lit with deluxemaps the pages alternate light,
+	 * direction, so surfaces only use even pages (docs/spec/bsp.md). Every
+	 * page is uploaded, which keeps the indices as they are. */
 	lmsize = fbsp ? 512 : 128;
 	npages = lumps[14 * 2 + 1] / (lmsize * lmsize * 3);
-	deluxe = maxlm >= 0 && npages >= 2 * (maxlm + 1) && (npages % 2) == 0;
+	r_world.deluxe = npages >= 2 && (npages % 2) == 0 && !oddlm;
 	r_world.lightmapsize = lmsize;
-	r_world.numlightmaps = deluxe ? npages / 2 : npages;
+	r_world.numlightmaps = npages;
 	if (r_world.numlightmaps > 0) {
 		r_world.lightmaps = Mem_Alloc(sizeof(GLuint) * r_world.numlightmaps);
 		if (R_Active()) {
 			qglGenTextures(r_world.numlightmaps, r_world.lightmaps);
 			qglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			for (int i = 0; i < r_world.numlightmaps; i++) {
-				const uint8_t *page = d + lumps[14 * 2] + (size_t)(deluxe ? i * 2 : i) * lmsize * lmsize * 3;
+				const uint8_t *page = d + lumps[14 * 2] + (size_t)i * lmsize * lmsize * 3;
 				GL_BindTexture(1, GL_TEXTURE_2D, r_world.lightmaps[i]);
 				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, lmsize, lmsize, 0, GL_RGB, GL_UNSIGNED_BYTE, page);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -407,7 +408,7 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 		qglBindVertexArray(0);
 	}
 	Con_DPrintf("%s: %d surfaces, %d vertices, %d triangles, %d lightmaps%s\n", path, nsurfs, vb.num, ib.num / 3,
-	            r_world.numlightmaps, deluxe ? " (with deluxemaps)" : "");
+	            r_world.numlightmaps, r_world.deluxe ? " (with deluxemaps)" : "");
 	Mem_Free(vb.v);
 	Mem_Free(ib.i);
 	Mem_Free(fileverts);

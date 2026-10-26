@@ -74,15 +74,16 @@ add_library(bwclient STATIC
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c
-	src/sound/snd_main.c)
+	src/sound/snd_main.c
+	src/sound/snd_mem.c)
 target_link_libraries(bwclient PUBLIC bwserver)
 
 if(SDL2_FOUND)
-	add_executable(bulwark src/main.c src/client/vid_sdl.c)
+	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c)
 	target_include_directories(bulwark PRIVATE ${SDL2_INCLUDE_DIRS})
 	target_link_libraries(bulwark bwclient ${SDL2_LIBRARIES})
 else()
 	message(WARNING "SDL2 not found: building the client without a window")
-	add_executable(bulwark src/main.c src/client/vid_null.c)
+	add_executable(bulwark src/main.c src/client/vid_null.c src/sound/snd_null.c)
 	target_link_libraries(bulwark bwclient)
 endif()

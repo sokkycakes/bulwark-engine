@@ -65,3 +65,29 @@ behaves like `strcat` and `strunzone` does nothing.
 Return in globals 1–3, parameters at 4 + 3n for n < 8. Arguments past the
 eighth live in globals named `$parm8`, `$parm9`, … (found by name). The
 `CALLnH` opcodes pass the first two arguments in operands b and c instead.
+
+## Multiprogs
+
+FTEQW's `specs/multiprogs.txt` describes `addprogs`: extra progs files
+loaded into an already running VM, sharing its entities. Nuclide uses it for
+`progs/singleplayer.dat` (game rules) on the server and `hud.dat` on the
+client. This VM implements it like this:
+
+- Each progs keeps its own functions, strings and globals. Its globals live
+  in the VM's heap, so pointers between progs stay valid.
+- Function values and static string values carry the progs number in bits
+  24-30 (0 for the main progs). A call switches the active progs and
+  switches back on return; strings decode against their own progs.
+- Fields of an added progs are matched by name onto the main progs' entity
+  layout. Fields the main progs lacks get one of 64 spare words reserved
+  past the main layout. Nuclide's added progs needed none.
+- The system globals (up to `end_sys_globals`, or the first 28 words) are
+  copied across on every switch, so `self`, `time` and the rest are shared.
+  Extra parameters (`$parm8` and up) are copied by name.
+- An added progs' `init(float prevprogs)` runs once it is linked.
+- Overlapping fields: FTEQCC gives fields of unrelated classes the same
+  entity slot. Nuclide's csprogs has 2733 field definitions on 616 distinct
+  offsets, for example `ncView::__mSetupView` shares a slot with
+  `ncIO::__mSpawned`. So a method call's target depends on `self` being the
+  right entity. That is why engine code must give `self` back after it
+  runs QC from inside a builtin (see client-game.md).
