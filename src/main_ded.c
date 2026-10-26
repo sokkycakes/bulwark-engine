@@ -6,6 +6,7 @@
 #include "common/cmd.h"
 #include "common/cvar.h"
 #include "common/fs.h"
+#include "net/net.h"
 #include "server/sv_local.h"
 
 static bool quit_requested;
@@ -62,9 +63,10 @@ int main(int argc, char **argv)
 		games[numgames++] = "base";
 	for (int i = 0; i < numgames; i++)
 		FS_AddGameDir(games[i]);
+	NET_Init();
 	SV_Init();
 	Cmd_Add("quit", Quit_f);
-	Cmd_SetFallback(ServerFallback);
+	Cmd_SetPreHook(ServerFallback);
 
 	if (FS_FileExists("server.cfg"))
 		Cbuf_AddText("exec server.cfg\n");
@@ -89,6 +91,8 @@ int main(int argc, char **argv)
 			dt = now - last;
 			last = now;
 		}
+		host_time += dt;
+		NET_RunDelayed();
 		SV_Frame(dt);
 	}
 	if (maxframes >= 0)

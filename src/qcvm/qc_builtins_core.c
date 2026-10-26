@@ -1167,12 +1167,16 @@ static void bi_callfunction(qcvm_t *vm)
 		QC_RunError(vm, "callfunction needs a function name");
 	name = QC_PSTR(vm, argc - 1);
 	f = QC_FindFunction(vm, name);
-	if (!f)
-		QC_RunError(vm, "callfunction: no function named %s", name);
+	if (!f) {
+		/* Nuclide calls this on names that may not exist (spawnfunc_player
+		 * in the base game), so a missing function is not an error */
+		Con_DPrintf("callfunction: no function named %s\n", name);
+		return;
+	}
 	vm->argc = argc - 1;
-	if (vm->functions[f].builtin) {
-		vm->extra->calling_builtin = f;
-		vm->functions[f].builtin(vm);
+	if (QC_FUNC_PROGS(f) == vm->curprogs && vm->functions[QC_FUNC_INDEX(f)].builtin) {
+		vm->extra->calling_builtin = QC_FUNC_INDEX(f);
+		vm->functions[QC_FUNC_INDEX(f)].builtin(vm);
 	} else {
 		QC_Execute(vm, f);
 	}
@@ -1396,7 +1400,8 @@ static void bi_parseentitydata(qcvm_t *vm)
 static void bi_memalloc(qcvm_t *vm)
 {
 	int size = QC_PINT(vm, 0);
-	QC_ReturnInt(vm, size > 0 ? (int32_t)QC_HeapAlloc(vm, (size_t)size) : 0);
+	/* a zero-byte request still gets a distinct block, as Nuclide checks the result for failure */
+	QC_ReturnInt(vm, size >= 0 ? (int32_t)QC_HeapAlloc(vm, (size_t)size) : 0);
 }
 
 static void bi_memrealloc(qcvm_t *vm)

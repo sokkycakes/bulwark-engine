@@ -28,10 +28,13 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `physics_supported` returns 0: there is no rigid-body physics yet.
 - Networking (`Write*`, `multicast`, `stuffcmd`, …) builtins are accepted and
   do nothing until the network layer exists.
-- `addprogs` returns -1 (multiprogs not implemented).
+- `addprogs`, `externvalue`, `externset` and `externcall` work on extra
+  progs loaded into the same VM; see the multiprogs section of
+  [progs-format.md](progs-format.md).
 
 ## Still missing for Nuclide's server
 
 Seen while running all 42 maps in Nuclide's `base` game:
-`frameforaction`, `gettagindex`, `processmodelevents` (need model loading)
-and `runstandardplayerphysics` (needs clients).
+`frameforaction`, `gettagindex`, `processmodelevents` and the `skel_*`
+family (need skeletal models on the server). `runstandardplayerphysics` is
+in place now that there are clients.

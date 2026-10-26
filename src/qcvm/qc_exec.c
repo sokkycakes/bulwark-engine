@@ -14,16 +14,20 @@ bool QC_AnyExecuting(void) { return executing_count > 0; }
 
 #define QC_MAX_INSTRUCTIONS (1u << 28)
 
+static void trace_line(qcvm_t *vm, int progs, int f, int s)
+{
+	qcprogs_t *p = &vm->progs[progs];
+	if (f > 0 && f < p->numfunctions)
+		Con_Printf("  %s (%s) statement %d%s%s\n", p->functions[f].name, p->functions[f].file, s,
+		           progs ? " in " : "", progs ? p->name : "");
+}
+
 void QC_StackTrace(qcvm_t *vm)
 {
-	int f = vm->xfunction;
-	if (f > 0 && f < vm->numfunctions)
-		Con_Printf("  %s (%s) statement %d\n", vm->functions[f].name, vm->functions[f].file, vm->xstatement);
-	for (int i = vm->depth - 1; i >= 0; i--) {
-		int ff = vm->stack[i].f;
-		if (ff > 0 && ff < vm->numfunctions)
-			Con_Printf("  %s (%s) statement %d\n", vm->functions[ff].name, vm->functions[ff].file, vm->stack[i].s);
-	}
+	int progs = vm->curprogs;
+	trace_line(vm, progs, vm->xfunction, vm->xstatement);
+	for (int i = vm->depth - 1; i >= 0; i--)
+		trace_line(vm, vm->stack[i].progs, vm->stack[i].f, vm->stack[i].s);
 }
 
 void QC_RunError(qcvm_t *vm, const char *fmt, ...)
@@ -41,7 +45,11 @@ void QC_RunError(qcvm_t *vm, const char *fmt, ...)
 	longjmp(*(jmp_buf *)vm->abort_jmp, 1);
 }
 
-static void enter_function(qcvm_t *vm, int fnum, int returnto)
+/* calls fnum of the running progs; caller is the progs to return to */
+/* pr_trace: prints each QC function entered whose name contains this */
+char qc_tracefilter[64];
+
+static void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
 {
 	qcfunc_t *f = &vm->functions[fnum];
 	int locals = f->d.locals;
@@ -50,9 +58,12 @@ static void enter_function(qcvm_t *vm, int fnum, int returnto)
 
 	if (vm->depth >= QC_MAX_DEPTH)
 		QC_RunError(vm, "stack overflow calling %s", f->name);
+	if (qc_tracefilter[0] && strstr(f->name, qc_tracefilter))
+		Con_Printf("%s: %*s%s (self %d)\n", vm->name, vm->depth, "", f->name, QC_GInt(vm, vm->gofs.self));
 	fr = &vm->stack[vm->depth++];
 	fr->s = returnto;
 	fr->f = vm->xfunction;
+	fr->progs = caller;
 	fr->localbase = vm->localstack_used;
 
 	/* save the callee's locals so recursion does not clobber them */
@@ -91,6 +102,8 @@ static int leave_function(qcvm_t *vm)
 	qcfunc_t *f = &vm->functions[vm->xfunction];
 	memcpy(vm->globals + f->d.parm_start, vm->localstack + fr->localbase, sizeof(qcval_t) * f->d.locals);
 	vm->localstack_used = fr->localbase;
+	if (fr->progs != vm->curprogs)
+		QC_SwitchProgs(vm, fr->progs);
 	vm->xfunction = fr->f;
 	return fr->s;
 }
@@ -351,7 +364,7 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 			c[0] = p[0]; c[1] = p[1];
 			break;
 		}
-		case OP_GLOBALADDRESS: c->u = (uint32_t)(st->a + b->i) * 4; break;
+		case OP_GLOBALADDRESS: c->u = vm->globals_addr + (uint32_t)(st->a + b->i) * 4; break;
 		case OP_ADD_PIW: c->u = a->u + (uint32_t)b->i * 4; break;
 		case OP_BOUNDCHECK: {
 			int32_t lo = (int32_t)st->c, hi = (int32_t)st->b;
@@ -606,7 +619,8 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 		case OP_CALL5: case OP_CALL6: case OP_CALL7: case OP_CALL8:
 		case OP_CALL1H: case OP_CALL2H: case OP_CALL3H: case OP_CALL4H:
 		case OP_CALL5H: case OP_CALL6H: case OP_CALL7H: case OP_CALL8H: {
-			int fnum = a->i;
+			int target = a->i, caller = vm->curprogs;
+			int fnum = QC_FUNC_INDEX(target), pn = QC_FUNC_PROGS(target);
 			qcfunc_t *f;
 			if (st->op >= OP_CALL1H) {
 				vm->argc = (int)(st->op - OP_CALL1H) + 1;
@@ -617,19 +631,24 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 			} else {
 				vm->argc = (int)(st->op - OP_CALL0);
 			}
-			if (fnum <= 0 || fnum >= vm->numfunctions) {
+			if (pn >= vm->numprogs || fnum <= 0 || fnum >= vm->progs[pn].numfunctions) {
 				vm->xstatement = s;
-				QC_RunError(vm, "call to %s function (%d)", fnum ? "invalid" : "NULL", fnum);
+				QC_RunError(vm, "call to %s function (%d)", target ? "invalid" : "NULL", target);
 			}
+			vm->xstatement = s;
+			if (pn != caller)
+				QC_SwitchProgs(vm, pn);
 			f = &vm->functions[fnum];
 			if (f->builtin) {
-				vm->xstatement = s;
 				vm->extra->calling_builtin = fnum;
 				f->builtin(vm);
+				if (vm->curprogs != caller)
+					QC_SwitchProgs(vm, caller);
 				G = vm->globals;
 				break;
 			}
-			enter_function(vm, fnum, s + 1);
+			enter_function(vm, fnum, s + 1, caller);
+			G = vm->globals;
 			s = f->d.first_statement;
 			continue;
 		}
@@ -641,6 +660,7 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 			/* fall through */
 		case OP_DONE:
 			s = leave_function(vm);
+			G = vm->globals;
 			if (vm->depth <= entrydepth)
 				return;
 			continue;
@@ -660,13 +680,15 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	int entrydepth = vm->depth;
 	int oldfunc = vm->xfunction, oldstmt = vm->xstatement;
 	int oldlocals = vm->localstack_used;
-	qcfunc_t *f;
+	int oldprogs = vm->curprogs, pn = QC_FUNC_PROGS(fnum);
+	qcfunc_t *f = QC_Function(vm, fnum);
 
-	if (fnum <= 0 || fnum >= vm->numfunctions) {
+
+	if (!f) {
 		Con_Printf("%s: tried to execute a NULL function\n", vm->name);
 		return false;
 	}
-	f = &vm->functions[fnum];
+	const int idx = QC_FUNC_INDEX(fnum);
 	executing_count++;
 	vm->exec_depth++;
 	if (setjmp(jb)) {
@@ -675,8 +697,12 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 			qcframe_t *fr = &vm->stack[--vm->depth];
 			qcfunc_t *cf = &vm->functions[vm->xfunction];
 			memcpy(vm->globals + cf->d.parm_start, vm->localstack + fr->localbase, sizeof(qcval_t) * cf->d.locals);
+			if (fr->progs != vm->curprogs)
+				QC_SwitchProgs(vm, fr->progs);
 			vm->xfunction = fr->f;
 		}
+		if (vm->curprogs != oldprogs)
+			QC_SwitchProgs(vm, oldprogs);
 		vm->localstack_used = oldlocals;
 		vm->xfunction = oldfunc;
 		vm->xstatement = oldstmt;
@@ -695,11 +721,16 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	}
 	vm->abort_jmp = &jb;
 
+	if (pn != oldprogs)
+		QC_SwitchProgs(vm, pn);
 	if (f->builtin) {
-		vm->extra->calling_builtin = fnum;
+		vm->extra->calling_builtin = idx;
 		f->builtin(vm);
+		if (vm->curprogs != oldprogs)
+			QC_SwitchProgs(vm, oldprogs);
 	} else {
-		enter_function(vm, fnum, -1);
+		/* the frame returns to oldprogs */
+		enter_function(vm, idx, -1, oldprogs);
 		run(vm, f->d.first_statement, entrydepth);
 	}
 

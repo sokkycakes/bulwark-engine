@@ -4,6 +4,8 @@
 
 #include "../qcvm/qcvm.h"
 #include "bspfile.h"
+#include "../net/netchan.h"
+#include "../net/protocol.h"
 
 #define SV_MAX_MODELS 4096
 #define SV_MAX_SOUNDS 4096
@@ -60,10 +62,104 @@ typedef struct {
 	char localinfo[8192];
 	const char *entitytoken_pos; /* getentitytoken cursor */
 	bool spawning;
+	bool paused;
 	int frames;
 } server_t;
 
 extern server_t sv;
+
+/* --- clients (sv_client.c) --- */
+typedef enum { CS_FREE, CS_CONNECTED, CS_SPAWNED } clientstate_t;
+
+/* per client, per entity send state */
+#define ES_KNOWN 1      /* the client has (or is being sent) this entity */
+#define ES_CONFIRMED 2  /* its creation was acknowledged, so deltas are safe */
+#define ES_NEEDREMOVE 4 /* a removal was lost and must be resent */
+#define SENDFLAGS_ALL 0xffffffu
+
+typedef struct {
+	uint32_t ent;
+	uint32_t flags;
+	uint8_t remove, create;
+} sentrec_t;
+
+#define SNAP_HISTORY 256 /* outgoing packets whose entity contents we remember */
+typedef struct {
+	uint32_t seq;
+	int num, cap;
+	sentrec_t *recs;
+} snaprec_t;
+
+#define MAX_SPAWN_PARMS 16
+
+typedef struct client_s {
+	clientstate_t state;
+	bool bot;
+	netchan_t chan;
+	char name[64];
+	char userinfo[2048];
+	int edict;
+	int spawncount; /* map the client was last told about */
+	double connect_time, last_ping_update;
+	float spawn_parms[MAX_SPAWN_PARMS];
+	bool have_parms;
+
+	uint32_t lastcmd; /* servercommandframe: last usercmd sequence executed */
+	usercmd_t lastucmd;
+	float cmd_budget; /* seconds of movement the client may still submit (speedhack guard) */
+
+	uint32_t *pending;
+	uint8_t *estate;
+	int estate_count;
+	uint32_t ent_rotor; /* where the next snapshot starts scanning */
+	snaprec_t snaps[SNAP_HISTORY];
+
+	/* QC writes to MSG_ONE/MSG_ALL/reliable multicasts, flushed as one svc_qcmessage */
+	strbuf_t qcrel;
+	/* unreliable extras for the next packet (prints, multicasts, sounds) */
+	strbuf_t datagram;
+
+	double next_snapshot;
+	float updaterate; /* snapshots per second (cl_updaterate) */
+	float interp;     /* client's interpolation delay, seconds (for lag compensation) */
+} client_t;
+
+typedef struct {
+	client_t *clients;
+	int maxclients;
+	int spawncount;
+	struct {
+		netadr_t adr;
+		int challenge;
+		double time;
+	} challenges[64];
+	char *signon; /* MSG_INIT bytes */
+	size_t signonlen;
+} serverstatic_t;
+
+extern serverstatic_t svs;
+
+void SV_InitClients(void);
+void SV_ClientsMapChanged(void); /* after a new map is spawned */
+void SV_ReadPackets(void);
+void SV_ClientsPreThink(void);
+void SV_ClientsPostThink(void);
+void SV_SendClientMessages(void);
+void SV_ClientsAfterPhysics(void);
+void SV_BroadcastPrecache(int kind, int index, const char *name);
+void SV_BroadcastLightstyle(int index, const char *style);
+void SV_BroadcastServerinfo(const char *key, const char *value);
+client_t *SV_ClientForEdict(int e);
+void SV_DropClient(client_t *c, const char *reason);
+void SV_LagCompensationRecord(void);
+void SV_SetupClientSlots(void);
+void SV_SaveSpawnParms(void);
+void SV_RunStandardPlayerPhysics(int e);
+void SV_InitPMove(void);
+struct pmvars_s;
+void W_RunPlayerPhysics(qcvm_t *vm, int e, const struct pmvars_s *vars);
+void SV_SyncServerinfoCvars(bool broadcast);
+extern const qc_builtin_t sv_client_builtins[];
 
 /* sv_main.c */
 void SV_Init(void);
@@ -91,6 +187,16 @@ typedef struct {
 	int brush, brushside;
 } svtrace_t;
 
+typedef struct worldctx_s {
+	qcvm_t *vm;
+	bspmap_t *world;
+	bool (*brushmodel)(int modelindex, bspmap_t **bsp, int *submodel);
+} worldctx_t;
+/* Points the world functions (SV_Move and friends) at another module's
+ * entities, e.g. the client's; NULL restores the server. Returns the previous
+ * context (NULL for the server). */
+worldctx_t *SV_SetWorldContext(worldctx_t *w);
+
 void SV_LinkEdict(int e, bool touch_triggers);
 void SV_UnlinkEdict(int e);
 void SV_Move(const float *start, const float *mins, const float *maxs, const float *end, int type, int passent, svtrace_t *tr);
@@ -104,5 +210,18 @@ bool SV_DropToFloor(int e);
 void SV_Physics(void);
 
 extern const qc_builtin_t sv_builtins[];
+
+/* world builtins that work on whichever VM and world context is current;
+ * the client calls them with its own context set */
+void W_bi_setorigin(qcvm_t *vm);
+void W_bi_setsize(qcvm_t *vm);
+void W_bi_traceline(qcvm_t *vm);
+void W_bi_tracebox(qcvm_t *vm);
+void W_bi_pointcontents(qcvm_t *vm);
+void W_bi_droptofloor(qcvm_t *vm);
+void W_bi_checkbottom(qcvm_t *vm);
+void W_bi_walkmove(qcvm_t *vm);
+void W_bi_changeyaw(qcvm_t *vm);
+void W_bi_touchtriggers(qcvm_t *vm);
 
 #endif

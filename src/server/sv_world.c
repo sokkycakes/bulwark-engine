@@ -5,10 +5,40 @@
 
 #include <math.h>
 
-#define F sv.vm->fofs
-#define G sv.vm->gofs
+/* The same code serves the client (CSQC traces and prediction) by pointing
+ * W at the client's world; see SV_SetWorldContext. */
+static bool sv_brushmodel(int mi, bspmap_t **bsp, int *sub)
+{
+	if (mi <= 0 || mi >= sv.nummodels || !sv.modelinfo[mi].bsp)
+		return false;
+	*bsp = sv.modelinfo[mi].bsp;
+	*sub = sv.modelinfo[mi].submodel;
+	return true;
+}
 
-static float *evec(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(sv.vm, e)[ofs].f; }
+static worldctx_t sv_worldctx = {NULL, NULL, sv_brushmodel};
+static worldctx_t *W = &sv_worldctx;
+
+static inline worldctx_t *cur(void)
+{
+	if (W == &sv_worldctx) {
+		sv_worldctx.vm = sv.vm;
+		sv_worldctx.world = sv.world;
+	}
+	return W;
+}
+
+worldctx_t *SV_SetWorldContext(worldctx_t *w)
+{
+	worldctx_t *old = W;
+	W = w ? w : &sv_worldctx;
+	return old == &sv_worldctx ? NULL : old;
+}
+
+#define F cur()->vm->fofs
+#define G cur()->vm->gofs
+
+static float *evec(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(cur()->vm, e)[ofs].f; }
 
 void SV_LinkEdict(int e, bool touch_triggers)
 {
@@ -24,7 +54,7 @@ void SV_LinkEdict(int e, bool touch_triggers)
 		if (amax)
 			amax[i] = org[i] + maxs[i] + 1;
 	}
-	if (touch_triggers && QC_EFloat(sv.vm, e, F.solid) != SOLID_NOT)
+	if (touch_triggers && QC_EFloat(cur()->vm, e, F.solid) != SOLID_NOT)
 		SV_TouchTriggers(e);
 }
 
@@ -47,31 +77,35 @@ int SV_ContentsToQuake(int bits)
 	return CONTENT_EMPTY;
 }
 
-static bool ent_brush_model(int e, svmodel_t **out)
+typedef struct {
+	bspmap_t *bsp;
+	int submodel;
+} brushref_t;
+
+static bool ent_brush_model(int e, brushref_t *out)
 {
-	int mi = (int)QC_EFloat(sv.vm, e, F.modelindex);
-	if (mi <= 0 || mi >= sv.nummodels || !sv.modelinfo[mi].bsp || sv.modelinfo[mi].bsp->type != BSP_Q3)
+	int mi = (int)QC_EFloat(cur()->vm, e, F.modelindex);
+	if (!cur()->brushmodel(mi, &out->bsp, &out->submodel) || out->bsp->type != BSP_Q3)
 		return false;
-	*out = &sv.modelinfo[mi];
 	return true;
 }
 
 int SV_PointContentsBits(const float *p)
 {
 	float zero[3] = {0, 0, 0};
-	int bits = sv.world ? BSP_PointContents(sv.world, 0, zero, p) : 0;
+	int bits = cur()->world ? BSP_PointContents(cur()->world, 0, zero, p) : 0;
 	/* brush entities such as func_water add their contents too */
-	for (int e = 1; e < sv.vm->num_edicts; e++) {
-		svmodel_t *m;
+	for (int e = 1; e < cur()->vm->num_edicts; e++) {
+		brushref_t m;
 		int solid;
-		if (sv.vm->edicts[e].free)
+		if (cur()->vm->edicts[e].free)
 			continue;
-		solid = (int)QC_EFloat(sv.vm, e, F.solid);
+		solid = (int)QC_EFloat(cur()->vm, e, F.solid);
 		if (solid != SOLID_BSP && solid != SOLID_BSPTRIGGER)
 			continue;
 		if (!ent_brush_model(e, &m))
 			continue;
-		bits |= BSP_PointContents(m->bsp, m->submodel, evec(e, F.origin), p);
+		bits |= BSP_PointContents(m.bsp, m.submodel, evec(e, F.origin), p);
 	}
 	return bits;
 }
@@ -155,11 +189,11 @@ static void merge_bsp(svtrace_t *tr, const bsptrace_t *bt, const bspmap_t *map, 
 
 static int default_mask(int passent)
 {
-	int mask = passent > 0 ? QC_EInt(sv.vm, passent, F.hitcontentsmaski) : 0;
+	int mask = passent > 0 ? QC_EInt(cur()->vm, passent, F.hitcontentsmaski) : 0;
 	if (mask)
 		return mask;
 	mask = CONTENTS_SOLID | CONTENTS_BODY;
-	if (passent > 0 && ((int)QC_EFloat(sv.vm, passent, F.flags) & FL_CLIENT))
+	if (passent > 0 && ((int)QC_EFloat(cur()->vm, passent, F.flags) & FL_CLIENT))
 		mask |= CONTENTS_PLAYERCLIP;
 	return mask;
 }
@@ -177,8 +211,8 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 {
 	float zero[3] = {0, 0, 0}, tmin[3], tmax[3];
 	int mask = default_mask(passent);
-	int passowner = passent > 0 ? QC_EInt(sv.vm, passent, F.owner) : 0;
-	int passhit = (passent > 0 && F.dimension_hit >= 0) ? (int)QC_EFloat(sv.vm, passent, F.dimension_hit) : 255;
+	int passowner = passent > 0 ? QC_EInt(cur()->vm, passent, F.owner) : 0;
+	int passhit = (passent > 0 && F.dimension_hit >= 0) ? (int)QC_EFloat(cur()->vm, passent, F.dimension_hit) : 255;
 	bsptrace_t bt;
 
 	memset(tr, 0, sizeof(*tr));
@@ -189,32 +223,32 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 	if (type & MOVE_EVERYTHING)
 		mask = -1;
 
-	if (sv.world) {
-		BSP_TraceModel(sv.world, 0, zero, start, mins, maxs, end, mask, &bt);
-		merge_bsp(tr, &bt, sv.world, 0);
+	if (cur()->world) {
+		BSP_TraceModel(cur()->world, 0, zero, start, mins, maxs, end, mask, &bt);
+		merge_bsp(tr, &bt, cur()->world, 0);
 	}
 
 	for (int i = 0; i < 3; i++) {
 		tmin[i] = BW_MIN(start[i], end[i]) + mins[i] - 1;
 		tmax[i] = BW_MAX(start[i], end[i]) + maxs[i] + 1;
 	}
-	for (int e = 1; e < sv.vm->num_edicts && tr->fraction > 0; e++) {
+	for (int e = 1; e < cur()->vm->num_edicts && tr->fraction > 0; e++) {
 		int solid, owner;
 		float *amin, *amax;
-		svmodel_t *m;
-		if (sv.vm->edicts[e].free || e == passent)
+		brushref_t m;
+		if (cur()->vm->edicts[e].free || e == passent)
 			continue;
-		solid = (int)QC_EFloat(sv.vm, e, F.solid);
+		solid = (int)QC_EFloat(cur()->vm, e, F.solid);
 		if (solid == SOLID_NOT)
 			continue;
 		if ((solid == SOLID_TRIGGER || solid == SOLID_BSPTRIGGER) && !(type & (MOVE_TRIGGERS | MOVE_EVERYTHING)))
 			continue;
 		if ((type & MOVE_NOMONSTERS) && solid != SOLID_BSP)
 			continue;
-		owner = QC_EInt(sv.vm, e, F.owner);
+		owner = QC_EInt(cur()->vm, e, F.owner);
 		if (passent > 0 && (owner == passent || (passowner && passowner == e)))
 			continue;
-		if (F.dimension_solid >= 0 && !((int)QC_EFloat(sv.vm, e, F.dimension_solid) & passhit))
+		if (F.dimension_solid >= 0 && !((int)QC_EFloat(cur()->vm, e, F.dimension_solid) & passhit))
 			continue;
 		amin = evec(e, F.absmin);
 		amax = evec(e, F.absmax);
@@ -223,8 +257,8 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 			continue;
 		if ((solid == SOLID_BSP || solid == SOLID_BSPTRIGGER) && ent_brush_model(e, &m)) {
 			int emask = (solid == SOLID_BSPTRIGGER) ? -1 : mask;
-			BSP_TraceModel(m->bsp, m->submodel, evec(e, F.origin), start, mins, maxs, end, emask, &bt);
-			merge_bsp(tr, &bt, m->bsp, e);
+			BSP_TraceModel(m.bsp, m.submodel, evec(e, F.origin), start, mins, maxs, end, emask, &bt);
+			merge_bsp(tr, &bt, m.bsp, e);
 		} else {
 			float bmin[3], bmax[3], *org = evec(e, F.origin), *emin = evec(e, F.mins), *emax = evec(e, F.maxs);
 			int c = ent_contents(e, solid);
@@ -247,7 +281,7 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 
 void SV_SetTraceGlobals(const svtrace_t *tr)
 {
-	qcvm_t *vm = sv.vm;
+	qcvm_t *vm = cur()->vm;
 	QC_SetGFloat(vm, G.trace_allsolid, tr->allsolid);
 	QC_SetGFloat(vm, G.trace_startsolid, tr->startsolid);
 	QC_SetGFloat(vm, G.trace_fraction, tr->fraction);
@@ -267,7 +301,7 @@ void SV_SetTraceGlobals(const svtrace_t *tr)
 
 void SV_TouchTriggers(int e)
 {
-	qcvm_t *vm = sv.vm;
+	qcvm_t *vm = cur()->vm;
 	float *amin = evec(e, F.absmin), *amax = evec(e, F.absmax);
 	int oldself = QC_GInt(vm, G.self), oldother = QC_GInt(vm, G.other);
 	if (!amin || !amax)
@@ -312,7 +346,7 @@ bool SV_DropToFloor(int e)
 		return false;
 	VectorCopy(tr.endpos, org);
 	SV_LinkEdict(e, false);
-	QC_SetEFloat(sv.vm, e, F.flags, (float)((int)QC_EFloat(sv.vm, e, F.flags) | FL_ONGROUND));
-	QC_SetEInt(sv.vm, e, F.groundentity, tr.ent);
+	QC_SetEFloat(cur()->vm, e, F.flags, (float)((int)QC_EFloat(cur()->vm, e, F.flags) | FL_ONGROUND));
+	QC_SetEInt(cur()->vm, e, F.groundentity, tr.ent);
 	return true;
 }

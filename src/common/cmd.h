@@ -28,6 +28,8 @@ void Cmd_Remove(const char *name);
 /* handler tried for any command the engine does not know; returns true if consumed */
 typedef bool (*cmd_fallback_fn)(const char *line, int argc, const char **argv);
 void Cmd_SetFallback(cmd_fallback_fn fn);
+/* consulted before engine commands: for commands the game modules registered */
+void Cmd_SetPreHook(cmd_fallback_fn fn);
 
 void Cbuf_AddText(const char *text);
 void Cbuf_InsertText(const char *text);

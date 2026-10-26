@@ -128,6 +128,8 @@ int SV_ModelIndex(const char *name, bool precache)
 	}
 	sv.models[sv.nummodels] = Mem_Strdup(name);
 	model_bounds(sv.nummodels);
+	if (!sv.spawning)
+		SV_BroadcastPrecache(PRECACHE_MODEL, sv.nummodels, name);
 	return sv.nummodels++;
 }
 
@@ -141,6 +143,8 @@ int SV_SoundIndex(const char *name, bool precache)
 	if (!precache || sv.numsounds >= SV_MAX_SOUNDS)
 		return 0;
 	sv.sounds[sv.numsounds] = Mem_Strdup(name);
+	if (!sv.spawning)
+		SV_BroadcastPrecache(PRECACHE_SOUND, sv.numsounds, name);
 	return sv.numsounds++;
 }
 
@@ -236,7 +240,7 @@ static void spawn_map_entities(const char *data)
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
@@ -310,6 +314,7 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.worldpath, path, sizeof(sv.worldpath));
 	Cvar_SetDirect(Cvar_Find("mapname"), mapname);
 	SV_InfoSet(sv.serverinfo, sizeof(sv.serverinfo), "map", mapname);
+	SV_SyncServerinfoCvars(false);
 
 	progs = FS_LoadFile(sv_progs->string, &len);
 	if (!progs) {
@@ -326,6 +331,11 @@ bool SV_SpawnServer(const char *mapname)
 	}
 	vm->host = &sv;
 	sv.vm = vm;
+	SV_SetupClientSlots();
+	vm->reserved_edicts = svs.maxclients;
+	vm->num_edicts = svs.maxclients + 1;
+	for (int i = 1; i <= svs.maxclients; i++)
+		QC_ClearEdict(vm, i);
 	sv.nummodels = 1;
 	sv.numsounds = 1;
 	sv.time = 1.0; /* start a second in so think times of 0 mean "never" */
@@ -387,6 +397,7 @@ bool SV_SpawnServer(const char *mapname)
 		spawn_map_entities(sv.world->entities);
 	}
 	sv.spawning = false;
+	SV_ClientsMapChanged();
 	QC_CollectGarbage(vm, true);
 	Con_Printf("map %s: %d entities in use, %d models, %d sounds precached\n", mapname,
 	           vm->num_edicts, sv.nummodels - 1, sv.numsounds - 1);
@@ -611,13 +622,22 @@ void SV_Physics(void)
 		QC_SetGInt(vm, G.other, 0);
 		QC_ExecuteByName(vm, "StartFrame");
 	}
+	SV_ClientsPreThink();
 	for (int e = 1; e < vm->num_edicts; e++) {
 		if (vm->edicts[e].free)
 			continue;
 		if (QC_GFloat(vm, G.force_retouch))
 			SV_LinkEdict(e, true);
+		if (e <= svs.maxclients) {
+			/* players move through their usercmds; only thinks run here */
+			client_t *c = SV_ClientForEdict(e);
+			if (c->state == CS_SPAWNED)
+				run_think(e, (float)(sv.time + sv.frametime * 0.5));
+			continue;
+		}
 		run_entity(e);
 	}
+	SV_ClientsPostThink();
 	if (QC_GFloat(vm, G.force_retouch) > 0)
 		QC_SetGFloat(vm, G.force_retouch, QC_GFloat(vm, G.force_retouch) - 1);
 	if (QC_FindFunction(vm, "EndFrame")) {
@@ -631,14 +651,23 @@ void SV_Frame(double dt)
 	static double accum;
 	if (!sv.active)
 		return;
+	SV_ReadPackets();
+	if (!sv.active)
+		return;
 	accum += dt;
+	if (accum > 0.25)
+		accum = 0.25; /* after a stall, drop time rather than spiral */
 	while (accum >= sv.frametime) {
 		accum -= sv.frametime;
-		SV_Physics();
-		sv.time += sv.frametime;
-		sv.frames++;
+		if (!sv.paused) {
+			SV_Physics();
+			sv.time += sv.frametime;
+			sv.frames++;
+		}
+		SV_ClientsAfterPhysics();
 		QC_CollectGarbage(sv.vm, false);
 	}
+	SV_SendClientMessages();
 }
 
 /* commands registered with registercommand go to the progs' ConsoleCmd */
@@ -674,6 +703,19 @@ static void SV_Map_f(int argc, const char **argv)
 		Con_Printf("usage: map <name>\n");
 		return;
 	}
+	/* a fresh map starts everyone's spawn parms over */
+	for (int i = 0; i < svs.maxclients; i++)
+		svs.clients[i].have_parms = false;
+	SV_SpawnServer(argv[1]);
+}
+
+static void SV_Changelevel_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("usage: changelevel <name>\n");
+		return;
+	}
+	SV_SaveSpawnParms();
 	SV_SpawnServer(argv[1]);
 }
 
@@ -701,8 +743,30 @@ static void SV_Edicts_f(int argc, const char **argv)
 	}
 }
 
+/* "edict <n>": one entity's placement, for checking movement in scripted runs */
+static void SV_Edict_f(int argc, const char **argv)
+{
+	int e = argc > 1 ? atoi(argv[1]) : 1;
+	qcval_t *f;
+	if (!sv.active || e < 0 || e >= sv.vm->num_edicts || sv.vm->edicts[e].free)
+		return;
+	f = QC_EdictFields(sv.vm, e);
+	Con_Printf("edict %d %s origin %g %g %g velocity %g %g %g angles %g %g %g\n", e,
+	           QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), f[F.origin].f, f[F.origin + 1].f,
+	           f[F.origin + 2].f, f[F.velocity].f, f[F.velocity + 1].f, f[F.velocity + 2].f, f[F.angles].f,
+	           f[F.angles + 1].f, f[F.angles + 2].f);
+}
+
+/* "pr_trace <text>": prints entries to QC functions whose names contain it,
+ * in every VM; with no argument, stops */
+static void PrTrace_f(int argc, const char **argv)
+{
+	Str_Copy(qc_tracefilter, argc > 1 ? argv[1] : "", sizeof(qc_tracefilter));
+}
+
 void SV_Init(void)
 {
+	Cmd_Add("pr_trace", PrTrace_f);
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
@@ -711,6 +775,9 @@ void SV_Init(void)
 	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
 	Cmd_Add("map", SV_Map_f);
+	Cmd_Add("changelevel", SV_Changelevel_f);
+	SV_InitClients();
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
+	Cmd_Add("edict", SV_Edict_f);
 }
