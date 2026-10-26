@@ -918,15 +918,40 @@ static void bi_tokenize(qcvm_t *vm)
 	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
 }
 
+/* console-style split: whitespace (newlines included) separates, double
+ * quotes group, // comments run to the end of their line. Nuclide keeps
+ * decl bodies and spawn data as one "key" "value" pair per line and reads
+ * them back with this, so it can't stop at the first newline the way the
+ * console's own command tokenizer does. */
 static void bi_tokenize_console(qcvm_t *vm)
 {
-	const char *src = QC_PSTR(vm, 0);
-	cmd_tokens_t *ct = Mem_Alloc(sizeof(*ct));
+	const char *src = QC_PSTR(vm, 0), *p = src;
 	tokens_reset(vm);
-	Cmd_TokenizeInto(ct, src);
-	for (int i = 0; i < ct->argc; i++)
-		token_add(vm, src, ct->argv[i], strlen(ct->argv[i]), src + ct->argstart[i], src + ct->argend[i]);
-	Mem_Free(ct);
+	for (;;) {
+		const char *start;
+		while (*p && (unsigned char)*p <= ' ')
+			p++;
+		if (!*p)
+			break;
+		if (p[0] == '/' && p[1] == '/') {
+			while (*p && *p != '\n')
+				p++;
+			continue;
+		}
+		start = p;
+		if (*p == '"') {
+			const char *q = ++p;
+			while (*p && *p != '"')
+				p++;
+			token_add(vm, src, q, (size_t)(p - q), start, *p ? p + 1 : p);
+			if (*p)
+				p++;
+			continue;
+		}
+		while ((unsigned char)*p > ' ')
+			p++;
+		token_add(vm, src, start, (size_t)(p - start), start, p);
+	}
 	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
 }
 

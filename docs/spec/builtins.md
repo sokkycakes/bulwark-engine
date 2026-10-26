@@ -25,6 +25,15 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `rotate_axis`-style helpers (`rotatevectorsbyangle`, `rotatevectorsbyvectors`)
   follow the doc comments, but have not been checked against content that
   depends on them. *Unverified.*
+- `tokenize_console` splits on any whitespace, newlines included; double
+  quotes group and `//` comments run to the end of their line. Nuclide's
+  `ncDict` keeps decl bodies as one `"key" "value"` line per pair and reads
+  them back with `tokenize_console`, adding keys by rebuilding the body from
+  the tokens. A tokenizer that stopped at the first newline (as the console
+  does for a command line) dropped every key after the first line: hitscan
+  damage dicts lost their `damage` key and every bullet did 0 damage. Found
+  by a probe (`Add` three keys, read one back) and by running Rad-Therapy's
+  weapons against monsters. Up to 1024 tokens are kept.
 - `physics_supported` returns 0: there is no rigid-body physics yet.
 - Networking (`Write*`, `multicast`, `stuffcmd`, …) builtins are accepted and
   do nothing until the network layer exists.
@@ -63,15 +72,24 @@ angles, frame time as `input_timelength`) run through
 `SV_RunClientCommand`, so the progs can fill in the `input_*` globals from
 its AI and move the bot like any other player.
 
+## Traces
+
+`traceline`, `tracebox` and friends take the usual `MOVE_*` flags.
+`MOVE_OTHERONLY` follows its fteextensions comment: the trace tests only
+the entity in the `other` global (owner, `SOLID_NOT` and dimension rules
+don't apply to it), or only the map when `other` is the world. Nuclide's
+monsters use it to check a clear line to their enemy before attacking:
+without it every such check failed and no monster attacked.
+
 ## Still missing for Nuclide's server
 
-Seen while running all 42 maps in Nuclide's `base` game:
-`processmodelevents` and ragdolls (`skel_ragupdate`). The `skel_*` family,
-`gettagindex`/`gettaginfo` and the frame queries now work on IQM models in
-both VMs (see [models.md](models.md)); `frameforaction` returns -1.
-`runstandardplayerphysics` is in place now that there are clients. The `sv`
-console command hands a line to the server game's `ConsoleCmd`, as
-Nuclide's tools expect.
+Seen while running all 42 maps in Nuclide's `base` game: ragdolls
+(`skel_ragupdate`). The `skel_*` family, `gettagindex`/`gettaginfo` and
+the frame queries work on IQM models in both VMs, and the frame queries,
+`frameforaction` and the model event builtins on studio models (see
+[models.md](models.md)). `runstandardplayerphysics` is in place now that
+there are clients. The `sv` console command hands a line to the server
+game's `ConsoleCmd`, as Nuclide's tools expect.
 
 ## Autocvars
 

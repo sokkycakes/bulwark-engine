@@ -48,6 +48,7 @@ void QC_RunError(qcvm_t *vm, const char *fmt, ...)
 /* calls fnum of the running progs; caller is the progs to return to */
 /* pr_trace: prints each QC function entered whose name contains this */
 char qc_tracefilter[64];
+bool qc_profiling;
 
 static void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
 {
@@ -203,6 +204,8 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 			QC_RunError(vm, "statement %d out of range", s);
 		}
 		st = &vm->statements[s];
+		if (qc_profiling)
+			vm->functions[vm->xfunction].profile++;
 		a = G + st->a;
 		b = G + st->b;
 		c = G + st->c;

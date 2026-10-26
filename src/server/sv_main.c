@@ -752,9 +752,58 @@ static void PrTrace_f(int argc, const char **argv)
 	Str_Copy(qc_tracefilter, argc > 1 ? argv[1] : "", sizeof(qc_tracefilter));
 }
 
+static int prof_cmp(const void *a, const void *b)
+{
+	uint64_t x = (*(qcfunc_t *const *)a)->profile, y = (*(qcfunc_t *const *)b)->profile;
+	return x < y ? 1 : x > y ? -1 : 0;
+}
+
+/* "pr_profile start" counts the statements each server QC function runs;
+ * "pr_profile [n]" prints the n busiest (default 20), then starts over */
+static void PrProfile_f(int argc, const char **argv)
+{
+	qcvm_t *vm = sv.vm;
+	qcfunc_t **list;
+	uint64_t total = 0;
+	int n = 0, max = 0, show = 20;
+	if (!vm) {
+		Con_Printf("no map running\n");
+		return;
+	}
+	if (argc > 1 && !strcmp(argv[1], "start")) {
+		qc_profiling = true;
+		for (int p = 0; p < vm->numprogs; p++)
+			for (int i = 0; i < vm->progs[p].numfunctions; i++)
+				vm->progs[p].functions[i].profile = 0;
+		return;
+	}
+	if (argc > 1)
+		show = atoi(argv[1]);
+	for (int p = 0; p < vm->numprogs; p++)
+		max += vm->progs[p].numfunctions;
+	list = Mem_Alloc(sizeof(*list) * (size_t)BW_MAX(1, max));
+	for (int p = 0; p < vm->numprogs; p++)
+		for (int i = 0; i < vm->progs[p].numfunctions; i++) {
+			qcfunc_t *f = &vm->progs[p].functions[i];
+			if (f->profile) {
+				list[n++] = f;
+				total += f->profile;
+			}
+		}
+	qsort(list, (size_t)n, sizeof(*list), prof_cmp);
+	Con_Printf("%llu statements\n", (unsigned long long)total);
+	for (int i = 0; i < n && i < show; i++)
+		Con_Printf("%5.1f%% %12llu %s\n", 100.0 * (double)list[i]->profile / (double)BW_MAX(1, total),
+		           (unsigned long long)list[i]->profile, list[i]->name);
+	for (int i = 0; i < n; i++)
+		list[i]->profile = 0;
+	Mem_Free(list);
+}
+
 void SV_Init(void)
 {
 	Cmd_Add("pr_trace", PrTrace_f);
+	Cmd_Add("pr_profile", PrProfile_f);
 	Cmd_Add("sv", SV_Cmd_f);
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");

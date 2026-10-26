@@ -221,6 +221,9 @@ static qc_builtin_fn lookup_builtin(const qc_builtin_t *const *tables, const cha
 	for (const qc_builtin_t *b = qc_builtins_skel; b->name; b++)
 		if (!strcmp(b->name, name))
 			return b->fn;
+	for (const qc_builtin_t *b = qc_builtins_modelevents; b->name; b++)
+		if (!strcmp(b->name, name))
+			return b->fn;
 	return NULL;
 }
 
@@ -722,13 +725,6 @@ qcval_t *QC_Parm(qcvm_t *vm, int n)
 /* --- entities -------------------------------------------------------- */
 
 bool QC_ValidEdict(qcvm_t *vm, int e) { return e >= 0 && e < vm->max_edicts; }
-
-qcval_t *QC_EdictFields(qcvm_t *vm, int e)
-{
-	if (e < 0 || e >= vm->max_edicts)
-		QC_RunError(vm, "entity %d out of range", e);
-	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * vm->edict_words * 4);
-}
 
 void QC_ClearEdict(qcvm_t *vm, int e)
 {

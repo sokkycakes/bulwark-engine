@@ -5,6 +5,7 @@
 #include "../common/cvar.h"
 #include "../common/cmd.h"
 #include "../common/skel.h"
+#include "../common/studio.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -399,12 +400,24 @@ static framegroup_t *group_arg(qcvm_t *vm, int n)
 	return m && f >= 0 && f < m->numanims ? &m->anims[f] : NULL;
 }
 
+/* the frame queries take IQM framegroups, or GoldSrc studio sequences */
+static const studio_model_t *studio_arg(qcvm_t *vm)
+{
+	return QC_StudioModel(vm, (int)QC_PFLOAT(vm, 0));
+}
+
 static void bi_frameforname(qcvm_t *vm)
 {
 	skelmodel_t *m = skel_arg(vm);
+	const studio_model_t *sm = m ? NULL : studio_arg(vm);
 	const char *name = QC_PSTR(vm, 1);
 	for (int i = 0; m && i < m->numanims; i++)
 		if (!Str_ICmp(m->anims[i].name, name)) {
+			QC_ReturnFloat(vm, (float)i);
+			return;
+		}
+	for (int i = 0; sm && i < sm->numseqs; i++)
+		if (!Str_ICmp(sm->seqs[i].label, name)) {
 			QC_ReturnFloat(vm, (float)i);
 			return;
 		}
@@ -414,22 +427,30 @@ static void bi_frameforname(qcvm_t *vm)
 static void bi_frameduration(qcvm_t *vm)
 {
 	framegroup_t *g = group_arg(vm, 1);
-	QC_ReturnFloat(vm, g ? g->count / g->fps : 0);
+	if (g)
+		QC_ReturnFloat(vm, g->count / g->fps);
+	else
+		QC_ReturnFloat(vm, Studio_SeqDuration(studio_arg(vm), (int)QC_PFLOAT(vm, 1)));
 }
 
 static void bi_frametoname(qcvm_t *vm)
 {
 	framegroup_t *g = group_arg(vm, 1);
-	QC_ReturnString(vm, g ? g->name : "");
+	const studio_model_t *sm = g ? NULL : studio_arg(vm);
+	int f = (int)QC_PFLOAT(vm, 1);
+	if (g)
+		QC_ReturnString(vm, g->name);
+	else
+		QC_ReturnString(vm, sm && f >= 0 && f < sm->numseqs ? sm->seqs[f].label : "");
 }
 
 static void bi_modelframecount(qcvm_t *vm)
 {
 	skelmodel_t *m = skel_arg(vm);
-	QC_ReturnFloat(vm, m ? (float)m->numanims : 0);
+	const studio_model_t *sm = m ? NULL : studio_arg(vm);
+	QC_ReturnFloat(vm, m ? (float)m->numanims : sm ? (float)sm->numseqs : 0);
 }
 
-static void bi_minus1(qcvm_t *vm) { QC_ReturnFloat(vm, -1); }
 
 const char *SV_ModelName(qcvm_t *vm, int index)
 {
@@ -463,7 +484,7 @@ const qc_builtin_t sv_builtins[] = {
 	{"getlocalinfo", bi_getlocalinfo}, {"changelevel", bi_changelevel},
 	{"makestatic", bi_makestatic}, {"registercommand", bi_registercommand}, {"getentitytoken", bi_getentitytoken},
 	{"frameforname", bi_frameforname}, {"frameduration", bi_frameduration}, {"frametoname", bi_frametoname},
-	{"modelframecount", bi_modelframecount}, {"frameforaction", bi_minus1},
+	{"modelframecount", bi_modelframecount},
 	{"setattachment", bi_dropped}, {"logfrag", bi_dropped},
 	{"openportal", bi_dropped},
 	{NULL, NULL}};

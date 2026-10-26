@@ -36,6 +36,7 @@ typedef struct {
 	const char *file;
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
+	uint64_t profile; /* statements run in this function while qc_profiling */
 } qcfunc_t;
 
 typedef struct {
@@ -254,6 +255,7 @@ void QC_SyncAutocvars(qcvm_t *vm);
 BW_NORETURN void QC_RunError(qcvm_t *vm, const char *fmt, ...) BW_PRINTF(2, 3);
 void QC_StackTrace(qcvm_t *vm);
 extern char qc_tracefilter[64]; /* non-empty: print entries to matching functions */
+extern bool qc_profiling; /* count statements per function (pr_profile) */
 
 /* strings */
 const char *QC_GetString(qcvm_t *vm, string_t s);
@@ -265,7 +267,13 @@ void QC_CollectGarbage(qcvm_t *vm, bool force);
 int QC_LiveStrings(void);
 
 /* entities */
-qcval_t *QC_EdictFields(qcvm_t *vm, int e);
+/* inline: the interpreter calls this for every field access */
+static inline qcval_t *QC_EdictFields(qcvm_t *vm, int e)
+{
+	if (e < 0 || e >= vm->max_edicts)
+		QC_RunError(vm, "entity %d out of range", e);
+	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * vm->edict_words * 4);
+}
 int QC_SpawnEdict(qcvm_t *vm);
 void QC_FreeEdict(qcvm_t *vm, int e, float now);
 void QC_ClearEdict(qcvm_t *vm, int e);
@@ -343,6 +351,11 @@ extern const qc_builtin_t qc_builtins_core[];
 extern const qc_builtin_t qc_builtins_extra[];
 /* skeleton objects and tags; every VM falls back to these */
 extern const qc_builtin_t qc_builtins_skel[];
+/* model events and frameforaction on studio models (qc_modelevents.c) */
+extern const qc_builtin_t qc_builtins_modelevents[];
+struct studio_model_s;
+/* the GoldSrc studio model behind a model index, or NULL */
+const struct studio_model_s *QC_StudioModel(qcvm_t *vm, int modelindex);
 
 struct skelmodel_s;
 /* the bones of skeleton object id, for drawing */

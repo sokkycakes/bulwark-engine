@@ -105,6 +105,12 @@ int SV_PointContentsBits(const float *p)
 		solid = (int)QC_EFloat(cur()->vm, e, F.solid);
 		if (solid != SOLID_BSP && solid != SOLID_BSPTRIGGER)
 			continue;
+		if (F.absmin >= 0) {
+			const float *amin = evec(e, F.absmin), *amax = evec(e, F.absmax);
+			if (p[0] < amin[0] || p[1] < amin[1] || p[2] < amin[2] ||
+			    p[0] > amax[0] || p[1] > amax[1] || p[2] > amax[2])
+				continue;
+		}
 		if (!ent_brush_model(e, &m))
 			continue;
 		bits |= BSP_PointContents(m.bsp, m.submodel, evec(e, F.origin), p);
@@ -222,10 +228,17 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 	tr->ent = -1;
 	tr->surfacename = "";
 	tr->brush = tr->brushside = -1;
+	int onlyent = -1; /* MOVE_OTHERONLY: the one entity to test, 0 for the world */
 	if (type & MOVE_EVERYTHING)
 		mask = -1;
+	if (type & MOVE_OTHERONLY) {
+		/* fteextensions: collide against only the 'other' global's entity,
+		   ignoring owner, SOLID_NOT and dimension rules but keeping
+		   contents and bsp/box tests. other = world leaves only the map. */
+		onlyent = G.other >= 0 ? QC_GInt(cur()->vm, G.other) : 0;
+	}
 
-	if (cur()->world) {
+	if (cur()->world && onlyent <= 0) {
 		BSP_TraceModel(cur()->world, 0, zero, start, mins, maxs, end, mask, &bt);
 		merge_bsp(tr, &bt, cur()->world, 0);
 	}
@@ -238,19 +251,21 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 		int solid, owner;
 		float *amin, *amax;
 		brushref_t m;
-		if (cur()->vm->edicts[e].free || e == passent)
+		if (onlyent >= 0 && e != onlyent)
+			continue;
+		if (cur()->vm->edicts[e].free || (e == passent && onlyent < 0))
 			continue;
 		solid = (int)QC_EFloat(cur()->vm, e, F.solid);
-		if (solid == SOLID_NOT)
+		if (solid == SOLID_NOT && onlyent < 0)
 			continue;
 		if ((solid == SOLID_TRIGGER || solid == SOLID_BSPTRIGGER) && !(type & (MOVE_TRIGGERS | MOVE_EVERYTHING)))
 			continue;
 		if ((type & MOVE_NOMONSTERS) && solid != SOLID_BSP)
 			continue;
 		owner = QC_EInt(cur()->vm, e, F.owner);
-		if (passent > 0 && (owner == passent || (passowner && passowner == e)))
+		if (onlyent < 0 && passent > 0 && (owner == passent || (passowner && passowner == e)))
 			continue;
-		if (F.dimension_solid >= 0 && !((int)QC_EFloat(cur()->vm, e, F.dimension_solid) & passhit))
+		if (onlyent < 0 && F.dimension_solid >= 0 && !((int)QC_EFloat(cur()->vm, e, F.dimension_solid) & passhit))
 			continue;
 		amin = evec(e, F.absmin);
 		amax = evec(e, F.absmax);

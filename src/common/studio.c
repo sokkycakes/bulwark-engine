@@ -1,6 +1,7 @@
 /* Bulwark engine - GoldSrc-era studio models (IDST v10) and CSO appended
  * sequence files. Layouts: docs/spec/studio-mdl.md. ISC licence, see LICENSE. */
 #include "studio.h"
+#include "fs.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -556,4 +557,79 @@ void Studio_Free(studio_model_t *m)
 	Mem_Free(m->bodyparts);
 	Mem_Free(m->attachments);
 	memset(m, 0, sizeof(*m));
+}
+
+/* --- cache and queries for the game VMs ----------------------------------- */
+
+typedef struct studiocache_s {
+	char name[128];
+	uint8_t *buf;
+	studio_model_t model;
+	bool ok;
+	struct studiocache_s *next;
+} studiocache_t;
+
+static studiocache_t *studiocache;
+
+const studio_model_t *Studio_Cached(const char *name)
+{
+	studiocache_t *c;
+	size_t size = 0;
+	char err[256];
+	if (!name || !*name || name[0] == '*')
+		return NULL;
+	for (c = studiocache; c; c = c->next)
+		if (!Str_ICmp(c->name, name))
+			return c->ok ? &c->model : NULL;
+	c = Mem_Alloc(sizeof(*c));
+	Str_Copy(c->name, name, sizeof(c->name));
+	c->next = studiocache;
+	studiocache = c;
+	c->buf = (uint8_t *)FS_LoadFile(name, &size);
+	if (!c->buf || size < 8 || memcmp(c->buf, "IDST", 4)) {
+		Mem_Free(c->buf), c->buf = NULL;
+		return NULL;
+	}
+	c->ok = Studio_Parse(&c->model, c->buf, size, err, sizeof(err));
+	if (!c->ok) {
+		Con_DPrintf("%s: %s\n", name, err);
+		Studio_Free(&c->model);
+		Mem_Free(c->buf), c->buf = NULL;
+		return NULL;
+	}
+	return &c->model;
+}
+
+float Studio_SeqDuration(const studio_model_t *m, int seq)
+{
+	const studio_seq_t *s;
+	if (!m || seq < 0 || seq >= m->numseqs)
+		return 0;
+	s = &m->seqs[seq];
+	if (s->fps <= 0)
+		return 0;
+	/* frame n is shown at n / fps, and the last one ends the sequence;
+	   a single-frame sequence still lasts one frame */
+	return (float)(s->numframes > 1 ? s->numframes - 1 : 1) / s->fps;
+}
+
+int Studio_SeqForActivity(const studio_model_t *m, int activity, unsigned rnd)
+{
+	int total = 0, pick;
+	if (!m)
+		return -1;
+	for (int i = 0; i < m->numseqs; i++)
+		if (m->seqs[i].activity == activity && m->seqs[i].actweight > 0)
+			total += m->seqs[i].actweight;
+	if (!total)
+		return -1;
+	pick = (int)(rnd % (unsigned)total);
+	for (int i = 0; i < m->numseqs; i++) {
+		if (m->seqs[i].activity != activity || m->seqs[i].actweight <= 0)
+			continue;
+		if (pick < m->seqs[i].actweight)
+			return i;
+		pick -= m->seqs[i].actweight;
+	}
+	return -1;
 }
