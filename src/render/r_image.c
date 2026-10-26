@@ -364,7 +364,7 @@ void R_ShutdownImages(void)
 		while (img) {
 			image_t *next = img->next;
 			if (img->tex && !img->missing && R_Active())
-				qglDeleteTextures(1, &img->tex);
+				GL_DeleteTextures(1, &img->tex);
 			Mem_Free(img);
 			img = next;
 		}

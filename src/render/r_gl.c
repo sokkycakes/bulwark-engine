@@ -97,6 +97,18 @@ void GL_BindTexture(int unit, GLenum target, GLuint tex)
 	gs.target[unit] = target;
 }
 
+/* deleting a texture unbinds it, and the next glGenTextures can hand out
+ * the same name: forget it here too, or GL_BindTexture would skip binding
+ * the new texture and its upload would land in whatever is bound */
+void GL_DeleteTextures(int n, const GLuint *tex)
+{
+	for (int i = 0; i < n; i++)
+		for (int u = 0; u < (int)(sizeof(gs.tex) / sizeof(gs.tex[0])); u++)
+			if (gs.tex[u] == tex[i])
+				gs.tex[u] = 0;
+	qglDeleteTextures(n, tex);
+}
+
 /* --- programs -------------------------------------------------------------- */
 
 glprog_t r_progs[PROG_COUNT];

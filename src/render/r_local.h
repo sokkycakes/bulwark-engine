@@ -129,6 +129,7 @@ void GL_SetBlend(int blend, GLenum src, GLenum dst);
 void GL_SetDepth(bool test, bool write);
 void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);
+void GL_DeleteTextures(int n, const GLuint *tex);
 
 /* --- models -------------------------------------------------------------- */
 

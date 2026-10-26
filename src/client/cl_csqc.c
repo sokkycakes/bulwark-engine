@@ -848,7 +848,10 @@ static void cl_registercommand(qcvm_t *vm)
 
 /* getentitytoken([resetstring]): the next token of the map's entity lump.
  * An empty or null argument starts over from the map; any other text is
- * tokenised instead of the map. Returns "" at the end. */
+ * tokenised instead of the map. Either way that call returns "" and the
+ * next one returns the first token: Nuclide's CSQC_WorldLoaded resets with
+ * getentitytoken(0) and expects the following call to give the "{".
+ * Returns "" at the end. */
 static char *enttok_text;
 static const char *enttok_pos;
 static void cl_getentitytoken(qcvm_t *vm)
@@ -859,6 +862,8 @@ static void cl_getentitytoken(qcvm_t *vm)
 		Mem_Free(enttok_text);
 		enttok_text = Mem_Strdup(s && *s ? s : (cl.world && cl.world->entities ? cl.world->entities : ""));
 		enttok_pos = enttok_text;
+		QC_ReturnString(vm, "");
+		return;
 	}
 	if (!enttok_pos || !(enttok_pos = COM_Parse(enttok_pos, tok, sizeof(tok)))) {
 		QC_ReturnString(vm, "");

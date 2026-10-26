@@ -479,7 +479,7 @@ void R_FreeWorld(void)
 		if (r_world.ebo)
 			qglDeleteBuffers(1, &r_world.ebo);
 		if (r_world.numlightmaps && r_world.lightmaps)
-			qglDeleteTextures(r_world.numlightmaps, r_world.lightmaps);
+			GL_DeleteTextures(r_world.numlightmaps, r_world.lightmaps);
 	}
 	Mem_Free(r_world.surfaces);
 	Mem_Free(r_world.lightmaps);
