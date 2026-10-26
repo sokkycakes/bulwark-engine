@@ -35,6 +35,7 @@ typedef struct {
 	int contents;
 	int shader;
 	float mins[3], maxs[3];
+	bool added; /* made by the loader (props, displacements), not in the file */
 } cbrush_t;
 
 typedef struct {
@@ -107,6 +108,8 @@ typedef struct {
 	bool bsp2;
 	/* GoldSrc BSP30: four hulls, sized for Half-Life players */
 	bool hl;
+	/* Source BSP (VBSP): loaded into the Q3 structures, see bsp_source.c */
+	bool source;
 } bspmap_t;
 
 bspmap_t *BSP_Load(const char *path);

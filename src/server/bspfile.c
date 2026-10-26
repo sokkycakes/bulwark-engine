@@ -2,6 +2,7 @@
  * The Q3 lump directory and record sizes are listed in docs/spec/bsp.md.
  * ISC licence, see LICENSE. */
 #include "bspfile.h"
+#include "bsp_source.h"
 #include "../common/fs.h"
 
 #include <math.h>
@@ -386,6 +387,8 @@ bspmap_t *BSP_Load(const char *path)
 	Str_Copy(m->name, path, sizeof(m->name));
 	if (size >= 8 && (!memcmp(d, "IBSP", 4) || !memcmp(d, "FBSP", 4) || !memcmp(d, "RBSP", 4)))
 		ok = load_q3(m, d, size);
+	else if (size >= 8 && !memcmp(d, "VBSP", 4))
+		ok = BSP_LoadSource(m, d, size);
 	else if (size >= 4) {
 		int32_t v = rd32(d);
 		if (v == 29 || v == 30 || !memcmp(d, "BSP2", 4))

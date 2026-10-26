@@ -80,7 +80,7 @@ static void draw_polys_2d(int first, int count, material_t *mat, int flags)
 	static uint16_t idx[MAX_POLY_VERTS * 3];
 	int n = 0;
 	float m[16];
-	if (!R_Active() || count < 3 || !mat)
+	if (!R_Active() || count < 3 || !mat || !r_draw2d->ivalue)
 		return;
 	R_Flush2D();
 	for (int i = 1; i + 1 < count && n + 3 <= (int)BW_ARRAY_COUNT(idx); i++) {
@@ -383,6 +383,7 @@ void R_RenderScene(void)
 	if (!R_Active())
 		return;
 	R_Flush2D();
+	R_DebugView();
 	R_SetupView();
 	/* the viewport is given in virtual pixels; GL wants physical ones, from the bottom */
 	sx = (float)r_pwidth / r_vwidth;
@@ -431,6 +432,7 @@ void R_RenderScene(void)
 			R_DrawModelEntity(sorted[i], true);
 	}
 	R_DrawParticles();
+	R_DrawClipBrushes();
 	r_stats.polys = numpolys;
 	R_DrawPolygons(false);
 	numpolys = 0;

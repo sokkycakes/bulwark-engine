@@ -51,7 +51,7 @@ static int numimagehandles = 1; /* 0 is none */
 
 void R_Flush2D(void)
 {
-	if (!numverts || !R_Active()) {
+	if (!numverts || !R_Active() || !r_draw2d->ivalue) {
 		numverts = 0;
 		return;
 	}
@@ -637,7 +637,7 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 {
 	image_t *img = image > 0 && image < numimagehandles ? imagehandles[image] : r_whiteimage;
 	rvert_t *v;
-	if (!in2d || !R_Active() || numverts <= 0 || numidx <= 0)
+	if (!in2d || !R_Active() || numverts <= 0 || numidx <= 0 || !r_draw2d->ivalue)
 		return;
 	R_Flush2D();
 	v = Mem_Alloc(sizeof(*v) * (size_t)numverts);

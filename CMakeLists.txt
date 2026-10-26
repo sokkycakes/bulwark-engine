@@ -20,6 +20,8 @@ add_library(bwcommon STATIC
 	src/common/pmove.c
 	src/common/skel.c
 	src/common/infoblob.c
+	src/common/vbsp.c
+	src/thirdparty/lzma/LzmaDec.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m)
 
@@ -49,7 +51,9 @@ add_library(bwserver STATIC
 	src/server/sv_client.c
 	src/server/sv_pmove.c
 	src/server/sv_route.c
-	src/server/bspfile.c)
+	src/server/bspfile.c
+	src/server/bsp_source.c
+	src/server/bsp_props.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 
 add_executable(bulwark-ded src/main_ded.c)
@@ -82,6 +86,8 @@ add_library(bwclient STATIC
 	src/render/r_material.c
 	src/render/r_world.c
 	src/render/r_q1world.c
+	src/render/r_srcworld.c
+	src/render/r_debug.c
 	src/render/r_decal.c
 	src/render/r_part.c
 	src/render/r_draw.c
