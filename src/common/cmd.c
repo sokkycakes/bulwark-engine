@@ -97,6 +97,14 @@ void Cmd_AddD(const char *name, cmd_fn fn, const char *description)
 		}
 }
 
+/* gives a command a description if it has none */
+void Cmd_Describe(const char *name, const char *description)
+{
+	for (cmd_t *c = cmd_list; c; c = c->next)
+		if (!Str_ICmp(c->name, name) && !c->description)
+			c->description = Mem_Strdup(description);
+}
+
 const char *Cmd_Description(const char *name)
 {
 	for (cmd_t *c = cmd_list; c; c = c->next)

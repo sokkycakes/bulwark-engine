@@ -1016,3 +1016,67 @@ void Cmd_InitExtra(void)
 	Cmd_AddD("version", Version_f, "Engine version and build date");
 	Cmd_AddD("hunkprint", Memstats_f, "Memory statistics");
 }
+
+/* help text for the commands registered before descriptions existed; run
+ * once everything has registered */
+void Cmd_DescribeAll(void)
+{
+	static const char *const d[][2] = {
+		{"alias", "alias <name> [commands]: name a list of commands; $1..$9 and $* are its arguments"},
+		{"bind", "bind <key> [command]: run a command on a key"},
+		{"bindlist", "List the key bindings"},
+		{"changelevel", "changelevel <map>: go to a map, keeping the players' spawn parms"},
+		{"clear", "Clear the console"},
+		{"clients", "List the players on the server"},
+		{"cmd", "cmd <text>: send a command to the server"},
+		{"cmdlist", "cmdlist [pattern]: list the commands"},
+		{"cvarlist", "cvarlist [-c -d -F -a -r -h] [pattern]: list the cvars"},
+		{"disconnect", "Leave the game"},
+		{"dsp_info", "The sound effects room (DSP) in use"},
+		{"echo", "echo <text>: print to the console"},
+		{"edict", "edict <n>: an entity's position, velocity and angles"},
+		{"edicts", "List the server's entities"},
+		{"exec", "exec <file>: run a config file"},
+		{"impulse", "impulse <n>: send an impulse with the next move"},
+		{"joy_virtual", "Show the on-screen controller"},
+		{"joy_virtual_set", "Set up the on-screen controller"},
+		{"map", "map <name>: start a map"},
+		{"menu_restart", "Reload the menu"},
+		{"music", "music <file or track> [-]: play music"},
+		{"netstats", "Network statistics: latency, loss and traffic"},
+		{"path", "The search path for game files"},
+		{"pingserver", "pingserver <address>: ask a server for its status"},
+		{"play", "play <sound>: play a sound"},
+		{"pr_trace", "pr_trace [text]: print each QC function entered whose name contains the text"},
+		{"quit", "Quit the game"},
+		{"r_decalinfo", "The decals on screen"},
+		{"r_effect", "r_effect <name>: start a particle effect where you look"},
+		{"r_partlist", "List the particle effects"},
+		{"r_partreload", "Reload the particle effects"},
+		{"reconnect", "Connect to the last server again"},
+		{"screenshot", "screenshot [name]: save the screen (r_screenshot_format)"},
+		{"set", "set <cvar> <value> [description]: set or create a cvar"},
+		{"seta", "seta <cvar> <value>: set a cvar and save it in the config"},
+		{"sets", "sets <cvar> <value>: set a cvar that's also in serverinfo"},
+		{"setu", "setu <cvar> <value>: set a cvar that's also in userinfo"},
+		{"setinfo", "setinfo [key value]: show or set userinfo"},
+		{"setinfoblob", "setinfoblob <key> <file>: send a file as a userinfo blob"},
+		{"sky", "sky <name>: change the sky"},
+		{"snd_restart", "Restart the sound system"},
+		{"status", "The map, time and entity counts"},
+		{"stopmusic", "Stop the music"},
+		{"stopsound", "Stop all sounds"},
+		{"sv", "sv <command>: run a command of the server game (ConsoleCmd)"},
+		{"toggleconsole", "Open or close the console"},
+		{"togglemenu", "Open or close the menu"},
+		{"unalias", "unalias <name>: remove an alias"},
+		{"unbind", "unbind <key>: clear a key"},
+		{"unbindall", "Clear every key"},
+		{"wait", "wait [frames]: run the rest of the line in a later frame"},
+		{"demos_next", "Play the next demo of the startdemos loop"},
+		{"kick", "kick <player> [reason]: drop a player"},
+		{"connect", "connect <address>: join a server"},
+	};
+	for (size_t i = 0; i < sizeof(d) / sizeof(d[0]); i++)
+		Cmd_Describe(d[i][0], d[i][1]);
+}

@@ -416,22 +416,22 @@ void QC_InitDebugCommands(void)
 		char name[64], desc[160];
 		snprintf(name, sizeof(name), "profile_%s", vm_suffix[k]);
 		snprintf(desc, sizeof(desc), "%s [n]: profile %s; again to show the top n functions", name, descs[k]);
-		Cmd_AddD(Mem_Strdup(name), Profile_f, Mem_Strdup(desc));
+		Cmd_AddD(name, Profile_f, desc);
 		snprintf(name, sizeof(name), "coredump_%s", vm_suffix[k]);
 		snprintf(desc, sizeof(desc), "Write the stack, globals and entities of %s to %score.txt", descs[k], vm_suffix[k]);
-		Cmd_AddD(Mem_Strdup(name), Coredump_f, Mem_Strdup(desc));
+		Cmd_AddD(name, Coredump_f, desc);
 		snprintf(name, sizeof(name), "extensionlist_%s", vm_suffix[k]);
 		snprintf(desc, sizeof(desc), "The QC extensions %s can use", descs[k]);
-		Cmd_AddD(Mem_Strdup(name), Extensionlist_f, Mem_Strdup(desc));
+		Cmd_AddD(name, Extensionlist_f, desc);
 		snprintf(name, sizeof(name), "breakpoint_%s", vm_suffix[k]);
 		snprintf(desc, sizeof(desc), "%s [function]: print the stack each time %s enters the function", name, descs[k]);
-		Cmd_AddD(Mem_Strdup(name), Breakpoint_f, Mem_Strdup(desc));
+		Cmd_AddD(name, Breakpoint_f, desc);
 		snprintf(name, sizeof(name), "watchpoint_%s", vm_suffix[k]);
 		snprintf(desc, sizeof(desc), "%s [global or entnum.field]: report each change in %s", name, descs[k]);
-		Cmd_AddD(Mem_Strdup(name), Watchpoint_f, Mem_Strdup(desc));
+		Cmd_AddD(name, Watchpoint_f, desc);
 		snprintf(name, sizeof(name), "poke_%s", vm_suffix[k]);
 		snprintf(desc, sizeof(desc), "%s <global or entnum.field> [value]: show or set a value in %s", name, descs[k]);
-		Cmd_AddD(Mem_Strdup(name), Poke_f, Mem_Strdup(desc));
+		Cmd_AddD(name, Poke_f, desc);
 	}
 	Cmd_AddD("breakpoint", Breakpoint_f, "breakpoint [function]: breakpoint_ssqc");
 	Cmd_AddD("watchpoint", Watchpoint_f, "watchpoint [global or entnum.field]: watchpoint_ssqc");

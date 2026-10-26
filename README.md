@@ -53,7 +53,8 @@ ctest --test-dir build        # needs FTEQCC=/path/to/fteqcc to rebuild the test
 ```
 
 Client options: `-width`, `-height`, `-fullscreen`, `-headless` (no window
-or sound), plus the server's options below. Useful commands: `screenshot`,
+or sound), plus the server's options below. Every console command is listed in
+[docs/spec/console.md](docs/spec/console.md). Useful ones: `screenshot`,
 `r_speeds 1` (2 also lists the scene's entities), `pr_trace <name>` (prints
 calls to QC functions whose names contain it), `music <file>`, `play
 <sample>`.
@@ -73,6 +74,7 @@ Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 - [docs/spec/progs-format.md](docs/spec/progs-format.md)
 - [docs/spec/opcodes.md](docs/spec/opcodes.md)
 - [docs/spec/builtins.md](docs/spec/builtins.md)
+- [docs/spec/console.md](docs/spec/console.md)
 - [docs/spec/bsp.md](docs/spec/bsp.md)
 - [docs/spec/materials.md](docs/spec/materials.md)
 - [docs/spec/client-game.md](docs/spec/client-game.md)

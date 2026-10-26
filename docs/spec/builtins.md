@@ -25,6 +25,16 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `rotate_axis`-style helpers (`rotatevectorsbyangle`, `rotatevectorsbyvectors`)
   follow the doc comments, but have not been checked against content that
   depends on them. *Unverified.*
+- `sprintf("%S", s)` quotes `s`; when it holds a quote, backslash, tab or
+  line break it uses the escaped form `\"...\"` (with `\n`, `\t`, `\r`,
+  `\"`, `\\` inside) that `tokenize` and `tokenize_console` read back. This
+  matches what FTE writes in Nuclide's saved games. See
+  [console.md](console.md).
+- `findentityfield(name)` gives a field's number for `getentityfieldstring`
+  and friends, 0 when there's none; `entityfieldref(n)` gives the field
+  itself.
+- `SV_PerformSave` and `SV_PerformLoad` are called by `save` and `load`
+  with a file handle the game reads or writes; see [console.md](console.md).
 - `physics_supported` returns 0: there is no rigid-body physics yet.
 - Networking (`Write*`, `multicast`, `stuffcmd`, …) builtins are accepted and
   do nothing until the network layer exists.

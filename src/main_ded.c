@@ -70,6 +70,7 @@ int main(int argc, char **argv)
 	QC_InitDebugCommands();
 	Cmd_Add("quit", Quit_f);
 	Cmd_Add("path", Path_f);
+	Cmd_DescribeAll();
 	Cmd_SetPreHook(ServerFallback);
 
 	if (FS_FileExists("server.cfg"))

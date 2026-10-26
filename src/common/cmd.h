@@ -25,6 +25,8 @@ void Cmd_Add(const char *name, cmd_fn fn);
 /* the same, with a line of help for "help", "find" and "apropos" */
 void Cmd_AddD(const char *name, cmd_fn fn, const char *description);
 const char *Cmd_Description(const char *name);
+void Cmd_Describe(const char *name, const char *description); /* only if it has none */
+void Cmd_DescribeAll(void); /* help text for commands registered without any (cmd_extra.c) */
 /* walks the registered commands and aliases */
 typedef void (*cmd_walk_fn)(const char *name, const char *text, void *ctx);
 void Cmd_ForEach(cmd_walk_fn fn, void *ctx);
