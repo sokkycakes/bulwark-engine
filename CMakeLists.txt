@@ -58,6 +58,7 @@ add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FI
 add_executable(bsptest tests/bsp/bsptest.c)
 target_link_libraries(bsptest bwserver)
 add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME bots COMMAND ${CMAKE_SOURCE_DIR}/tests/bots/run.sh $<TARGET_FILE:bulwark-ded>)
 
 # game client with a listen server
 find_package(SDL2 QUIET)

@@ -35,6 +35,9 @@ new games.
   (`room_type`), underwater muffling, and an automatic room guess.
 - **Input**: keyboard, mouse and SDL game controllers. Packages: `.pk3`
   and Quake `.pak`.
+- **Bots**: a game-side QC bot framework in `qc/bots` (action stack,
+  locomotion with climbing and gap jumps, vision, waypoint paths and chasing),
+  with headless scenario tests in `tests/bots`.
 - Not yet: ragdolls, the menu progs.
 
 ## Building
@@ -78,3 +81,4 @@ Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 - [docs/spec/client-game.md](docs/spec/client-game.md)
 - [docs/spec/particles.md](docs/spec/particles.md)
 - [docs/spec/sound.md](docs/spec/sound.md)
+- [docs/spec/bots.md](docs/spec/bots.md) and [qc/bots/README.md](qc/bots/README.md)

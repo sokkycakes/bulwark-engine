@@ -9,20 +9,43 @@ public descriptions of the format (the "Unofficial Quake Specs").
 Two closed rooms, A at x 0..512 and B at x 1024..1536 (both y 0..512,
 z 0..256). Room A has a 128x128x64 block on its floor. The visibility data
 says the rooms cannot see each other. Lighting is a soft point light per
-room, computed here. ISC licence, see LICENSE."""
+room, computed here.
+
+With --bots it writes tests/data/maps/botmap.bsp (BSP30) and its waypoint
+file tests/data/botmap.way instead: the bot framework's test map (see
+docs/spec/bots.md), a 2048x2048 room with a dividing wall, a 48 unit ledge,
+a flight of stairs and two platforms with a gap to jump. ISC licence, see LICENSE."""
 import math
 import struct
 import sys
 
 import os
 
-args = [a for a in sys.argv[1:] if a != "--hl"]
-HL = "--hl" in sys.argv[1:]
-out = args[0] if args else ("tests/data/maps/hltest.bsp" if HL else "tests/data/maps/q1test.bsp")
+args = [a for a in sys.argv[1:] if a not in ("--hl", "--bots")]
+BOTS = "--bots" in sys.argv[1:]
+HL = "--hl" in sys.argv[1:] or BOTS
+out = args[0] if args else ("tests/data/maps/botmap.bsp" if BOTS else
+                            "tests/data/maps/hltest.bsp" if HL else "tests/data/maps/q1test.bsp")
 
 ROOMS = [((0, 0, 0), (512, 512, 256)), ((1024, 0, 0), (1536, 512, 256))]
 BLOCKS = [((192, 192, 0), (320, 320, 64))]
+if BOTS:
+    ROOMS = [((-1024, -1024, 0), (1024, 1024, 384))]
+    BLOCKS = [((-16, -400, 0), (16, 1024, 128)),       # dividing wall, open at the south end
+              ((400, 200, 0), (800, 700, 48)),         # the ledge
+              ((-800, -1024, 0), (-768, -854, 16)),    # stairs: three steps and a landing
+              ((-768, -1024, 0), (-736, -854, 32)),
+              ((-736, -1024, 0), (-704, -854, 48)),
+              ((-704, -1024, 0), (-576, -854, 64)),
+              ((300, -900, 0), (400, -800, 64)),       # two platforms with a gap between
+              ((496, -900, 0), (596, -800, 64))]
 BIG = 4096
+
+def room_of(p):
+    for i, (r0, r1) in enumerate(ROOMS):
+        if all(r0[k] <= p[k] <= r1[k] for k in range(3)):
+            return i
+    return 0
 HULLS = [((0, 0, 0), (0, 0, 0)), ((-16, -16, -24), (16, 16, 32)), ((-32, -32, -24), (32, 32, 64))]
 if HL:  # standing, large, crouching
     HULLS = [((0, 0, 0), (0, 0, 0)), ((-16, -16, -36), (16, 16, 36)), ((-32, -32, -32), (32, 32, 32)),
@@ -78,7 +101,7 @@ def build(lo, hi, hull, cand, node_list, leaf_cb):
 def hull0_leaf(is_empty, lo, hi):
     if not is_empty:
         return -1  # leaf 0, solid
-    room = 0 if hi[0] <= 600 else 1
+    room = room_of([(lo[k] + hi[k]) / 2 for k in range(3)])
     leafs.append(dict(contents=-1, mins=lo, maxs=hi, faces=[], room=room))
     return -len(leafs)
 
@@ -110,7 +133,22 @@ def rect_faces():
             else:
                 fs.append((k, b0[k], -1, list(b0), list(b1)))
                 fs.append((k, b1[k], +1, list(b0), list(b1)))
-    return fs
+    # keep faces small enough for ordinary lightmaps
+    tiled = []
+    for axis, dist, sign, lo, hi in fs:
+        a1, a2 = [k for k in range(3) if k != axis]
+        u = lo[a1]
+        while u < hi[a1]:
+            u2 = min(hi[a1], u + 256)
+            v = lo[a2]
+            while v < hi[a2]:
+                v2 = min(hi[a2], v + 256)
+                tlo, thi = list(lo), list(hi)
+                tlo[a1], thi[a1], tlo[a2], thi[a2] = u, u2, v, v2
+                tiled.append((axis, dist, sign, tlo, thi))
+                v = v2
+            u = u2
+    return tiled if BOTS else fs
 
 texinfos = []
 def texinfo_for(axis, tex):
@@ -131,7 +169,7 @@ def light_at(p, room):
     r0, r1 = ROOMS[room]
     c = [(r0[0] + r1[0]) / 2, (r0[1] + r1[1]) / 2, 200]
     d = math.dist(p, c)
-    v = 24 + 120 * max(0.0, 1 - d / 450)
+    v = 24 + 120 * max(0.0, 1 - d / max(450, (r1[0] - r0[0]) * 0.75))
     return int(min(255, v))
 
 for axis, dist, sign, lo, hi in rect_faces():
@@ -165,7 +203,7 @@ for axis, dist, sign, lo, hi in rect_faces():
     smin, smax = math.floor(min(ss) / 16), math.ceil(max(ss) / 16)
     tmin, tmax = math.floor(min(ts) / 16), math.ceil(max(ts) / 16)
     w, h = smax - smin + 1, tmax - tmin + 1
-    room = 0 if lo[0] < 600 else 1
+    room = room_of([(lo[k] + hi[k]) / 2 for k in range(3)])
     lightofs = len(lighting)
     # luxel positions on the plane: solve p from (s, t)
     for j in range(h):
@@ -289,6 +327,9 @@ entities = (b'{\n"classname" "worldspawn"\n"message" "Bulwark Q1 test"\n"wad" "%
             b'{\n"classname" "info_player_start"\n"origin" "96 96 40"\n"angle" "45"\n}\n'
             b'{\n"classname" "info_player_deathmatch"\n"origin" "96 96 40"\n"angle" "45"\n}\n\0')
 entities = entities.replace(b"%s", b"\\sierra\\half-life\\valve\\hltest.wad;other.wad" if HL else b"")
+if BOTS:
+    entities = (b'{\n"classname" "worldspawn"\n"message" "Bulwark bot test"\n"wad" "hltest.wad"\n}\n'
+                b'{\n"classname" "info_player_start"\n"origin" "-900 900 40"\n"angle" "0"\n}\n\0')
 
 def pack_planes():
     b = b""
@@ -322,7 +363,9 @@ lumps[10] = b"".join(struct.pack("<ii6h2H4B", lf["contents"], lf["visofs"], *bbo
 lumps[11] = b"".join(struct.pack("<H", m) for m in marksurfaces)
 lumps[12] = b"".join(struct.pack("<2H", *e) for e in edges)
 lumps[13] = b"".join(struct.pack("<i", e) for e in surfedges)
-lumps[14] = struct.pack("<9f4i3i", 0, 0, 0, 1536, 512, 256, 0, 0, 0, root0, clip_roots[0], clip_roots[1],
+wmin = [min(r[0][k] for r in ROOMS) for k in range(3)]
+wmax = [max(r[1][k] for r in ROOMS) for k in range(3)]
+lumps[14] = struct.pack("<9f4i3i", *wmin, *wmax, 0, 0, 0, root0, clip_roots[0], clip_roots[1],
                         clip_roots[2] if HL else 0,
                         len(leafs) - 1, 0, len(faces))
 
@@ -334,3 +377,28 @@ for i, l in enumerate(lumps):
     data += l
 open(out, "wb").write(data)
 print(f"{out}: {len(nodes)} nodes, {len(leafs)} leafs, {len(clipnodes)} clipnodes, {len(faces)} faces")
+
+# --- bot test waypoints -------------------------------------------------------------
+# docs/spec/bots.md: node count, then per node "x y z radius linkcount" and a
+# line "othernode cost flags" per link; positions 24 above the floor.
+if BOTS:
+    WP = [(-900, 900, 24), (-900, 300, 24), (-600, -300, 24), (-500, -700, 24), (-150, -600, 24),
+          (0, -650, 24), (150, -600, 24), (500, -300, 24), (600, 100, 24), (600, 300, 72),
+          (600, 600, 72), (600, 900, 24), (250, 450, 24), (900, 450, 24), (900, -800, 24),
+          (-300, 400, 24), (-880, -940, 24), (-640, -940, 88), (-900, -600, 24), (300, 900, 24),
+          (350, -850, 88), (546, -850, 88)]
+    PAIRS = [(0, 1), (0, 15), (1, 15), (1, 2), (15, 2), (2, 3), (2, 18), (18, 16), (16, 17), (18, 3),
+             (3, 4), (4, 5), (5, 6), (6, 7), (6, 14), (7, 8), (7, 14), (14, 13), (8, 9), (9, 10),
+             (10, 11), (8, 12), (12, 19), (19, 11), (11, 13), (13, 8), (12, 9), (13, 10), (7, 12), (20, 21)]
+    links = [[] for _ in WP]
+    for a, b in PAIRS:
+        cost = round(math.dist(WP[a], WP[b]))
+        links[a].append((b, cost, 0))
+        links[b].append((a, cost, 0))
+    lines = [str(len(WP))]
+    for i, p in enumerate(WP):
+        lines.append("%g %g %g 32 %d" % (*p, len(links[i])))
+        lines += ["%d %d %d" % l for l in links[i]]
+    wayout = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(out))), "botmap.way")
+    open(wayout, "w").write("\n".join(lines) + "\n")
+    print(f"{wayout}: {len(WP)} waypoints, {len(PAIRS) * 2} links")
