@@ -34,7 +34,7 @@ image_t *R_LoadCubemap(const char *basename);    /* basename_rt.tga ... or NULL 
 bool R_ImageExists(const char *name);
 void R_InitImages(void);
 void R_ShutdownImages(void);
-extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal;
+extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal, *r_whitecube;
 /* decodes an image file into RGBA (Mem_Free the result) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h);
 

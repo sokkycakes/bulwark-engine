@@ -260,6 +260,9 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 
 void R_AddEntities(qcvm_t *vm, int mask)
 {
+	/* predraws run with self set to their entity; the QC that called
+	 * addentities is usually a method that still needs its own self */
+	int oldself = QC_GInt(vm, vm->gofs.self);
 	lookup_fields(vm);
 	if (EF.drawmask < 0)
 		return;
@@ -280,6 +283,7 @@ void R_AddEntities(qcvm_t *vm, int mask)
 		}
 		R_AddEntityFromQC(vm, e);
 	}
+	QC_SetGInt(vm, vm->gofs.self, oldself);
 }
 
 int R_AddDynamicLight(const float *org, float radius, const float *color)
@@ -425,6 +429,15 @@ void R_RenderScene(void)
 		           h, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2], r_scene.angles[0], r_scene.angles[1],
 		           r_stats.worldsurfs, r_stats.culled, r_scene.numents, r_stats.polys,
 		           r_scene.drawworld ? "" : ", no world");
+	if (r_speeds->ivalue > 1)
+		for (int i = 0; i < r_scene.numents; i++) {
+			rentity_t *e = &r_scene.ents[i];
+			float amb[3], dif[3], dir[3];
+			R_LightPoint(e->origin, amb, dif, dir);
+			Con_Printf("  ent %d: %s frame %d at %.0f %.0f %.0f flags %d alpha %.2f light %.2f %.2f %.2f + %.2f %.2f %.2f\n",
+			           e->entnum, e->model ? e->model->name : "(no model)", e->frame, e->origin[0], e->origin[1],
+			           e->origin[2], e->renderflags, e->alpha, amb[0], amb[1], amb[2], dif[0], dif[1], dif[2]);
+		}
 	qglDisable(GL_SCISSOR_TEST);
 	GL_SetBlend(BLEND_OPAQUE, 0, 0);
 	/* back to 2D for whatever the client game draws next */

@@ -200,14 +200,13 @@ static void Screenshot_f(int argc, const char **argv)
 /* "sky <name>": a skybox from env/<name>_rt and friends, as sent by games */
 static void Sky_f(int argc, const char **argv)
 {
-	char base[96];
 	if (argc < 2) {
-		Con_Printf("sky is \"%s\"\n", r_world.skyname);
+		Con_Printf("sky is \"%s\"%s\n", r_world.skyname, r_world.skybox ? "" : " (no cubemap loaded)");
 		return;
 	}
+	/* loaded when the sky is next drawn, as a path or from env/ */
 	Str_Copy(r_world.skyname, argv[1], sizeof(r_world.skyname));
-	snprintf(base, sizeof(base), strchr(argv[1], '/') ? "%s" : "env/%s", argv[1]);
-	r_world.skybox = r_active ? R_LoadCubemap(base) : NULL;
+	r_world.skybox = NULL;
 }
 
 bool R_Init(bool headless)

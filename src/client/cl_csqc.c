@@ -232,7 +232,10 @@ static void set_frame_globals(qcvm_t *vm)
 	QC_SetGFloat(vm, CS.maxclients, (float)cl.maxclients);
 	QC_SetGFloat(vm, CS.clientcommandframe, (float)cl.clientcommandframe);
 	QC_SetGFloat(vm, CS.servercommandframe, (float)cl.servercommandframe);
-	QC_SetGFloat(vm, CS.numclientseats, 1);
+	/* no seats until the player is in the game: Nuclide's View_Init, run
+	 * from CSQC_RendererRestart during loading, sets up the seats at or
+	 * above numclientseats, so it relies on this being 0 then */
+	QC_SetGFloat(vm, CS.numclientseats, cl.state == ca_active ? 1 : 0);
 	QC_SetGInt(vm, G.world, 0);
 }
 

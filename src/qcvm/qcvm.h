@@ -244,6 +244,7 @@ bool QC_Execute(qcvm_t *vm, func_t fnum);
 bool QC_ExecuteByName(qcvm_t *vm, const char *name);
 BW_NORETURN void QC_RunError(qcvm_t *vm, const char *fmt, ...) BW_PRINTF(2, 3);
 void QC_StackTrace(qcvm_t *vm);
+extern char qc_tracefilter[64]; /* non-empty: print entries to matching functions */
 
 /* strings */
 const char *QC_GetString(qcvm_t *vm, string_t s);

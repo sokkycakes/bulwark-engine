@@ -719,8 +719,16 @@ static void SV_Edict_f(int argc, const char **argv)
 	           f[F.angles + 1].f, f[F.angles + 2].f);
 }
 
+/* "pr_trace <text>": prints entries to QC functions whose names contain it,
+ * in every VM; with no argument, stops */
+static void PrTrace_f(int argc, const char **argv)
+{
+	Str_Copy(qc_tracefilter, argc > 1 ? argv[1] : "", sizeof(qc_tracefilter));
+}
+
 void SV_Init(void)
 {
+	Cmd_Add("pr_trace", PrTrace_f);
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
