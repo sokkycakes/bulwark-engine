@@ -389,8 +389,10 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 			r_world.hasfog = f[3] > 0;
 		}
 	}
-	if (bsp && entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0])
+	if (bsp && entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0] && Str_ICmp(buf, r_world.skyname)) {
 		Str_Copy(r_world.skyname, buf, sizeof(r_world.skyname));
+		r_world.skybox = NULL;
+	}
 
 	if (R_Active() && vb.num && ib.num) {
 		qglGenVertexArrays(1, &r_world.vao);
@@ -605,8 +607,14 @@ void R_DrawSky(const float *mvp)
 	bool any = false;
 	if (!r_world.loaded || !r_world.vao || !r_world.numsubmodels)
 		return;
-	if (!r_world.skybox && r_world.skyname[0])
+	if (!r_world.skybox && r_world.skyname[0]) {
+		/* worldspawn and the sky command name either a path or a set in env/ */
+		char env[96];
+		snprintf(env, sizeof(env), "env/%s", r_world.skyname);
 		r_world.skybox = R_LoadCubemap(r_world.skyname);
+		if (!r_world.skybox)
+			r_world.skybox = R_LoadCubemap(env);
+	}
 	m = &r_world.submodels[0];
 	R_UseProgram(PROG_SKY);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
@@ -626,7 +634,7 @@ void R_DrawSky(const float *mvp)
 				GL_BindTexture(3, GL_TEXTURE_CUBE_MAP, cube->tex);
 				qglUniform4f(p->u_color, 1, 1, 1, 1);
 			} else {
-				GL_BindTexture(3, GL_TEXTURE_CUBE_MAP, 0);
+				GL_BindTexture(3, GL_TEXTURE_CUBE_MAP, r_whitecube->tex);
 				qglUniform4f(p->u_color, 0.3f, 0.4f, 0.55f, 1);
 			}
 			any = true;

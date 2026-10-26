@@ -28,7 +28,7 @@
 
 #define IMAGE_HASH 1024
 static image_t *images[IMAGE_HASH];
-image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal;
+image_t *r_whitecube, *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal;
 static uint8_t q1palette[768];
 static bool have_palette;
 
@@ -223,6 +223,17 @@ image_t *R_FindImage(const char *name, int flags)
  * the cube face that the sky shader's lookup (-y, z, -x) reaches when the
  * view looks the matching way: rt is -y (right), lf +y, ft +x (forward),
  * bk -x, up +z and dn -z. */
+/* turns a square RGBA image a quarter, counter-clockwise or clockwise */
+static void rotate_quarter(uint8_t *pix, int n, bool ccw)
+{
+	uint32_t *src = Mem_Alloc((size_t)n * n * 4), *dst = (uint32_t *)pix;
+	memcpy(src, pix, (size_t)n * n * 4);
+	for (int y = 0; y < n; y++)
+		for (int x = 0; x < n; x++)
+			dst[y * n + x] = ccw ? src[x * n + (n - 1 - y)] : src[(n - 1 - x) * n + y];
+	Mem_Free(src);
+}
+
 image_t *R_LoadCubemap(const char *basename)
 {
 	/* cube faces +X, -X, +Y, -Y, +Z, -Z in lookup space (-y, z, -x) */
@@ -252,6 +263,10 @@ image_t *R_LoadCubemap(const char *basename)
 			return NULL;
 		}
 		size = w;
+		/* Quake-style sets store up and down turned a quarter: measured by
+		 * matching their edges against the side faces (docs/spec/materials.md) */
+		if ((f == 2 || f == 3) && w == h)
+			rotate_quarter(pix, w, f == 2);
 		if (R_Active())
 			qglTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
 		Mem_Free(pix);
@@ -276,6 +291,24 @@ static image_t *solid(const char *name, uint8_t r, uint8_t g, uint8_t b, uint8_t
 		px[i * 4 + 3] = a;
 	}
 	return R_ImageFromPixels(name, px, 4, 4, IMG_NOMIP);
+}
+
+/* a 1x1 white cubemap, so a sky without a box can still be tinted */
+static image_t *white_cube(void)
+{
+	static const uint8_t white[4] = {255, 255, 255, 255};
+	image_t *img = new_image("$whitecube");
+	img->target = GL_TEXTURE_CUBE_MAP;
+	img->width = img->height = 1;
+	if (!R_Active())
+		return img;
+	qglGenTextures(1, &img->tex);
+	GL_BindTexture(3, GL_TEXTURE_CUBE_MAP, img->tex);
+	for (int f = 0; f < 6; f++)
+		qglTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+	qglTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	qglTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	return img;
 }
 
 void R_InitImages(void)
@@ -312,6 +345,7 @@ void R_InitImages(void)
 			p[3] = 255;
 		}
 	r_checkerimage = R_ImageFromPixels("$checker", check, 64, 64, IMG_NEAREST);
+	r_whitecube = white_cube();
 }
 
 void R_ShutdownImages(void)

@@ -46,6 +46,9 @@ void QC_RunError(qcvm_t *vm, const char *fmt, ...)
 }
 
 /* calls fnum of the running progs; caller is the progs to return to */
+/* pr_trace: prints each QC function entered whose name contains this */
+char qc_tracefilter[64];
+
 static void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
 {
 	qcfunc_t *f = &vm->functions[fnum];
@@ -55,6 +58,8 @@ static void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
 
 	if (vm->depth >= QC_MAX_DEPTH)
 		QC_RunError(vm, "stack overflow calling %s", f->name);
+	if (qc_tracefilter[0] && strstr(f->name, qc_tracefilter))
+		Con_Printf("%s: %*s%s (self %d)\n", vm->name, vm->depth, "", f->name, QC_GInt(vm, vm->gofs.self));
 	fr = &vm->stack[vm->depth++];
 	fr->s = returnto;
 	fr->f = vm->xfunction;
@@ -677,12 +682,7 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	int oldlocals = vm->localstack_used;
 	int oldprogs = vm->curprogs, pn = QC_FUNC_PROGS(fnum);
 	qcfunc_t *f = QC_Function(vm, fnum);
-	/* a call made from inside a builtin (predraw from addentities, touch
-	 * from a trace...) hands self and other back as it found them: the QC
-	 * that called the builtin is a method that still relies on self */
-	bool nested = oldjmp != NULL;
-	int oldself = nested ? QC_GInt(vm, vm->gofs.self) : 0;
-	int oldother = nested ? QC_GInt(vm, vm->gofs.other) : 0;
+
 
 	if (!f) {
 		Con_Printf("%s: tried to execute a NULL function\n", vm->name);
@@ -739,10 +739,6 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	vm->xstatement = oldstmt;
 	executing_count--;
 	vm->exec_depth--;
-	if (nested) {
-		QC_SetGInt(vm, vm->gofs.self, oldself);
-		QC_SetGInt(vm, vm->gofs.other, oldother);
-	}
 	return true;
 }
 
