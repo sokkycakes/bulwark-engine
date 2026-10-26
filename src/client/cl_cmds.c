@@ -9,6 +9,10 @@
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../server/sv_local.h"
+#include "../render/render.h"
+#include "../net/net.h"
+#include "../sound/sound.h"
+#include "../common/fs.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -259,6 +263,131 @@ static void ForwardToServer_f(int argc, const char **argv)
 	CL_SendStringCmd(argc > 1 ? va("%s %s", argv[0], Cmd_Args()) : argv[0]);
 }
 
+/* cl_status: the connection and what the client loaded */
+static void ClStatus_f(int argc, const char **argv)
+{
+	static const char *const states[] = {"disconnected", "challenging", "connecting", "loading", "active"};
+	Con_Printf("state            : %s\n", cl.state >= 0 && cl.state <= ca_active ? states[cl.state] : "?");
+	if (cl.state >= ca_loading) {
+		Con_Printf("server           : %s%s\n", cl.servername, cl.demoplayback ? " (demo)" : "");
+		Con_Printf("packets,bytes/sec: in %.1f B/s  out %.1f B/s, rtt %d ms, loss %d%%\n", cl.chan.bytes_in_sec,
+		           cl.chan.bytes_out_sec, (int)(cl.chan.rtt * 1000), (int)(cl.chan.loss * 100));
+		Con_Printf("map              : %s\n", cl.mapname);
+	}
+	Con_Printf("csqc             : %s\n", cl.csqc ? cl.csprogsname : "not loaded");
+	Con_Printf("gamedir          : %s\n", FS_GameDir());
+}
+
+/* packet <destination> <contents>: one connectionless packet; replies are
+ * printed as they come */
+static void Packet_f(int argc, const char **argv)
+{
+	netadr_t to;
+	char buf[2048];
+	size_t n = 0;
+	if (argc < 3) {
+		Con_Printf("usage: packet <destination> <contents>\n");
+		return;
+	}
+	if (!NET_StringToAdr(argv[1], &to, 27500)) {
+		Con_Printf("bad address %s\n", argv[1]);
+		return;
+	}
+	NET_OpenClient();
+	memcpy(buf, "\xff\xff\xff\xff", 4);
+	n = 4;
+	/* \n and \\ as in FTE, so multi-line packets can be typed */
+	for (const char *p = argv[2]; *p && n + 1 < sizeof(buf); p++) {
+		if (p[0] == '\\' && p[1] == 'n') {
+			buf[n++] = '\n';
+			p++;
+		} else if (p[0] == '\\' && p[1] == '\\') {
+			buf[n++] = '\\';
+			p++;
+		} else {
+			buf[n++] = *p;
+		}
+	}
+	NET_SendPacket(NS_CLIENT, buf, n, &to);
+}
+
+/* changing: the server says a level change is coming (QuakeWorld) */
+static void Changing_f(int argc, const char **argv)
+{
+	if (cl.state < ca_loading) {
+		Con_Printf("Changing while not connected\n");
+		return;
+	}
+	cl.state = ca_loading;
+	S_StopAllSounds();
+}
+
+/* timerefresh: draw 128 frames turning once around, and time them */
+static void Timerefresh_f(int argc, const char **argv)
+{
+	float yaw = cl.viewangles[1];
+	double start = Sys_Seconds(), t;
+	for (int i = 0; i < 128; i++) {
+		int w, h;
+		cl.viewangles[1] = yaw + i * (360.0f / 128);
+		R_BeginFrame();
+		R_GetSize(&w, &h);
+		CSQC_Frame(w, h);
+		R_EndFrame();
+	}
+	cl.viewangles[1] = yaw;
+	t = Sys_Seconds() - start;
+	Con_Printf("%f seconds (%f fps)\n", t, t > 0 ? 128 / t : 0);
+}
+
+/* me <action>: an emote in chat */
+static void Me_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("usage: me <action>\n");
+		return;
+	}
+	Cmd_ExecuteString(va("say \"* %s %s\"", Cvar_String("name"), Cmd_Args()));
+}
+
+/* cd <play|loop|stop|pause|resume|info> [track]: the CD-audio command,
+ * played through the music player (tracks are music/track<n>) */
+static void Cd_f(int argc, const char **argv)
+{
+	const char *c = argc > 1 ? argv[1] : "";
+	if (!Str_ICmp(c, "play") || !Str_ICmp(c, "loop")) {
+		if (argc < 3)
+			Con_Printf("cd %s <track>\n", c);
+		else
+			Cmd_ExecuteString(va("music %s%s", argv[2], !Str_ICmp(c, "play") ? " -" : ""));
+	} else if (!Str_ICmp(c, "stop") || !Str_ICmp(c, "off") || !Str_ICmp(c, "pause")) {
+		Cmd_ExecuteString("stopmusic");
+	} else if (!Str_ICmp(c, "info") || !*c) {
+		Con_Printf("No cd drive detected; cd play <track> plays music/track<n> instead.\n");
+	} else {
+		Con_Printf("cd: play, loop, stop, pause or info\n");
+	}
+}
+
+/* mod <command>: a command for the game modules, whichever takes it */
+static void Mod_f(int argc, const char **argv)
+{
+	const char *line = Cmd_Args();
+	if (argc < 2 || !(MQC_ForceCommand(line) || CSQC_ForceCommand(line) || SV_ConsoleCommand(line)))
+		Con_Printf("Mod-specific command \"%s\" not known\n", argc > 1 ? argv[1] : "");
+}
+
+/* sendcvar <name>: a server asks for a cvar's value; the answer goes back
+ * as "sentcvar <name> <value>" for the game to read */
+static void Sendcvar_f(int argc, const char **argv)
+{
+	cvar_t *v;
+	if (argc < 2 || cl.state < ca_loading)
+		return;
+	v = Cvar_Find(argv[1]);
+	CL_SendStringCmd(va("sentcvar %s \"%s\"", argv[1], v ? v->string : ""));
+}
+
 /* cl_cmd and menu_cmd: a command for the client game or the menu, even one
  * it didn't register */
 static void ClCmd_f(int argc, const char **argv)
@@ -281,11 +410,23 @@ void CL_InitCommands(void)
 			{"fly", "Toggle flying (cheat)"}, {"give", "give <item or health> [amount]: (cheat)"},
 			{"setpos", "setpos <x> <y> <z> [pitch yaw roll]: move yourself (cheat)"}, {"kill", "Kill yourself"},
 			{"join", "Join the game from spectating"}, {"observe", "Spectate"},
+			{"sayone", "sayone <player> <text>: a private message"},
+			{"bestweapon", "bestweapon <impulse> [impulse...]: switch to the first of these weapons you have"},
+			{"6dof", "Toggle six-degrees-of-freedom movement: no pitch limit, roll with +rollleft/+rollright (cheat)"},
+			{"spiderpig", "Toggle walking up walls (cheat)"},
 		};
 		for (size_t i = 0; i < sizeof(fwd) / sizeof(fwd[0]); i++)
 			if (!Cmd_Exists(fwd[i][0]))
 				Cmd_AddD(fwd[i][0], ForwardToServer_f, fwd[i][1]);
 	}
+	Cmd_AddD("cl_status", ClStatus_f, "The connection, map, client game and game directory");
+	Cmd_AddD("packet", Packet_f, "packet <destination> <contents>: send a connectionless packet (\\n for a line break)");
+	Cmd_AddD("changing", Changing_f, "Sent by servers before a level change; not for typing");
+	Cmd_AddD("timerefresh", Timerefresh_f, "Draw 128 frames turning around once, and report the frame rate");
+	Cmd_AddD("me", Me_f, "me <action>: an emote in chat");
+	Cmd_AddD("cd", Cd_f, "cd <play|loop|stop|info> [track]: CD audio, played as music/track<n>");
+	Cmd_AddD("sendcvar", Sendcvar_f, "sendcvar <cvar>: tell the server a cvar's value (servers send this)");
+	Cmd_AddD("mod", Mod_f, "mod <command>: a command for the menu, client game or server game");
 	Cmd_AddD("cl_cmd", ClCmd_f, "cl_cmd <command>: run a command of the client game (CSQC_ConsoleCommand)");
 	Cmd_AddD("menu_cmd", ClCmd_f, "menu_cmd <command>: run a command of the menu (m_consolecommand)");
 	CL_InitDemos();

@@ -19,6 +19,7 @@ typedef struct cvar_s {
 	char *name;
 	char *string;
 	char *defstring;
+	char *engdefault; /* the default the engine or game registered; defstring can be relocked */
 	char *description;
 	float value;
 	int ivalue;

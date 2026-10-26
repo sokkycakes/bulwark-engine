@@ -503,4 +503,5 @@ void Cmd_Init(void)
 	Cmd_Add("alias", Cmd_Alias_f);
 	Cmd_Add("unalias", Cmd_Unalias_f);
 	Cmd_InitExtra();
+	Cmd_InitCompat();
 }

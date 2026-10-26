@@ -161,7 +161,7 @@ typedef struct {
 enum {
 	B_FORWARD, B_BACK, B_MOVELEFT, B_MOVERIGHT, B_MOVEUP, B_MOVEDOWN, B_LEFT, B_RIGHT, B_LOOKUP, B_LOOKDOWN, B_SPEED,
 	B_JUMP, B_ATTACK, B_ATTACK2, B_USE, B_RELOAD, B_DUCK, B_SPRINT, B_PRONE, B_BUTTON3, B_BUTTON4, B_BUTTON5,
-	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_STRAFE, B_KLOOK, B_COUNT
+	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_STRAFE, B_KLOOK, B_ROLLLEFT, B_ROLLRIGHT, B_COUNT
 };
 static kbutton_t buttons[B_COUNT];
 static int pending_impulse;
@@ -232,6 +232,9 @@ BUTTON_CMDS(button7, B_BUTTON7)
 BUTTON_CMDS(button8, B_BUTTON8)
 BUTTON_CMDS(strafe, B_STRAFE)
 BUTTON_CMDS(klook, B_KLOOK)
+BUTTON_CMDS(rollleft, B_ROLLLEFT)
+BUTTON_CMDS(rollright, B_ROLLRIGHT)
+static cvar_t *cl_6dof, *cl_rollspeed;
 
 /* the mouse always looks around; +mlook and -mlook are kept so old configs
  * that bind them don't print errors */
@@ -276,6 +279,17 @@ static void Impulse_f(int argc, const char **argv)
 {
 	if (argc > 1)
 		pending_impulse = atoi(argv[1]);
+}
+
+/* the pitch limit, which 6dof lifts (and lets the view roll instead) */
+static void clamp_pitch(void)
+{
+	if (cl_6dof && cl_6dof->ivalue)
+		return;
+	if (cl.viewangles[0] > 89)
+		cl.viewangles[0] = 89;
+	if (cl.viewangles[0] < -89)
+		cl.viewangles[0] = -89;
 }
 
 static float button_amount(kbutton_t *b)
@@ -369,10 +383,7 @@ void IN_MouseMove(float dx, float dy)
 	olddy = dy;
 	cl.viewangles[1] -= m_yaw->value * mx * sensitivity->value;
 	cl.viewangles[0] += m_pitch->value * my * sensitivity->value;
-	if (cl.viewangles[0] > 89)
-		cl.viewangles[0] = 89;
-	if (cl.viewangles[0] < -89)
-		cl.viewangles[0] = -89;
+	clamp_pitch();
 	cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
 }
 
@@ -445,24 +456,20 @@ static void fill_command(usercmd_t *u, double now)
 	if (!strafe)
 		cl.viewangles[1] += dt * cl_yawspeed->value * turn;
 	cl.viewangles[0] += dt * cl_pitchspeed->value * (button_amount(&buttons[B_LOOKDOWN]) - button_amount(&buttons[B_LOOKUP]));
+	if (cl_6dof->ivalue)
+		cl.viewangles[2] += dt * cl_rollspeed->value * (button_amount(&buttons[B_ROLLRIGHT]) - button_amount(&buttons[B_ROLLLEFT]));
 	if (klook) {
 		cl.viewangles[0] += dt * cl_pitchspeed->value * (walkback - walk);
 		walk = walkback = 0;
 	}
-	if (cl.viewangles[0] > 89)
-		cl.viewangles[0] = 89;
-	if (cl.viewangles[0] < -89)
-		cl.viewangles[0] = -89;
+	clamp_pitch();
 
 	/* controller sticks: right one turns, left one moves */
 	if (joy_enable->ivalue && !Con_IsActive()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
 		cl.viewangles[1] -= dt * joy_yawspeed->value * rx;
 		cl.viewangles[0] += dt * joy_pitchspeed->value * ry * (joy_invert->ivalue ? -1 : 1);
-		if (cl.viewangles[0] > 89)
-			cl.viewangles[0] = 89;
-		if (cl.viewangles[0] < -89)
-			cl.viewangles[0] = -89;
+		clamp_pitch();
 		joy_move[0] = -ly * joy_movescale->value;
 		joy_move[1] = lx * joy_movescale->value;
 	} else {
@@ -601,6 +608,10 @@ void IN_Init(void)
 	ADD(button8);
 	ADD(strafe);
 	ADD(klook);
+	ADD(rollleft);
+	ADD(rollright);
+	cl_6dof = Cvar_Get("cl_6dof", "0", 0, "No pitch limit and a rolling view (the server's 6dof cheat sets it)");
+	cl_rollspeed = Cvar_Get("cl_rollspeed", "200", CVAR_ARCHIVE, "Degrees a second +rollleft and +rollright turn in 6dof");
 	Cmd_Add("+mlook", mlook_f);
 	Cmd_Add("-mlook", mlook_f);
 #undef ADD

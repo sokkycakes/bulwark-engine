@@ -46,7 +46,9 @@ cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *
 		if (!(flags & CVAR_USERCREATED) && (v->flags & CVAR_USERCREATED)) {
 			v->flags = (v->flags & ~CVAR_USERCREATED) | flags;
 			Mem_Free(v->defstring);
+			Mem_Free(v->engdefault);
 			v->defstring = Mem_Strdup(defvalue ? defvalue : "");
+			v->engdefault = Mem_Strdup(v->defstring);
 		}
 		if (description && !v->description)
 			v->description = Mem_Strdup(description);
@@ -55,6 +57,7 @@ cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *
 	v = Mem_Alloc(sizeof(*v));
 	v->name = Mem_Strdup(name);
 	v->defstring = Mem_Strdup(defvalue ? defvalue : "");
+	v->engdefault = Mem_Strdup(v->defstring);
 	v->description = description ? Mem_Strdup(description) : NULL;
 	v->flags = flags;
 	Cvar_Assign(v, v->defstring);

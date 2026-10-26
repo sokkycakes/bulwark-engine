@@ -125,6 +125,8 @@ typedef struct client_s {
 	float updaterate; /* snapshots per second (cl_updaterate) */
 	float interp;     /* client's interpolation delay, seconds (for lag compensation) */
 	bool fullupdate;  /* resent the signon for a demo recording; "begin" doesn't respawn */
+	bool sixdof, spiderpig; /* the 6dof and spiderpig cheats */
+	int forced_impulse;     /* from bestweapon or sv_impulse, for the next move */
 } client_t;
 
 typedef struct {
@@ -175,6 +177,13 @@ struct pmvars_s;
 void W_RunPlayerPhysics(qcvm_t *vm, int e, const struct pmvars_s *vars);
 void SV_SyncServerinfoCvars(bool broadcast);
 extern const qc_builtin_t sv_client_builtins[];
+
+/* sv_compat.c: FTE and QuakeWorld server commands */
+void SV_InitCompat(void);
+bool SV_ClientCompatCommand(client_t *c, int argc, const char **argv);
+void SV_CompatPostThink(client_t *c);
+void SV_CompatFrame(void);
+bool SV_CompatConnectionless(const netadr_t *from, int argc, const char **argv);
 
 /* sv_save.c: saved games */
 void SV_InitSaves(void);

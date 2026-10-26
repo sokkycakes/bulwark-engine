@@ -642,6 +642,7 @@ void SV_Frame(double dt)
 	while (accum >= sv.frametime) {
 		accum -= sv.frametime;
 		if (!sv.paused) {
+			SV_CompatFrame();
 			SV_Physics();
 			sv.time += sv.frametime;
 			sv.frames++;
@@ -782,4 +783,5 @@ void SV_Init(void)
 	Cmd_Add("edict", SV_Edict_f);
 	SV_InitCommands();
 	SV_InitSaves();
+	SV_InitCompat();
 }

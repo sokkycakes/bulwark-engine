@@ -1,0 +1,205 @@
+/* Bulwark engine - console commands kept for compatibility with FTE and the
+ * QuakeWorld clients before it: other spellings of existing commands, cvar
+ * default handling, file system rescans and hashes, and the commands FTE
+ * itself only keeps to say they are obsolete.
+ * ISC licence, see LICENSE. */
+#include "cmd.h"
+#include "cvar.h"
+#include "fs.h"
+#include "digest.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void join_from(int first, int argc, const char **argv, char *out, size_t size)
+{
+	out[0] = 0;
+	for (int i = first; i < argc; i++) {
+		if (i > first)
+			Str_Cat(out, " ", size);
+		Str_Cat(out, argv[i], size);
+	}
+}
+
+/* in <seconds> <command>: run a command later */
+static void In_f(int argc, const char **argv)
+{
+	char cmd[4096];
+	if (argc < 3) {
+		Con_Printf("in <seconds to wait> <command to execute>\n");
+		return;
+	}
+	join_from(2, argc, argv, cmd, sizeof(cmd));
+	Cbuf_AddDeferred(atof(argv[1]), cmd);
+}
+
+/* setfl <var> <value> <a|u|s>: set, also archiving it, or putting it in
+ * userinfo or serverinfo */
+static void Setfl_f(int argc, const char **argv)
+{
+	cvar_t *v;
+	int flags = 0;
+	if (argc < 4) {
+		Con_Printf("setfl <var> <value> <a|u|s>\n");
+		return;
+	}
+	for (const char *f = argv[3]; *f; f++) {
+		if (*f == 'a')
+			flags |= CVAR_ARCHIVE;
+		else if (*f == 'u')
+			flags |= CVAR_USERINFO;
+		else if (*f == 's')
+			flags |= CVAR_SERVERINFO;
+	}
+	if (!(v = Cvar_Find(argv[1])))
+		v = Cvar_Get(argv[1], "", CVAR_USERCREATED, NULL);
+	v->flags |= flags;
+	Cvar_Set(v->name, argv[2]);
+}
+
+/* set_tp <var> <value>: set, under ezQuake's name for teamplay variables */
+static void SetTp_f(int argc, const char **argv)
+{
+	cvar_t *v;
+	if (argc < 3) {
+		Con_Printf("set_tp <var> <value>\n");
+		return;
+	}
+	if (!(v = Cvar_Find(argv[1])))
+		v = Cvar_Get(argv[1], "", CVAR_USERCREATED, NULL);
+	Cvar_Set(v->name, argv[2]);
+}
+
+/* newalias: alias under its other name */
+static void Newalias_f(int argc, const char **argv)
+{
+	char line[4096];
+	strbuf_t sb = {0};
+	SB_AppendStr(&sb, "alias");
+	for (int i = 1; i < argc; i++) {
+		SB_AppendStr(&sb, " \"");
+		SB_AppendStr(&sb, argv[i]);
+		SB_AppendStr(&sb, "\"");
+	}
+	Str_Copy(line, sb.data ? sb.data : "alias", sizeof(line));
+	SB_Free(&sb);
+	Cmd_ExecuteString(line);
+}
+
+/* cvar_lockdefaults: today's values become the defaults (reset, differences
+ * and the config then measure from them); cvar_purgedefaults undoes it */
+static void LockDefaults_f(int argc, const char **argv)
+{
+	int n = 0;
+	for (cvar_t *v = Cvar_First(); v; v = v->next)
+		if (strcmp(v->defstring, v->string)) {
+			Mem_Free(v->defstring);
+			v->defstring = Mem_Strdup(v->string);
+			n++;
+		}
+	Con_DPrintf("%d cvar defaults locked\n", n);
+}
+
+static void PurgeDefaults_f(int argc, const char **argv)
+{
+	for (cvar_t *v = Cvar_First(); v; v = v->next)
+		if (v->engdefault && strcmp(v->defstring, v->engdefault)) {
+			Mem_Free(v->defstring);
+			v->defstring = Mem_Strdup(v->engdefault);
+		}
+}
+
+/* fs_hash <file>: the file's hashes */
+static void FsHash_f(int argc, const char **argv)
+{
+	static const char *const algos[] = {"CRC16", "MD5", "SHA1", "SHA256"};
+	size_t len;
+	char *data;
+	if (argc < 2) {
+		Con_Printf("fs_hash <FILENAME>: computes various hashes of the specified file\n");
+		return;
+	}
+	if (!(data = FS_LoadFile(argv[1], &len))) {
+		Con_Printf("%s not found\n", argv[1]);
+		return;
+	}
+	Con_Printf("%s (%zu bytes, from %s):\n", argv[1], len, FS_WhichPath(argv[1]));
+	for (size_t i = 0; i < BW_ARRAY_COUNT(algos); i++) {
+		char hex[80];
+		if (Digest_Hex(algos[i], data, len, hex, sizeof(hex)))
+			Con_Printf("  %-7s %s\n", algos[i], hex);
+	}
+	Mem_Free(data);
+}
+
+/* fs_restart, fs_flush, flush: pick up packages added or changed while
+ * running */
+static void FsRestart_f(int argc, const char **argv)
+{
+	FS_Restart();
+	Con_Printf("file system rescanned\n");
+}
+
+/* fs_showmanifest: what defines the game. Bulwark has no manifest file; this
+ * is what one would say. */
+static void FsShowmanifest_f(int argc, const char **argv)
+{
+	Con_Printf("basedir \"%s\"\n", FS_BaseDir());
+	for (int i = 0; i < FS_NumGameDirs(); i++)
+		Con_Printf("gamedir \"%s\"\n", FS_GameDirAt(i));
+	Con_Printf("mainconfig \"%s.cfg\"\n", Cvar_String("cfg_save_name"));
+}
+
+/* colorize/colourise <text>: prints text with ezQuake's &cRGB colours
+ * turned into the engine's ^xRGB */
+static void Colorize_f(int argc, const char **argv)
+{
+	char text[4096], out[8192];
+	size_t n = 0;
+	join_from(1, argc, argv, text, sizeof(text));
+	for (const char *p = text; *p && n + 8 < sizeof(out); p++) {
+		if (p[0] == '&' && p[1] == 'c' && p[2] && p[3] && p[4]) {
+			out[n++] = '^';
+			out[n++] = 'x';
+			memcpy(out + n, p + 2, 3);
+			n += 3;
+			p += 4;
+		} else if (p[0] == '&' && p[1] == 'r') {
+			out[n++] = '^';
+			out[n++] = '7';
+			p++;
+		} else {
+			out[n++] = *p;
+		}
+	}
+	out[n] = 0;
+	Con_Printf("%s\n", out);
+}
+
+/* commands FTE keeps only to say they no longer do anything */
+static void Obsolete_f(int argc, const char **argv)
+{
+	Con_Printf("%s is obsolete, redundant, or otherwise outdated.\n", argv[0]);
+}
+
+void Cmd_InitCompat(void)
+{
+	static const char *const obsolete[] = {"check_maps", "download_map_url", "sv_downloadchunksperframe",
+	                                       "sv_progsname", "sv_progtype", "sv_speedcheck", "sys_select_timeout"};
+	Cmd_AddD("in", In_f, "in <seconds> <command>: run a command later");
+	Cmd_AddD("setfl", Setfl_f, "setfl <var> <value> <a|u|s>: set a cvar, archived (a), in userinfo (u) or serverinfo (s)");
+	Cmd_AddD("set_tp", SetTp_f, "set_tp <var> <value>: set (ezQuake's name)");
+	Cmd_AddD("newalias", Newalias_f, "newalias <name> <commands>: alias");
+	Cmd_AddD("cvar_lockdefaults", LockDefaults_f, "Make every cvar's current value its default");
+	Cmd_AddD("cvar_purgedefaults", PurgeDefaults_f, "Put cvar defaults back to the engine's, keeping their values");
+	Cmd_AddD("fs_hash", FsHash_f, "fs_hash <file>: CRC16, MD5, SHA1 and SHA256 of a file");
+	Cmd_AddD("fs_restart", FsRestart_f, "Rescan the game directories for packages");
+	Cmd_AddD("fs_flush", FsRestart_f, "Rescan the game directories for packages");
+	Cmd_AddD("flush", FsRestart_f, "Rescan the game directories for packages");
+	Cmd_AddD("fs_showmanifest", FsShowmanifest_f, "The base directory, game directories and config name");
+	Cmd_AddD("colorize", Colorize_f, "colorize <text>: print text with &cRGB colours");
+	Cmd_AddD("colourise", Colorize_f, "colourise <text>: print text with &cRGB colours");
+	for (size_t i = 0; i < BW_ARRAY_COUNT(obsolete); i++)
+		Cmd_AddD(obsolete[i], Obsolete_f, "Obsolete in FTE; does nothing");
+}

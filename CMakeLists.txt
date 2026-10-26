@@ -17,6 +17,7 @@ add_library(bwcommon STATIC
 	src/common/cvar.c
 	src/common/cmd.c
 	src/common/cmd_extra.c
+	src/common/cmd_compat.c
 	src/common/fs.c
 	src/common/pmove.c
 	src/common/skel.c
@@ -53,6 +54,7 @@ add_library(bwserver STATIC
 	src/server/sv_route.c
 	src/server/sv_cmds.c
 	src/server/sv_save.c
+	src/server/sv_compat.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 

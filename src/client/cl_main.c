@@ -295,6 +295,9 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 		Con_Printf("%s", body ? body + 1 : "");
 	} else if (!strcmp(t->argv[0], "infoResponse")) {
 		Con_Printf("%s: %s\n", NET_AdrToString(from), text + strlen("infoResponse"));
+	} else {
+		/* replies to "packet" and anything else unasked */
+		Con_Printf("%s: %s\n", NET_AdrToString(from), text);
 	}
 done:
 	Mem_Free(text);

@@ -480,19 +480,169 @@ static void Listdemo_f(int argc, const char **argv)
 	           last, counts[DR_ANGLES], counts[DR_RELIABLE], counts[DR_UNRELIABLE], counts[DR_USERCMD]);
 }
 
+typedef struct {
+	int n, want;
+	char found[256];
+} demolist_t;
+
 static void list_demo(const char *name, const char *searchpath, void *ctx)
 {
-	int *n = ctx;
-	Con_Printf("  %-40s %s\n", name, searchpath);
-	(*n)++;
+	demolist_t *l = ctx;
+	l->n++;
+	if (l->want == 0)
+		Con_Printf("%3d: %-40s %s\n", l->n, name, searchpath);
+	else if (l->want == l->n)
+		Str_Copy(l->found, name, sizeof(l->found));
 }
 
 static void Demolist_f(int argc, const char **argv)
 {
-	int n = 0;
-	FS_List("*.dem", true, list_demo, &n);
-	FS_List("demos/*.dem", true, list_demo, &n);
-	Con_Printf("%d demos\n", n);
+	demolist_t l = {0};
+	FS_List("*.dem", true, list_demo, &l);
+	FS_List("demos/*.dem", true, list_demo, &l);
+	Con_Printf("%d demos\n", l.n);
+}
+
+/* rmdemonum <#>: delete a demo by its number in demolist */
+static void Rmdemonum_f(int argc, const char **argv)
+{
+	demolist_t l = {0};
+	char path[1024];
+	if (argc < 2 || (l.want = atoi(argv[1])) <= 0) {
+		Con_Printf("rmdemonum <#>\n");
+		return;
+	}
+	FS_List("*.dem", true, list_demo, &l);
+	FS_List("demos/*.dem", true, list_demo, &l);
+	if (!l.found[0]) {
+		Con_Printf("no demo number %d\n", l.want);
+		return;
+	}
+	if (!FS_WritePath(l.found, path, sizeof(path)) || remove(path))
+		Con_Printf("can't delete %s\n", l.found);
+	else
+		Con_Printf("deleted %s\n", l.found);
+}
+
+/* cancel: stop recording and throw the demo away */
+static void Cancel_f(int argc, const char **argv)
+{
+	char rel[256], path[1024];
+	if (!demo.rec) {
+		Con_Printf("Not recording a demo.\n");
+		return;
+	}
+	Str_Copy(rel, demo.rec_name, sizeof(rel));
+	fclose(demo.rec);
+	demo.rec = NULL;
+	demo.waiting = false;
+	if (FS_WritePath(rel, path, sizeof(path)))
+		remove(path);
+	Con_Printf("recording of %s cancelled\n", rel);
+}
+
+/* finds the time of the next record after the current one that matches;
+ * the read position is put back, so playback carries on unchanged */
+static bool scan_ahead(bool (*match)(int type, const uint8_t *data, uint32_t len), double *when)
+{
+	long pos = ftell(demo.play);
+	bool had = demo.have_next, found = false;
+	double ntime = demo.next_time;
+	int ntype = demo.next_type;
+	uint32_t nlen = demo.next_len;
+	uint8_t *copy = NULL;
+	if (had && nlen) {
+		copy = Mem_Alloc(nlen);
+		memcpy(copy, demo.next_data, nlen);
+	}
+	while (read_next())
+		if (match(demo.next_type, demo.next_data, demo.next_len)) {
+			*when = demo.next_time;
+			found = true;
+			break;
+		}
+	fseek(demo.play, pos, SEEK_SET);
+	demo.have_next = had;
+	demo.next_time = ntime;
+	demo.next_type = ntype;
+	demo.next_len = nlen;
+	if (copy) {
+		memcpy(demo.next_data, copy, nlen);
+		Mem_Free(copy);
+	}
+	return found;
+}
+
+static bool is_mark(int type, const uint8_t *data, uint32_t len)
+{
+	static const char mark[] = "//demomark";
+	if (type != DR_RELIABLE || len < sizeof(mark) - 1)
+		return false;
+	for (uint32_t i = 0; i + sizeof(mark) - 1 <= len; i++)
+		if (!memcmp(data + i, mark, sizeof(mark) - 1))
+			return true;
+	return false;
+}
+
+static void seek_forward(double t)
+{
+	demo.seek_to = t;
+	demo.play_time = t;
+}
+
+/* demo_jump_mark: on to the next "//demomark" a server stuffed in */
+static void DemoJumpMark_f(int argc, const char **argv)
+{
+	double t;
+	if (!demo.play) {
+		Con_Printf("not playing a demo, cannot jump.\n");
+		return;
+	}
+	if (scan_ahead(is_mark, &t))
+		seek_forward(t);
+	else
+		Con_Printf("no more marks in the demo\n");
+}
+
+/* demo_jump_end: the end of the demo. FTE stops at the next intermission;
+ * Bulwark's protocol has no intermission message, so this goes to the last
+ * record. */
+static void DemoJumpEnd_f(int argc, const char **argv)
+{
+	double last = -1;
+	if (!demo.play) {
+		Con_Printf("not playing a demo, cannot jump.\n");
+		return;
+	}
+	/* the last record's time, reading only the headers */
+	{
+		FILE *f = demo.play;
+		long pos = ftell(f);
+		double tt;
+		uint8_t ty;
+		uint32_t len;
+		while (fread(&tt, sizeof(tt), 1, f) == 1 && fread(&ty, 1, 1, f) == 1 && fread(&len, sizeof(len), 1, f) == 1 &&
+		       !fseek(f, (long)len, SEEK_CUR))
+			last = tt;
+		fseek(f, pos, SEEK_SET);
+	}
+	if (last > demo.play_time)
+		seek_forward(last - 0.05);
+}
+
+/* demo_nudge [frames]: step a few server frames forward or back */
+static void DemoNudge_f(int argc, const char **argv)
+{
+	int frames = argc > 1 ? atoi(argv[1]) : 1;
+	double step = cl.tickrate > 0 ? 1.0 / cl.tickrate : 1.0 / 72;
+	char arg[64];
+	const char *jargv[2] = {"demo_jump", arg};
+	if (!demo.play) {
+		Con_Printf("not playing a demo, cannot nudge.\n");
+		return;
+	}
+	snprintf(arg, sizeof(arg), "%+f", frames * step);
+	DemoJump_f(2, jargv);
 }
 
 /* startdemos <demo1> <demo2> ...: plays them in a loop (the attract mode) */
@@ -565,6 +715,11 @@ void CL_InitDemos(void)
 	Cmd_AddD("startdemos", Startdemos_f, "startdemos <demo1> [demo2...]: play demos in a loop");
 	Cmd_AddD("demos", Demos_f, "Back to the startdemos loop");
 	Cmd_AddD("demos_next", DemosNext_f, NULL);
+	Cmd_AddD("rmdemonum", Rmdemonum_f, "rmdemonum <#>: delete a demo by its demolist number");
+	Cmd_AddD("cancel", Cancel_f, "Stop recording and delete the demo");
+	Cmd_AddD("demo_jump_mark", DemoJumpMark_f, "Jump to the next //demomark the server sent");
+	Cmd_AddD("demo_jump_end", DemoJumpEnd_f, "Jump to the end of the demo");
+	Cmd_AddD("demo_nudge", DemoNudge_f, "demo_nudge [frames]: step server frames forward (or back, negative)");
 	Cmd_AddD("rerecord", Rerecord_f, "Record again under the last name, from the start of the map");
 	Cmd_AddD("rmdemo", Rmdemo_f, "rmdemo <name>: delete a demo");
 	Cmd_AddD("demo_setspeed", DemoSetspeed_f, "demo_setspeed <scale>: playback speed (demo_timescale)");

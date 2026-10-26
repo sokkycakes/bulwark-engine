@@ -821,6 +821,8 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 			cl_connect(from, t->argc, t->argv);
 		else if (!strcmp(c, "getinfo") || !strcmp(c, "info"))
 			cl_info(from);
+		else if (SV_CompatConnectionless(from, t->argc, t->argv))
+			;
 		else if (!strcmp(c, "rcon"))
 			SV_HandleRcon(from, text);
 	}
@@ -969,6 +971,10 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 	if (cmd.msec > c->cmd_budget)
 		cmd.msec = BW_MAX(c->cmd_budget, 0.0f);
 	c->cmd_budget -= cmd.msec;
+	if (c->forced_impulse) {
+		cmd.impulse = (uint8_t)c->forced_impulse;
+		c->forced_impulse = 0;
+	}
 
 	set_input_globals(&cmd);
 	QC_SetGFloat(vm, G.time, (float)sv.time);
@@ -1141,6 +1147,8 @@ static void execute_clientcommand(client_t *c, const char *s)
 			client_print(c, 2, "Pausing isn't allowed now.\n");
 	} else if (SV_ClientCheatCommand(c, t->argc, t->argv)) {
 		/* god, noclip and the other cheats */
+	} else if (SV_ClientCompatCommand(c, t->argc, t->argv)) {
+		/* sayone, bestweapon, 6dof, spiderpig */
 	} else if (!strcmp(t->argv[0], "setinfo") || !strcmp(t->argv[0], "begin") || !strcmp(t->argv[0], "disconnect")) {
 		/* handled by parse_stringcmd */
 	} else {
@@ -1322,6 +1330,7 @@ void SV_ClientsPostThink(void)
 			continue;
 		/* real time passes for everyone, so movement budget refills */
 		c->cmd_budget = BW_MIN(c->cmd_budget + sv.frametime, 0.25f);
+		SV_CompatPostThink(c);
 		if (!f)
 			continue;
 		QC_SetGInt(vm, G.self, c->edict);
