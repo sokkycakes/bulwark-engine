@@ -17,8 +17,11 @@ cvar_t *Cvar_Find(const char *name)
 	return NULL;
 }
 
+int cvar_generation;
+
 static void Cvar_Assign(cvar_t *v, const char *value)
 {
+	cvar_generation++;
 	char *old = v->string;
 	v->string = Mem_Strdup(value);
 	v->value = (float)atof(value);

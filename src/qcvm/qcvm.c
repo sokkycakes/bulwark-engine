@@ -609,13 +609,15 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 
 	vm->localstack_size = 1 << 16;
 	vm->localstack = Mem_Alloc(sizeof(qcval_t) * vm->localstack_size);
-	vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size;
+	/* random() differs from run to run, as in Quake engines seeded from the clock */
+	vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ ((uint64_t)Sys_Milliseconds() * 0x2545f4914f6cdd1dull);
 
 	activate(vm, 0);
 	resolve_fields(vm);
 	resolve_globals(vm);
 	bind_builtins(vm, tables);
 	store_derived(vm, 0);
+	QC_BindAutocvars(vm, 0);
 
 	vm_list[vm_count++] = vm;
 	Con_DPrintf("%s: %d functions, %d statements, %d globals, %d entity words\n", name,
@@ -667,6 +669,7 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	bind_builtins(vm, vm->tables);
 	store_derived(vm, n);
 	activate(vm, prev);
+	QC_BindAutocvars(vm, n);
 	Con_DPrintf("%s: added to %s as progs %d, %d functions\n", name, vm->name, n, p->numfunctions);
 
 	/* "init(float prevprogs)" runs as soon as a progs is loaded */
@@ -692,6 +695,7 @@ void QC_Free(qcvm_t *vm)
 	if (vm->extra)
 		QC_ExtraFree(vm);
 	Mem_Free(vm->extra);
+	Mem_Free(vm->autocvars);
 	for (int i = 0; i < vm->numprogs; i++)
 		free_progs(&vm->progs[i]);
 	Mem_Free(vm->mem);

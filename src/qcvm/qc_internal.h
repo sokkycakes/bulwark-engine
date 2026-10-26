@@ -47,6 +47,9 @@ struct qc_extra_s {
 };
 
 void QC_ExtraInit(qcvm_t *vm);
+/* qc_autocvar.c */
+void QC_BindAutocvars(qcvm_t *vm, int progs);
+void QC_SyncAutocvars(qcvm_t *vm);
 void QC_ExtraFree(qcvm_t *vm);
 void QC_HeapInit(qcvm_t *vm);
 bool QC_HeapBlockUsed(qcvm_t *vm, size_t ofs, size_t *size);

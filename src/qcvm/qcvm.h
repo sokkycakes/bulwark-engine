@@ -197,6 +197,10 @@ struct qcvm_s {
 	/* per-module helper tables (files, hash tables, json) */
 	struct qc_extra_s *extra;
 
+	/* autocvar_ globals, see qc_autocvar.c */
+	struct qc_autocvar_s *autocvars;
+	int numautocvars, autocvar_gen;
+
 	/* random */
 	uint64_t rng;
 
