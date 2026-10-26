@@ -17,6 +17,8 @@
 
 static bool quit_requested;
 
+static void Path_f(int argc, const char **argv) { FS_PrintPath(); }
+
 static void Quit_f(int argc, const char **argv) { quit_requested = true; }
 
 /* commands the game modules registered come before the engine's own */
@@ -100,6 +102,7 @@ int main(int argc, char **argv)
 	R_Init(headless);
 	S_Init(headless);
 	Cmd_Add("quit", Quit_f);
+	Cmd_Add("path", Path_f);
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
 

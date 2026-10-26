@@ -11,6 +11,8 @@
 
 static bool quit_requested;
 
+static void Path_f(int argc, const char **argv) { FS_PrintPath(); }
+
 static void Quit_f(int argc, const char **argv) { quit_requested = true; }
 
 static bool ServerFallback(const char *line, int argc, const char **argv) { return SV_ConsoleCommand(line); }
@@ -66,6 +68,7 @@ int main(int argc, char **argv)
 	NET_Init();
 	SV_Init();
 	Cmd_Add("quit", Quit_f);
+	Cmd_Add("path", Path_f);
 	Cmd_SetPreHook(ServerFallback);
 
 	if (FS_FileExists("server.cfg"))

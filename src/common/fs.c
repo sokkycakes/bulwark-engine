@@ -1,5 +1,8 @@
-/* Bulwark engine - virtual file system. ISC licence, see LICENSE. */
+/* Bulwark engine - virtual file system: game directories and the packages
+ * in them (.pk3 zip archives, Quake .pak files). Zip layout from PKWARE's
+ * APPNOTE; inflate by stb_image (public domain). ISC licence, see LICENSE. */
 #include "fs.h"
+#include "../thirdparty/stb_image.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,10 +16,290 @@ static char fs_basedir[1024] = ".";
 static char fs_gamedirs[FS_MAX_PATHS][64];
 static int fs_numgamedirs;
 
+/* --- packages ---------------------------------------------------------------- */
+
+typedef struct {
+	char *name;
+	uint32_t offset;      /* of the local header (zip) or the data (pak) */
+	uint32_t csize, size;
+	uint16_t method;      /* 0 stored, 8 deflated */
+	int next;             /* hash chain */
+} packfile_t;
+
+typedef struct {
+	char path[1400];      /* OS path of the archive */
+	char name[128];       /* as shown: gamedir/file.pk3 */
+	int gamedir;
+	bool zip;
+	packfile_t *files;
+	int numfiles;
+	int *hash;
+	int hashsize;
+} pack_t;
+
+#define FS_MAX_PACKS 256
+static pack_t *packs[FS_MAX_PACKS]; /* in search order within each game dir: later wins */
+static int numpacks;
+
+static uint32_t rd16(const uint8_t *p) { return p[0] | (p[1] << 8); }
+static uint32_t rd32u(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
+
+static unsigned name_hash(const char *s)
+{
+	unsigned h = 5381;
+	for (; *s; s++)
+		h = h * 33 + (unsigned char)(*s >= 'A' && *s <= 'Z' ? *s + 32 : *s);
+	return h;
+}
+
+static void pack_add(pack_t *pk, const char *name, uint32_t offset, uint32_t csize, uint32_t size, uint16_t method)
+{
+	packfile_t *f;
+	if (!*name || name[strlen(name) - 1] == '/')
+		return;
+	if (pk->numfiles % 256 == 0)
+		pk->files = Mem_Realloc(pk->files, sizeof(packfile_t) * (pk->numfiles + 256));
+	f = &pk->files[pk->numfiles++];
+	f->name = Mem_Strdup(name);
+	for (char *c = f->name; *c; c++)
+		if (*c == '\\')
+			*c = '/';
+	f->offset = offset;
+	f->csize = csize;
+	f->size = size;
+	f->method = method;
+}
+
+static void pack_index(pack_t *pk)
+{
+	pk->hashsize = 64;
+	while (pk->hashsize < pk->numfiles * 2)
+		pk->hashsize *= 2;
+	pk->hash = Mem_Alloc(sizeof(int) * pk->hashsize);
+	for (int i = 0; i < pk->hashsize; i++)
+		pk->hash[i] = -1;
+	/* later entries with the same name win, as in the archive's own order */
+	for (int i = 0; i < pk->numfiles; i++) {
+		unsigned h = name_hash(pk->files[i].name) & (pk->hashsize - 1);
+		pk->files[i].next = pk->hash[h];
+		pk->hash[h] = i;
+	}
+}
+
+static packfile_t *pack_find(pack_t *pk, const char *name)
+{
+	for (int i = pk->hash[name_hash(name) & (pk->hashsize - 1)]; i >= 0; i = pk->files[i].next)
+		if (!Str_ICmp(pk->files[i].name, name))
+			return &pk->files[i];
+	return NULL;
+}
+
+/* zip: the end-of-central-directory record, then the central directory */
+static bool open_zip(pack_t *pk, FILE *f)
+{
+	uint8_t tail[65536 + 22], *eocd = NULL;
+	long size, start;
+	size_t n;
+	uint32_t count, cdsize, cdofs;
+	uint8_t *cd;
+	fseek(f, 0, SEEK_END);
+	size = ftell(f);
+	start = size > (long)sizeof(tail) ? size - (long)sizeof(tail) : 0;
+	fseek(f, start, SEEK_SET);
+	n = fread(tail, 1, (size_t)(size - start), f);
+	for (long i = (long)n - 22; i >= 0; i--)
+		if (rd32u(tail + i) == 0x06054b50) {
+			eocd = tail + i;
+			break;
+		}
+	if (!eocd)
+		return false;
+	count = rd16(eocd + 10);
+	cdsize = rd32u(eocd + 12);
+	cdofs = rd32u(eocd + 16);
+	if ((long)cdofs + (long)cdsize > size)
+		return false;
+	cd = Mem_Alloc(cdsize + 1);
+	fseek(f, (long)cdofs, SEEK_SET);
+	if (fread(cd, 1, cdsize, f) != cdsize) {
+		Mem_Free(cd);
+		return false;
+	}
+	for (uint32_t i = 0, p = 0; i < count && p + 46 <= cdsize; i++) {
+		uint8_t *e = cd + p;
+		uint32_t nlen = rd16(e + 28), xlen = rd16(e + 30), clen = rd16(e + 32);
+		char name[256];
+		if (rd32u(e) != 0x02014b50 || p + 46 + nlen > cdsize)
+			break;
+		if (nlen < sizeof(name) && !(rd16(e + 8) & 1)) { /* skip encrypted entries */
+			memcpy(name, e + 46, nlen);
+			name[nlen] = 0;
+			pack_add(pk, name, rd32u(e + 42), rd32u(e + 20), rd32u(e + 24), (uint16_t)rd16(e + 10));
+		}
+		p += 46 + nlen + xlen + clen;
+	}
+	Mem_Free(cd);
+	pk->zip = true;
+	return true;
+}
+
+/* Quake .pak: "PACK", directory offset and length; 64-byte entries */
+static bool open_pak(pack_t *pk, FILE *f)
+{
+	uint8_t h[12], *dir;
+	uint32_t ofs, len;
+	if (fread(h, 1, 12, f) != 12 || memcmp(h, "PACK", 4))
+		return false;
+	ofs = rd32u(h + 4);
+	len = rd32u(h + 8);
+	if (len % 64 || len > (64u << 20))
+		return false;
+	dir = Mem_Alloc(len + 1);
+	fseek(f, (long)ofs, SEEK_SET);
+	if (fread(dir, 1, len, f) != len) {
+		Mem_Free(dir);
+		return false;
+	}
+	for (uint32_t i = 0; i < len / 64; i++) {
+		char name[57];
+		memcpy(name, dir + i * 64, 56);
+		name[56] = 0;
+		pack_add(pk, name, rd32u(dir + i * 64 + 56), rd32u(dir + i * 64 + 60), rd32u(dir + i * 64 + 60), 0);
+	}
+	Mem_Free(dir);
+	return true;
+}
+
+static int cmp_names(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+/* every .pak and .pk3 in a game directory, alphabetically: pak0 before pak1 */
+static void add_packs(int gamedir)
+{
+	char dirpath[1100];
+	char *names[512];
+	int n = 0;
+	DIR *d;
+	struct dirent *de;
+	snprintf(dirpath, sizeof(dirpath), "%s/%s", fs_basedir, fs_gamedirs[gamedir]);
+	if (!(d = opendir(dirpath)))
+		return;
+	while ((de = readdir(d)) && n < (int)BW_ARRAY_COUNT(names)) {
+		size_t l = strlen(de->d_name);
+		if (l > 4 && (!Str_ICmp(de->d_name + l - 4, ".pk3") || !Str_ICmp(de->d_name + l - 4, ".pak")))
+			names[n++] = Mem_Strdup(de->d_name);
+	}
+	closedir(d);
+	qsort(names, (size_t)n, sizeof(char *), cmp_names);
+	for (int i = 0; i < n; i++) {
+		pack_t *pk = Mem_Alloc(sizeof(*pk));
+		FILE *f;
+		bool ok = false;
+		snprintf(pk->path, sizeof(pk->path), "%s/%s", dirpath, names[i]);
+		snprintf(pk->name, sizeof(pk->name), "%s/%s", fs_gamedirs[gamedir], names[i]);
+		pk->gamedir = gamedir;
+		if ((f = fopen(pk->path, "rb"))) {
+			size_t l = strlen(names[i]);
+			ok = !Str_ICmp(names[i] + l - 4, ".pak") ? open_pak(pk, f) : open_zip(pk, f);
+			fclose(f);
+		}
+		if (ok && numpacks < FS_MAX_PACKS) {
+			pack_index(pk);
+			packs[numpacks++] = pk;
+			Con_DPrintf("added %s (%d files)\n", pk->name, pk->numfiles);
+		} else {
+			Con_Printf("^3%s: not a usable package\n", pk->name);
+			for (int k = 0; k < pk->numfiles; k++)
+				Mem_Free(pk->files[k].name);
+			Mem_Free(pk->files);
+			Mem_Free(pk);
+		}
+		Mem_Free(names[i]);
+	}
+}
+
+static char *pack_read(pack_t *pk, packfile_t *pf, size_t *len)
+{
+	FILE *f = fopen(pk->path, "rb");
+	uint8_t lh[30];
+	uint32_t ofs = pf->offset;
+	char *out = NULL;
+	if (!f)
+		return NULL;
+	if (pk->zip) {
+		/* the local header's name and extra lengths may differ from the
+		 * central directory's */
+		fseek(f, (long)ofs, SEEK_SET);
+		if (fread(lh, 1, 30, f) != 30 || rd32u(lh) != 0x04034b50)
+			goto done;
+		ofs += 30 + rd16(lh + 26) + rd16(lh + 28);
+	}
+	fseek(f, (long)ofs, SEEK_SET);
+	out = Mem_Alloc((size_t)pf->size + 1);
+	if (pf->method == 0) {
+		if (pf->csize != pf->size || fread(out, 1, pf->size, f) != pf->size)
+			Mem_Free(out), out = NULL;
+	} else if (pf->method == 8) {
+		char *comp = Mem_Alloc((size_t)pf->csize + 1);
+		if (fread(comp, 1, pf->csize, f) != pf->csize ||
+		    stbi_zlib_decode_noheader_buffer(out, (int)pf->size, comp, (int)pf->csize) != (int)pf->size)
+			Mem_Free(out), out = NULL;
+		Mem_Free(comp);
+	} else {
+		Con_Printf("^3%s in %s: compression method %u is not supported\n", pf->name, pk->name, pf->method);
+		Mem_Free(out), out = NULL;
+	}
+	if (out) {
+		out[pf->size] = 0;
+		if (len)
+			*len = pf->size;
+	}
+done:
+	fclose(f);
+	return out;
+}
+
+/* the newest package of game dir `dir` holding path */
+static packfile_t *find_in_packs(int dir, const char *path, pack_t **pk)
+{
+	for (int i = numpacks - 1; i >= 0; i--) {
+		packfile_t *pf;
+		if (packs[i]->gamedir != dir)
+			continue;
+		if ((pf = pack_find(packs[i], path))) {
+			*pk = packs[i];
+			return pf;
+		}
+	}
+	return NULL;
+}
+
+static void free_packs(void)
+{
+	for (int i = 0; i < numpacks; i++) {
+		for (int k = 0; k < packs[i]->numfiles; k++)
+			Mem_Free(packs[i]->files[k].name);
+		Mem_Free(packs[i]->files);
+		Mem_Free(packs[i]->hash);
+		Mem_Free(packs[i]);
+	}
+	numpacks = 0;
+}
+
+void FS_PrintPath(void)
+{
+	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
+		Con_Printf("%s/%s\n", fs_basedir, fs_gamedirs[i]);
+		for (int k = numpacks - 1; k >= 0; k--)
+			if (packs[k]->gamedir == i)
+				Con_Printf("  %s (%d files)\n", packs[k]->name, packs[k]->numfiles);
+	}
+}
+
 void FS_Init(const char *basedir)
 {
 	Str_Copy(fs_basedir, basedir && *basedir ? basedir : ".", sizeof(fs_basedir));
 	fs_numgamedirs = 0;
+	free_packs();
 }
 
 const char *FS_BaseDir(void) { return fs_basedir; }
@@ -29,6 +312,7 @@ void FS_AddGameDir(const char *gamedir)
 	if (fs_numgamedirs >= FS_MAX_PATHS || !FS_SafeName(gamedir))
 		return;
 	Str_Copy(fs_gamedirs[fs_numgamedirs++], gamedir, sizeof(fs_gamedirs[0]));
+	add_packs(fs_numgamedirs - 1);
 }
 
 const char *FS_GameDir(void) { return fs_numgamedirs ? fs_gamedirs[fs_numgamedirs - 1] : ""; }
@@ -96,6 +380,14 @@ char *FS_LoadFile(const char *path, size_t *len)
 		buf = load_os_file(ospath, len);
 		if (buf)
 			return buf;
+		/* loose files override the game dir's own packages, which makes
+		 * trying out a changed file easy */
+		{
+			pack_t *pk;
+			packfile_t *pf = find_in_packs(i, path, &pk);
+			if (pf && (buf = pack_read(pk, pf, len)))
+				return buf;
+		}
 	}
 	return NULL;
 }
@@ -106,9 +398,13 @@ const char *FS_WhichPath(const char *path)
 	struct stat st;
 	if (!FS_SafeName(path))
 		return NULL;
-	for (int i = fs_numgamedirs - 1; i >= 0; i--)
+	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
+		pack_t *pk;
 		if (os_path(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
 			return fs_gamedirs[i];
+		if (find_in_packs(i, path, &pk))
+			return pk->name;
+	}
 	return NULL;
 }
 
@@ -209,6 +505,22 @@ void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx)
 		char root[1100];
 		snprintf(root, sizeof(root), "%s/%s", fs_basedir, fs_gamedirs[i]);
 		walk(root, base, pattern, nocase, &seen, fs_gamedirs[i], fn, ctx, 0);
+		for (int k = numpacks - 1; k >= 0; k--) {
+			pack_t *pk = packs[k];
+			if (pk->gamedir != i)
+				continue;
+			for (int f = 0; f < pk->numfiles; f++) {
+				const char *n = pk->files[f].name;
+				if (!Str_WildMatch(pattern, n, nocase) || namelist_has(&seen, n))
+					continue;
+				if (seen.count >= seen.cap) {
+					seen.cap = seen.cap ? seen.cap * 2 : 64;
+					seen.names = Mem_Realloc(seen.names, sizeof(char *) * seen.cap);
+				}
+				seen.names[seen.count++] = Mem_Strdup(n);
+				fn(n, pk->name, ctx);
+			}
+		}
 	}
 	for (int i = 0; i < seen.count; i++)
 		Mem_Free(seen.names[i]);

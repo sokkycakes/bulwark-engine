@@ -7,24 +7,7 @@
 #include <stdlib.h>
 
 #define STBI_NO_STDIO
-#define STBI_ONLY_PNG
-#define STBI_ONLY_TGA
-#define STBI_ONLY_JPEG
-#define STBI_ONLY_BMP
-#define STBI_MALLOC(sz) Mem_Alloc(sz)
-#define STBI_REALLOC(p, sz) Mem_Realloc(p, sz)
-#define STBI_FREE(p) Mem_Free(p)
-#define STB_IMAGE_IMPLEMENTATION
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-function"
-#pragma GCC diagnostic ignored "-Wmisleading-indentation"
-#pragma GCC diagnostic ignored "-Wtype-limits"
-#endif
-#include "../thirdparty/stb_image.h"
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
+#include "../thirdparty/stb_image.h" /* built in src/common/stb_image_impl.c */
 
 #define IMAGE_HASH 1024
 static image_t *images[IMAGE_HASH];

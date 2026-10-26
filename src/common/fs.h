@@ -1,6 +1,7 @@
 /* Bulwark engine - virtual file system. ISC licence, see LICENSE.
  * Search paths are game directories under the base directory; later game
- * directories override earlier ones. Package (pk3) support is still TODO. */
+ * directories override earlier ones. Each directory's .pk3 and .pak packages
+ * are searched after its loose files, the alphabetically last first. */
 #ifndef BW_FS_H
 #define BW_FS_H
 
@@ -27,5 +28,8 @@ typedef void (*fs_list_fn)(const char *name, const char *searchpath, void *ctx);
 void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx);
 
 bool FS_SafeName(const char *path);
+
+/* the search path, newest first, with each game dir's packages */
+void FS_PrintPath(void);
 
 #endif
