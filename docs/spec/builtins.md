@@ -26,7 +26,7 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
   follow the doc comments, but have not been checked against content that
   depends on them. *Unverified.*
 - `sprintf("%S", s)` quotes `s`; when it holds a quote, backslash, tab or
-  line break it uses the escaped form `\"...\"` (with `\n`, `\t`, `\r`,
+  line break it uses the escaped form `\"..."` (with `\n`, `\t`, `\r`,
   `\"`, `\\` inside) that `tokenize` and `tokenize_console` read back. This
   matches what FTE writes in Nuclide's saved games. See
   [console.md](console.md).
