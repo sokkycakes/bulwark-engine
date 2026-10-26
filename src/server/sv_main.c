@@ -281,9 +281,11 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.localinfo, keep_localinfo, sizeof(sv.localinfo));
 
 	snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
+	Host_Loading("server_world", mapname, 0.0f);
 	sv.world = BSP_Load(path);
 	if (!sv.world) {
 		Con_Printf("couldn't load map %s\n", path);
+		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
 	Str_Copy(sv.mapname, mapname, sizeof(sv.mapname));
@@ -292,16 +294,20 @@ bool SV_SpawnServer(const char *mapname)
 	SV_InfoSet(sv.serverinfo, sizeof(sv.serverinfo), "map", mapname);
 	SV_SyncServerinfoCvars(false);
 
+	Host_Loading("server_progs", mapname, 0.10f);
 	progs = FS_LoadFile(sv_progs->string, &len);
 	if (!progs) {
 		Con_Printf("couldn't load %s\n", sv_progs->string);
+		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
 	vm = QC_Load(sv_progs->string, progs, len, QCVM_SERVER, sv_tables, BW_MAX(64, pr_maxedicts->ivalue),
 	             (size_t)BW_MAX(1, pr_heapsize->ivalue) * 1024 * 1024);
 	Mem_Free(progs);
-	if (!vm)
+	if (!vm) {
+		Host_Loading(NULL, NULL, 0);
 		return false;
+	}
 	vm->host = &sv;
 	vm->modelname = SV_ModelName;
 	sv.vm = vm;
@@ -359,6 +365,7 @@ bool SV_SpawnServer(const char *mapname)
 		QC_ExecuteByName(vm, "initents");
 	}
 
+	Host_Loading("server_entities", mapname, 0.15f);
 	spawn_map_entities(sv.world->entities);
 	sv.spawning = false;
 	SV_ClientsMapChanged();

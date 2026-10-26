@@ -336,6 +336,24 @@ static bool os_path(int dir, const char *path, char *out, size_t outsize)
 	return n > 0 && (size_t)n < outsize;
 }
 
+/* GoldSrc content names files in any case ("resource/Quest/QuestClosed")
+ * and was made on a case-insensitive file system. When the name as given
+ * isn't there, the all-lowercase name is tried, which is how extracted
+ * archives are laid out. */
+static bool os_path_lower(int dir, const char *path, char *out, size_t outsize)
+{
+	size_t base;
+	if (!os_path(dir, "", out, outsize))
+		return false;
+	base = strlen(out);
+	if (base + strlen(path) + 1 > outsize)
+		return false;
+	for (size_t i = 0; path[i]; i++)
+		out[base + i] = (char)(path[i] >= 'A' && path[i] <= 'Z' ? path[i] + 32 : path[i]);
+	out[base + strlen(path)] = 0;
+	return strcmp(out + base, path) != 0; /* nothing new to try otherwise */
+}
+
 static char *load_os_file(const char *ospath, size_t *len)
 {
 	FILE *f = fopen(ospath, "rb");
@@ -378,6 +396,8 @@ char *FS_LoadFile(const char *path, size_t *len)
 		if (!os_path(i, path, ospath, sizeof(ospath)))
 			continue;
 		buf = load_os_file(ospath, len);
+		if (!buf && os_path_lower(i, path, ospath, sizeof(ospath)))
+			buf = load_os_file(ospath, len);
 		if (buf)
 			return buf;
 		/* loose files override the game dir's own packages, which makes
@@ -401,6 +421,8 @@ const char *FS_WhichPath(const char *path)
 	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
 		pack_t *pk;
 		if (os_path(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
+			return fs_gamedirs[i];
+		if (os_path_lower(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
 			return fs_gamedirs[i];
 		if (find_in_packs(i, path, &pk))
 			return pk->name;

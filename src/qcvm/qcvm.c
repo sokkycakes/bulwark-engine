@@ -2,6 +2,7 @@
  * The interpreter loop lives in qc_exec.c. ISC licence, see LICENSE. */
 #include "qcvm.h"
 #include "qc_internal.h"
+#include "../common/cvar.h"
 
 #include <stdio.h>
 #include <stdlib.h>

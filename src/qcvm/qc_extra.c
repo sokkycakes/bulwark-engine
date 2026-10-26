@@ -826,6 +826,177 @@ void QC_ExtraInit(qcvm_t *vm)
 	x->json = Mem_Alloc(sizeof(*x->json));
 }
 
+/* --- string buffers (DP_QC_STRINGBUFFERS) ------------------------------ */
+
+static void strbuf_free(qc_strbuf_t *b)
+{
+	for (int i = 0; i < b->count; i++)
+		Mem_Free(b->strs[i]);
+	Mem_Free(b->strs);
+	memset(b, 0, sizeof(*b));
+}
+
+static qc_strbuf_t *get_strbuf(qcvm_t *vm, float h)
+{
+	int i = (int)h;
+	if (i < 0 || i >= vm->extra->numstrbufs || !vm->extra->strbufs[i].inuse)
+		return NULL;
+	return &vm->extra->strbufs[i];
+}
+
+static void strbuf_set(qc_strbuf_t *b, int idx, const char *s)
+{
+	if (idx < 0 || idx >= (1 << 20))
+		return;
+	if (idx >= b->cap) {
+		int cap = b->cap ? b->cap : 16;
+		while (cap <= idx)
+			cap *= 2;
+		b->strs = Mem_Realloc(b->strs, sizeof(char *) * (size_t)cap);
+		memset(b->strs + b->cap, 0, sizeof(char *) * (size_t)(cap - b->cap));
+		b->cap = cap;
+	}
+	Mem_Free(b->strs[idx]);
+	b->strs[idx] = s ? Mem_Strdup(s) : NULL;
+	if (idx >= b->count)
+		b->count = idx + 1;
+	while (b->count > 0 && !b->strs[b->count - 1])
+		b->count--;
+}
+
+static void bi_buf_create(qcvm_t *vm)
+{
+	struct qc_extra_s *x = vm->extra;
+	int i;
+	for (i = 0; i < x->numstrbufs; i++)
+		if (!x->strbufs[i].inuse)
+			break;
+	if (i == x->numstrbufs) {
+		x->strbufs = Mem_Realloc(x->strbufs, sizeof(*x->strbufs) * (size_t)(x->numstrbufs + 1));
+		memset(&x->strbufs[i], 0, sizeof(*x->strbufs));
+		x->numstrbufs++;
+	}
+	x->strbufs[i].inuse = true;
+	QC_ReturnFloat(vm, (float)i);
+}
+
+static void bi_buf_del(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	if (b)
+		strbuf_free(b);
+}
+
+static void bi_buf_getsize(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	QC_ReturnFloat(vm, b ? (float)b->count : 0);
+}
+
+static void bi_buf_copy(qcvm_t *vm)
+{
+	qc_strbuf_t *from = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	qc_strbuf_t *to = get_strbuf(vm, QC_PFLOAT(vm, 1));
+	if (!from || !to || from == to)
+		return;
+	for (int i = 0; i < to->count; i++)
+		Mem_Free(to->strs[i]);
+	to->count = 0;
+	for (int i = 0; i < from->count; i++)
+		strbuf_set(to, i, from->strs[i]);
+}
+
+static void bi_buf_implode(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	const char *glue = QC_PSTR(vm, 1);
+	strbuf_t sb = {0};
+	bool first = true;
+	if (b) {
+		for (int i = 0; i < b->count; i++) {
+			if (!b->strs[i])
+				continue;
+			if (!first)
+				SB_AppendStr(&sb, glue);
+			SB_AppendStr(&sb, b->strs[i]);
+			first = false;
+		}
+	}
+	QC_ReturnString(vm, sb.data ? sb.data : "");
+	SB_Free(&sb);
+}
+
+static void bi_bufstr_get(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	int idx = (int)QC_PFLOAT(vm, 1);
+	if (!b || idx < 0 || idx >= b->count || !b->strs[idx]) {
+		QC_ReturnString(vm, "");
+		return;
+	}
+	QC_ReturnString(vm, b->strs[idx]);
+}
+
+static void bi_bufstr_set(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	if (b)
+		strbuf_set(b, (int)QC_PFLOAT(vm, 1), QC_PSTR(vm, 2));
+}
+
+/* order 0: first free slot; otherwise the end */
+static void bi_bufstr_add(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	int idx;
+	if (!b) {
+		QC_ReturnFloat(vm, -1);
+		return;
+	}
+	idx = b->count;
+	if (QC_PFLOAT(vm, 2) == 0)
+		for (int i = 0; i < b->count; i++)
+			if (!b->strs[i]) {
+				idx = i;
+				break;
+			}
+	strbuf_set(b, idx, QC_PSTR(vm, 1));
+	QC_ReturnFloat(vm, (float)idx);
+}
+
+static void bi_bufstr_free(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	if (b)
+		strbuf_set(b, (int)QC_PFLOAT(vm, 1), NULL);
+}
+
+static int strbuf_cmp_prefix;
+static int strbuf_cmp(const void *a, const void *b)
+{
+	const char *x = *(char *const *)a, *y = *(char *const *)b;
+	if (!x || !y)
+		return !x - !y;
+	return strbuf_cmp_prefix > 0 ? strncmp(x, y, (size_t)strbuf_cmp_prefix) : strcmp(x, y);
+}
+
+static void bi_buf_sort(qcvm_t *vm)
+{
+	qc_strbuf_t *b = get_strbuf(vm, QC_PFLOAT(vm, 0));
+	if (!b || b->count < 2)
+		return;
+	strbuf_cmp_prefix = (int)QC_PFLOAT(vm, 1);
+	qsort(b->strs, (size_t)b->count, sizeof(char *), strbuf_cmp);
+	if (QC_PFLOAT(vm, 2) != 0)
+		for (int i = 0, j = b->count - 1; i < j; i++, j--) {
+			char *t = b->strs[i];
+			b->strs[i] = b->strs[j];
+			b->strs[j] = t;
+		}
+	while (b->count > 0 && !b->strs[b->count - 1])
+		b->count--;
+}
+
 void QC_ExtraFree(qcvm_t *vm)
 {
 	struct qc_extra_s *x = vm->extra;
@@ -844,6 +1015,9 @@ void QC_ExtraFree(qcvm_t *vm)
 	for (int i = 0; i < QC_MAX_SEARCHES; i++)
 		if (x->searches[i].inuse)
 			free_search(&x->searches[i]);
+	for (int i = 0; i < x->numstrbufs; i++)
+		strbuf_free(&x->strbufs[i]);
+	Mem_Free(x->strbufs);
 }
 
 /* --- FTE_MULTIPROGS ------------------------------------------------------- */
@@ -923,6 +1097,10 @@ const qc_builtin_t qc_builtins_extra[] = {
 	{"search_getsize", bi_search_getsize}, {"search_getfilename", bi_search_getfilename},
 	{"search_getpackagename", bi_search_getpackagename}, {"search_getfilesize", bi_search_getfilesize},
 	{"search_fopen", bi_search_fopen},
+	{"buf_create", bi_buf_create}, {"buf_del", bi_buf_del}, {"buf_getsize", bi_buf_getsize},
+	{"buf_copy", bi_buf_copy}, {"buf_sort", bi_buf_sort}, {"buf_implode", bi_buf_implode},
+	{"bufstr_get", bi_bufstr_get}, {"bufstr_set", bi_bufstr_set}, {"bufstr_add", bi_bufstr_add},
+	{"bufstr_free", bi_bufstr_free},
 	{"json_parse", bi_json_parse}, {"json_free", bi_json_free},
 	{"json_get_value_type", bi_json_get_value_type}, {"json_get_integer", bi_json_get_integer},
 	{"json_get_float", bi_json_get_float}, {"json_get_string", bi_json_get_string},

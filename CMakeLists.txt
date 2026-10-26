@@ -19,6 +19,9 @@ add_library(bwcommon STATIC
 	src/common/fs.c
 	src/common/pmove.c
 	src/common/skel.c
+	src/common/studio.c
+	src/common/keyvalues.c
+	src/common/vgui_res.c
 	src/common/infoblob.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m)
@@ -55,8 +58,25 @@ target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 add_executable(bulwark-ded src/main_ded.c)
 target_link_libraries(bulwark-ded bwserver)
 
+add_executable(mdlcheck tools/mdlcheck.c)
+target_link_libraries(mdlcheck bwcommon)
+add_executable(studiotest tools/studiotest.c)
+target_link_libraries(studiotest bwcommon)
+add_executable(wavcheck tools/wavcheck.c)
+target_link_libraries(wavcheck bwcommon)
+add_executable(rescheck tools/rescheck.c)
+target_link_libraries(rescheck bwcommon)
+add_executable(vguitest tools/vguitest.c)
+target_link_libraries(vguitest bwcommon)
+
 enable_testing()
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
+add_test(NAME studio COMMAND studiotest)
+# real content, if BULWARK_STUDIO_FIXTURES names a folder of models (never committed)
+add_test(NAME studio-fixtures COMMAND ${CMAKE_SOURCE_DIR}/tests/run_studio_fixtures.sh $<TARGET_FILE:mdlcheck>)
+add_test(NAME vgui COMMAND vguitest)
+# real .res files, if BULWARK_RES_FIXTURES names a folder of them (never committed)
+add_test(NAME vgui-fixtures COMMAND ${CMAKE_SOURCE_DIR}/tests/run_res_fixtures.sh $<TARGET_FILE:rescheck>)
 add_executable(bsptest tests/bsp/bsptest.c)
 target_link_libraries(bsptest bwserver)
 add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

@@ -35,6 +35,8 @@ void Cvar_SetDirect(cvar_t *var, const char *value);
 float Cvar_Value(const char *name);
 const char *Cvar_String(const char *name);
 cvar_t *Cvar_First(void);
+/* bumped on every cvar value change, so callers can cache cvar reads */
+int Cvar_Generation(void);
 /* handles "name" and "name value" typed at the console; returns false if no such cvar */
 bool Cvar_Command(int argc, const char **argv);
 void Cvar_Init(void);

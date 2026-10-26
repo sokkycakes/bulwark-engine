@@ -18,6 +18,7 @@ cvar_t *Cvar_Find(const char *name)
 }
 
 int cvar_generation;
+int Cvar_Generation(void) { return cvar_generation; }
 
 static void Cvar_Assign(cvar_t *v, const char *value)
 {
@@ -118,6 +119,8 @@ static void Cvar_Set_f(int argc, const char **argv)
 	}
 	if (!Cvar_Find(argv[1]))
 		Cvar_Get(argv[1], "", CVAR_USERCREATED | (!strcmp(argv[0], "seta") ? CVAR_ARCHIVE : 0), NULL);
+	else if (!strcmp(argv[0], "seta") && (Cvar_Find(argv[1])->flags & CVAR_USERCREATED))
+		Cvar_Find(argv[1])->flags |= CVAR_ARCHIVE; /* "seta" on a QC cvar saves it too */
 	Cvar_Set(argv[1], argv[2]);
 }
 

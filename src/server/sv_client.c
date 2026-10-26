@@ -397,10 +397,20 @@ static void send_snapshot(client_t *c)
 
 	MSG_Init(&m, buf, sizeof(buf));
 	m.allowoverflow = true;
-	/* unreliable extras first; dropped if they would not fit */
-	if (c->datagram.len && c->datagram.len < budget / 2)
-		MSG_WriteData(&m, c->datagram.data, c->datagram.len);
-	c->datagram.len = 0;
+	/* unreliable extras (sounds, HUD text) go first and the entities get
+	 * what is left, since a missed entity change is sent again anyway. When
+	 * a reliable fragment leaves too little room they wait for the next
+	 * packet; only a backlog that no packet could carry is dropped. */
+	if (c->datagram.len) {
+		size_t room = budget > 32 ? budget - 32 : 0;
+		if (c->datagram.len <= room) {
+			MSG_WriteData(&m, c->datagram.data, c->datagram.len);
+			c->datagram.len = 0;
+		} else if (c->datagram.len > NET_MAX_PACKET - 48 - 32) {
+			Con_DPrintf("dropped %d bytes of unreliable messages for %s\n", (int)c->datagram.len, c->name);
+			c->datagram.len = 0;
+		}
+	}
 
 	rec = &c->snaps[seq % SNAP_HISTORY];
 	rec->seq = seq;

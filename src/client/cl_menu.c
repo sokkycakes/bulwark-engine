@@ -141,13 +141,43 @@ void MQC_Toggle(int mode)
 	call(M.toggle, 1);
 }
 
+/* --- loading progress -------------------------------------------------------
+ * Host_Loading reports land here. They are kept in three read-only cvars the
+ * menu can read (cl_loadstage, cl_loadmap, cl_loadprogress), and each report
+ * during a blocking load draws one frame so the loading screen moves. */
+
+static cvar_t *cl_loadstage, *cl_loadmap, *cl_loadprogress;
+static bool loading_drawing;
+
+static void loading_hook(const char *stage, const char *map, float frac)
+{
+	int w, h;
+	Cvar_SetDirect(cl_loadstage, stage ? stage : "");
+	if (!stage)
+		Cvar_SetDirect(cl_loadmap, "");
+	else if (map)
+		Cvar_SetDirect(cl_loadmap, map);
+	Cvar_SetDirect(cl_loadprogress, va("%g", stage ? frac : 0.0f));
+	if (!stage || loading_drawing || !R_Active())
+		return;
+	/* the main loop isn't drawing while a load blocks it: draw from here */
+	loading_drawing = true;
+	R_BeginFrame();
+	R_GetSize(&w, &h);
+	MQC_Frame(w, h);
+	R_EndFrame();
+	loading_drawing = false;
+}
+
+bool MQC_Loading(void) { return cl_loadstage && cl_loadstage->string[0]; }
+
 void MQC_Frame(int width, int height)
 {
 	if (!M.vm)
 		return;
 	set_time();
 	QC_SetGVec(M.vm, OFS_PARM(0), (const float[3]){(float)width, (float)height, 0});
-	if (cl.state > ca_disconnected && cl.state < ca_active && M.drawloading) {
+	if ((MQC_Loading() || (cl.state > ca_disconnected && cl.state < ca_active)) && M.drawloading) {
 		M.vm->globals[OFS_PARM(1)].f = 0;
 		call(M.drawloading, 2);
 	} else if (M.draw) {
@@ -209,6 +239,10 @@ static void Menu_Restart_f(int argc, const char **argv)
 
 void MQC_Init(void)
 {
+	cl_loadstage = Cvar_Get("cl_loadstage", "", CVAR_READONLY, "The step of the map load in progress, empty when none");
+	cl_loadmap = Cvar_Get("cl_loadmap", "", CVAR_READONLY, "The map being loaded");
+	cl_loadprogress = Cvar_Get("cl_loadprogress", "0", CVAR_READONLY, "How far the map load is, 0-1, from counted items");
+	Host_SetLoadingHook(loading_hook);
 	Cmd_Add("togglemenu", Menu_Toggle_f);
 	Cmd_Add("menu_restart", Menu_Restart_f);
 }

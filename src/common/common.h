@@ -26,6 +26,14 @@ typedef float vec3_t[3];
 /* console output; everything goes through here so a client console can hook it */
 typedef void (*con_hook_fn)(const char *text);
 void Con_SetHook(con_hook_fn fn);
+
+/* Loading progress. The server and client report each step of bringing up a
+ * map; the client shows it (a menu's loading screen) and clears it with stage
+ * NULL once in game. frac is 0-1 within the whole load, measured from counted
+ * items, not guessed from time. Without a hook the reports go nowhere. */
+typedef void (*loading_hook_fn)(const char *stage, const char *map, float frac);
+void Host_SetLoadingHook(loading_hook_fn fn);
+void Host_Loading(const char *stage, const char *map, float frac);
 void Con_Printf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_DPrintf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_Print(const char *text);

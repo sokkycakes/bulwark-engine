@@ -727,8 +727,15 @@ static void cl_serverkey(qcvm_t *vm)
 		QC_ReturnString(vm, cl.servername);
 	else if (!strcmp(k, "constate"))
 		QC_ReturnString(vm, cl.state == ca_active ? "active" : cl.state >= ca_loading ? "connected" : "disconnected");
-	else
-		QC_ReturnString(vm, CL_ServerKey(k, buf, sizeof(buf)));
+	else {
+		/* a missing key is the null string, as on the server, so that
+		   if (serverkey(k)) is false for it */
+		const char *v = CL_ServerKey(k, buf, sizeof(buf));
+		if (v && *v)
+			QC_ReturnString(vm, v);
+		else
+			QC_ReturnInt(vm, 0);
+	}
 }
 
 static void cl_serverkeyfloat(qcvm_t *vm)

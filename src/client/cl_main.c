@@ -221,6 +221,7 @@ void CL_Disconnect(const char *reason)
 	clear_map_state();
 	S_StopAllSounds();
 	cl.state = ca_disconnected;
+	Host_Loading(NULL, NULL, 0);
 	memset(cl.serverinfo, 0, sizeof(cl.serverinfo));
 	memset(cl.playerinfo, 0, sizeof(cl.playerinfo));
 	Str_Copy(cl.disconnect_reason, reason ? reason : "", sizeof(cl.disconnect_reason));
@@ -239,6 +240,7 @@ void CL_Connect(const char *address)
 	cl.connect_time = -999;
 	cl.connect_tries = 0;
 	cl.challenge = 0;
+	Host_Loading("connecting", NULL, 0.20f);
 	Con_Printf("connecting to %s...\n", NET_AdrToString(&cl.server));
 }
 
@@ -285,6 +287,7 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 		const char *why = strchr(text, ' ');
 		Con_Printf("server refused connection:%s\n", why ? why : "");
 		cl.state = ca_disconnected;
+		Host_Loading(NULL, NULL, 0);
 	} else if (!strcmp(t->argv[0], "infoResponse")) {
 		Con_Printf("%s: %s\n", NET_AdrToString(from), text + strlen("infoResponse"));
 	}
@@ -366,21 +369,32 @@ static void parse_serverdata(msg_t *m)
 	cl.servercommandframe = 0;
 	cl.time = 0;
 	Con_Printf("map %s\n", cl.mapname);
+	Host_Loading("precache", cl.mapname, 0.25f);
 }
 
 static void finish_signon(void)
 {
 	char cmd[64];
+	/* progress: collision world 0.30, render world and models up to 0.85
+	 * (R_NewMap reports those), sounds up to 0.92, client game, then the
+	 * wait for the server to spawn us */
+	Host_Loading("world", cl.mapname, 0.30f);
 	load_world();
 	R_NewMap();
-	for (int i = 1; i < cl.numsounds; i++)
-		if (cl.sounds[i])
-			S_PrecacheSound(cl.sounds[i]);
+	for (int i = 1; i < cl.numsounds; i++) {
+		if (!cl.sounds[i])
+			continue;
+		if ((i & 7) == 1)
+			Host_Loading("sounds", cl.mapname, 0.85f + 0.07f * (float)i / (float)cl.numsounds);
+		S_PrecacheSound(cl.sounds[i]);
+	}
+	Host_Loading("csprogs", cl.mapname, 0.92f);
 	if (!CSQC_Load()) {
 		CL_Disconnect("couldn't load the client game (csprogs.dat)");
 		return;
 	}
 	CSQC_WorldLoaded();
+	Host_Loading("spawning", cl.mapname, 0.97f);
 	snprintf(cmd, sizeof(cmd), "begin %d", cl.spawncount);
 	CL_SendStringCmd(cmd);
 }
@@ -505,6 +519,7 @@ static void parse_server_message(msg_t *m, bool reliable)
 				finish_signon();
 			else if (stage == 2 && cl.state == ca_loading) {
 				cl.state = ca_active;
+				Host_Loading(NULL, NULL, 0);
 				Con_SetActive(false); /* the console gets out of the way once in game */
 				cl.next_cmd = cl.realtime;
 				cl.cmd_start = cl.realtime;
