@@ -1216,6 +1216,22 @@ void SV_ClientsPreThink(void)
 		QC_SetGFloat(vm, G.time, (float)sv.time);
 		QC_Execute(vm, f);
 	}
+	/* bots send no input, so each frame runs one command for them, repeating
+	 * the last one; the game fills input_* from its AI inside
+	 * SV_RunClientCommand, as Nuclide's bots do */
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		usercmd_t cmd;
+		if (c->state != CS_SPAWNED || !c->bot)
+			continue;
+		cmd = c->lastucmd;
+		cmd.sequence = c->lastcmd + 1;
+		cmd.msec = sv.frametime;
+		cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
+		cmd.impulse = 0;
+		c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
+		run_usercmd(c, &cmd);
+	}
 }
 
 void SV_ClientsPostThink(void)
