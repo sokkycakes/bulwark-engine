@@ -213,6 +213,11 @@ bool SV_DropToFloor(int e);
 void SV_Physics(void);
 
 extern const qc_builtin_t sv_builtins[];
+
+/* sv_route.c: route_calculate over data/<map>.way */
+extern const qc_builtin_t sv_route_builtins[];
+void SV_RunRoutes(void);
+void SV_FreeRoutes(void);
 const char *SV_ModelName(qcvm_t *vm, int index);
 
 /* world builtins that work on whichever VM and world context is current;

@@ -239,7 +239,7 @@ static void spawn_map_entities(const char *data)
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
@@ -247,6 +247,7 @@ void SV_Shutdown(void)
 		if (QC_FindFunction(sv.vm, "SV_Shutdown"))
 			QC_ExecuteByName(sv.vm, "SV_Shutdown");
 		QC_Free(sv.vm);
+		SV_FreeRoutes();
 	}
 	for (int i = 1; i < sv.nummodels; i++) {
 		if (sv.modelinfo[i].bsp && sv.modelinfo[i].bsp != sv.world)
@@ -585,6 +586,7 @@ void SV_Physics(void)
 		QC_SetGInt(vm, G.other, 0);
 		QC_ExecuteByName(vm, "StartFrame");
 	}
+	SV_RunRoutes();
 	SV_ClientsPreThink();
 	for (int e = 1; e < vm->num_edicts; e++) {
 		if (vm->edicts[e].free)

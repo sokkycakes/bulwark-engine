@@ -51,3 +51,21 @@ changes, globals are refreshed before the next top-level QC call. A write
 from QC changes only the global. Bound in `src/qcvm/qc_autocvar.c`.
 
 `random()` is seeded from the clock when a VM loads, so each run differs.
+
+## Bots and routes
+
+- Bots made by `spawnclient()` send no input. Each server frame, after
+  PlayerPreThink, the engine runs one command per bot: its last command
+  again, with msec set to the frame time, the next sequence number, and
+  impulse cleared. That command goes through `SV_RunClientCommand` like a
+  player's, so the game can fill `input_*` from its AI there, as Nuclide's
+  ncBot::RunAI does.
+- `route_calculate(ent, dest, denylinkflags, callback)` loads the waypoint
+  graph from `data/<map>.way`, in the text layout of Nuclide's node editor.
+  It runs A* from the node nearest the entity to the node nearest dest
+  (preferring nodes the point can see), skipping links whose flags meet
+  denylinkflags.
+- The callback runs at the start of the next server frame with a memalloc'd
+  `nodeslist_t` array (dest, linkflags, radius; 20 bytes each). Entry 0 is
+  dest itself and the last entry is the first node to reach. With no route,
+  the count is 0. Done in `src/server/sv_route.c`.
