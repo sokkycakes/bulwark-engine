@@ -7,6 +7,7 @@
 #include "cvar.h"
 #include "fs.h"
 #include "digest.h"
+#include "bsptool.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,6 +235,42 @@ static void Aliaslevel_f(int argc, const char **argv)
 	Cmd_SetAliasLevel(argv[1], level < 0 ? -1 : BW_MIN(level, Cmd_ExecLevel()));
 }
 
+/* wf <file> <text>: writes a line of text to a file in the game directory;
+ * df <file>: prints a file. FTE has both without saying what they do; these
+ * are the plain readings of the names. */
+static void Wf_f(int argc, const char **argv)
+{
+	char path[1024], text[4096];
+	FILE *f;
+	if (argc < 3) {
+		Con_Printf("wf <file> <text>: write text to a file in the game directory\n");
+		return;
+	}
+	join_from(2, argc, argv, text, sizeof(text));
+	if (!FS_WritePath(argv[1], path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "wb"))) {
+		Con_Printf("can't write %s\n", argv[1]);
+		return;
+	}
+	fprintf(f, "%s\n", text);
+	fclose(f);
+}
+
+static void Df_f(int argc, const char **argv)
+{
+	size_t len;
+	char *data;
+	if (argc < 2) {
+		Con_Printf("df <file>: print a file\n");
+		return;
+	}
+	if (!(data = FS_LoadFile(argv[1], &len))) {
+		Con_Printf("%s not found\n", argv[1]);
+		return;
+	}
+	Con_Printf("%s%s", data, len && data[len - 1] != '\n' ? "\n" : "");
+	Mem_Free(data);
+}
+
 /* commands FTE keeps only to say they no longer do anything */
 static void Obsolete_f(int argc, const char **argv)
 {
@@ -258,6 +295,9 @@ void Cmd_InitCompat(void)
 	Cmd_AddD("colorize", Colorize_f, "colorize <text>: print text with &cRGB colours");
 	Cmd_AddD("colourise", Colorize_f, "colourise <text>: print text with &cRGB colours");
 	Cvar_Get("cmd_gamecodelevel", "29", 0, "The execution level of commands the game's QC runs (localcmd)");
+	BSP_InitTools();
+	Cmd_AddD("wf", Wf_f, "wf <file> <text>: write text to a file in the game directory");
+	Cmd_AddD("df", Df_f, "df <file>: print a file");
 	Cmd_AddD("restrict", Restrict_f, "restrict <command or cvar> [level]: the execution level needed to use it");
 	Cmd_AddD("aliaslevel", Aliaslevel_f, "aliaslevel <alias> [level]: the execution level an alias runs at");
 	for (size_t i = 0; i < BW_ARRAY_COUNT(obsolete); i++)

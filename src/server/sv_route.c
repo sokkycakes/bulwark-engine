@@ -7,6 +7,7 @@
  * back to the first (the destination). ISC licence, see LICENSE. */
 #include "sv_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -254,3 +255,35 @@ void SV_RunRoutes(void)
 }
 
 const qc_builtin_t sv_route_builtins[] = {{"route_calculate", bi_route_calculate}, {NULL, NULL}};
+
+/* the graph, for route_visualise on a listen server */
+int SV_RouteNumNodes(void)
+{
+	if (sv.active)
+		load_graph();
+	return way.numnodes;
+}
+
+bool SV_RouteNode(int i, float *origin, float *radius, int *numlinks)
+{
+	if (i < 0 || i >= way.numnodes)
+		return false;
+	VectorCopy(way.nodes[i].origin, origin);
+	*radius = way.nodes[i].radius;
+	*numlinks = way.nodes[i].numlinks;
+	return true;
+}
+
+int SV_RouteLink(int i, int k) { return i >= 0 && i < way.numnodes && k >= 0 && k < way.nodes[i].numlinks ? way.nodes[i].links[k].node : -1; }
+
+/* route_reload: read data/<map>.way again */
+static void RouteReload_f(int argc, const char **argv)
+{
+	SV_FreeRoutes();
+	if (sv.active) {
+		load_graph();
+		Con_Printf("%d waypoints in data/%s.way\n", way.numnodes, sv.mapname);
+	}
+}
+
+void SV_InitRoutes(void) { Cmd_AddD("route_reload", RouteReload_f, "Read the map's waypoint graph (data/<map>.way) again"); }

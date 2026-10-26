@@ -189,6 +189,8 @@ typedef struct {
 	image_t *skybox;
 	float fog[4];
 	bool hasfog;
+	/* density r g b alpha depthbias, from worldspawn or waterfog/skyroomfog */
+	float waterfog[6], skyroomfog[6];
 	/* visibility: the collision map's tree and leafs, and each file surface's
 	 * place in the sorted list */
 	bspmap_t *bsp;
@@ -291,9 +293,18 @@ typedef struct {
 	float view[16], proj[16], viewproj[16];
 	float vmviewproj[16]; /* the projection view models use */
 	float forward[3], right[3], up[3];
-	/* the last view that filled most of the screen, for console tests */
-	float mainorigin[3], mainforward[3];
+	/* the last view that filled most of the screen, for console tests and
+	 * the screenshots that redraw it */
+	float mainorigin[3], mainforward[3], mainangles[3], mainfov[2];
+	bool havemain, maindrawworld;
+	/* VF_SKYROOM_CAMERA: where the skyroom is seen from, through the sky */
+	bool skyroom;
+	float skyroom_origin[3];
+	bool noskyroom; /* set while drawing the skyroom itself */
 } rscene_t;
+
+/* the fog for the view being drawn: rgb and density */
+extern float r_viewfog[4];
 
 extern rscene_t r_scene;
 
@@ -358,6 +369,25 @@ void Mat4_View(float *m, const float *origin, const float *angles);
 void Mat4_Transform(const float *m, const float *in, float *out4);
 bool Mat4_Invert(float *out, const float *m);
 void AnglesToAxis(const float *angles, float axis[3][3]);
+
+/* --- tools (r_tools.c) and the accessors they use ------------------------ */
+
+void R_ForEachImage(void (*fn)(image_t *img, void *ctx), void *ctx);
+void R_ForEachMaterial(void (*fn)(material_t *m, void *ctx), void *ctx);
+int R_NumModels(void);
+rmodel_t *R_ModelAt(int i);
+size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris);
+void R_ForEachWadTexture(void (*fn)(const char *wad, const char *name, int type, int size, void *ctx), void *ctx);
+int R_NumWads(void);
+bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs);
+const char *R_GLSLHeader(void);
+bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *numsizes);
+bool R_ToolsRedrawing(void);   /* a screenshot tool is drawing the scene again */
+void R_DrawToolsWorld(void);   /* pointfile and route lines, in the 3D pass */
+void R_DrawToolsOverlay(int w, int h); /* showpic pictures */
+void R_ToolsEndFrame(void);    /* the cubemap, 360, stereo and mega screenshots */
+void R_InitTools(void);
+void R_ToolsMapLoaded(void);  /* skygroup overrides */
 
 extern cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 extern cvar_t *gl_texturemode, *r_wireframe, *r_speeds;

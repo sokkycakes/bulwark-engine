@@ -468,3 +468,19 @@ bool Mat4_Invert(float *out, const float *m)
 		out[i] = inv[i] * det;
 	return true;
 }
+
+/* a program's GLSL, for r_dumpshaders */
+bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs)
+{
+	static const char *const names[PROG_COUNT] = {"2d", "world", "model", "unlit", "sky"};
+	const char *const v[PROG_COUNT] = {vs_2d, vs_world, vs_model, vs_unlit, vs_sky};
+	const char *const f[PROG_COUNT] = {fs_2d, fs_world, fs_model, fs_2d, fs_sky};
+	if (p < 0 || p >= PROG_COUNT)
+		return false;
+	*name = names[p];
+	*vs = v[p];
+	*fs = f[p];
+	return true;
+}
+
+const char *R_GLSLHeader(void) { return glsl_header; }

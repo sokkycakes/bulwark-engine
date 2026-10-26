@@ -232,6 +232,21 @@ static void finish_world(bspmap_t *bsp)
 			r_world.hasfog = f[3] > 0;
 		}
 	}
+	memset(r_world.waterfog, 0, sizeof(r_world.waterfog));
+	memset(r_world.skyroomfog, 0, sizeof(r_world.skyroomfog));
+	r_world.waterfog[1] = r_world.waterfog[2] = r_world.waterfog[3] = 0.3f;
+	r_world.waterfog[4] = 1;
+	memcpy(r_world.skyroomfog, r_world.waterfog, sizeof(r_world.skyroomfog));
+	/* "density r g b [alpha depthbias]", as FTE's and Nuclide's worldspawn keys */
+	{
+		static const char *const keys[][2] = {{"waterfog", "_waterfog"}, {"skyroomfog", "_skyroomfog"}};
+		for (int k = 0; k < 2; k++) {
+			float *dst = k ? r_world.skyroomfog : r_world.waterfog;
+			if (bsp && (entity_key(bsp->entities, keys[k][0], buf, sizeof(buf))[0] ||
+			            entity_key(bsp->entities, keys[k][1], buf, sizeof(buf))[0]))
+				sscanf(buf, "%f %f %f %f %f %f", &dst[0], &dst[1], &dst[2], &dst[3], &dst[4], &dst[5]);
+		}
+	}
 	if (bsp && (entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0] ||
 	            entity_key(bsp->entities, "sky", buf, sizeof(buf))[0]) &&
 	    Str_ICmp(buf, r_world.skyname)) {
@@ -239,6 +254,7 @@ static void finish_world(bspmap_t *bsp)
 		r_world.skybox = NULL;
 	}
 	r_world.bsp = bsp;
+	R_ToolsMapLoaded();
 	r_world.surfmap = Mem_Alloc(sizeof(int) * (r_world.numsurfaces + 1));
 	for (int i = 0; i < r_world.numsurfaces; i++)
 		r_world.surfmap[i] = -1;
@@ -616,7 +632,7 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
 	qglUniform3f(p->u_vieworg, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2]);
-	qglUniform4f(p->u_fog, r_world.fog[0], r_world.fog[1], r_world.fog[2], r_world.hasfog ? r_world.fog[3] : 0);
+	qglUniform4f(p->u_fog, r_viewfog[0], r_viewfog[1], r_viewfog[2], r_viewfog[3]);
 	qglUniform1f(p->u_usefullbright, 0);
 	set_lights(p, model);
 	qglBindVertexArray(r_world.vao);

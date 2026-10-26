@@ -667,3 +667,18 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 
 void R_Set2DClip(float x, float y, float w, float h) { R_SetClip(x, y, w, h); }
 void R_Reset2DClip(void) { R_ResetClip(); }
+
+/* a loaded font: false for a free slot */
+bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *numsizes)
+{
+	const font_t *f;
+	if (slot < 0 || slot >= MAX_FONTS || !fonts[slot].used)
+		return false;
+	f = &fonts[slot];
+	*name = f->name;
+	*truetype = f->ttf != NULL;
+	*numsizes = f->numsizes;
+	for (int i = 0; i < f->numsizes; i++)
+		sizes[i] = f->sizes[i].pixelsize;
+	return true;
+}

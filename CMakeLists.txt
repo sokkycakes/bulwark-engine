@@ -18,6 +18,7 @@ add_library(bwcommon STATIC
 	src/common/cmd.c
 	src/common/cmd_extra.c
 	src/common/cmd_compat.c
+	src/common/bsptool.c
 	src/common/fs.c
 	src/common/pmove.c
 	src/common/skel.c
@@ -95,6 +96,7 @@ add_library(bwclient STATIC
 	src/render/r_q1world.c
 	src/render/r_decal.c
 	src/render/r_part.c
+	src/render/r_tools.c
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c

@@ -177,6 +177,7 @@ void R_ClearScene(void)
 	r_scene.farclip = 0;
 	r_scene.drawworld = true;
 	r_scene.perspective = true;
+	r_scene.skyroom = false;
 	r_scene.viewentity = cl.playerent;
 	memset(r_scene.origin, 0, sizeof(r_scene.origin));
 	memset(r_scene.angles, 0, sizeof(r_scene.angles));
@@ -356,7 +357,25 @@ void R_SetupView(void)
 		Mat4_Multiply(r_scene.vmviewproj, vproj, r_scene.view);
 	}
 	AngleVectors(r_scene.angles, r_scene.forward, r_scene.right, r_scene.up);
+	/* the map's fog, waterfog when the eye is under water, skyroomfog in the skyroom */
+	{
+		static const float zero[3];
+		const float *f = NULL;
+		r_viewfog[3] = 0;
+		if (r_scene.noskyroom && r_world.skyroomfog[0] > 0)
+			f = r_world.skyroomfog;
+		else if (!r_scene.noskyroom && r_world.waterfog[0] > 0 && cl.world &&
+		         (BSP_PointContents(cl.world, 0, zero, r_scene.origin) & (CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA)))
+			f = r_world.waterfog;
+		if (f) {
+			r_viewfog[0] = f[1], r_viewfog[1] = f[2], r_viewfog[2] = f[3], r_viewfog[3] = f[0];
+		} else if (r_world.hasfog) {
+			memcpy(r_viewfog, r_world.fog, sizeof(r_viewfog));
+		}
+	}
 }
+
+float r_viewfog[4];
 
 /* world point to virtual screen point; z is the distance in front of the view */
 void R_Project(const float *in, float *out)
@@ -425,21 +444,43 @@ void R_RenderScene(void)
 		qglClear(GL_COLOR_BUFFER_BIT);
 	}
 
-	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight) {
+	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight && !R_ToolsRedrawing()) {
+		float fx, fy;
+		compute_fov(&fx, &fy);
 		VectorCopy(r_scene.origin, r_scene.mainorigin);
 		VectorCopy(r_scene.forward, r_scene.mainforward);
+		VectorCopy(r_scene.angles, r_scene.mainangles);
+		r_scene.mainfov[0] = fx, r_scene.mainfov[1] = fy;
+		r_scene.maindrawworld = r_scene.drawworld;
+		r_scene.havemain = true;
 	}
 	R_UpdateParticles();
 	R_AddParticleLights();
 	Mat4_Identity(model);
+	/* the skyroom first, seen through the sky: then the sky itself isn't drawn */
+	if (r_scene.skyroom && r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels) {
+		float saved[3];
+		VectorCopy(r_scene.origin, saved);
+		VectorCopy(r_scene.skyroom_origin, r_scene.origin);
+		r_scene.noskyroom = true;
+		R_SetupView();
+		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
+		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, true);
+		r_scene.noskyroom = false;
+		VectorCopy(saved, r_scene.origin);
+		R_SetupView();
+		qglClear(GL_DEPTH_BUFFER_BIT);
+	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
 	if (r_drawentities->ivalue)
 		for (int i = 0; i < r_scene.numents; i++)
 			R_DrawModelEntity(&r_scene.ents[i], false);
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue) {
-		R_DrawSky(r_scene.viewproj);
+		if (!r_scene.skyroom)
+			R_DrawSky(r_scene.viewproj);
 		R_DrawDecals();
+		R_DrawToolsWorld();
 	}
 
 	/* translucent: world water and glass, then entities back to front, then polygons */

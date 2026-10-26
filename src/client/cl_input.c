@@ -5,6 +5,7 @@
 #include "keys.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../render/render.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -362,6 +363,9 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		if (down || !held_command[key])
 			return;
 	} else if (down || !held_command[key]) {
+		/* a showpic picture with a command takes clicks on it */
+		if (key == K_MOUSE1 && down && R_ShowpicTouch(in_mouse_x / R_Get2DScale(), in_mouse_y / R_Get2DScale()))
+			return;
 		/* an open menu, then the game, get first look at keys */
 		if (MQC_InputEvent(down ? 0 : 1, (float)key, (float)unicode, 0))
 			return;
@@ -473,6 +477,26 @@ static float stick(float v)
 
 /* --- commands ------------------------------------------------------------- */
 
+/* rotate <degrees> [seconds]: turn the view, at once or over a time */
+static float rotate_left, rotate_rate;
+
+static void Rotate_f(int argc, const char **argv)
+{
+	float secs;
+	if (argc < 2) {
+		Con_Printf("rotate <degrees> [seconds]: turn the view left (negative turns right)\n");
+		return;
+	}
+	secs = argc > 2 ? (float)atof(argv[2]) : 0;
+	if (secs <= 0) {
+		cl.viewangles[1] += (float)atof(argv[1]);
+		rotate_left = 0;
+		return;
+	}
+	rotate_left = (float)atof(argv[1]);
+	rotate_rate = fabsf(rotate_left) / secs;
+}
+
 static void fill_command(usercmd_t *u, double now)
 {
 	float speed = (cl_run->ivalue ^ buttons[B_SPEED].active) ? 1.0f : cl_movespeedkey->value;
@@ -486,6 +510,12 @@ static void fill_command(usercmd_t *u, double now)
 	float walk = button_amount(&buttons[B_FORWARD]), walkback = button_amount(&buttons[B_BACK]);
 	if (!strafe)
 		cl.viewangles[1] += dt * cl_yawspeed->value * turn;
+	if (rotate_left != 0) {
+		float step = BW_MIN(fabsf(rotate_left), rotate_rate * dt);
+		step = rotate_left < 0 ? -step : step;
+		cl.viewangles[1] += step;
+		rotate_left -= step;
+	}
 	cl.viewangles[0] += dt * cl_pitchspeed->value * (button_amount(&buttons[B_LOOKDOWN]) - button_amount(&buttons[B_LOOKUP]));
 	if (cl_6dof->ivalue)
 		cl.viewangles[2] += dt * cl_rollspeed->value * (button_amount(&buttons[B_ROLLRIGHT]) - button_amount(&buttons[B_ROLLLEFT]));
@@ -608,6 +638,7 @@ void IN_Init(void)
 	Cmd_Add("unbind", Unbind_f);
 	Cmd_Add("unbindall", Unbindall_f);
 	Cmd_Add("bindlist", Bindlist_f);
+	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");
 	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
 	Cmd_Add("impulse", Impulse_f);
 #define ADD(n)                                                                                                         \

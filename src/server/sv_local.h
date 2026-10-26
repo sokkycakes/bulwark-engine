@@ -199,6 +199,7 @@ enum { PEN_KIND_MUTE, PEN_KIND_STEALTH, PEN_KIND_CUFF, PEN_KIND_CRIPPLE, PEN_KIN
 enum { CHAT_PASS, CHAT_DROP, CHAT_ONLY_SENDER };
 extern client_t *sv_chat_only; /* while set, prints and multicasts reach only this client */
 void SV_InitAdmin(void);
+void SV_InitRoutes(void);
 int SV_Penalties(const client_t *c);
 void SV_AdminFilterMove(client_t *c, usercmd_t *cmd);
 int SV_AdminFilterChat(client_t *c);

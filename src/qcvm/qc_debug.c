@@ -406,8 +406,11 @@ static void Poke_f(int argc, const char **argv)
 	Con_Printf("%s = %s\n", argv[1], buf);
 }
 
+void QC_InitSkelCommands(void);
+
 void QC_InitDebugCommands(void)
 {
+	QC_InitSkelCommands();
 	static const char *const descs[3] = {"the server game", "the client game", "the menu"};
 	coreonerror[0] = Cvar_Get("pr_ssqc_coreonerror", "0", CVAR_ARCHIVE, "Write ssqccore.txt when the server game has an error");
 	coreonerror[1] = Cvar_Get("pr_csqc_coreonerror", "0", CVAR_ARCHIVE, "Write csqccore.txt when the client game has an error");

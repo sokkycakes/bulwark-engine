@@ -785,4 +785,5 @@ void SV_Init(void)
 	SV_InitSaves();
 	SV_InitCompat();
 	SV_InitAdmin();
+	SV_InitRoutes();
 }

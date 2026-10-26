@@ -786,7 +786,7 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
 	qglUniform4f(p->u_color, 1, 1, 1, e->alpha);
 	qglUniform3f(p->u_vieworg, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2]);
-	qglUniform4f(p->u_fog, r_world.fog[0], r_world.fog[1], r_world.fog[2], r_world.hasfog ? r_world.fog[3] : 0);
+	qglUniform4f(p->u_fog, r_viewfog[0], r_viewfog[1], r_viewfog[2], r_viewfog[3]);
 	set_model_lighting(p, e);
 
 	if (m->type == MOD_ALIAS) {
@@ -837,4 +837,27 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	if (depthhack)
 		qglDepthRange(0, 1);
 	GL_SetCull(true);
+}
+
+int R_NumModels(void) { return nummodels; }
+rmodel_t *R_ModelAt(int i) { return i >= 0 && i < nummodels ? models[i] : NULL; }
+
+/* roughly what a model holds in memory, and its vertex and triangle counts */
+size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris)
+{
+	size_t bytes = sizeof(*m);
+	*verts = *tris = 0;
+	if (m->alias) {
+		const alias_t *a = m->alias;
+		bytes += (size_t)a->numposes * (size_t)a->numverts * 6 * sizeof(float) + (size_t)a->numoutverts * (2 * sizeof(float) + sizeof(int)) +
+		         (size_t)a->numtris * 3 * sizeof(uint16_t) + (size_t)a->numframes * sizeof(aliasframe_t);
+		*verts = a->numverts;
+		*tris = a->numtris;
+	}
+	if (m->type == MOD_BRUSH || (!m->alias && !m->iqm && m->numsurfaces)) {
+		for (int i = 0; i < m->numsurfaces; i++)
+			*tris += r_world.surfaces[m->firstsurface + i].numindexes / 3;
+		bytes += (size_t)*tris * 3 * sizeof(uint32_t) + (size_t)m->numsurfaces * sizeof(rsurface_t);
+	}
+	return bytes;
 }

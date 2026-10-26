@@ -372,3 +372,10 @@ void R_ShutdownImages(void)
 	}
 	r_whiteimage = r_blackimage = r_checkerimage = r_flatnormal = NULL;
 }
+
+void R_ForEachImage(void (*fn)(image_t *img, void *ctx), void *ctx)
+{
+	for (int i = 0; i < IMAGE_HASH; i++)
+		for (image_t *img = images[i]; img; img = img->next)
+			fn(img, ctx);
+}

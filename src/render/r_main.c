@@ -134,8 +134,10 @@ void R_EndFrame(void)
 		Con_SetActive(true);
 	}
 	R_DrawOverlays(r_vwidth, r_vheight);
+	R_DrawToolsOverlay(r_vwidth, r_vheight);
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
+	R_ToolsEndFrame();
 	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode);
 	if (screenshot_pending[0]) {
 		take_screenshot(screenshot_pending);
@@ -280,6 +282,7 @@ bool R_Init(bool headless)
 	Cmd_Add("sky", Sky_f);
 	r_fog_linear = Cvar_Get("r_fog_linear", "0", 0, "fog's first number is the full-fog distance instead of a density");
 	Cmd_AddD("fog", Fog_f, "fog <density> [r g b]: set the fog (0 turns it off)");
+	R_InitTools();
 	R_InitScene();
 	r_active = false;
 	if (!headless && VID_Active()) {
@@ -609,7 +612,7 @@ enum {
 	VF_ORIGIN, VF_ORIGIN_X, VF_ORIGIN_Y, VF_ORIGIN_Z, VF_ANGLES, VF_ANGLES_X, VF_ANGLES_Y, VF_ANGLES_Z,
 	VF_DRAWWORLD, VF_DRAWENGINESBAR, VF_DRAWCROSSHAIR, VF_MINDIST = 23, VF_MAXDIST = 24,
 	VF_CL_VIEWANGLES = 33, VF_CL_VIEWANGLES_X, VF_CL_VIEWANGLES_Y, VF_CL_VIEWANGLES_Z,
-	VF_PERSPECTIVE = 200, VF_ACTIVESEAT = 202, VF_AFOV = 203, VF_SCREENVSIZE = 204, VF_SCREENPSIZE = 205,
+	VF_SKYROOM_CAMERA = 222, VF_PERSPECTIVE = 200, VF_ACTIVESEAT = 202, VF_AFOV = 203, VF_SCREENVSIZE = 204, VF_SCREENPSIZE = 205,
 	VF_VIEWENTITY = 206
 };
 
@@ -661,6 +664,7 @@ static void r_setproperty(qcvm_t *vm)
 		break;
 	case VF_PERSPECTIVE: r_scene.perspective = f != 0; break;
 	case VF_VIEWENTITY: r_scene.viewentity = (int)f; break;
+	case VF_SKYROOM_CAMERA: memcpy(r_scene.skyroom_origin, v, sizeof(float) * 3), r_scene.skyroom = true; break;
 	default: break;
 	}
 	QC_ReturnFloat(vm, 1);

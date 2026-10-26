@@ -27,6 +27,9 @@ void R_NewMap(void);             /* cl.world is loaded */
 void R_PointParticles(int index, const float *org, const float *dir, float count);
 void R_TrailParticles(int index, const float *start, const float *end);
 
+/* a click on a showpic picture with a command; true if it ran one */
+bool R_ShowpicTouch(float x, float y);
+
 void R_BeginFrame(void);
 void R_EndFrame(void);          /* draws the console and presents */
 
