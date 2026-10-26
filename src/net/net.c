@@ -353,3 +353,112 @@ void NET_OutOfBandPrint(netsrc_t src, const netadr_t *to, const char *fmt, ...)
 		n = (int)sizeof(buf) - 5;
 	NET_SendPacket(src, buf, (size_t)n + 4, to);
 }
+
+/* --- TCP streams --- */
+
+/* IPv4 sockets for IPv4 peers, so this works without IPv6 */
+static int tcp_socket(netadrtype_t type)
+{
+	int s = socket(type == NA_IP6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
+	if (s >= 0)
+		fcntl(s, F_SETFL, O_NONBLOCK);
+	return s;
+}
+
+int NET_TCPListen(int port)
+{
+	struct sockaddr_in sa;
+	int on = 1, s = tcp_socket(NA_IP4);
+	if (s < 0)
+		return -1;
+	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = htonl(INADDR_ANY);
+	sa.sin_port = htons((uint16_t)port);
+	if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) < 0 || listen(s, 8) < 0) {
+		Con_Printf("^3TCP listen on port %d failed: %s\n", port, strerror(errno));
+		close(s);
+		return -1;
+	}
+	return s;
+}
+
+int NET_TCPAccept(int listener, netadr_t *from)
+{
+	struct sockaddr_in sa;
+	socklen_t len = sizeof(sa);
+	int s = listener >= 0 ? accept(listener, (struct sockaddr *)&sa, &len) : -1;
+	if (s < 0)
+		return -1;
+	fcntl(s, F_SETFL, O_NONBLOCK);
+	if (from) {
+		memset(from, 0, sizeof(*from));
+		from->type = NA_IP4;
+		memcpy(from->ip, &sa.sin_addr, 4);
+		from->port = ntohs(sa.sin_port);
+	}
+	return s;
+}
+
+int NET_TCPConnect(const netadr_t *to)
+{
+	int s;
+	if (to->type != NA_IP4 && to->type != NA_IP6)
+		return -1;
+	if ((s = tcp_socket(to->type)) < 0)
+		return -1;
+	if (to->type == NA_IP4) {
+		struct sockaddr_in sa;
+		memset(&sa, 0, sizeof(sa));
+		sa.sin_family = AF_INET;
+		sa.sin_port = htons(to->port);
+		memcpy(&sa.sin_addr, to->ip, 4);
+		if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0 && errno != EINPROGRESS) {
+			close(s);
+			return -1;
+		}
+	} else {
+		struct sockaddr_in6 sa;
+		adr_to_sockaddr(to, &sa);
+		if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0 && errno != EINPROGRESS) {
+			close(s);
+			return -1;
+		}
+	}
+	return s;
+}
+
+/* bytes sent (maybe fewer than asked, 0 when it would block), -1 when the stream is gone */
+int NET_TCPSend(int s, const void *data, size_t len)
+{
+	ssize_t n;
+	if (s < 0)
+		return -1;
+	if (!len)
+		return 0;
+	n = send(s, data, len, MSG_NOSIGNAL);
+	if (n < 0)
+		return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS || errno == ENOTCONN ? 0 : -1;
+	return (int)n;
+}
+
+/* bytes read, 0 when nothing is waiting, -1 when the peer closed or failed */
+int NET_TCPRecv(int s, void *buf, size_t size)
+{
+	ssize_t n;
+	if (s < 0)
+		return -1;
+	n = recv(s, buf, size, 0);
+	if (n == 0)
+		return -1;
+	if (n < 0)
+		return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS || errno == ENOTCONN ? 0 : -1;
+	return (int)n;
+}
+
+void NET_TCPClose(int s)
+{
+	if (s >= 0)
+		close(s);
+}

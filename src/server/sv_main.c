@@ -260,6 +260,7 @@ static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins,
 
 void SV_Shutdown(void)
 {
+	SV_MVDMapChanged();
 	if (sv.vm) {
 		if (QC_FindFunction(sv.vm, "SV_Shutdown"))
 			QC_ExecuteByName(sv.vm, "SV_Shutdown");
@@ -379,6 +380,7 @@ bool SV_SpawnServer(const char *mapname)
 	spawn_map_entities(sv.world->entities);
 	sv.spawning = false;
 	SV_ClientsMapChanged();
+	SV_MVDMapSpawned();
 	QC_CollectGarbage(vm, true);
 	Con_Printf("map %s: %d entities in use, %d models, %d sounds precached\n", mapname,
 	           vm->num_edicts, sv.nummodels - 1, sv.numsounds - 1);
@@ -786,4 +788,5 @@ void SV_Init(void)
 	SV_InitCompat();
 	SV_InitAdmin();
 	SV_InitRoutes();
+	SV_InitMVD();
 }

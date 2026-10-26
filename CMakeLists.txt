@@ -57,6 +57,7 @@ add_library(bwserver STATIC
 	src/server/sv_save.c
 	src/server/sv_compat.c
 	src/server/sv_admin.c
+	src/server/sv_mvd.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 

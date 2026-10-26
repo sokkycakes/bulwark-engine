@@ -52,6 +52,10 @@ static int client_slot(const client_t *c) { return (int)(c - svs.clients); }
 
 static void sb_write(strbuf_t *sb, const msg_t *m) { SB_Append(sb, (const char *)m->data, m->cursize); }
 
+/* while set, reliable messages go here (each as uint32 length + bytes)
+ * instead of to the client: SV_CaptureSignon */
+static strbuf_t *capture;
+
 /* flushes QC-written reliable bytes ahead of any engine reliable message */
 static void flush_qcrel(client_t *c)
 {
@@ -66,6 +70,7 @@ static void flush_qcrel(client_t *c)
 		uint8_t *tmp = Mem_Alloc(m.cursize + c->qcrel.len);
 		memcpy(tmp, m.data, m.cursize);
 		memcpy(tmp + m.cursize, c->qcrel.data, c->qcrel.len);
+		SV_MVDReliable(c, tmp, m.cursize + c->qcrel.len);
 		Netchan_WriteReliable(&c->chan, tmp, m.cursize + c->qcrel.len);
 		Mem_Free(tmp);
 	}
@@ -75,9 +80,16 @@ done:
 
 static void client_reliable(client_t *c, const msg_t *m)
 {
+	if (capture) {
+		uint32_t n = (uint32_t)m->cursize;
+		SB_Append(capture, (const char *)&n, sizeof(n));
+		SB_Append(capture, (const char *)m->data, m->cursize);
+		return;
+	}
 	if (c->state == CS_FREE || c->bot)
 		return;
 	flush_qcrel(c);
+	SV_MVDReliable(c, m->data, m->cursize);
 	Netchan_WriteReliable(&c->chan, m->data, m->cursize);
 }
 
@@ -334,6 +346,7 @@ static void collect_sendflags(void)
 			if (c->state == CS_SPAWNED && !c->bot && e < c->estate_count)
 				c->pending[e] |= fl;
 		}
+		SV_MVDPendingFlags(e, fl);
 		QC_SetEFloat(vm, e, F.sendflags, 0);
 	}
 }
@@ -436,6 +449,7 @@ static void send_snapshot(client_t *c)
 	/* unreliable extras first; dropped if they would not fit */
 	if (c->datagram.len && c->datagram.len < budget / 2)
 		MSG_WriteData(&m, c->datagram.data, c->datagram.len);
+	SV_MVDSnapshot(c, (const uint8_t *)c->datagram.data, c->datagram.len);
 	c->datagram.len = 0;
 
 	rec = &c->snaps[seq % SNAP_HISTORY];
@@ -455,6 +469,44 @@ static void send_snapshot(client_t *c)
 		rec->num = 0;
 	}
 	Netchan_Transmit(&c->chan, m.data, m.cursize);
+}
+
+/* A recording's own copy of what 'real' sees: everything in one message,
+ * and nothing is ever lost, so whatever was sent counts as confirmed. */
+void SV_ShadowSnapshot(const client_t *real, client_t *shadow, msg_t *m)
+{
+	snaprec_t *rec = &shadow->snaps[0];
+	if (!sv.vm)
+		return;
+	if (shadow->estate_count != sv.vm->max_edicts)
+		reset_entity_state(shadow);
+	shadow->edict = real->edict;
+	rec->num = 0;
+	MSG_WriteByte(m, svc_snapshot);
+	MSG_WriteLong(m, sv.frames);
+	MSG_WriteDouble(m, sv.time);
+	MSG_WriteLong(m, (int32_t)real->lastcmd);
+	write_entities(shadow, m, m->maxsize - 16, rec);
+	for (int e = 0; e < shadow->estate_count; e++)
+		if (shadow->estate[e] & ES_KNOWN)
+			shadow->estate[e] |= ES_CONFIRMED;
+}
+
+void SV_ShadowReset(client_t *shadow) { reset_entity_state(shadow); }
+void SV_ShadowFree(client_t *shadow) { free_client_state(shadow); }
+
+static void send_serverdata(client_t *c);
+
+/* the signon a client would get now, from serverdata to signon 1 */
+void SV_CaptureSignon(client_t *c, strbuf_t *out)
+{
+	clientstate_t st = c->state;
+	int sc = c->spawncount;
+	capture = out;
+	send_serverdata(c);
+	capture = NULL;
+	c->state = st;
+	c->spawncount = sc;
 }
 
 /* --- signon ------------------------------------------------------------ */
@@ -596,6 +648,8 @@ static void spawn_client(client_t *c)
 {
 	qcvm_t *vm = sv.vm;
 	reset_entity_state(c);
+	if (!c->bot)
+		SV_MVDClientSpawning(c);
 	c->lastcmd = 0;
 	memset(&c->lastucmd, 0, sizeof(c->lastucmd));
 	c->cmd_budget = 0.25f;
@@ -655,6 +709,7 @@ void SV_DropClient(client_t *c, const char *reason)
 	if (vm && c->edict < vm->max_edicts) {
 		QC_ClearEdict(vm, c->edict);
 	}
+	SV_MVDClientDropped(c);
 	free_client_state(c);
 	c->state = CS_FREE;
 	c->bot = false;
@@ -1005,6 +1060,7 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 	QC_SetGFloat(vm, G.frametime, sv.frametime);
 	c->lastucmd = cmd;
 	c->lastcmd = cmd.sequence;
+	SV_MVDUsercmd(c, &cmd);
 }
 
 static void read_usercmd(msg_t *m, const usercmd_t *from, usercmd_t *to)
@@ -1079,6 +1135,7 @@ static void parse_stringcmd(client_t *c, const char *s)
 				c->fullupdate = false;
 				c->state = CS_SPAWNED;
 				reset_entity_state(c);
+				SV_MVDClientSpawning(c);
 				MSG_WriteByte(&p, svc_signon);
 				MSG_WriteByte(&p, 2);
 				client_reliable(c, &p);
@@ -1386,6 +1443,7 @@ void SV_SendClientMessages(void)
 {
 	double now = host_time;
 	SV_SyncServerinfoCvars(true);
+	SV_MVDFrame();
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		float rate;

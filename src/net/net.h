@@ -48,4 +48,12 @@ void NET_RunDelayed(void);
 /* Sends "\xff\xff\xff\xff" followed by text. */
 void NET_OutOfBandPrint(netsrc_t src, const netadr_t *to, const char *fmt, ...);
 
+/* TCP streams, non-blocking; sockets are plain descriptors, -1 for none */
+int NET_TCPListen(int port);
+int NET_TCPAccept(int listener, netadr_t *from);
+int NET_TCPConnect(const netadr_t *to);
+int NET_TCPSend(int s, const void *data, size_t len); /* bytes taken, 0 if it would block, -1 if gone */
+int NET_TCPRecv(int s, void *buf, size_t size);       /* bytes read, 0 if none waiting, -1 if closed */
+void NET_TCPClose(int s);
+
 #endif

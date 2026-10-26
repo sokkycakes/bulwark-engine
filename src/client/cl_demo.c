@@ -9,21 +9,28 @@
  *   then the bytes.
  * Types: 1 reliable server message, 2 unreliable server message, 3 the
  * view angles that frame (3 floats), 4 a usercmd the player built (so the
- * client game's prediction replays as it ran).
+ * client game's prediction replays as it ran), 5 a uint8 player slot the
+ * records after it belong to (server demos hold every player's view; see
+ * sv_mvd.c). Records for players other than the one tracked are skipped,
+ * and switching player plays the demo again from the start up to the
+ * same time with the new player's records (a live QTV stream reconnects).
  * ISC licence, see LICENSE. */
 #include "client.h"
 #include "console.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
+#include "../net/net.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <time.h>
 
 #define DEMO_MAGIC "BWDM"
 #define DEMO_VERSION 1
-enum { DR_RELIABLE = 1, DR_UNRELIABLE = 2, DR_ANGLES = 3, DR_USERCMD = 4 };
+enum { DR_RELIABLE = 1, DR_UNRELIABLE = 2, DR_ANGLES = 3, DR_USERCMD = 4, DR_VIEW = 5 };
+#define QTV_DEFAULT_PORT 27599
 
 static struct {
 	FILE *rec;
@@ -47,16 +54,32 @@ static struct {
 	size_t next_cap;
 	double seek_to; /* > 0 while fast-forwarding to a time */
 
+	/* server demos: whose view is shown */
+	int curview;  /* the player the records now being read belong to, -1 for all */
+	int track;    /* the player shown, -1 until the first one */
+	int want_track; /* to start with after a restart, -1 for the first */
+	uint8_t seen[32]; /* players with a view in the demo, as bits */
+	bool multiview;
+	double next_autotrack;
+
+	/* a QTV stream instead of a file */
+	int qtv_sock;
+	bool qtv, qtv_closed, qtv_header, qtv_magic, qtv_sent;
+	strbuf_t qbuf;
+	size_t qpos;
+	char qtv_source[256], qtv_password[128];
+
 	/* the startdemos loop */
 	char *loop[32];
 	int numloop, loopnext;
 } demo;
 
-static cvar_t *demo_timescale, *demo_autorecord;
+static cvar_t *demo_timescale, *demo_autorecord, *cl_autotrack, *cl_autotrack_team;
+static bool autotrack_on;
 
 static void easy_record(int argc, const char **argv, bool ask_update);
 
-bool CL_DemoPlaying(void) { return demo.play != NULL; }
+bool CL_DemoPlaying(void) { return demo.play != NULL || demo.qtv; }
 bool CL_DemoRecording(void) { return demo.rec != NULL && !demo.waiting; }
 
 static void write_record(int type, const void *data, uint32_t len)
@@ -116,7 +139,7 @@ static void stop_recording(void)
 
 static void demo_path(const char *name, char *out, size_t size)
 {
-	snprintf(out, size, "%s%s", name, strstr(name, ".dem") ? "" : ".dem");
+	snprintf(out, size, "%s%s", name, strstr(name, ".dem") || strstr(name, ".mvd") ? "" : ".dem");
 }
 
 static char last_record[256]; /* for rerecord */
@@ -216,11 +239,49 @@ static void EasyRecord_f(int argc, const char **argv) { easy_record(argc, argv, 
 
 /* --- playback --------------------------------------------------------------------------- */
 
+static bool read_next_qtv(void)
+{
+	double t;
+	uint8_t ty;
+	uint32_t len;
+	const char *p = demo.qbuf.data + demo.qpos;
+	size_t avail = demo.qbuf.len - demo.qpos;
+	if (avail < 13)
+		return false;
+	memcpy(&t, p, 8);
+	ty = (uint8_t)p[8];
+	memcpy(&len, p + 9, 4);
+	if (len > (1u << 24)) {
+		demo.qtv_closed = true;
+		return false;
+	}
+	if (avail < 13 + (size_t)len)
+		return false;
+	if (len > demo.next_cap) {
+		demo.next_data = Mem_Realloc(demo.next_data, len);
+		demo.next_cap = len;
+	}
+	memcpy(demo.next_data, p + 13, len);
+	demo.qpos += 13 + len;
+	if (demo.qpos > (1u << 20)) {
+		memmove(demo.qbuf.data, demo.qbuf.data + demo.qpos, demo.qbuf.len - demo.qpos);
+		demo.qbuf.len -= demo.qpos;
+		demo.qpos = 0;
+	}
+	demo.next_time = t;
+	demo.next_type = ty;
+	demo.next_len = len;
+	demo.have_next = true;
+	return true;
+}
+
 static bool read_next(void)
 {
 	double t;
 	uint8_t ty;
 	uint32_t len;
+	if (demo.qtv)
+		return read_next_qtv();
 	if (fread(&t, sizeof(t), 1, demo.play) != 1 || fread(&ty, 1, 1, demo.play) != 1 ||
 	    fread(&len, sizeof(len), 1, demo.play) != 1 || len > (1u << 24))
 		return false;
@@ -243,11 +304,19 @@ static bool open_demo(const char *name)
 {
 	char rel[256], magic[4];
 	uint32_t ver;
-	const char *tries[3];
-	char a[256], b[300];
+	const char *tries[5];
+	char a[256], b[300], c[256], d[300];
+	int n = 0;
 	demo_path(name, a, sizeof(a));
 	snprintf(b, sizeof(b), "demos/%s", a);
-	tries[0] = a, tries[1] = b, tries[2] = NULL;
+	tries[n++] = a, tries[n++] = b;
+	/* server demos are .mvd */
+	if (!strchr(name, '.')) {
+		snprintf(c, sizeof(c), "%s.mvd", name);
+		snprintf(d, sizeof(d), "demos/%s.mvd", name);
+		tries[n++] = c, tries[n++] = d;
+	}
+	tries[n] = NULL;
 	for (int i = 0; tries[i]; i++) {
 		char path[1024];
 		const char *where = FS_WhichPath(tries[i]);
@@ -272,6 +341,24 @@ static bool open_demo(const char *name)
 		return false;
 	}
 	Str_Copy(demo.play_name, rel, sizeof(demo.play_name));
+	/* which players have views, from the record headers */
+	memset(demo.seen, 0, sizeof(demo.seen));
+	demo.multiview = false;
+	{
+		long pos = ftell(demo.play);
+		double tt;
+		uint8_t ty, v;
+		uint32_t len;
+		while (fread(&tt, sizeof(tt), 1, demo.play) == 1 && fread(&ty, 1, 1, demo.play) == 1 &&
+		       fread(&len, sizeof(len), 1, demo.play) == 1) {
+			if (ty == DR_VIEW && len == 1 && fread(&v, 1, 1, demo.play) == 1) {
+				demo.seen[v >> 3] |= (uint8_t)(1 << (v & 7));
+				demo.multiview = true;
+			} else if (fseek(demo.play, (long)len, SEEK_CUR))
+				break;
+		}
+		fseek(demo.play, pos, SEEK_SET);
+	}
 	return true;
 }
 
@@ -292,6 +379,8 @@ static bool start_playback(const char *name, bool timedemo)
 	demo.timedemo = timedemo;
 	demo.td_frames = 0;
 	demo.td_start = Sys_Seconds();
+	demo.curview = -1;
+	demo.track = demo.want_track;
 	Con_Printf("playing %s\n", demo.play_name);
 	return true;
 }
@@ -303,15 +392,30 @@ static void Playdemo_f(int argc, const char **argv)
 		return;
 	}
 	demo.numloop = 0;
+	demo.want_track = -1;
 	start_playback(argv[1], !Str_ICmp(argv[0], "timedemo"));
+}
+
+static void qtv_close(void)
+{
+	NET_TCPClose(demo.qtv_sock);
+	demo.qtv_sock = -1;
+	SB_Free(&demo.qbuf);
+	demo.qpos = 0;
+	demo.qtv = false;
 }
 
 static void end_playback(bool finished)
 {
-	if (!demo.play)
+	if (!demo.play && !demo.qtv)
 		return;
-	fclose(demo.play);
+	if (demo.play)
+		fclose(demo.play);
 	demo.play = NULL;
+	if (demo.qtv) {
+		qtv_close();
+		Con_Printf("QTV stream ended\n");
+	}
 	if (demo.timedemo && finished) {
 		double t = Sys_Seconds() - demo.td_start;
 		Con_Printf("timedemo %s: %d frames in %.2f seconds, %.1f fps\n", demo.play_name, demo.td_frames, t,
@@ -327,18 +431,378 @@ static void end_playback(bool finished)
 	}
 }
 
+/* --- QTV streams ------------------------------------------------------------ */
+
+static char last_qtv_host[256];
+
+/* "[stream@]host[:port]": the address, and the stream (empty for the game) */
+static bool qtv_address(const char *arg, netadr_t *adr, char *stream, size_t ssize)
+{
+	const char *at = strrchr(arg, '@');
+	const char *host = at ? at + 1 : arg;
+	stream[0] = 0;
+	if (at)
+		Str_Copy(stream, arg, BW_MIN(ssize, (size_t)(at - arg) + 1));
+	if (!strncmp(host, "tls://", 6))
+		host += 6; /* no TLS here: plain TCP */
+	if (!NET_StringToAdr(host, adr, QTV_DEFAULT_PORT) || adr->type == NA_LOOPBACK) {
+		if (adr->type == NA_LOOPBACK && NET_StringToAdr("127.0.0.1", adr, QTV_DEFAULT_PORT)) {
+			const char *colon = strrchr(host, ':');
+			if (colon)
+				adr->port = (uint16_t)atoi(colon + 1);
+			Str_Copy(last_qtv_host, host, sizeof(last_qtv_host));
+			return true;
+		}
+		return false;
+	}
+	Str_Copy(last_qtv_host, host, sizeof(last_qtv_host));
+	return true;
+}
+
+static bool qtv_start(const char *source, const char *password)
+{
+	netadr_t adr;
+	char stream[256], req[700];
+	if (!qtv_address(source, &adr, stream, sizeof(stream))) {
+		Con_Printf("bad QTV address %s\n", source);
+		return false;
+	}
+	stop_recording();
+	CL_Disconnect(NULL);
+	if ((demo.qtv_sock = NET_TCPConnect(&adr)) < 0) {
+		Con_Printf("Couldn't connect to proxy\n");
+		return false;
+	}
+	if (!strncmp(stream, "demo:", 5))
+		snprintf(req, sizeof(req), "BWQTV 1\nPASSWORD: %s\nDEMO: %s\n\n", password, stream + 5);
+	else
+		snprintf(req, sizeof(req), "BWQTV 1\nPASSWORD: %s\nSOURCE: %s\n\n", password, stream);
+	/* sent once the connection is up, from qtv_pump */
+	SB_Free(&demo.qbuf);
+	SB_AppendStr(&demo.qbuf, req);
+	demo.qpos = 0;
+	demo.qtv = true;
+	demo.qtv_closed = false;
+	demo.qtv_header = false;
+	demo.qtv_magic = false;
+	demo.qtv_sent = false;
+	if (source != demo.qtv_source)
+		Str_Copy(demo.qtv_source, source, sizeof(demo.qtv_source));
+	if (password != demo.qtv_password)
+		Str_Copy(demo.qtv_password, password, sizeof(demo.qtv_password));
+	memset(&cl.chan, 0, sizeof(cl.chan));
+	cl.demoplayback = true;
+	cl.state = ca_loading;
+	snprintf(cl.servername, sizeof(cl.servername), "qtv:%s", source);
+	Str_Copy(demo.play_name, source, sizeof(demo.play_name));
+	demo.play_time = 0;
+	demo.paused = false;
+	demo.have_next = false;
+	demo.seek_to = 0;
+	demo.timedemo = false;
+	demo.curview = -1;
+	demo.track = demo.want_track;
+	demo.multiview = false;
+	memset(demo.seen, 0, sizeof(demo.seen));
+	Con_Printf("connecting to QTV %s\n", source);
+	return true;
+}
+
+/* moves the stream along; true once records can be read */
+static bool qtv_pump(void)
+{
+	char buf[65536];
+	int n;
+	if (!demo.qtv_header && !demo.qtv_sent) {
+		/* the request waits in qbuf until the connection takes it */
+		n = NET_TCPSend(demo.qtv_sock, demo.qbuf.data, demo.qbuf.len);
+		if (n < 0) {
+			Con_Printf("Couldn't connect to proxy\n");
+			end_playback(false);
+			return false;
+		}
+		if (n > 0) {
+			memmove(demo.qbuf.data, demo.qbuf.data + n, demo.qbuf.len - (size_t)n);
+			demo.qbuf.len -= (size_t)n;
+			if (!demo.qbuf.len)
+				demo.qtv_sent = true;
+		}
+		if (!demo.qtv_sent)
+			return false;
+	}
+	while ((n = NET_TCPRecv(demo.qtv_sock, buf, sizeof(buf))) > 0)
+		SB_Append(&demo.qbuf, buf, (size_t)n);
+	if (n < 0)
+		demo.qtv_closed = true;
+	if (!demo.qtv_header) {
+		char *end;
+		SB_Append(&demo.qbuf, "", 1);
+		demo.qbuf.len--;
+		end = strstr(demo.qbuf.data, "\n\n");
+		if (!end) {
+			if (demo.qtv_closed) {
+				Con_Printf("Couldn't connect to proxy\n");
+				end_playback(false);
+			}
+			return false;
+		}
+		*end = 0;
+		if (strncmp(demo.qbuf.data, "BWQTV 1", 7)) {
+			Con_Printf("that isn't a Bulwark QTV server\n");
+			end_playback(false);
+			return false;
+		}
+		for (char *l = demo.qbuf.data; l && *l;) {
+			char *e = strchr(l, '\n');
+			if (e)
+				*e = 0;
+			if (!strncmp(l, "ERROR:", 6)) {
+				Con_Printf("QTV:%s\n", l + 6);
+				end_playback(false);
+				return false;
+			}
+			if (!strncmp(l, "LIVE:", 5) && atof(l + 5) > 0) {
+				/* catch up from the stream's start to now */
+				demo.seek_to = atof(l + 5);
+				demo.play_time = demo.seek_to;
+			}
+			l = e ? e + 1 : NULL;
+		}
+		demo.qpos = (size_t)(end + 2 - demo.qbuf.data);
+		demo.qtv_header = true;
+		demo.qtv_sent = false;
+	}
+	if (!demo.qtv_magic) {
+		uint32_t ver;
+		if (demo.qbuf.len - demo.qpos < 8)
+			return false;
+		memcpy(&ver, demo.qbuf.data + demo.qpos + 4, 4);
+		if (memcmp(demo.qbuf.data + demo.qpos, DEMO_MAGIC, 4) || ver != DEMO_VERSION) {
+			Con_Printf("the QTV stream isn't from this version of Bulwark\n");
+			end_playback(false);
+			return false;
+		}
+		demo.qpos += 8;
+		demo.qtv_magic = true;
+	}
+	return true;
+}
+
+static void Qtvplay_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("Usage: %s [stream@][tls://]hostname[:port] [password]\n", argv[0]);
+		return;
+	}
+	demo.numloop = 0;
+	demo.want_track = -1;
+	qtv_start(argv[1], argc > 2 ? argv[2] : "");
+}
+
+/* asks a QTV server something and prints the header lines that answer it */
+static void qtv_query(const char *host, const char *what, const char *key, const char *heading)
+{
+	netadr_t adr;
+	char stream[64], buf[4096];
+	strbuf_t in = {0};
+	char req[300];
+	int s;
+	double until;
+	bool sent = false;
+	if (!host || !host[0] || !qtv_address(host, &adr, stream, sizeof(stream)) || (s = NET_TCPConnect(&adr)) < 0) {
+		Con_Printf("Couldn't connect to proxy\n");
+		return;
+	}
+	snprintf(req, sizeof(req), "BWQTV 1\nPASSWORD: %s\n%s\n\n", Cvar_String("qtv_password_client"), what);
+	until = Sys_Seconds() + 3;
+	while (Sys_Seconds() < until) {
+		int n;
+		if (!sent) {
+			n = NET_TCPSend(s, req, strlen(req));
+			if (n < 0)
+				break;
+			sent = n > 0;
+		}
+		while ((n = NET_TCPRecv(s, buf, sizeof(buf))) > 0)
+			SB_Append(&in, buf, (size_t)n);
+		SB_Append(&in, "", 1);
+		in.len--;
+		if (n < 0 || strstr(in.data, "\n\n"))
+			break;
+		Sys_Sleep(0.01);
+	}
+	NET_TCPClose(s);
+	if (!in.len || strncmp(in.data, "BWQTV 1", 7)) {
+		Con_Printf("Couldn't connect to proxy\n");
+		SB_Free(&in);
+		return;
+	}
+	{
+		int count = 0;
+		size_t kl = strlen(key);
+		Con_Printf("%s on %s:\n", heading, host);
+		for (char *l = in.data; l && *l;) {
+			char *e = strchr(l, '\n');
+			if (e)
+				*e = 0;
+			if (!strncmp(l, "ERROR:", 6))
+				Con_Printf("QTV:%s\n", l + 6);
+			else if (!strncmp(l, key, kl) && l[kl] == ':') {
+				Con_Printf("  %s\n", l + kl + 2);
+				count++;
+			}
+			l = e ? e + 1 : NULL;
+		}
+		Con_Printf("%d found\n", count);
+	}
+	SB_Free(&in);
+}
+
+static void Qtvlist_f(int argc, const char **argv)
+{
+	qtv_query(argc > 1 ? argv[1] : last_qtv_host, "LIST", "STREAM", "streams");
+}
+
+static void Qtvdemos_f(int argc, const char **argv)
+{
+	qtv_query(argc > 1 ? argv[1] : last_qtv_host, "DEMOS", "DEMO", "demos");
+}
+
+/* --- tracking: whose view a server demo or stream shows ------------------------ */
+
+static bool has_view(int slot) { return slot >= 0 && slot < 256 && (demo.seen[slot >> 3] & (1 << (slot & 7))); }
+
+/* a player number (1-based, as the scoreboard counts) or name */
+static int find_player(const char *arg)
+{
+	char name[64];
+	bool numeric = arg[0] != 0;
+	for (const char *p = arg; *p; p++)
+		numeric &= *p >= '0' && *p <= '9';
+	if (numeric)
+		return atoi(arg) - 1;
+	for (int i = 0; i < CL_MAX_PLAYERS; i++)
+		if (CL_PlayerKey(i, "name", name, sizeof(name))[0] && !Str_ICmp(name, arg))
+			return i;
+	for (int i = 0; i < CL_MAX_PLAYERS; i++)
+		if (CL_PlayerKey(i, "name", name, sizeof(name))[0] && !Str_NICmp(name, arg, strlen(arg)))
+			return i;
+	return -1;
+}
+
+static void switch_track(int slot)
+{
+	if (slot == demo.track)
+		return;
+	demo.want_track = slot;
+	if (demo.qtv) {
+		char src[256], pwd[128];
+		Str_Copy(src, demo.qtv_source, sizeof(src));
+		Str_Copy(pwd, demo.qtv_password, sizeof(pwd));
+		qtv_start(src, pwd);
+	} else if (demo.play) {
+		char name[256];
+		double t = demo.play_time;
+		Str_Copy(name, demo.play_name, sizeof(name));
+		if (!start_playback(name, false))
+			return;
+		demo.seek_to = t;
+		demo.play_time = t;
+	}
+}
+
+static float player_score(int slot)
+{
+	char v[32];
+	const char *key = cl_autotrack->string;
+	if (!key[0] || !Str_ICmp(key, "auto") || !strcmp(key, "1"))
+		key = "frags";
+	return (float)atof(CL_PlayerKey(slot, key, v, sizeof(v)));
+}
+
+/* follows whoever is doing best */
+static void autotrack_frame(void)
+{
+	int best = -1;
+	char team[32], want[32];
+	if (!autotrack_on || !demo.multiview || demo.track < 0 || cl.realtime < demo.next_autotrack || demo.seek_to > 0)
+		return;
+	demo.next_autotrack = cl.realtime + 1;
+	Str_Copy(want, cl_autotrack_team->string, sizeof(want));
+	for (int i = 0; i < 256; i++) {
+		if (!has_view(i))
+			continue;
+		if (want[0] && Str_ICmp(CL_PlayerKey(i, "team", team, sizeof(team)), want))
+			continue;
+		if (best < 0 || player_score(i) > player_score(best))
+			best = i;
+	}
+	if (best >= 0 && best != demo.track && (!has_view(demo.track) || player_score(best) > player_score(demo.track)))
+		switch_track(best);
+}
+
+static void Track_f(int argc, const char **argv)
+{
+	int seat = isdigit((unsigned char)argv[0][5]) ? argv[0][5] - '1' : 0, slot;
+	if (argc < 2) {
+		Con_Printf("Usage: %s userid|nick|off\n", argv[0]);
+		return;
+	}
+	if (seat > 0) {
+		Con_Printf("there is only one player view (seat 1)\n");
+		return;
+	}
+	if (!demo.multiview) {
+		/* in a live game, the game's spectator code can follow the request */
+		if (cl.state < ca_loading || cl.demoplayback) {
+			Con_Printf("Not connected.\n");
+			return;
+		}
+		if (!Str_ICmp(argv[1], "off"))
+			CL_SendStringCmd("ptrack");
+		else if ((slot = find_player(argv[1])) >= 0)
+			CL_SendStringCmd(va("ptrack %d", slot));
+		else
+			Con_Printf("no player %s\n", argv[1]);
+		return;
+	}
+	autotrack_on = false;
+	if (!Str_ICmp(argv[1], "off")) {
+		Con_Printf("not tracking anyone\n");
+		return;
+	}
+	slot = find_player(argv[1]);
+	if (!has_view(slot)) {
+		Con_Printf("%s has no view in this demo\n", argv[1]);
+		return;
+	}
+	switch_track(slot);
+}
+
+static void Autotrack_f(int argc, const char **argv)
+{
+	autotrack_on = !autotrack_on;
+	demo.next_autotrack = 0;
+	Con_Printf("autotrack %s\n", autotrack_on ? "on" : "off");
+}
+
 /* called instead of reading the network while a demo plays */
 void CL_DemoReadPackets(double dt)
 {
 	bool frame_done = false;
-	if (!demo.play)
+	if (!demo.play && !demo.qtv)
 		return;
+	if (demo.qtv && !qtv_pump())
+		return;
+	autotrack_frame();
 	if (!demo.paused && !demo.timedemo)
 		demo.play_time += dt * BW_MAX(0.0f, demo_timescale->value);
 	if (demo.timedemo)
 		demo.td_frames++;
 	for (;;) {
 		if (!demo.have_next && !read_next()) {
+			if (demo.qtv && !demo.qtv_closed)
+				return; /* more is on its way */
 			end_playback(true);
 			return;
 		}
@@ -351,6 +815,20 @@ void CL_DemoReadPackets(double dt)
 			return;
 		}
 		demo.have_next = false;
+		if (demo.next_type == DR_VIEW) {
+			if (demo.next_len == 1) {
+				int v = demo.next_data[0];
+				demo.curview = v;
+				demo.multiview = true;
+				demo.seen[v >> 3] |= (uint8_t)(1 << (v & 7));
+				if (demo.track < 0)
+					demo.track = v;
+			}
+			continue;
+		}
+		/* another player's view */
+		if (demo.curview >= 0 && demo.curview != demo.track)
+			continue;
 		switch (demo.next_type) {
 		case DR_RELIABLE:
 		case DR_UNRELIABLE: {
@@ -358,7 +836,7 @@ void CL_DemoReadPackets(double dt)
 			MSG_Init(&m, demo.next_data, demo.next_len);
 			m.cursize = demo.next_len;
 			CL_ParseServerMessage(&m, demo.next_type == DR_RELIABLE);
-			if (!demo.play)
+			if (!demo.play && !demo.qtv)
 				return; /* the message ended the game */
 			break;
 		}
@@ -391,7 +869,7 @@ static void Stop_f(int argc, const char **argv)
 {
 	if (demo.rec)
 		stop_recording();
-	else if (demo.play)
+	else if (demo.play || demo.qtv)
 		end_playback(false);
 	else
 		Con_Printf("not recording or playing a demo\n");
@@ -422,7 +900,7 @@ static void DemoJump_f(int argc, const char **argv)
 {
 	double target;
 	if (argc < 2 || !demo.play) {
-		Con_Printf("usage: %s <seconds> (+n or -n to move by n)\n", argv[0]);
+		Con_Printf(demo.qtv ? "can't move around in a live stream\n" : "usage: %s <seconds> (+n or -n to move by n)\n", argv[0]);
 		return;
 	}
 	target = atof(argv[1]);
@@ -433,6 +911,7 @@ static void DemoJump_f(int argc, const char **argv)
 	if (target < demo.play_time) {
 		char name[256];
 		Str_Copy(name, demo.play_name, sizeof(name));
+		demo.want_track = demo.track;
 		if (!start_playback(name, false))
 			return;
 	}
@@ -442,12 +921,17 @@ static void DemoJump_f(int argc, const char **argv)
 
 static void DemoInfo_f(int argc, const char **argv)
 {
-	if (demo.play)
-		Con_Printf("playing %s at %.2f s%s, timescale %g\n", demo.play_name, demo.play_time, demo.paused ? " (paused)" : "",
-		           demo_timescale->value);
+	if (demo.play || demo.qtv)
+		Con_Printf("%s %s at %.2f s%s, timescale %g\n", demo.qtv ? "watching QTV" : "playing", demo.play_name, demo.play_time,
+		           demo.paused ? " (paused)" : "", demo_timescale->value);
+	if (demo.multiview && demo.track >= 0) {
+		char name[64];
+		Con_Printf("tracking player %d (%s)%s\n", demo.track + 1, CL_PlayerKey(demo.track, "name", name, sizeof(name)),
+		           autotrack_on ? ", autotrack on" : "");
+	}
 	if (demo.rec)
 		Con_Printf("recording %s%s\n", demo.rec_name, demo.waiting ? " (waiting for the game)" : "");
-	if (!demo.play && !demo.rec)
+	if (!demo.play && !demo.qtv && !demo.rec)
 		Con_Printf("no demo playing or recording\n");
 }
 
@@ -500,6 +984,7 @@ static void Demolist_f(int argc, const char **argv)
 	demolist_t l = {0};
 	FS_List("*.dem", true, list_demo, &l);
 	FS_List("demos/*.dem", true, list_demo, &l);
+	FS_List("demos/*.mvd", true, list_demo, &l);
 	Con_Printf("%d demos\n", l.n);
 }
 
@@ -514,6 +999,7 @@ static void Rmdemonum_f(int argc, const char **argv)
 	}
 	FS_List("*.dem", true, list_demo, &l);
 	FS_List("demos/*.dem", true, list_demo, &l);
+	FS_List("demos/*.mvd", true, list_demo, &l);
 	if (!l.found[0]) {
 		Con_Printf("no demo number %d\n", l.want);
 		return;
@@ -690,6 +1176,8 @@ void CL_DemoAbort(void)
 		fclose(demo.play);
 		demo.play = NULL;
 	}
+	if (demo.qtv)
+		qtv_close();
 	demo.timedemo = false;
 	cl.demoplayback = false;
 }
@@ -722,5 +1210,19 @@ void CL_InitDemos(void)
 	Cmd_AddD("demo_nudge", DemoNudge_f, "demo_nudge [frames]: step server frames forward (or back, negative)");
 	Cmd_AddD("rerecord", Rerecord_f, "Record again under the last name, from the start of the map");
 	Cmd_AddD("rmdemo", Rmdemo_f, "rmdemo <name>: delete a demo");
+	cl_autotrack = Cvar_Get("cl_autotrack", "auto", CVAR_ARCHIVE, "What autotrack follows: auto (frags) or a player key holding a score");
+	cl_autotrack_team = Cvar_Get("cl_autotrack_team", "", CVAR_ARCHIVE, "Autotrack only this team's players (empty: anyone)");
+	Cvar_Get("qtv_password_client", "", 0, "Password qtvlist and qtvdemos send");
+	demo.qtv_sock = -1;
+	demo.want_track = -1;
+	Cmd_AddD("qtvplay", Qtvplay_f, "qtvplay [stream@]host[:port] [password]: watch a game (or demo:<name>@host) streamed over QTV");
+	Cmd_AddD("qtvlist", Qtvlist_f, "qtvlist [host[:port]]: the streams a QTV server has");
+	Cmd_AddD("qtvdemos", Qtvdemos_f, "qtvdemos [host[:port]]: the demos a QTV server has");
+	Cmd_AddD("track", Track_f, "track <player|off>: whose view a server demo or QTV stream shows");
+	Cmd_AddD("track1", Track_f, "track1 <player|off>: whose view seat 1 shows");
+	Cmd_AddD("track2", Track_f, "track2 <player|off>: whose view seat 2 shows");
+	Cmd_AddD("track3", Track_f, "track3 <player|off>: whose view seat 3 shows");
+	Cmd_AddD("track4", Track_f, "track4 <player|off>: whose view seat 4 shows");
+	Cmd_AddD("autotrack", Autotrack_f, "Follow the best player in a server demo or QTV stream");
 	Cmd_AddD("demo_setspeed", DemoSetspeed_f, "demo_setspeed <scale>: playback speed (demo_timescale)");
 }

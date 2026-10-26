@@ -297,4 +297,22 @@ void W_bi_changeyaw(qcvm_t *vm);
 void W_bi_touchtriggers(qcvm_t *vm);
 void W_bi_checkpvs(qcvm_t *vm);
 
+/* sv_mvd.c: server demos and QTV streams */
+void SV_InitMVD(void);
+void SV_MVDFrame(void);
+void SV_MVDMapChanged(void);
+void SV_MVDMapSpawned(void);
+void SV_MVDShutdown(void);
+void SV_MVDReliable(client_t *c, const void *data, size_t len);
+void SV_MVDPendingFlags(int e, uint32_t flags);
+void SV_MVDSnapshot(client_t *c, const uint8_t *dgram, size_t len);
+void SV_MVDUsercmd(client_t *c, const usercmd_t *u);
+void SV_MVDClientSpawning(client_t *c);
+void SV_MVDClientDropped(client_t *c);
+/* sv_client.c, for recordings */
+void SV_ShadowSnapshot(const client_t *real, client_t *shadow, msg_t *m);
+void SV_ShadowReset(client_t *shadow);
+void SV_ShadowFree(client_t *shadow);
+void SV_CaptureSignon(client_t *c, strbuf_t *out);
+
 #endif
