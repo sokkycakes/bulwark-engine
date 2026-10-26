@@ -227,6 +227,11 @@ bool CIN_Playing(void);
 void CIN_Stop(void);
 /* cl_download.c */
 /* cl_emenu.c: the engine's own menus */
+/* cl_editor.c: edit and aliasedit */
+void ED_Init(void);
+bool ED_Active(void);
+void ED_Draw(int w, int h);
+bool ED_KeyEvent(int key, bool down, int unicode);
 void EM_Init(void);
 bool EM_Active(void);
 void EM_Draw(int w, int h);

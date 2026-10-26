@@ -299,6 +299,7 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.serverinfo, keep_serverinfo, sizeof(sv.serverinfo));
 	Str_Copy(sv.localinfo, keep_localinfo, sizeof(sv.localinfo));
 
+	Terrain_PrepareMap(mapname);
 	snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
 	sv.world = BSP_Load(path);
 	if (!sv.world) {
@@ -795,4 +796,5 @@ void SV_Init(void)
 	SV_InitDownloads();
 	SV_InitVoip();
 	SV_InitSQL();
+	SV_InitCompile();
 }

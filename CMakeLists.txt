@@ -28,6 +28,7 @@ add_library(bwcommon STATIC
 	src/common/infoblob.c
 	src/common/worker.c
 	src/common/plugin.c
+	src/common/terrain.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m Threads::Threads ${CMAKE_DL_LIBS})
 
@@ -55,6 +56,7 @@ target_link_libraries(qcrun bwqcvm)
 
 add_library(bwserver STATIC
 	src/server/sv_main.c
+	src/server/sv_compile.c
 	src/server/sv_world.c
 	src/server/sv_builtins.c
 	src/server/sv_client.c
@@ -98,6 +100,7 @@ add_library(bwclient STATIC
 	src/client/cl_cinematic.c
 	src/client/cl_voip.c
 	src/client/cl_emenu.c
+	src/client/cl_editor.c
 	src/client/cl_main.c
 	src/client/cl_input.c
 	src/client/cl_csqc.c
@@ -118,6 +121,7 @@ add_library(bwclient STATIC
 	src/render/r_part.c
 	src/render/r_tools.c
 	src/render/r_rtlights.c
+	src/render/r_viewer.c
 	src/render/r_hud.c
 	src/render/r_draw.c
 	src/render/r_model.c

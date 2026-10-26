@@ -132,7 +132,8 @@ void R_EndFrame(void)
 	bool game = cl.state == ca_active && cl.csqc;
 	if (!r_active)
 		return;
-	if (!game && !Con_IsActive() && !MQC_Active()) {
+	V_Draw(r_vwidth, r_vheight);
+	if (!game && !Con_IsActive() && !MQC_Active() && !V_Active() && !ED_Active()) {
 		/* nothing else on screen: show the console */
 		static const float black[3] = {0, 0, 0};
 		R_DrawFill(0, 0, (float)r_vwidth, (float)r_vheight, black, 1, 0);
@@ -157,10 +158,11 @@ void R_EndFrame(void)
 		}
 	}
 	EM_Draw(r_vwidth, r_vheight);
+	ED_Draw(r_vwidth, r_vheight);
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
 	R_ToolsEndFrame();
-	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode && !EM_Active());
+	VID_SetMouseGrab(((game && !cursor_mode) || V_Active()) && !Con_IsActive() && !EM_Active() && !ED_Active());
 	if (screenshot_pending[0]) {
 		take_screenshot(screenshot_pending);
 		screenshot_pending[0] = 0;
@@ -362,6 +364,7 @@ bool R_Init(bool headless)
 	Cmd_AddD("fog", Fog_f, "fog <density> [r g b]: set the fog (0 turns it off)");
 	R_InitTools();
 	R_InitRTLights();
+	V_Init();
 	R_InitScene();
 	r_active = false;
 	if (!headless && VID_Active()) {

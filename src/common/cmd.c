@@ -564,6 +564,24 @@ static void Cmd_Wait_f(int argc, const char **argv)
 	cbuf_wait = n > 0 ? n : 1;
 }
 
+void Cmd_SetAlias(const char *name, const char *text)
+{
+	alias_t *a;
+	for (a = alias_list; a; a = a->next)
+		if (!Str_ICmp(a->name, name))
+			break;
+	if (!a) {
+		a = Mem_Alloc(sizeof(*a));
+		a->level = -1;
+		a->name = Mem_Strdup(name);
+		a->next = alias_list;
+		alias_list = a;
+	} else {
+		Mem_Free(a->text);
+	}
+	a->text = Mem_Strdup(text);
+}
+
 /* "alias name "commands"": with no text it prints the alias, with no name all */
 static void Cmd_Alias_f(int argc, const char **argv)
 {
@@ -645,4 +663,5 @@ void Cmd_Init(void)
 	Mf_Init();
 	Worker_Init();
 	Plug_Init();
+	Terrain_Init();
 }

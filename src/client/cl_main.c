@@ -383,6 +383,14 @@ static void parse_serverdata(msg_t *m)
 	cl.playerent = MSG_ReadEntity(m);
 	Str_Copy(cl.mapname, MSG_ReadString(m), sizeof(cl.mapname));
 	Str_Copy(cl.worldpath, MSG_ReadString(m), sizeof(cl.worldpath));
+	if (!Str_NICmp(cl.worldpath, "maps/", 5) && strlen(cl.worldpath) > 9) {
+		char tn[128];
+		Str_Copy(tn, cl.worldpath + 5, sizeof(tn));
+		if (strlen(tn) > 4 && !Str_ICmp(tn + strlen(tn) - 4, ".bsp")) {
+			tn[strlen(tn) - 4] = 0;
+			Terrain_PrepareMap(tn);
+		}
+	}
 	Str_Copy(cl.csprogsname, MSG_ReadString(m), sizeof(cl.csprogsname));
 	cl.csprogscrc = (uint16_t)MSG_ReadUShort(m);
 	MSG_ReadLong(m); /* size, for a future download */
@@ -1023,5 +1031,6 @@ void CL_Init(void)
 	CL_InitCinematics();
 	CL_InitVoip();
 	EM_Init();
+	ED_Init();
 	IN_Init();
 }

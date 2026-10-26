@@ -362,6 +362,14 @@ void IN_KeyEvent(int key, bool down, int unicode)
 			Con_KeyEvent(key, unicode);
 		if (down || !held_command[key])
 			return;
+	} else if (ED_Active() && (down || !held_command[key])) {
+		/* the text editor takes every key while open */
+		ED_KeyEvent(key, down, unicode);
+		return;
+	} else if (V_Active() && (down || !held_command[key])) {
+		/* the model and map viewers take every key while open */
+		V_KeyEvent(key, down);
+		return;
 	} else if (EM_Active() && (down || !held_command[key])) {
 		/* the engine's menus take every key while open */
 		EM_KeyEvent(key, down, unicode);
@@ -411,7 +419,9 @@ void IN_MouseMove(float dx, float dy)
 {
 	static float olddx, olddy;
 	float mx = dx, my = dy;
-	if (Con_IsActive() || EM_Active())
+	if (Con_IsActive() || EM_Active() || ED_Active())
+		return;
+	if (V_MouseMove(dx, dy))
 		return;
 	if (MQC_InputEvent(2, dx, dy, 0))
 		return;

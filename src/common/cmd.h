@@ -29,6 +29,9 @@ void Cmd_Describe(const char *name, const char *description); /* only if it has 
 void Cmd_DescribeAll(void);
 /* native plugins (plugin.c) */
 void Plug_Init(void);
+/* terrain.c: heightmap maps, built into maps/<name>.bsp before it loads */
+void Terrain_Init(void);
+bool Terrain_PrepareMap(const char *name);
 void Plug_Frame(void);
 void Plug_Shutdown(void);
 void Cmd_InitCompat(void); /* cmd_compat.c */ /* help text for commands registered without any (cmd_extra.c) */
@@ -37,6 +40,7 @@ typedef void (*cmd_walk_fn)(const char *name, const char *text, void *ctx);
 void Cmd_ForEach(cmd_walk_fn fn, void *ctx);
 void Cmd_ForEachAlias(cmd_walk_fn fn, void *ctx);
 const char *Cmd_AliasText(const char *name);
+void Cmd_SetAlias(const char *name, const char *text); /* creates or replaces */
 /* writes the aliases as "alias" lines, for a config file */
 void Cmd_WriteAliases(strbuf_t *sb);
 bool Cmd_Exists(const char *name);

@@ -330,6 +330,10 @@ extern const qc_builtin_t sv_sql_builtins[];
 void SV_InitSQL(void);
 void SV_SQLShutdown(void);
 
+/* sv_compile.c */
+void SV_InitCompile(void);
+bool QC_Decompile(const char *name, const uint8_t *d, size_t size, strbuf_t *out);
+
 /* sv_voip.c */
 void SV_InitVoip(void);
 void SV_ParseVoice(client_t *c, msg_t *m);

@@ -75,4 +75,12 @@ void R_MainView(float origin[3], float forward[3]);
 /* $r_editlights_current_* macros (r_editlights); NULL for other names */
 const char *R_EditLightsMacro(const char *name);
 
+/* modelviewer and mapedit (r_viewer.c): while active they take keys and the mouse */
+bool V_Active(void);
+bool V_KeyEvent(int key, bool down);
+bool V_MouseMove(float dx, float dy);
+void V_Close(void);
+void V_Draw(int w, int h);
+void V_Init(void);
+
 #endif
