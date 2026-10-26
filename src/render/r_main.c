@@ -64,6 +64,7 @@ void R_ClearMap(void)
 {
 	R_ClearParticles();
 	R_FreeWorld();
+	R_FreeVoxels();
 	R_FreeModels();
 	for (int i = 0; i < cl.nummodels; i++)
 		cl.models[i].render = NULL;
@@ -219,6 +220,7 @@ bool R_Init(bool headless)
 	r_fullbright = Cvar_Get("r_fullbright", "0", 0, "Draw everything without lighting");
 	r_drawentities = Cvar_Get("r_drawentities", "1", 0, "Draw models and brush entities");
 	r_drawworld = Cvar_Get("r_drawworld", "1", 0, "Draw the world");
+	r_drawvoxels = Cvar_Get("r_drawvoxels", "1", 0, "Draw the voxel world");
 	r_novis = Cvar_Get("r_novis", "0", 0, "Ignore visibility data");
 	r_clearcolor = Cvar_Get("r_clearcolor", "0 0 0", CVAR_ARCHIVE, "Colour behind everything");
 	gl_texturemode = Cvar_Get("gl_texturemode", "linear", CVAR_ARCHIVE, "Texture filtering: linear or nearest");

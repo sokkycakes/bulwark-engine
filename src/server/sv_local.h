@@ -43,6 +43,7 @@ typedef struct {
 	bool active;
 	qcvm_t *vm;
 	bspmap_t *world;
+	struct vxworld_s *voxel;
 	char mapname[64];
 	char worldpath[128];
 	double time;
@@ -163,6 +164,25 @@ struct pmvars_s;
 void W_RunPlayerPhysics(qcvm_t *vm, int e, const struct pmvars_s *vars);
 void SV_SyncServerinfoCvars(bool broadcast);
 extern const qc_builtin_t sv_client_builtins[];
+void SV_ClientReliable(client_t *c, const msg_t *m);
+void SV_BroadcastReliable(const msg_t *m);
+/* voxel worlds (sv_voxel.c) */
+void SV_VoxelSignon(client_t *c);
+void SV_VoxelShutdown(void);
+extern const qc_builtin_t sv_voxel_builtins[];
+extern struct vxworld_s *vx_clientworld;
+const int *SV_LastVoxelCell(void); /* x, y, z, type of the last trace's voxel hit; type -1 if none */
+void VX_bi_voxel_cellforpoint(qcvm_t *vm);
+void VX_bi_voxel_cellorigin(qcvm_t *vm);
+void VX_bi_voxel_size(qcvm_t *vm);
+void VX_bi_voxel_blocksize(qcvm_t *vm);
+void VX_bi_voxel_count(qcvm_t *vm);
+void VX_bi_voxel_typeforname(qcvm_t *vm);
+void VX_bi_voxel_typename(qcvm_t *vm);
+void VX_bi_voxel_tracecell(qcvm_t *vm);
+void VX_bi_voxel_tracetype(qcvm_t *vm);
+void VX_bi_voxel_client_get(qcvm_t *vm);
+void VX_bi_voxel_client_getrot(qcvm_t *vm);
 
 /* sv_main.c */
 void SV_Init(void);
@@ -188,12 +208,14 @@ typedef struct {
 	int surfaceflags;
 	const char *surfacename;
 	int brush, brushside;
+	int voxelcell[4]; /* x, y, z, type of a voxel hit; [3] is -1 when none */
 } svtrace_t;
 
 typedef struct worldctx_s {
 	qcvm_t *vm;
 	bspmap_t *world;
 	bool (*brushmodel)(int modelindex, bspmap_t **bsp, int *submodel);
+	struct vxworld_s *voxel; /* the voxel grid, part of the world (ent 0) */
 } worldctx_t;
 /* Points the world functions (SV_Move and friends) at another module's
  * entities, e.g. the client's; NULL restores the server. Returns the previous

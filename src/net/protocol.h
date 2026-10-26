@@ -3,7 +3,7 @@
 #ifndef BW_PROTOCOL_H
 #define BW_PROTOCOL_H
 
-#define PROTOCOL_VERSION 1
+#define PROTOCOL_VERSION 2
 #define PROTOCOL_NAME "BULWARK"
 #define PORT_SERVER 27500
 
@@ -30,6 +30,7 @@ enum {
 	svc_pointparticles, /* varuint effect, coord x3 origin, float x3 direction, float count */
 	svc_trailparticles, /* varuint effect, entity, coord x3 start, coord x3 end */
 	svc_playerblob,   /* byte slot, string key, varuint length, bytes */
+	svc_voxel,        /* byte subcommand (VXN_*), see docs/spec/voxel.md */
 	svc_count
 };
 
@@ -43,6 +44,15 @@ enum {
 	clc_event,     /* string function, then typed arguments */
 	clc_userblob,  /* string key, varuint length, bytes */
 	clc_count
+};
+
+/* svc_voxel subcommands */
+enum {
+	VXN_INIT,  /* varuint size x3, float blocksize, float origin x3: a new empty world */
+	VXN_FREE,  /* no voxel world any more */
+	VXN_DEF,   /* varuint type, byte shape, long contents, byte rgba x4, byte flags, string name, string texture */
+	VXN_CHUNK, /* varuint cx, cy, cz, varuint length, run-length bytes (Vox_EncodeChunk) */
+	VXN_SET    /* varuint x, y, z, short type, byte rot */
 };
 
 /* svc_precache kinds */

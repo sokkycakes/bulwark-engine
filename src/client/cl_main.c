@@ -7,6 +7,8 @@
 #include "../common/fs.h"
 #include "../render/render.h"
 #include "../sound/sound.h"
+#include "../common/voxel.h"
+#include "../server/sv_local.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -334,6 +336,12 @@ bool CL_ForwardToServer(const char *line, int argc, const char **argv)
 
 /* --- server messages ------------------------------------------------------- */
 
+static void free_voxel(void)
+{
+	Vox_Free(vx_clientworld);
+	vx_clientworld = NULL;
+}
+
 static void load_world(void)
 {
 	BSP_Free(cl.world);
@@ -361,6 +369,7 @@ static void parse_serverdata(msg_t *m)
 	cl.playerent = MSG_ReadEntity(m);
 	Str_Copy(cl.mapname, MSG_ReadString(m), sizeof(cl.mapname));
 	Str_Copy(cl.worldpath, MSG_ReadString(m), sizeof(cl.worldpath));
+	free_voxel(); /* a new map: the server sends its voxels again */
 	Str_Copy(cl.csprogsname, MSG_ReadString(m), sizeof(cl.csprogsname));
 	cl.csprogscrc = (uint16_t)MSG_ReadUShort(m);
 	MSG_ReadLong(m); /* size, for a future download */
@@ -433,6 +442,80 @@ static void parse_sound(msg_t *m)
 		org[i] = MSG_ReadCoord(m);
 	if (idx > 0 && idx < (uint32_t)cl.numsounds && cl.sounds[idx])
 		S_StartSound(ent, chan, cl.sounds[idx], org, vol, atten, pitch, flags);
+}
+
+/* the voxel world mirror: the server sends it whole at signon and every
+ * change after that (sv_voxel.c, docs/spec/voxel.md) */
+
+static void parse_voxel(msg_t *m)
+{
+	int sub = MSG_ReadByte(m);
+	vxworld_t *w = vx_clientworld;
+	switch (sub) {
+	case VXN_INIT: {
+		int size[3];
+		float bs, org[3];
+		vxworld_t *nw;
+		for (int i = 0; i < 3; i++)
+			size[i] = (int)MSG_ReadVarUInt(m);
+		bs = MSG_ReadFloat(m);
+		for (int i = 0; i < 3; i++)
+			org[i] = MSG_ReadFloat(m);
+		if (m->badread)
+			break;
+		nw = Vox_Create(size, bs, org);
+		if (!nw) {
+			Con_Printf("^1voxel world %d %d %d from the server is out of range\n", size[0], size[1], size[2]);
+			m->badread = true;
+			break;
+		}
+		if (w)
+			memcpy(nw->defs, w->defs, sizeof(nw->defs));
+		free_voxel();
+		vx_clientworld = nw;
+		break;
+	}
+	case VXN_FREE:
+		free_voxel();
+		break;
+	case VXN_DEF: {
+		vxdef_t d = {0};
+		uint32_t type = MSG_ReadVarUInt(m);
+		d.shape = (uint8_t)MSG_ReadByte(m);
+		d.contents = (uint32_t)MSG_ReadLong(m);
+		for (int i = 0; i < 4; i++)
+			d.color[i] = (uint8_t)MSG_ReadByte(m);
+		d.flags = (uint8_t)MSG_ReadByte(m);
+		Str_Copy(d.name, MSG_ReadString(m), sizeof(d.name));
+		Str_Copy(d.texture, MSG_ReadString(m), sizeof(d.texture));
+		if (!m->badread && w && !Vox_Define(w, (int)type, &d))
+			Con_DPrintf("voxel: bad definition %u\n", type);
+		break;
+	}
+	case VXN_CHUNK: {
+		uint32_t cx = MSG_ReadVarUInt(m), cy = MSG_ReadVarUInt(m), cz = MSG_ReadVarUInt(m);
+		uint32_t len = MSG_ReadVarUInt(m);
+		if (m->badread || len > MSG_Remaining(m)) {
+			m->badread = true;
+			break;
+		}
+		if (w && !Vox_DecodeChunk(w, (int)cx, (int)cy, (int)cz, m->data + m->readpos, len))
+			Con_Printf("^1voxel: bad chunk %u %u %u from the server\n", cx, cy, cz);
+		m->readpos += len;
+		break;
+	}
+	case VXN_SET: {
+		uint32_t x = MSG_ReadVarUInt(m), y = MSG_ReadVarUInt(m), z = MSG_ReadVarUInt(m);
+		int type = MSG_ReadUShort(m), rot = MSG_ReadByte(m);
+		if (!m->badread && w && !Vox_Set(w, (int)x, (int)y, (int)z, type, rot))
+			Con_DPrintf("voxel: bad cell update %u %u %u\n", x, y, z);
+		break;
+	}
+	default:
+		Con_Printf("^1bad voxel message %d\n", sub);
+		m->badread = true;
+		break;
+	}
 }
 
 static void parse_server_message(msg_t *m, bool reliable)
@@ -569,6 +652,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_setangle:
 			for (int i = 0; i < 3; i++)
 				cl.viewangles[i] = MSG_ReadAngle(m);
+			break;
+		case svc_voxel:
+			parse_voxel(m);
 			break;
 		default:
 			Con_Printf("^1bad server message %d\n", c);

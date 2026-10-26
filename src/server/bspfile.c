@@ -374,6 +374,29 @@ static bool load_q1(bspmap_t *m, const uint8_t *d, size_t size)
 	return true;
 }
 
+/* A void map (maps/<name>.vxmap) is just an entity lump in a text file: a
+ * world with no brushes, used by games that build their level at run time
+ * out of voxels (docs/spec/voxel.md). It has one model so the world entity
+ * and model index 1 exist, with bounds that cover the voxel range. */
+static bool is_void_map(const char *path)
+{
+	size_t n = strlen(path);
+	return n > 6 && !Str_ICmp(path + n - 6, ".vxmap");
+}
+
+static void load_void(bspmap_t *m, const uint8_t *d, size_t size)
+{
+	m->type = BSP_NONE;
+	m->entities = Mem_Alloc(size + 1);
+	memcpy(m->entities, d, size);
+	m->nummodels = 1;
+	m->models = Mem_Alloc(sizeof(cmodel_t));
+	for (int i = 0; i < 3; i++) {
+		m->models[0].mins[i] = -32768;
+		m->models[0].maxs[i] = 32768;
+	}
+}
+
 bspmap_t *BSP_Load(const char *path)
 {
 	size_t size;
@@ -384,6 +407,11 @@ bspmap_t *BSP_Load(const char *path)
 		return NULL;
 	m = Mem_Alloc(sizeof(*m));
 	Str_Copy(m->name, path, sizeof(m->name));
+	if (is_void_map(path)) {
+		load_void(m, d, size);
+		Mem_Free(d);
+		return m;
+	}
 	if (size >= 8 && (!memcmp(d, "IBSP", 4) || !memcmp(d, "FBSP", 4) || !memcmp(d, "RBSP", 4)))
 		ok = load_q3(m, d, size);
 	else if (size >= 4) {
