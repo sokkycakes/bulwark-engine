@@ -174,6 +174,27 @@ and `tutorscheme` from `cstrike_na`, and `voxelscheme` from `estrike`.
   parent whose size the file does not give. `VGUI_LayoutPanels` therefore
   takes the parent size and a scale from the caller.
 
+## Localization files
+
+`resource/cso_na_en.txt` in `cstrike_na_en` is the same KeyValues syntax
+with a `"lang"` root and a `"Tokens"` block of `"Token" "text"` pairs.
+Labels in layouts refer to them as `#Token`.
+
+- **Encoding (observed).** UTF-16 little-endian with a BOM and CRLF line
+  ends. The readers here take bytes, so the file has to be converted to
+  UTF-8 first.
+- **Strings over several lines (observed).** 160 values run on past the
+  end of their line, for example the mission texts at line 900. Read with
+  strings ending at the newline, these break the pairing of everything
+  after them (`CSO_OverDeath_Check` ends up as a value). Read with
+  `KV_SPAN_LINES`, the file needs one repair (a key with no value at line
+  47,919) and the tokens checked (`CSO_GameMode_Zombi`,
+  `CSO_OverDeath_Check`, `CSO_origin`) come out right. So localization
+  files are read with `KV_SPAN_LINES`, and `.res` layouts without it.
+- **`\n` (observed).** Line breaks inside a text are also written as the
+  two characters `\n`. The reader leaves them as they are; turning them
+  into line breaks is for whatever draws the text.
+
 ## Limits and failure
 
 These make the reader fail instead of repairing:
