@@ -40,6 +40,7 @@ void QC_RunError(qcvm_t *vm, const char *fmt, ...)
 	va_end(ap);
 	Con_Printf("^1%s: QC error: %s\n", vm->name, buf);
 	QC_StackTrace(vm);
+	QC_CoreDump(vm, buf);
 	if (!vm->abort_jmp)
 		Sys_Error("%s: QC error outside of execution: %s", vm->name, buf);
 	vm->aborting = false;
@@ -95,6 +96,8 @@ static void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
 		}
 	}
 	vm->xfunction = fnum;
+	if (vm->debug_hooks)
+		QC_DebugFunctionEntered(vm, f);
 }
 
 /* returns the statement to continue at */
@@ -204,6 +207,8 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 			vm->xstatement = s;
 			QC_RunError(vm, "statement %d out of range", s);
 		}
+		if (vm->debug_hooks)
+			QC_DebugStatement(vm, s);
 		st = &vm->statements[s];
 		if (qc_profiling)
 			vm->functions[vm->xfunction].profile++;
@@ -645,7 +650,14 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 			f = &vm->functions[fnum];
 			if (f->builtin) {
 				vm->extra->calling_builtin = fnum;
-				f->builtin(vm);
+				if (vm->profiling) {
+					double t0 = Sys_Seconds();
+					f->builtin(vm);
+					f->prof_time += Sys_Seconds() - t0;
+					f->prof_calls++;
+				} else {
+					f->builtin(vm);
+				}
 				if (vm->curprogs != caller)
 					QC_SwitchProgs(vm, caller);
 				/* a builtin may have changed a cvar the progs reads as an autocvar */

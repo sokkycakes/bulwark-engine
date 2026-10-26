@@ -34,6 +34,16 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
   damage dicts lost their `damage` key and every bullet did 0 damage. Found
   by a probe (`Add` three keys, read one back) and by running Rad-Therapy's
   weapons against monsters. Up to 1024 tokens are kept.
+- `sprintf("%S", s)` quotes `s`; when it holds a quote, backslash, tab or
+  line break it uses the escaped form `\"..."` (with `\n`, `\t`, `\r`,
+  `\"`, `\\` inside) that `tokenize` and `tokenize_console` read back. This
+  matches what FTE writes in Nuclide's saved games. See
+  [console.md](console.md).
+- `findentityfield(name)` gives a field's number for `getentityfieldstring`
+  and friends, 0 when there's none; `entityfieldref(n)` gives the field
+  itself.
+- `SV_PerformSave` and `SV_PerformLoad` are called by `save` and `load`
+  with a file handle the game reads or writes; see [console.md](console.md).
 - `physics_supported` returns 0: there is no rigid-body physics yet.
 - Networking (`Write*`, `multicast`, `stuffcmd`, …) builtins are accepted and
   do nothing until the network layer exists.

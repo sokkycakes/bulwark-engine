@@ -570,3 +570,10 @@ void R_ShutdownMaterials(void)
 		}
 	}
 }
+
+void R_ForEachMaterial(void (*fn)(material_t *m, void *ctx), void *ctx)
+{
+	for (int i = 0; i < MAT_HASH; i++)
+		for (material_t *m = materials[i]; m; m = m->next)
+			fn(m, ctx);
+}

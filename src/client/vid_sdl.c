@@ -13,7 +13,7 @@
 static SDL_Window *window;
 static SDL_GLContext glctx;
 static bool grabbed;
-static cvar_t *vid_vsync;
+static cvar_t *vid_vsync, *vid_width, *vid_height, *vid_fullscreen;
 
 /* --- game controllers ------------------------------------------------------ */
 
@@ -218,6 +218,79 @@ static int map_key(SDL_Keycode k)
 	}
 }
 
+/* vid_restart/vid_reload: apply vid_width, vid_height and vid_fullscreen
+ * (0 windowed, 1 exclusive, 2 desktop). The GL context lives on, so the
+ * games are told the renderer restarted rather than everything reloading. */
+static void apply_mode(void)
+{
+	int w = vid_width->ivalue, h = vid_height->ivalue, fs = vid_fullscreen->ivalue;
+	if (!window)
+		return;
+	if (fs) {
+		if (fs == 1 && w > 0 && h > 0) {
+			SDL_DisplayMode mode;
+			if (SDL_GetWindowDisplayMode(window, &mode) == 0) {
+				mode.w = w;
+				mode.h = h;
+				SDL_SetWindowDisplayMode(window, &mode);
+			}
+		}
+		SDL_SetWindowFullscreen(window, fs == 1 ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_FULLSCREEN_DESKTOP);
+	} else {
+		SDL_SetWindowFullscreen(window, 0);
+		if (w > 0 && h > 0) {
+			SDL_SetWindowSize(window, w, h);
+			SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+		}
+	}
+}
+
+void VID_ApplyMode(void) { apply_mode(); }
+
+static void VidRestart_f(int argc, const char **argv)
+{
+	apply_mode();
+	CSQC_RendererRestarted();
+	MQC_RendererRestarted();
+}
+
+static void VidToggle_f(int argc, const char **argv)
+{
+	Cvar_Set("vid_fullscreen", vid_fullscreen->ivalue ? "0" : "2");
+	apply_mode();
+}
+
+/* in_restart: close every controller and open the ones plugged in */
+static void InRestart_f(int argc, const char **argv)
+{
+	for (int i = 0; i < MAX_PADS; i++)
+		if (pads[i].gc)
+			pad_close(pads[i].id);
+	for (int i = 0; i < SDL_NumJoysticks(); i++)
+		if (SDL_IsGameController(i))
+			pad_open(i);
+}
+
+/* in_deviceids: the controllers and their slots */
+static void InDeviceIds_f(int argc, const char **argv)
+{
+	Con_Printf("keyboard and mouse: device 0\n");
+	for (int i = 0; i < MAX_PADS; i++)
+		if (pads[i].gc)
+			Con_Printf("controller %d: %s\n", i, SDL_GameControllerName(pads[i].gc));
+}
+
+/* vid_modelist: the display's modes */
+static void VidModes_f(int argc, const char **argv)
+{
+	int display = window ? SDL_GetWindowDisplayIndex(window) : 0;
+	for (int i = 0; i < SDL_GetNumDisplayModes(display); i++) {
+		SDL_DisplayMode m;
+		if (SDL_GetDisplayMode(display, i, &m) == 0)
+			Con_Printf("%dx%d %dHz\n", m.w, m.h, m.refresh_rate);
+	}
+}
+
 bool VID_Init(int width, int height, bool fullscreen)
 {
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
@@ -247,6 +320,16 @@ bool VID_Init(int width, int height, bool fullscreen)
 		return false;
 	}
 	vid_vsync = Cvar_Get("vid_vsync", "1", CVAR_ARCHIVE, "Wait for the display before showing a frame");
+	vid_width = Cvar_Get("vid_width", va("%d", width), CVAR_ARCHIVE, "Window or screen width (vid_restart applies it)");
+	vid_height = Cvar_Get("vid_height", va("%d", height), CVAR_ARCHIVE, "Window or screen height (vid_restart applies it)");
+	vid_fullscreen = Cvar_Get("vid_fullscreen", fullscreen ? "2" : "0", CVAR_ARCHIVE,
+	                          "0 windowed, 1 fullscreen at vid_width x vid_height, 2 fullscreen at the desktop size");
+	Cmd_AddD("vid_restart", VidRestart_f, "Apply the video mode cvars and reload the games' renderer resources");
+	Cmd_AddD("vid_reload", VidRestart_f, "Reload the games' renderer resources");
+	Cmd_AddD("vid_toggle", VidToggle_f, "Switch between fullscreen and a window");
+	Cmd_AddD("vid_modelist", VidModes_f, "List the display's video modes");
+	Cmd_AddD("in_restart", InRestart_f, "Reopen the game controllers");
+	Cmd_AddD("in_deviceids", InDeviceIds_f, "List the input devices");
 	SDL_GL_SetSwapInterval(vid_vsync->value ? 1 : 0);
 	SDL_StartTextInput();
 	/* controllers are optional: devices already plugged in arrive as

@@ -168,13 +168,26 @@ int SV_Spawn(void)
  * fields named by its keys are filled in, __fullspawndata is set to the
  * entity's raw text, and the progs' CheckSpawn(spawnfunc) is called if it
  * has one; otherwise the function named by the classname is called. */
+static int spawn_entities(const char *data, bool world, int *first);
+
 static void spawn_map_entities(const char *data)
+{
+	spawn_entities(data, true, NULL);
+}
+
+/* entity text spawned into the running map, as ent_create does; returns
+ * how many blocks were spawned and the first one's number */
+int SV_SpawnEntitiesFromText(const char *data, int *first) { return spawn_entities(data, false, first); }
+
+static int spawn_entities(const char *data, bool world, int *first)
 {
 	qcvm_t *vm = sv.vm;
 	int checkspawn = QC_FindFunction(vm, "CheckSpawn");
 	int fullspawn = QC_GlobalOfs(vm, "__fullspawndata");
 	int count = 0, failed = 0;
-	bool world = true;
+	bool map = world;
+	if (first)
+		*first = 0;
 
 	for (;;) {
 		char token[64];
@@ -193,6 +206,8 @@ static void spawn_map_entities(const char *data)
 		e = world ? 0 : SV_Spawn();
 		if (world)
 			init_edict_defaults(0);
+		if (first && !*first)
+			*first = e;
 		next = QC_ParseEdict(vm, e, data, &ok);
 		if (!ok || !next) {
 			Con_Printf("^3entity lump: parse error\n");
@@ -235,18 +250,22 @@ static void spawn_map_entities(const char *data)
 		count++;
 		world = false;
 	}
-	Con_Printf("%d map entities parsed, %d with no QC function for their classname\n", count, failed);
+	if (map)
+		Con_Printf("%d map entities parsed, %d with no QC function for their classname\n", count, failed);
+	return count;
 }
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, sv_stat_builtins, sv_sql_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
+	SV_MVDMapChanged();
 	if (sv.vm) {
 		if (QC_FindFunction(sv.vm, "SV_Shutdown"))
 			QC_ExecuteByName(sv.vm, "SV_Shutdown");
+		SV_SQLShutdown();
 		QC_Free(sv.vm);
 		SV_FreeRoutes();
 	}
@@ -284,6 +303,7 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.serverinfo, keep_serverinfo, sizeof(sv.serverinfo));
 	Str_Copy(sv.localinfo, keep_localinfo, sizeof(sv.localinfo));
 
+	Terrain_PrepareMap(mapname);
 	Host_Loading("server_world", mapname, 0.0f);
 	/* maps/<name>.scene wins over maps/<name>.bsp; its MapInstance names the world */
 	snprintf(path, sizeof(path), "maps/%s.scene", mapname);
@@ -421,6 +441,8 @@ bool SV_SpawnServer(const char *mapname)
 	}
 	sv.spawning = false;
 	SV_ClientsMapChanged();
+	SV_MVDMapSpawned();
+	SV_MasterMapSpawned();
 	QC_CollectGarbage(vm, true);
 	Con_Printf("map %s: %d entities in use, %d models, %d sounds precached\n", mapname,
 	           vm->num_edicts, sv.nummodels - 1, sv.numsounds - 1);
@@ -781,6 +803,7 @@ void SV_Frame(double dt)
 	while (accum >= sv.frametime) {
 		accum -= sv.frametime;
 		if (!sv.paused) {
+			SV_CompatFrame();
 			SV_Physics();
 			sv.time += sv.frametime;
 			sv.frames++;
@@ -853,7 +876,8 @@ static void SV_Changelevel_f(int argc, const char **argv)
 		return;
 	}
 	SV_SaveSpawnParms();
-	SV_SpawnServer(argv[1]);
+	if (SV_SpawnServer(argv[1]))
+		SV_SaveLevelChanged();
 }
 
 static void SV_Status_f(int argc, const char **argv)
@@ -967,4 +991,15 @@ void SV_Init(void)
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);
+	SV_InitCommands();
+	SV_InitSaves();
+	SV_InitCompat();
+	SV_InitAdmin();
+	SV_InitRoutes();
+	SV_InitMVD();
+	SV_InitMaster();
+	SV_InitDownloads();
+	SV_InitVoip();
+	SV_InitSQL();
+	SV_InitCompile();
 }

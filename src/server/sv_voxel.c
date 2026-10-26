@@ -72,25 +72,25 @@ static void send_world(client_t *c)
 	if (!w) {
 		MSG_WriteByte(&m, svc_voxel);
 		MSG_WriteByte(&m, VXN_FREE);
-		c ? SV_ClientReliable(c, &m) : SV_BroadcastReliable(&m);
+		c ? SV_ClientReliableMsg(c, &m) : SV_BroadcastReliable(&m);
 		Mem_Free(big);
 		return;
 	}
 	write_init(&m, w);
-	c ? SV_ClientReliable(c, &m) : SV_BroadcastReliable(&m);
+	c ? SV_ClientReliableMsg(c, &m) : SV_BroadcastReliable(&m);
 	for (int t = 1; t < VX_MAX_TYPES; t++) {
 		if (!w->defs[t].defined)
 			continue;
 		MSG_Clear(&m);
 		write_def(&m, w, t);
-		c ? SV_ClientReliable(c, &m) : SV_BroadcastReliable(&m);
+		c ? SV_ClientReliableMsg(c, &m) : SV_BroadcastReliable(&m);
 	}
 	for (int cz = 0; cz < w->nchunks[2]; cz++)
 		for (int cy = 0; cy < w->nchunks[1]; cy++)
 			for (int cx = 0; cx < w->nchunks[0]; cx++) {
 				MSG_Clear(&m);
 				if (write_chunk(&m, w, cx, cy, cz, false))
-					c ? SV_ClientReliable(c, &m) : SV_BroadcastReliable(&m);
+					c ? SV_ClientReliableMsg(c, &m) : SV_BroadcastReliable(&m);
 			}
 	Mem_Free(big);
 }

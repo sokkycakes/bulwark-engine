@@ -26,7 +26,6 @@
  * under the direct sound */
 #define LATE_LEVEL 0.12f
 #define SOUND_SPEED 13500.0f /* units per second, taking a unit as an inch */
-#define BW_CLAMP(v, lo, hi) BW_MIN(BW_MAX((v), (lo)), (hi))
 
 /* reverbinfo_t as fteextensions.qc lays it out: EFX reverb properties */
 typedef struct {

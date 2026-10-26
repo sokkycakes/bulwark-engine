@@ -821,6 +821,20 @@ static void bi_sprintf(qcvm_t *vm)
 			}
 			case 's': case 'S': {
 				const char *s = QC_GetString(vm, p->i);
+				if (conv == 'S' && Str_NeedsEscape(s)) {
+					/* text a plain quoted string can't hold: \"escaped" */
+					SB_Append(&sb, "\\\"", 2);
+					for (; *s; s++) {
+						const char *e = *s == '\n' ? "\\n" : *s == '\t' ? "\\t" : *s == '\r' ? "\\r" :
+						                *s == '"' ? "\\\"" : *s == '\\' ? "\\\\" : NULL;
+						if (e)
+							SB_AppendStr(&sb, e);
+						else
+							SB_Append(&sb, s, 1);
+					}
+					SB_Append(&sb, "\"", 1);
+					break;
+				}
 				if (conv == 'S')
 					SB_Append(&sb, "\"", 1);
 				spec[sl++] = 's';
@@ -897,6 +911,14 @@ static void bi_tokenize(qcvm_t *vm)
 		if (p[0] == '/' && p[1] == '/')
 			break;
 		start = p;
+		if (p[0] == '\\' && p[1] == '"') {
+			size_t len = strlen(p);
+			char *buf = Mem_Alloc(len + 1);
+			size_t n = Str_ParseEscaped(&p, buf, len + 1);
+			token_add(vm, src, buf, n, start, p);
+			Mem_Free(buf);
+			continue;
+		}
 		if (*p == '"') {
 			const char *q = ++p;
 			while (*p && *p != '"')
@@ -1109,8 +1131,26 @@ static void bi_cvar_description(qcvm_t *vm)
 	QC_ReturnString(vm, v && v->description ? v->description : "");
 }
 
-static void bi_cvar_set(qcvm_t *vm) { Cvar_Set(QC_PSTR(vm, 0), QC_PSTR(vm, 1)); }
-static void bi_cvar_setf(qcvm_t *vm) { Cvar_SetValue(QC_PSTR(vm, 0), QC_PFLOAT(vm, 1)); }
+/* the execution level QC's commands and cvar changes get: the menu is the
+ * player's own front end; the client game can come from a server */
+static int qc_execlevel(const qcvm_t *vm)
+{
+	return vm->kind == QCVM_MENU ? RESTRICT_MAX : (int)Cvar_Value("cmd_gamecodelevel");
+}
+
+static void bi_cvar_set(qcvm_t *vm)
+{
+	int saved = Cmd_LowerExecLevel(qc_execlevel(vm));
+	Cvar_Set(QC_PSTR(vm, 0), QC_PSTR(vm, 1));
+	Cmd_RestoreExecLevel(saved);
+}
+
+static void bi_cvar_setf(qcvm_t *vm)
+{
+	int saved = Cmd_LowerExecLevel(qc_execlevel(vm));
+	Cvar_SetValue(QC_PSTR(vm, 0), QC_PFLOAT(vm, 1));
+	Cmd_RestoreExecLevel(saved);
+}
 
 static void bi_registercvar(qcvm_t *vm)
 {
@@ -1145,7 +1185,8 @@ static void bi_localcmd(qcvm_t *vm)
 {
 	strbuf_t sb = {0};
 	concat_args(vm, 0, &sb);
-	Cbuf_AddText(sb.data);
+	/* game code runs at cmd_gamecodelevel, so restricted commands stay out of its reach */
+	Cbuf_AddTextAtLevel(sb.data ? sb.data : "", qc_execlevel(vm));
 	SB_Free(&sb);
 }
 
@@ -1155,7 +1196,7 @@ static void bi_checkcommand(qcvm_t *vm)
 	QC_ReturnFloat(vm, (Cmd_Exists(n) || Cvar_Find(n)) ? 1 : 0);
 }
 
-static const char *const supported_extensions[] = {
+const char *const qc_supported_extensions[] = {
 	"FRIK_FILE", "FTE_STRINGS", "DP_QC_SPRINTF", "DP_QC_TOKENIZEBYSEPARATOR", "DP_QC_FINDFLOAT",
 	"DP_QC_FINDFLAGS", "DP_QC_MINMAXBOUND", "DP_QC_SINCOSSQRTPOW", "DP_QC_RANDOMVEC",
 	"DP_QC_CVAR_STRING", "DP_QC_CVAR_DEFSTRING", "DP_QC_CVAR_TYPE", "DP_QC_ETOS", "DP_QC_EDICT_NUM",
@@ -1168,8 +1209,8 @@ static const char *const supported_extensions[] = {
 static void bi_checkextension(qcvm_t *vm)
 {
 	const char *n = QC_PSTR(vm, 0);
-	for (int i = 0; supported_extensions[i]; i++)
-		if (!Str_ICmp(supported_extensions[i], n)) {
+	for (int i = 0; qc_supported_extensions[i]; i++)
+		if (!Str_ICmp(qc_supported_extensions[i], n)) {
 			QC_ReturnFloat(vm, 1);
 			return;
 		}
@@ -1389,6 +1430,24 @@ static void bi_entityfieldtype(qcvm_t *vm)
 	QC_ReturnFloat(vm, d ? (float)(d->type & ~DEF_SAVEGLOBAL) : 0);
 }
 
+/* a field's number by name; 0 (the unnamed first field) when there's none */
+static void bi_findentityfield(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 0);
+	for (int i = 1; i < vm->numfielddefs; i++)
+		if (vm->fielddefs[i].name && !strcmp(vm->fielddefs[i].name, name)) {
+			QC_ReturnFloat(vm, (float)i);
+			return;
+		}
+	QC_ReturnFloat(vm, 0);
+}
+
+static void bi_entityfieldref(qcvm_t *vm)
+{
+	qcdef_t *d = field_by_num(vm, (int)QC_PFLOAT(vm, 0));
+	QC_ReturnInt(vm, d ? (int32_t)d->ofs : 0);
+}
+
 static void bi_getentityfieldstring(qcvm_t *vm)
 {
 	qcdef_t *d = field_by_num(vm, (int)QC_PFLOAT(vm, 0));
@@ -1540,7 +1599,8 @@ const qc_builtin_t qc_builtins_core[] = {
 	{"findradius", bi_findradius}, {"copyentity", bi_copyentity},
 	{"numentityfields", bi_numentityfields}, {"entityfieldname", bi_entityfieldname},
 	{"entityfieldtype", bi_entityfieldtype}, {"getentityfieldstring", bi_getentityfieldstring},
-	{"putentityfieldstring", bi_putentityfieldstring}, {"parseentitydata", bi_parseentitydata},
+	{"putentityfieldstring", bi_putentityfieldstring}, {"findentityfield", bi_findentityfield},
+	{"entityfieldref", bi_entityfieldref}, {"parseentitydata", bi_parseentitydata},
 
 	{"memalloc", bi_memalloc}, {"memrealloc", bi_memrealloc}, {"memfree", bi_memfree},
 	{"memcpy", bi_memcpy}, {"memcmp", bi_memcmp}, {"memfill8", bi_memfill8},

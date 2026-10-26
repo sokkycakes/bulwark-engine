@@ -6,7 +6,10 @@
 #include "common/cmd.h"
 #include "common/cvar.h"
 #include "common/fs.h"
+#include "common/manifest.h"
+#include "common/worker.h"
 #include "net/net.h"
+#include "net/pkg.h"
 #include "server/sv_local.h"
 
 static bool quit_requested;
@@ -61,14 +64,15 @@ int main(int argc, char **argv)
 	Cvar_Init();
 	Cmd_Init();
 	FS_Init(basedir);
-	if (!numgames)
-		games[numgames++] = "base";
-	for (int i = 0; i < numgames; i++)
-		FS_AddGameDir(games[i]);
+	Mf_Startup(games, numgames);
 	NET_Init();
+	PKG_Init();
 	SV_Init();
+	QC_InitDebugCommands();
 	Cmd_Add("quit", Quit_f);
 	Cmd_Add("path", Path_f);
+	Cmd_DescribeAll();
+	Cmd_ProtectLocal();
 	Cmd_SetPreHook(ServerFallback);
 
 	if (FS_FileExists("server.cfg"))
@@ -96,10 +100,14 @@ int main(int argc, char **argv)
 		}
 		host_time += dt;
 		NET_RunDelayed();
+		PKG_Frame();
+		Worker_Frame();
+		Plug_Frame();
 		SV_Frame(dt);
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("status");
+	Plug_Shutdown();
 	SV_Shutdown();
 	return 0;
 }

@@ -14,6 +14,14 @@
 extern const qc_builtin_t r_builtins[];
 
 bool R_Init(bool headless);
+/* fn gets the next frame as a JPEG; false when nothing is drawn (headless) */
+typedef void (*r_capture_fn)(const void *jpeg, size_t len);
+bool R_CaptureScreen(r_capture_fn fn);
+/* fn gets every frame's pixels (RGB, rows bottom up) until set to NULL */
+typedef void (*r_grab_fn)(const uint8_t *rgb, int w, int h);
+void R_SetFrameGrab(r_grab_fn fn);
+/* encodes RGB rows bottom up as png, jpg, tga or bmp; false for others */
+bool R_EncodeImage(const char *ext, const uint8_t *rgb, int w, int h, int quality, strbuf_t *out);
 void R_Shutdown(void);
 bool R_Active(void);           /* true when there is a window to draw into */
 void R_GetSize(int *w, int *h);
@@ -26,6 +34,9 @@ void R_NewMap(void);             /* cl.world is loaded */
 /* particle effects by their index in cl.particles */
 void R_PointParticles(int index, const float *org, const float *dir, float count);
 void R_TrailParticles(int index, const float *start, const float *end);
+
+/* a click on a showpic picture with a command; true if it ran one */
+bool R_ShowpicTouch(float x, float y);
 
 void R_BeginFrame(void);
 void R_EndFrame(void);          /* draws the console and presents */
@@ -50,5 +61,26 @@ void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const ui
                        int blend);      /* image 0 draws untextured */
 void R_Set2DClip(float x, float y, float w, float h);
 void R_Reset2DClip(void);
+
+/* simple 2D drawing in virtual pixels, for the engine's own menus: text
+ * in the console font at a size (8 is the font's own), boxes, pictures */
+float R_Text(float x, float y, const char *text, float size, const float *rgb, float alpha);
+float R_TextWidth(const char *text, float size);
+void R_Rect(float x, float y, float w, float h, const float *rgb, float alpha);
+bool R_Picture(float x, float y, float w, float h, const char *name, float alpha); /* false if there's no such picture */
+bool R_PictureSize(const char *name, int *w, int *h);
+
+/* the main view's origin and forward direction, from the last frame */
+void R_MainView(float origin[3], float forward[3]);
+/* $r_editlights_current_* macros (r_editlights); NULL for other names */
+const char *R_EditLightsMacro(const char *name);
+
+/* modelviewer and mapedit (r_viewer.c): while active they take keys and the mouse */
+bool V_Active(void);
+bool V_KeyEvent(int key, bool down);
+bool V_MouseMove(float dx, float dy);
+void V_Close(void);
+void V_Draw(int w, int h);
+void V_Init(void);
 
 #endif

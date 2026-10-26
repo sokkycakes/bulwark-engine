@@ -11,6 +11,10 @@ void FS_Init(const char *basedir);
 void FS_AddGameDir(const char *gamedir);
 const char *FS_GameDir(void); /* the writable (most recently added) game directory */
 const char *FS_BaseDir(void);
+void FS_Restart(void); /* rescan packages */
+int FS_NumGameDirs(void);
+const char *FS_GameDirAt(int i); /* 0 is the base game, searched last */
+void FS_SetGameDirs(const char *const *dirs, int count);
 
 /* returns a NUL-terminated Mem_Alloc'd buffer, or NULL */
 char *FS_LoadFile(const char *path, size_t *len);

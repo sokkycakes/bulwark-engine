@@ -8,9 +8,13 @@
 #include <time.h>
 
 int developer = 0;
-static con_hook_fn con_hook;
+static con_hook_fn con_hook, con_log_hook;
+static strbuf_t *con_redirect;
+
+void Con_Redirect(strbuf_t *sb) { con_redirect = sb; }
 
 void Con_SetHook(con_hook_fn fn) { con_hook = fn; }
+void Con_SetLogHook(con_hook_fn fn) { con_log_hook = fn; }
 
 static loading_hook_fn loading_hook;
 
@@ -26,6 +30,10 @@ void Con_Print(const char *text)
 {
 	if (con_hook)
 		con_hook(text);
+	if (con_log_hook)
+		con_log_hook(text);
+	if (con_redirect)
+		SB_AppendStr(con_redirect, text);
 	fputs(text, stdout);
 	fflush(stdout);
 }
@@ -146,6 +154,37 @@ int Str_NICmp(const char *a, const char *b, size_t n)
 			return ca - cb;
 	}
 	return 0;
+}
+
+bool Str_NeedsEscape(const char *s)
+{
+	return strpbrk(s, "\"\\\n\r\t") != NULL;
+}
+
+size_t Str_ParseEscaped(const char **pp, char *out, size_t outsize)
+{
+	const char *p = *pp + 2; /* past \" */
+	size_t n = 0;
+	while (*p && *p != '"') {
+		char c = *p++;
+		if (c == '\\' && *p) {
+			c = *p++;
+			if (c == 'n')
+				c = '\n';
+			else if (c == 't')
+				c = '\t';
+			else if (c == 'r')
+				c = '\r';
+		}
+		if (n + 1 < outsize)
+			out[n++] = c;
+	}
+	if (*p == '"')
+		p++;
+	if (outsize)
+		out[n] = 0;
+	*pp = p;
+	return n;
 }
 
 bool Str_WildMatch(const char *p, const char *s, bool nocase)

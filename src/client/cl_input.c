@@ -6,12 +6,14 @@
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../ui/ui.h"
+#include "../render/render.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 static char *bindings[K_MAX];
+static uint8_t bindlevel[K_MAX]; /* the level a binding runs at, less than RESTRICT_MAX after bindlevel */
 static bool keydown[K_MAX];
 
 static cvar_t *cl_forwardspeed, *cl_backspeed, *cl_sidespeed, *cl_upspeed, *cl_yawspeed, *cl_pitchspeed;
@@ -94,6 +96,8 @@ void Key_SetBinding(int key, const char *b)
 		return;
 	Mem_Free(bindings[key]);
 	bindings[key] = b && *b ? Mem_Strdup(b) : NULL;
+	/* a bind a server or game code made runs at their level when pressed */
+	bindlevel[key] = (uint8_t)BW_CLAMP(Cmd_ExecLevel(), 0, RESTRICT_MAX);
 }
 
 bool Key_IsDown(int key) { return key >= 0 && key < K_MAX && keydown[key]; }
@@ -101,8 +105,38 @@ bool Key_IsDown(int key) { return key >= 0 && key < K_MAX && keydown[key]; }
 void Key_WriteBindings(strbuf_t *sb)
 {
 	for (int k = 0; k < K_MAX; k++)
-		if (bindings[k])
+		if (bindings[k] && bindlevel[k] < RESTRICT_MAX)
+			SB_Printf(sb, "bindlevel %s %d \"%s\"\n", Key_NameForNum(k), bindlevel[k], bindings[k]);
+		else if (bindings[k])
 			SB_Printf(sb, "bind %s \"%s\"\n", Key_NameForNum(k), bindings[k]);
+}
+
+/* bindlevel <key> <level> [command]: a binding that runs at a lower
+ * execution level, so it can't reach restricted commands */
+static void Bindlevel_f(int argc, const char **argv)
+{
+	int k;
+	if (argc < 3) {
+		Con_Printf("%s <key> <level> [command] : attach a command to a key\n", argv[0]);
+		return;
+	}
+	k = Key_NumForName(argv[1]);
+	if (k < 0 || k >= K_MAX) {
+		Con_Printf("\"%s\" isn't a valid key\n", argv[1]);
+		return;
+	}
+	if (argc > 3) {
+		char cmd[1024] = "";
+		for (int i = 3; i < argc; i++) {
+			if (i > 3)
+				Str_Cat(cmd, " ", sizeof(cmd));
+			Str_Cat(cmd, argv[i], sizeof(cmd));
+		}
+		Key_SetBinding(k, cmd);
+	}
+	if (bindings[k])
+		bindlevel[k] = (uint8_t)BW_CLAMP(atoi(argv[2]), 0, BW_MIN(RESTRICT_MAX, Cmd_ExecLevel()));
+	Con_Printf("\"%s\" (level %d) = \"%s\"\n", argv[1], bindings[k] ? bindlevel[k] : RESTRICT_MAX, Key_GetBinding(k));
 }
 
 static void Bind_f(int argc, const char **argv)
@@ -162,7 +196,7 @@ typedef struct {
 enum {
 	B_FORWARD, B_BACK, B_MOVELEFT, B_MOVERIGHT, B_MOVEUP, B_MOVEDOWN, B_LEFT, B_RIGHT, B_LOOKUP, B_LOOKDOWN, B_SPEED,
 	B_JUMP, B_ATTACK, B_ATTACK2, B_USE, B_RELOAD, B_DUCK, B_SPRINT, B_PRONE, B_BUTTON3, B_BUTTON4, B_BUTTON5,
-	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_COUNT
+	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_STRAFE, B_KLOOK, B_ROLLLEFT, B_ROLLRIGHT, B_COUNT
 };
 static kbutton_t buttons[B_COUNT];
 static int pending_impulse;
@@ -231,11 +265,66 @@ BUTTON_CMDS(button5, B_BUTTON5)
 BUTTON_CMDS(button6, B_BUTTON6)
 BUTTON_CMDS(button7, B_BUTTON7)
 BUTTON_CMDS(button8, B_BUTTON8)
+BUTTON_CMDS(strafe, B_STRAFE)
+BUTTON_CMDS(klook, B_KLOOK)
+BUTTON_CMDS(rollleft, B_ROLLLEFT)
+BUTTON_CMDS(rollright, B_ROLLRIGHT)
+static cvar_t *cl_6dof, *cl_rollspeed;
+
+/* the mouse always looks around; +mlook and -mlook are kept so old configs
+ * that bind them don't print errors */
+static void mlook_f(int argc, const char **argv) {}
+
+/* +button0 .. +button19 by number: 0 and 2 are attack and jump, 3-8 the
+ * buttons above, 1 is bit 8 (256) and 9-19 the bits after it */
+static kbutton_t numbered[20];
+static void numbered_button(int argc, const char **argv)
+{
+	int n = atoi(argv[0] + 7);
+	if (n < 0 || n >= 20)
+		return;
+	if (argv[0][0] == '+')
+		key_down(&numbered[n], argc, argv);
+	else
+		key_up(&numbered[n], argc, argv);
+}
+
+static uint32_t numbered_bits(void)
+{
+	uint32_t bits = 0;
+	for (int n = 0; n < 20; n++) {
+		kbutton_t *b = &numbered[n];
+		if (!b->active && !b->impulse_down)
+			continue;
+		if (n == 0)
+			bits |= 1;
+		else if (n == 1)
+			bits |= 256;
+		else if (n == 2)
+			bits |= 2;
+		else if (n <= 8)
+			bits |= 1u << (n - 1);
+		else
+			bits |= 512u << (n - 9);
+	}
+	return bits;
+}
 
 static void Impulse_f(int argc, const char **argv)
 {
 	if (argc > 1)
 		pending_impulse = atoi(argv[1]);
+}
+
+/* the pitch limit, which 6dof lifts (and lets the view roll instead) */
+static void clamp_pitch(void)
+{
+	if (cl_6dof && cl_6dof->ivalue)
+		return;
+	if (cl.viewangles[0] > 89)
+		cl.viewangles[0] = 89;
+	if (cl.viewangles[0] < -89)
+		cl.viewangles[0] = -89;
 }
 
 static float button_amount(kbutton_t *b)
@@ -259,6 +348,10 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		return; /* key repeat on a held button */
 	keydown[key] = down;
 
+	if (Con_ChatMode() && down) {
+		Con_ChatKey(key, unicode);
+		return;
+	}
 	if (key == '`' || key == '~') {
 		if (down)
 			Con_ToggleConsole();
@@ -271,9 +364,27 @@ void IN_KeyEvent(int key, bool down, int unicode)
 			Con_KeyEvent(key, unicode);
 		if (down || !held_command[key])
 			return;
+	} else if (ED_Active() && (down || !held_command[key])) {
+		/* the text editor takes every key while open */
+		ED_KeyEvent(key, down, unicode);
+		return;
+	} else if (V_Active() && (down || !held_command[key])) {
+		/* the model and map viewers take every key while open */
+		V_KeyEvent(key, down);
+		return;
+	} else if (EM_Active() && (down || !held_command[key])) {
+		/* the engine's menus take every key while open */
+		EM_KeyEvent(key, down, unicode);
+		return;
 	} else if ((down || !held_command[key]) && UI_KeyEvent(key, down, unicode)) {
 		return; /* a menu or other input view is open */
 	} else if (down || !held_command[key]) {
+		/* a film takes every key while it plays */
+		if (CIN_KeyEvent(key, down))
+			return;
+		/* a showpic picture with a command takes clicks on it */
+		if (key == K_MOUSE1 && down && R_ShowpicTouch(in_mouse_x / R_Get2DScale(), in_mouse_y / R_Get2DScale()))
+			return;
 		/* an open menu, then the game, get first look at keys */
 		if (MQC_InputEvent(down ? 0 : 1, (float)key, (float)unicode, 0))
 			return;
@@ -302,10 +413,9 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		Mem_Free(held_command[key]);
 		held_command[key] = Mem_Strdup(b);
 		snprintf(cmd, sizeof(cmd), "%s %d\n", b, key);
-		Cbuf_AddText(cmd);
+		Cbuf_AddTextAtLevel(cmd, bindlevel[key]);
 	} else {
-		Cbuf_AddText(b);
-		Cbuf_AddText("\n");
+		Cbuf_AddTextAtLevel(va("%s\n", b), bindlevel[key]);
 	}
 }
 
@@ -313,11 +423,15 @@ void IN_MouseMove(float dx, float dy)
 {
 	static float olddx, olddy;
 	float mx = dx, my = dy;
-	if (Con_IsActive())
+	if (Con_IsActive() || EM_Active() || ED_Active())
+		return;
+	if (V_MouseMove(dx, dy))
 		return;
 	if (MQC_InputEvent(2, dx, dy, 0))
 		return;
 	if (CSQC_InputEvent(2, dx, dy, 0))
+		return;
+	if (HUD_MouseMove(dx, dy))
 		return;
 	if (m_filter->ivalue) {
 		mx = (dx + olddx) * 0.5f;
@@ -327,10 +441,7 @@ void IN_MouseMove(float dx, float dy)
 	olddy = dy;
 	cl.viewangles[1] -= m_yaw->value * mx * sensitivity->value;
 	cl.viewangles[0] += m_pitch->value * my * sensitivity->value;
-	if (cl.viewangles[0] > 89)
-		cl.viewangles[0] = 89;
-	if (cl.viewangles[0] < -89)
-		cl.viewangles[0] = -89;
+	clamp_pitch();
 	cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
 }
 
@@ -389,29 +500,60 @@ static float stick(float v)
 
 /* --- commands ------------------------------------------------------------- */
 
+/* rotate <degrees> [seconds]: turn the view, at once or over a time */
+static float rotate_left, rotate_rate;
+
+static void Rotate_f(int argc, const char **argv)
+{
+	float secs;
+	if (argc < 2) {
+		Con_Printf("rotate <degrees> [seconds]: turn the view left (negative turns right)\n");
+		return;
+	}
+	secs = argc > 2 ? (float)atof(argv[2]) : 0;
+	if (secs <= 0) {
+		cl.viewangles[1] += (float)atof(argv[1]);
+		rotate_left = 0;
+		return;
+	}
+	rotate_left = (float)atof(argv[1]);
+	rotate_rate = fabsf(rotate_left) / secs;
+}
+
 static void fill_command(usercmd_t *u, double now)
 {
 	float speed = (cl_run->ivalue ^ buttons[B_SPEED].active) ? 1.0f : cl_movespeedkey->value;
 	float dt = (float)cl.frametime;
 	float joy_move[2];
 	unsigned bits = 0;
-	/* keyboard turning */
-	cl.viewangles[1] += dt * cl_yawspeed->value * (button_amount(&buttons[B_LEFT]) - button_amount(&buttons[B_RIGHT]));
+	/* keyboard turning; +strafe makes the turn keys strafe, +klook makes
+	 * forward and back look up and down */
+	bool strafe = buttons[B_STRAFE].active, klook = buttons[B_KLOOK].active;
+	float turn = button_amount(&buttons[B_LEFT]) - button_amount(&buttons[B_RIGHT]);
+	float walk = button_amount(&buttons[B_FORWARD]), walkback = button_amount(&buttons[B_BACK]);
+	if (!strafe)
+		cl.viewangles[1] += dt * cl_yawspeed->value * turn;
+	if (rotate_left != 0) {
+		float step = BW_MIN(fabsf(rotate_left), rotate_rate * dt);
+		step = rotate_left < 0 ? -step : step;
+		cl.viewangles[1] += step;
+		rotate_left -= step;
+	}
 	cl.viewangles[0] += dt * cl_pitchspeed->value * (button_amount(&buttons[B_LOOKDOWN]) - button_amount(&buttons[B_LOOKUP]));
-	if (cl.viewangles[0] > 89)
-		cl.viewangles[0] = 89;
-	if (cl.viewangles[0] < -89)
-		cl.viewangles[0] = -89;
+	if (cl_6dof->ivalue)
+		cl.viewangles[2] += dt * cl_rollspeed->value * (button_amount(&buttons[B_ROLLRIGHT]) - button_amount(&buttons[B_ROLLLEFT]));
+	if (klook) {
+		cl.viewangles[0] += dt * cl_pitchspeed->value * (walkback - walk);
+		walk = walkback = 0;
+	}
+	clamp_pitch();
 
 	/* controller sticks: right one turns, left one moves */
 	if (joy_enable->ivalue && !Con_IsActive()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
 		cl.viewangles[1] -= dt * joy_yawspeed->value * rx;
 		cl.viewangles[0] += dt * joy_pitchspeed->value * ry * (joy_invert->ivalue ? -1 : 1);
-		if (cl.viewangles[0] > 89)
-			cl.viewangles[0] = 89;
-		if (cl.viewangles[0] < -89)
-			cl.viewangles[0] = -89;
+		clamp_pitch();
 		joy_move[0] = -ly * joy_movescale->value;
 		joy_move[1] = lx * joy_movescale->value;
 	} else {
@@ -419,10 +561,9 @@ static void fill_command(usercmd_t *u, double now)
 	}
 
 	VectorCopy(cl.viewangles, u->angles);
-	u->movevalues[0] = speed * (cl_forwardspeed->value * button_amount(&buttons[B_FORWARD]) -
-	                            cl_backspeed->value * button_amount(&buttons[B_BACK]));
+	u->movevalues[0] = speed * (cl_forwardspeed->value * walk - cl_backspeed->value * walkback);
 	u->movevalues[1] = speed * cl_sidespeed->value *
-	                   (button_amount(&buttons[B_MOVERIGHT]) - button_amount(&buttons[B_MOVELEFT]));
+	                   (button_amount(&buttons[B_MOVERIGHT]) - button_amount(&buttons[B_MOVELEFT]) - (strafe ? turn : 0));
 	u->movevalues[0] += speed * (joy_move[0] > 0 ? cl_forwardspeed->value : cl_backspeed->value) * joy_move[0];
 	u->movevalues[1] += speed * cl_sidespeed->value * joy_move[1];
 	for (int k = 0; k < 2; k++) {
@@ -449,6 +590,7 @@ static void fill_command(usercmd_t *u, double now)
 		bits |= 64;
 	if (buttons[B_DUCK].active || buttons[B_BUTTON8].active)
 		bits |= 128;
+	bits |= numbered_bits();
 	u->buttons = bits;
 	u->impulse = (uint8_t)pending_impulse;
 	u->sequence = cl.clientcommandframe;
@@ -474,11 +616,14 @@ void CL_BuildCommand(double now)
 	}
 	/* the server receives whole milliseconds, so predict with the same */
 	u->msec = roundf(u->msec * 1000) / 1000;
+	CL_DemoUsercmd(u);
 	cl.clientcommandframe++;
 	cl.cmd_start = now;
 	pending_impulse = 0;
 	for (int i = 0; i < B_COUNT; i++)
 		buttons[i].impulse_down = false;
+	for (int i = 0; i < 20; i++)
+		numbered[i].impulse_down = false;
 	memset(&cl.cmds[cl.clientcommandframe % CL_CMD_BACKUP], 0, sizeof(usercmd_t));
 }
 
@@ -490,8 +635,25 @@ bool CL_GetInputState(uint32_t seq, usercmd_t *out)
 	return out->sequence == seq;
 }
 
+/* +p1 <button> .. -p4 <button>: a button for one player of a split screen.
+ * There is one view here, so player 1's run as plain +button and the
+ * others' have no one to go to. */
+static void Seat_f(int argc, const char **argv)
+{
+	int seat = argv[0][2] - '1';
+	if (seat != 0) {
+		Con_DPrintf("%s: there is only one player view (seat 1)\n", argv[0]);
+		return;
+	}
+	Cmd_ExecuteString(va("%c%s", argv[0][0], Cmd_Args()));
+}
+
 void IN_Init(void)
 {
+	for (int i = 1; i <= 4; i++) {
+		Cmd_AddD(va("+p%d", i), Seat_f, "+pN <button>: press a button for split screen player N");
+		Cmd_AddD(va("-p%d", i), Seat_f, "-pN <button>: release a button for split screen player N");
+	}
 	cl_forwardspeed = Cvar_Get("cl_forwardspeed", "450", CVAR_ARCHIVE, "Forward move value at full speed");
 	cl_backspeed = Cvar_Get("cl_backspeed", "450", CVAR_ARCHIVE, "Backward move value");
 	cl_sidespeed = Cvar_Get("cl_sidespeed", "450", CVAR_ARCHIVE, "Strafe move value");
@@ -516,6 +678,8 @@ void IN_Init(void)
 	Cmd_Add("unbind", Unbind_f);
 	Cmd_Add("unbindall", Unbindall_f);
 	Cmd_Add("bindlist", Bindlist_f);
+	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");
+	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
 	Cmd_Add("impulse", Impulse_f);
 #define ADD(n)                                                                                                         \
 	Cmd_Add("+" #n, n##_down);                                                                                         \
@@ -545,7 +709,24 @@ void IN_Init(void)
 	ADD(button6);
 	ADD(button7);
 	ADD(button8);
+	ADD(strafe);
+	ADD(klook);
+	ADD(rollleft);
+	ADD(rollright);
+	cl_6dof = Cvar_Get("cl_6dof", "0", 0, "No pitch limit and a rolling view (the server's 6dof cheat sets it)");
+	cl_rollspeed = Cvar_Get("cl_rollspeed", "200", CVAR_ARCHIVE, "Degrees a second +rollleft and +rollright turn in 6dof");
+	Cmd_Add("+mlook", mlook_f);
+	Cmd_Add("-mlook", mlook_f);
 #undef ADD
+	for (int n = 0; n < 20; n++) {
+		char name[16];
+		if (n >= 3 && n <= 8)
+			continue; /* registered above */
+		snprintf(name, sizeof(name), "+button%d", n);
+		Cmd_Add(name, numbered_button);
+		name[0] = '-';
+		Cmd_Add(name, numbered_button);
+	}
 }
 
 /* the pointer moved while not grabbed (menus, cursor mode) */

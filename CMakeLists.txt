@@ -11,12 +11,18 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 	add_compile_definitions(_GNU_SOURCE)
 endif()
 
+find_package(Threads REQUIRED)
+
 add_library(bwcommon STATIC
 	src/common/common.c
 	src/common/digest.c
 	src/common/cvar.c
 	src/common/cmd.c
+	src/common/cmd_extra.c
+	src/common/cmd_compat.c
+	src/common/bsptool.c
 	src/common/fs.c
+	src/common/manifest.c
 	src/common/pmove.c
 	src/common/skel.c
 	src/common/studio.c
@@ -26,10 +32,13 @@ add_library(bwcommon STATIC
 	src/common/voxel.c
 	src/common/vbsp.c
 	src/thirdparty/lzma/LzmaDec.c
+	src/common/worker.c
+	src/common/plugin.c
+	src/common/terrain.c
 	src/common/stb_image_impl.c
 	src/common/json.c
 	src/common/ftew.c)
-target_link_libraries(bwcommon PUBLIC m)
+target_link_libraries(bwcommon PUBLIC m Threads::Threads ${CMAKE_DL_LIBS})
 
 add_library(bwscene STATIC
 	src/scene/scene.c
@@ -40,8 +49,10 @@ target_link_libraries(bwscene PUBLIC bwcommon)
 add_library(bwnet STATIC
 	src/net/msg.c
 	src/net/net.c
+	src/net/http.c
+	src/net/pkg.c
 	src/net/netchan.c)
-target_link_libraries(bwnet PUBLIC bwcommon)
+target_link_libraries(bwnet PUBLIC bwcommon Threads::Threads ${CMAKE_DL_LIBS})
 
 add_library(bwqcvm STATIC
 	src/qcvm/qcvm.c
@@ -49,6 +60,7 @@ add_library(bwqcvm STATIC
 	src/qcvm/qc_strings.c
 	src/qcvm/qc_builtins_core.c
 	src/qcvm/qc_extra.c
+	src/qcvm/qc_debug.c
 	src/qcvm/qc_skel.c
 	src/qcvm/qc_autocvar.c
 	src/qcvm/qc_modelevents.c)
@@ -59,11 +71,22 @@ target_link_libraries(qcrun bwqcvm)
 
 add_library(bwserver STATIC
 	src/server/sv_main.c
+	src/server/sv_compile.c
 	src/server/sv_world.c
 	src/server/sv_builtins.c
 	src/server/sv_client.c
 	src/server/sv_pmove.c
 	src/server/sv_route.c
+	src/server/sv_cmds.c
+	src/server/sv_save.c
+	src/server/sv_compat.c
+	src/server/sv_admin.c
+	src/server/sv_mvd.c
+	src/server/sv_master.c
+	src/server/sv_download.c
+	src/server/sv_voip.c
+	src/server/sv_sql.c
+	src/server/sv_stats.c
 	src/server/sv_voxel.c
 	src/server/bspfile.c
 	src/server/bsp_source.c
@@ -134,12 +157,24 @@ add_library(bwui STATIC
 target_link_libraries(bwui PUBLIC bwserver PRIVATE PanoramaEngine)
 
 add_library(bwclient STATIC
+	src/client/cl_master.c
+	src/client/cl_download.c
+	src/client/cl_capture.c
+	src/client/cl_cinematic.c
+	src/client/cl_voip.c
+	src/client/cl_emenu.c
+	src/client/cl_editor.c
 	src/client/cl_main.c
 	src/client/cl_input.c
 	src/client/cl_csqc.c
 	src/client/cl_menu.c
 	src/client/console.c
+	src/client/cl_cmds.c
+	src/client/cl_chat.c
+	src/client/cl_tp.c
+	src/client/cl_demo.c
 	src/render/r_main.c
+	src/render/r_overlay.c
 	src/render/r_gl.c
 	src/render/r_image.c
 	src/render/r_material.c
@@ -149,6 +184,10 @@ add_library(bwclient STATIC
 	src/render/r_debug.c
 	src/render/r_decal.c
 	src/render/r_part.c
+	src/render/r_tools.c
+	src/render/r_rtlights.c
+	src/render/r_viewer.c
+	src/render/r_hud.c
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c

@@ -315,6 +315,26 @@ void FS_AddGameDir(const char *gamedir)
 	add_packs(fs_numgamedirs - 1);
 }
 
+/* rescans the packages of every game directory, for files added while running */
+void FS_Restart(void)
+{
+	free_packs();
+	for (int i = 0; i < fs_numgamedirs; i++)
+		add_packs(i);
+}
+
+int FS_NumGameDirs(void) { return fs_numgamedirs; }
+const char *FS_GameDirAt(int i) { return i >= 0 && i < fs_numgamedirs ? fs_gamedirs[i] : NULL; }
+
+/* replaces the game directories (first is searched last) and rescans */
+void FS_SetGameDirs(const char *const *dirs, int count)
+{
+	free_packs();
+	fs_numgamedirs = 0;
+	for (int i = 0; i < count; i++)
+		FS_AddGameDir(dirs[i]);
+}
+
 const char *FS_GameDir(void) { return fs_numgamedirs ? fs_gamedirs[fs_numgamedirs - 1] : ""; }
 
 bool FS_SafeName(const char *path)

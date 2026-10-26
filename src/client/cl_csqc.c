@@ -271,7 +271,8 @@ bool CSQC_Load(void)
 	tables[3] = qc_builtins_core;
 	tables[4] = qc_builtins_extra;
 	tables[5] = ui_builtins;
-	tables[6] = NULL;
+	tables[6] = cl_hostcache_builtins;
+	tables[7] = NULL;
 	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)
@@ -360,6 +361,18 @@ bool CSQC_Load(void)
 	}
 	cl.csqc_initialised = true;
 	return true;
+}
+
+/* the renderer was reset (vid_restart, vid_reload): the game reloads
+ * what it keeps of it, fonts and shaders */
+void CSQC_RendererRestarted(void)
+{
+	qcvm_t *vm = cl.csqc;
+	if (!vm || !CS.RendererRestarted || !R_Active())
+		return;
+	vm->globals[OFS_PARM(0)].i = QC_NewString(vm, "");
+	vm->argc = 1;
+	QC_Execute(vm, CS.RendererRestarted);
 }
 
 void CSQC_WorldLoaded(void)
@@ -522,26 +535,20 @@ void CSQC_Frame(int width, int height)
 	vm->globals[OFS_PARM(1)].f = (float)height;
 	vm->globals[OFS_PARM(2)].f = MQC_Active() ? 0 : 1; /* "notmenu" */
 	vm->argc = 3;
-	{
-		float before[3];
-		VectorCopy(cl.viewangles, before);
-		QC_Execute(vm, CS.UpdateView);
-		/* the game turns the player by writing view_angles or through
-		 * setproperty(VF_CL_VIEWANGLES); the latter must not be undone */
-		if (CS.view_angles >= 0) {
-			const float *va = &vm->globals[CS.view_angles].f;
-			if (va[0] != before[0] || va[1] != before[1] || va[2] != before[2])
-				VectorCopy(va, cl.viewangles);
-		}
-	}
+	/* view_angles is the game's working copy for this view: bob and roll
+	 * written to it change the camera only. The game turns the player
+	 * through setproperty(VF_CL_VIEWANGLES) or input_angles instead. */
+	QC_Execute(vm, CS.UpdateView);
 	QC_CollectGarbage(vm, false);
 }
+
+static bool cmd_forced;
 
 bool CSQC_ConsoleCommand(const char *line)
 {
 	qcvm_t *vm = cl.csqc;
 	cmd_tokens_t *t;
-	bool known = false;
+	bool known = cmd_forced;
 	if (!vm || !CS.ConsoleCommand)
 		return false;
 	t = Mem_Alloc(sizeof(*t));
@@ -833,10 +840,16 @@ static void cl_setlocaluserinfo(qcvm_t *vm)
 {
 	const char *k = QC_PSTR(vm, 1), *val = QC_PSTR(vm, 2);
 	cvar_t *v = Cvar_Find(k);
+	int saved;
+	/* only userinfo: turning some other cvar (rcon_password) into userinfo
+	 * would send it to the server */
+	if (v && !(v->flags & CVAR_USERINFO))
+		return;
 	if (!v)
 		v = Cvar_Get(k, "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
-	v->flags |= CVAR_USERINFO;
+	saved = Cmd_LowerExecLevel((int)Cvar_Value("cmd_gamecodelevel"));
 	Cvar_Set(k, val);
+	Cmd_RestoreExecLevel(saved);
 }
 
 static void cl_registercommand(qcvm_t *vm)
@@ -849,8 +862,96 @@ static void cl_registercommand(qcvm_t *vm)
 		registered[numregistered++] = Mem_Strdup(n);
 }
 
+/* getentitytoken([resetstring]): the next token of the map's entity lump.
+ * An empty or null argument starts over from the map; any other text is
+ * tokenised instead of the map. Either way that call returns "" and the
+ * next one returns the first token: Nuclide's CSQC_WorldLoaded resets with
+ * getentitytoken(0) and expects the following call to give the "{".
+ * Returns "" at the end. */
+static char *enttok_text;
+static const char *enttok_pos;
+static void cl_getentitytoken(qcvm_t *vm)
+{
+	char tok[1024];
+	if (vm->argc > 0) {
+		const char *s = QC_GetString(vm, QC_Parm(vm, 0)->i);
+		Mem_Free(enttok_text);
+		enttok_text = Mem_Strdup(s && *s ? s : (cl.world && cl.world->entities ? cl.world->entities : ""));
+		enttok_pos = enttok_text;
+		QC_ReturnString(vm, "");
+		return;
+	}
+	if (!enttok_pos || !(enttok_pos = COM_Parse(enttok_pos, tok, sizeof(tok)))) {
+		QC_ReturnString(vm, "");
+		return;
+	}
+	QC_ReturnString(vm, tok);
+}
+
 static void cl_isserver(qcvm_t *vm) { QC_ReturnFloat(vm, cl.listen ? 1 : 0); }
-static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
+/* 2 for a demo holding every player's view (a server demo or QTV stream) */
+static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, !cl.demoplayback ? 0 : CL_DemoMultiview() ? 2 : 1); }
+
+float CL_StatFloat(int i)
+{
+	float f;
+	if (i < 0 || i > 255)
+		return 0;
+	if (cl.stattype[i] == 8)
+		return (float)(int32_t)cl.statval[i];
+	if (cl.stattype[i] == 1)
+		return cl.statstr[i] ? (float)atof(cl.statstr[i]) : 0;
+	memcpy(&f, &cl.statval[i], 4);
+	return f;
+}
+
+int CL_StatInt(int i)
+{
+	if (i < 0 || i > 255)
+		return 0;
+	if (cl.stattype[i] == 2)
+		return (int)CL_StatFloat(i);
+	if (cl.stattype[i] == 1)
+		return cl.statstr[i] ? atoi(cl.statstr[i]) : 0;
+	return (int32_t)cl.statval[i];
+}
+
+const char *CL_StatString(int i) { return i >= 0 && i < 256 && cl.stattype[i] == 1 && cl.statstr[i] ? cl.statstr[i] : ""; }
+
+/* getstatf(num [, firstbit, bitcount]): with bits, part of the stat as a whole number */
+static void cl_getstatf(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	if (vm->argc > 1) {
+		int first = (int)QC_PFLOAT(vm, 1), count = vm->argc > 2 ? (int)QC_PFLOAT(vm, 2) : 1;
+		uint32_t v = (uint32_t)CL_StatInt(i);
+		if (first < 0 || first > 31 || count <= 0)
+			QC_ReturnFloat(vm, 0);
+		else
+			QC_ReturnFloat(vm, (float)((v >> first) & (count >= 32 ? 0xffffffffu : (1u << count) - 1)));
+		return;
+	}
+	QC_ReturnFloat(vm, CL_StatFloat(i));
+}
+
+static void cl_getstati(qcvm_t *vm) { QC_ReturnInt(vm, CL_StatInt((int)QC_PFLOAT(vm, 0))); }
+static void cl_getstats(qcvm_t *vm) { QC_ReturnString(vm, CL_StatString((int)QC_PFLOAT(vm, 0))); }
+
+/* getplayerstat(player, stat, type): only our own (or, in a demo, the tracked player's) */
+static void cl_getplayerstat(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 1), type = (int)QC_PFLOAT(vm, 2);
+	if ((int)QC_PFLOAT(vm, 0) != cl.playerslot) {
+		QC_ReturnInt(vm, 0);
+		return;
+	}
+	if (type == 1)
+		QC_ReturnString(vm, CL_StatString(i));
+	else if (type == 8 || type == 4)
+		QC_ReturnInt(vm, CL_StatInt(i));
+	else
+		QC_ReturnFloat(vm, CL_StatFloat(i));
+}
 static void cl_clientstate(qcvm_t *vm) { QC_ReturnFloat(vm, cl.state == ca_active ? 2 : cl.state >= ca_loading ? 1 : 0); }
 
 static void cl_getentity(qcvm_t *vm)
@@ -924,7 +1025,6 @@ static void cl_findkeysforcommandex(qcvm_t *vm)
 }
 
 static void cl_setsensitivityscaler(qcvm_t *vm) { (void)vm; }
-static void cl_zero(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 static void cl_nop(qcvm_t *vm) { (void)vm; }
 
 static void cl_getlightstyle(qcvm_t *vm)
@@ -979,7 +1079,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"getplayerkeyblob", cl_getplayerkeyblob}, {"getlocaluserinfoblob", cl_getlocaluserinfoblob},
 	{"setlocaluserinfoblob", cl_setlocaluserinfoblob}, {"getlocaluserinfo", cl_getlocaluserinfo},
 	{"setlocaluserinfo", cl_setlocaluserinfo}, {"registercommand", cl_registercommand},
-	{"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
+	{"getentitytoken", cl_getentitytoken}, {"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
 	{"setpause", cl_setpause}, {"particleeffectnum", cl_particleeffectnum},
 	{"setorigin", cl_setorigin}, {"setsize", cl_setsize}, {"setmodel", cl_setmodel}, {"setmodelindex", cl_setmodelindex},
 	{"precache_model", cl_precache_model}, {"getmodelindex", cl_getmodelindex},
@@ -992,7 +1092,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"findkeysforcommand", cl_findkeysforcommand}, {"findkeysforcommandex", cl_findkeysforcommandex},
 	{"setsensitivityscaler", cl_setsensitivityscaler}, {"getlightstyle", cl_getlightstyle},
 	{"lightstyle", cl_lightstyle}, {"anglesub", cl_anglesub},
-	{"getstatf", cl_zero}, {"getstati", cl_zero}, {"getstats", cl_zero}, {"getplayerstat", cl_zero},
+	{"getstatf", cl_getstatf}, {"getstati", cl_getstati}, {"getstats", cl_getstats}, {"getplayerstat", cl_getplayerstat},
 	{"setwatchpoint", cl_nop}, {"gp_rumble", cl_nop}, {"gp_rumbletriggers", cl_nop}, {"gp_setledcolor", cl_nop},
 	{"gp_settriggerfx", cl_nop},
 	{"voxel_get", VX_bi_voxel_client_get}, {"voxel_getrot", VX_bi_voxel_client_getrot},
@@ -1001,3 +1101,14 @@ const qc_builtin_t cl_builtins[] = {
 	{"voxel_typeforname", VX_bi_voxel_typeforname}, {"voxel_typename", VX_bi_voxel_typename},
 	{"voxel_tracecell", VX_bi_voxel_tracecell}, {"voxel_tracetype", VX_bi_voxel_tracetype},
 	{NULL, NULL}};
+
+/* cl_cmd: the line goes to CSQC_ConsoleCommand whether or not the client
+ * game registered the command */
+bool CSQC_ForceCommand(const char *line)
+{
+	bool r;
+	cmd_forced = true;
+	r = CSQC_ConsoleCommand(line);
+	cmd_forced = false;
+	return r;
+}

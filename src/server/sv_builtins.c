@@ -306,6 +306,9 @@ static void bi_particleeffectnum(qcvm_t *vm)
 
 static void bi_dropped(qcvm_t *vm) { (void)vm; }
 
+/* logfrag(killer, victim): a line in the frag log (fraglogfile) */
+static void bi_logfrag(qcvm_t *vm) { SV_LogFrag(QC_PENT(vm, 0), QC_PENT(vm, 1)); }
+
 static void bi_localsound(qcvm_t *vm) { (void)vm; }
 
 
@@ -485,6 +488,6 @@ const qc_builtin_t sv_builtins[] = {
 	{"makestatic", bi_makestatic}, {"registercommand", bi_registercommand}, {"getentitytoken", bi_getentitytoken},
 	{"frameforname", bi_frameforname}, {"frameduration", bi_frameduration}, {"frametoname", bi_frametoname},
 	{"modelframecount", bi_modelframecount},
-	{"setattachment", bi_dropped}, {"logfrag", bi_dropped},
+	{"setattachment", bi_dropped}, {"logfrag", bi_logfrag},
 	{"openportal", bi_dropped},
 	{NULL, NULL}};

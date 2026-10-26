@@ -667,3 +667,49 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 
 void R_Set2DClip(float x, float y, float w, float h) { R_SetClip(x, y, w, h); }
 void R_Reset2DClip(void) { R_ResetClip(); }
+
+/* a loaded font: false for a free slot */
+bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *numsizes)
+{
+	const font_t *f;
+	if (slot < 0 || slot >= MAX_FONTS || !fonts[slot].used)
+		return false;
+	f = &fonts[slot];
+	*name = f->name;
+	*truetype = f->ttf != NULL;
+	*numsizes = f->numsizes;
+	for (int i = 0; i < f->numsizes; i++)
+		sizes[i] = f->sizes[i].pixelsize;
+	return true;
+}
+
+/* --- the plain interface (render.h) ------------------------------------------------- */
+
+float R_Text(float x, float y, const char *text, float size, const float *rgb, float alpha)
+{
+	return R_DrawString(x, y, text, size, size, rgb, alpha, 0, true);
+}
+
+float R_TextWidth(const char *text, float size) { return R_StringWidth(text, size, size, true); }
+
+void R_Rect(float x, float y, float w, float h, const float *rgb, float alpha) { R_DrawFill(x, y, w, h, rgb, alpha, 0); }
+
+bool R_PictureSize(const char *name, int *w, int *h)
+{
+	int handle = R_ImageHandle(name);
+	*w = *h = 0;
+	if (!handle)
+		return false;
+	R_ImageSize(handle, w, h);
+	return *w > 0;
+}
+
+bool R_Picture(float x, float y, float w, float h, const char *name, float alpha)
+{
+	static const float white[3] = {1, 1, 1};
+	material_t *m = R_FindMaterial(name, MATF_2D);
+	if (!m)
+		return false;
+	R_DrawPic(x, y, w, h, m, 0, 0, 1, 1, white, alpha, 0);
+	return true;
+}

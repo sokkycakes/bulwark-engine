@@ -13,6 +13,8 @@
 #include "../common/common.h"
 #include "progs.h"
 
+#include <stdio.h>
+
 typedef int32_t string_t;
 typedef int32_t func_t;
 
@@ -37,6 +39,9 @@ typedef struct {
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
 	uint64_t profile; /* statements run in this function while qc_profiling */
+	/* profile_ssqc and friends */
+	uint64_t prof_statements, prof_calls;
+	double prof_time; /* builtins only */
 } qcfunc_t;
 
 typedef struct {
@@ -216,6 +221,13 @@ struct qcvm_s {
 
 	/* the model name behind a modelindex, for skeletons and tags */
 	const char *(*modelname)(qcvm_t *vm, int modelindex);
+
+	/* debugging (qc_debug.c): any of these makes the interpreter call in */
+	bool debug_hooks;
+	bool profiling;
+	double profile_start;
+	char breakpoint[64];
+	struct qc_watch_s *watch;
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs
@@ -283,6 +295,12 @@ const char *QC_ParseEdict(qcvm_t *vm, int e, const char *data, bool *ok);
 bool QC_SetFieldFromString(qcvm_t *vm, int e, qcdef_t *field, const char *value);
 void QC_FieldToString(qcvm_t *vm, int e, qcdef_t *field, char *out, size_t outsize);
 
+/* file handles opened by the engine for the game (qc_extra.c); the game
+ * normally closes them with fclose, QC_CloseHandle covers when it doesn't */
+int QC_OpenWriteHandle(qcvm_t *vm, FILE *fp);
+int QC_OpenReadHandle(qcvm_t *vm, const char *data, size_t len);
+void QC_CloseHandle(qcvm_t *vm, int h);
+
 /* memory */
 void *QC_Pointer(qcvm_t *vm, uint32_t addr, size_t bytes); /* errors if out of range */
 uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes);
@@ -345,6 +363,15 @@ static inline void QC_SetEInt(qcvm_t *vm, int e, int ofs, int32_t v)
 	if (ofs >= 0)
 		QC_EdictFields(vm, e)[ofs].i = v;
 }
+
+/* qc_debug.c: profile_*, coredump_*, extensionlist_*, breakpoint, watchpoint,
+ * poke and pr_dumpplatform for each VM */
+void QC_InitDebugCommands(void);
+void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f);
+void QC_DebugStatement(qcvm_t *vm, int s);
+void QC_DebugUpdateHooks(qcvm_t *vm);
+void QC_CoreDump(qcvm_t *vm, const char *why);
+extern const char *const qc_supported_extensions[];
 
 /* builtin tables shared by every module */
 extern const qc_builtin_t qc_builtins_core[];

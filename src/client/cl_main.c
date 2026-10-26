@@ -87,6 +87,12 @@ const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size)
 	out[0] = 0;
 	if (slot < 0 || slot >= CL_MAX_PLAYERS)
 		return out;
+	if (CL_VoipPlayerKey(slot, key, out, size))
+		return out;
+	if (!strcmp(key, "ignored")) {
+		snprintf(out, size, "%d", CL_PlayerIgnored(slot) ? 1 : 0);
+		return out;
+	}
 	return info_get(cl.playerinfo[slot], key, out, size);
 }
 
@@ -193,7 +199,11 @@ static void clear_map_state(void)
 	for (int i = 0; i < 256; i++) {
 		Mem_Free(cl.lightstyles[i]);
 		cl.lightstyles[i] = NULL;
+		Mem_Free(cl.statstr[i]);
+		cl.statstr[i] = NULL;
 	}
+	memset(cl.stattype, 0, sizeof(cl.stattype));
+	memset(cl.statval, 0, sizeof(cl.statval));
 	for (int i = 0; i < CL_MAX_PLAYERS; i++)
 		Blob_Clear(cl.playerblobs[i]);
 	memset(blobsent, 0, sizeof(blobsent));
@@ -212,7 +222,9 @@ static void clear_map_state(void)
 
 void CL_Disconnect(const char *reason)
 {
-	if (cl.state >= ca_loading) {
+	if (cl.demoplayback)
+		CL_DemoAbort();
+	else if (cl.state >= ca_loading) {
 		uint8_t b[2] = {clc_disconnect, 0};
 		for (int i = 0; i < 3; i++)
 			Netchan_Transmit(&cl.chan, b, 1);
@@ -220,10 +232,14 @@ void CL_Disconnect(const char *reason)
 	}
 	if (cl.state != ca_disconnected)
 		Con_Printf("disconnected%s%s\n", reason ? ": " : "", reason ? reason : "");
+	CL_DemoDisconnected();
+	CL_DownloadsReset();
+	CL_VoipDisconnected();
 	clear_map_state();
 	S_StopAllSounds();
 	cl.state = ca_disconnected;
 	Host_Loading(NULL, NULL, 0);
+	cl.paused = false;
 	memset(cl.serverinfo, 0, sizeof(cl.serverinfo));
 	memset(cl.playerinfo, 0, sizeof(cl.playerinfo));
 	Str_Copy(cl.disconnect_reason, reason ? reason : "", sizeof(cl.disconnect_reason));
@@ -269,6 +285,8 @@ static void check_connect(void)
 
 static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 {
+	if (CL_MasterConnectionless(from, data, len))
+		return;
 	cmd_tokens_t *t = Mem_Alloc(sizeof(*t));
 	char *text = Mem_Alloc(len - 3);
 	memcpy(text, data + 4, len - 4);
@@ -290,8 +308,15 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 		Con_Printf("server refused connection:%s\n", why ? why : "");
 		cl.state = ca_disconnected;
 		Host_Loading(NULL, NULL, 0);
+	} else if (!strcmp(t->argv[0], "print")) {
+		/* rcon replies and other server messages */
+		const char *body = strchr(text, '\n');
+		Con_Printf("%s", body ? body + 1 : "");
 	} else if (!strcmp(t->argv[0], "infoResponse")) {
 		Con_Printf("%s: %s\n", NET_AdrToString(from), text + strlen("infoResponse"));
+	} else {
+		/* replies to "packet" and anything else unasked */
+		Con_Printf("%s: %s\n", NET_AdrToString(from), text);
 	}
 done:
 	Mem_Free(text);
@@ -302,7 +327,7 @@ void CL_SendStringCmd(const char *s)
 {
 	uint8_t buf[4096];
 	msg_t m;
-	if (cl.state < ca_loading)
+	if (cl.state < ca_loading || cl.demoplayback)
 		return;
 	MSG_Init(&m, buf, sizeof(buf));
 	MSG_WriteByte(&m, clc_stringcmd);
@@ -315,7 +340,7 @@ void CL_SendEvent(const msg_t *body)
 {
 	uint8_t *buf;
 	msg_t m;
-	if (cl.state != ca_active)
+	if (cl.state != ca_active || cl.demoplayback)
 		return;
 	buf = Mem_Alloc(body->cursize + 1);
 	MSG_Init(&m, buf, body->cursize + 1);
@@ -328,7 +353,7 @@ void CL_SendEvent(const msg_t *body)
 /* unknown commands go to the server, like the console in Quake and Source */
 bool CL_ForwardToServer(const char *line, int argc, const char **argv)
 {
-	if (cl.state < ca_loading || !argc)
+	if (cl.state < ca_loading || !argc || cl.demoplayback)
 		return false;
 	CL_SendStringCmd(line);
 	return true;
@@ -370,6 +395,14 @@ static void parse_serverdata(msg_t *m)
 	Str_Copy(cl.mapname, MSG_ReadString(m), sizeof(cl.mapname));
 	Str_Copy(cl.worldpath, MSG_ReadString(m), sizeof(cl.worldpath));
 	free_voxel(); /* a new map: the server sends its voxels again */
+	if (!Str_NICmp(cl.worldpath, "maps/", 5) && strlen(cl.worldpath) > 9) {
+		char tn[128];
+		Str_Copy(tn, cl.worldpath + 5, sizeof(tn));
+		if (strlen(tn) > 4 && !Str_ICmp(tn + strlen(tn) - 4, ".bsp")) {
+			tn[strlen(tn) - 4] = 0;
+			Terrain_PrepareMap(tn);
+		}
+	}
 	Str_Copy(cl.csprogsname, MSG_ReadString(m), sizeof(cl.csprogsname));
 	cl.csprogscrc = (uint16_t)MSG_ReadUShort(m);
 	MSG_ReadLong(m); /* size, for a future download */
@@ -381,9 +414,19 @@ static void parse_serverdata(msg_t *m)
 	Host_Loading("precache", cl.mapname, 0.25f);
 }
 
+/* the precaches are all in: load the map, unless files have to come first */
 static void finish_signon(void)
 {
+	if (CL_StartMissingDownloads())
+		return;
+	CL_FinishSignon();
+}
+
+void CL_FinishSignon(void)
+{
 	char cmd[64];
+	if (cl.state != ca_loading)
+		return;
 	/* progress: collision world 0.30, render world and models up to 0.85
 	 * (R_NewMap reports those), sounds up to 0.92, client game, then the
 	 * wait for the server to spawn us */
@@ -404,6 +447,7 @@ static void finish_signon(void)
 	}
 	CSQC_WorldLoaded();
 	Host_Loading("spawning", cl.mapname, 0.97f);
+	TP_NewMap();
 	snprintf(cmd, sizeof(cmd), "begin %d", cl.spawncount);
 	CL_SendStringCmd(cmd);
 }
@@ -517,6 +561,8 @@ static void parse_voxel(msg_t *m)
 		break;
 	}
 }
+static void parse_server_message(msg_t *m, bool reliable);
+void CL_ParseServerMessage(msg_t *m, bool reliable) { parse_server_message(m, reliable); }
 
 static void parse_server_message(msg_t *m, bool reliable)
 {
@@ -533,6 +579,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_print: {
 			int level = MSG_ReadByte(m);
 			const char *s = MSG_ReadString(m);
+			if (!CL_ChatAllowed(s, level))
+				break;
+			TP_CheckTriggers(s, level);
 			if (!CSQC_Print(s, level))
 				Con_Print(s);
 			break;
@@ -544,10 +593,15 @@ static void parse_server_message(msg_t *m, bool reliable)
 			break;
 		}
 		case svc_stufftext:
-			Cbuf_AddText(MSG_ReadString(m));
+			/* a server (or a demo) is not the player: its text runs at
+			 * cmd_serverlevel, below the commands Cmd_ProtectLocal keeps */
+			Cbuf_AddTextAtLevel(MSG_ReadString(m), (int)Cvar_Value("cmd_serverlevel"));
 			break;
 		case svc_serverdata:
 			parse_serverdata(m);
+			break;
+		case svc_download:
+			CL_ParseDownload(m);
 			break;
 		case svc_precache: {
 			int kind = MSG_ReadByte(m);
@@ -566,6 +620,20 @@ static void parse_server_message(msg_t *m, bool reliable)
 			Str_Copy(key, MSG_ReadString(m), sizeof(key));
 			info_set(cl.serverinfo, sizeof(cl.serverinfo), key, MSG_ReadString(m));
 			CSQC_ServerInfoChanged();
+			break;
+		}
+		case svc_stats: {
+			uint32_t n = MSG_ReadVarUInt(m);
+			for (uint32_t k = 0; k < n && !m->badread; k++) {
+				int i = MSG_ReadByte(m), type = MSG_ReadByte(m);
+				cl.stattype[i] = (uint8_t)type;
+				if (type == 1) {
+					Mem_Free(cl.statstr[i]);
+					cl.statstr[i] = Mem_Strdup(MSG_ReadString(m));
+				} else {
+					cl.statval[i] = (uint32_t)MSG_ReadLong(m);
+				}
+			}
 			break;
 		}
 		case svc_playerblob: {
@@ -649,6 +717,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 			R_TrailParticles(fx, start, end);
 			break;
 		}
+		case svc_voice:
+			CL_ParseVoice(m);
+			break;
 		case svc_setangle:
 			for (int i = 0; i < 3; i++)
 				cl.viewangles[i] = MSG_ReadAngle(m);
@@ -688,11 +759,15 @@ static void read_packets(void)
 		cl.chan.numacked = cl.chan.numlost = 0;
 		{
 			msg_t rel;
-			while (cl.state >= ca_loading && Netchan_NextReliable(&cl.chan, &rel))
+			while (cl.state >= ca_loading && Netchan_NextReliable(&cl.chan, &rel)) {
+				CL_DemoServerMessage(rel.data + rel.readpos, rel.cursize - rel.readpos, true);
 				parse_server_message(&rel, true);
+			}
 		}
-		if (cl.state >= ca_loading)
+		if (cl.state >= ca_loading) {
+			CL_DemoServerMessage(m.data + m.readpos, m.cursize - m.readpos, false);
 			parse_server_message(&m, false);
+		}
 	}
 }
 
@@ -771,15 +846,56 @@ static void CL_SetInfoBlob_f(int argc, const char **argv)
 static void CL_SetInfo_f(int argc, const char **argv)
 {
 	cvar_t *v;
-	if (argc < 3) {
-		Con_Printf("usage: setinfo <key> <value>\n");
+	if (argc == 1) {
+		for (v = Cvar_First(); v; v = v->next)
+			if (v->flags & CVAR_USERINFO)
+				Con_Printf("  %-20s %s\n", v->name, v->string);
+		return;
+	}
+	if (argc < 3 || !argv[1][0] || strchr(argv[1], '\\') || strchr(argv[2], '\\')) {
+		Con_Printf("usage: setinfo <key> <value> (no backslashes)\n");
 		return;
 	}
 	v = Cvar_Find(argv[1]);
 	if (!v)
 		v = Cvar_Get(argv[1], "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
+	if (!Cvar_MayFlag(v, CVAR_USERINFO))
+		return;
 	v->flags |= CVAR_USERINFO;
 	Cvar_Set(argv[1], argv[2]);
+}
+
+/* fullinfo \\key\\value\\key\\value...: several setinfo at once */
+static void CL_FullInfo_f(int argc, const char **argv)
+{
+	const char *p = argc > 1 ? argv[1] : "";
+	while (*p == '\\') {
+		char key[256], value[1024];
+		const char *sv[3] = {"setinfo", key, value};
+		size_t n = strcspn(++p, "\\");
+		snprintf(key, sizeof(key), "%.*s", (int)n, p);
+		p += n;
+		if (*p != '\\')
+			break;
+		n = strcspn(++p, "\\");
+		snprintf(value, sizeof(value), "%.*s", (int)n, p);
+		p += n;
+		CL_SetInfo_f(3, sv);
+	}
+}
+
+/* color <top> [bottom]: player colours, as topcolor and bottomcolor */
+static void CL_Color_f(int argc, const char **argv)
+{
+	const char *sv[3] = {"setinfo", "topcolor", argc > 1 ? argv[1] : ""};
+	if (argc < 2) {
+		Con_Printf("color is %s %s\n", Cvar_String("topcolor"), Cvar_String("bottomcolor"));
+		return;
+	}
+	CL_SetInfo_f(3, sv);
+	sv[1] = "bottomcolor";
+	sv[2] = argc > 2 ? argv[2] : argv[1];
+	CL_SetInfo_f(3, sv);
 }
 
 static void check_userinfo(void)
@@ -868,6 +984,7 @@ static void send_move(void)
 			MSG_WriteEntity(&m, u->cursor_entity);
 		}
 	}
+	CL_VoipWrite(&m);
 	Netchan_Transmit(&cl.chan, m.data, m.cursize);
 }
 
@@ -875,9 +992,19 @@ void CL_Frame(double dt)
 {
 	cl.realtime += dt;
 	cl.frametime = dt;
+	TP_Frame();
+	if (cl.demoplayback) {
+		CL_DemoReadPackets(dt);
+		update_clock(dt);
+		return;
+	}
 	NET_SetFakeConditions(net_fakelag->value, net_fakeloss->value);
 	read_packets();
 	check_connect();
+	CL_MasterFrame();
+	CL_DownloadFrame();
+	CL_CaptureFrame();
+	CL_VoipFrame();
 	update_clock(dt);
 	check_userinfo();
 
@@ -896,6 +1023,7 @@ void CL_Frame(double dt)
 			if (Netchan_CanSend(&cl.chan))
 				send_move();
 		}
+		CL_DemoFrame();
 	} else if (cl.state == ca_loading) {
 		/* keep acknowledging the signon stream */
 		if (cl.realtime >= cl.next_cmd) {
@@ -933,7 +1061,7 @@ static void CL_Cmd_f(int argc, const char **argv)
 	CL_SendStringCmd(Cmd_Args());
 }
 
-static void CL_Serverinfo_f(int argc, const char **argv)
+void CL_PrintServerinfo(void)
 {
 	const char *p = cl.serverinfo;
 	while (*p == '\\') {
@@ -989,13 +1117,24 @@ void CL_Init(void)
 	Cvar_Get("team", "", CVAR_USERINFO, NULL);
 	Cvar_Get("model", "", CVAR_ARCHIVE | CVAR_USERINFO, NULL);
 	Cmd_Add("connect", CL_Connect_f);
+	CL_InitChat();
+	TP_Init();
+	HUD_Init();
 	Cmd_Add("setinfo", CL_SetInfo_f);
+	Cmd_AddD("fullinfo", CL_FullInfo_f, "fullinfo \\key\\value...: set several userinfo keys");
+	Cmd_AddD("color", CL_Color_f, "color <top> [bottom]: player colours");
 	Cmd_Add("setinfoblob", CL_SetInfoBlob_f);
 	Cmd_Add("disconnect", CL_Disconnect_f);
 	Cmd_Add("reconnect", CL_Reconnect_f);
 	Cmd_Add("cmd", CL_Cmd_f);
-	Cmd_Add("serverinfo", CL_Serverinfo_f);
 	Cmd_Add("pingserver", CL_Ping_f);
 	Cmd_Add("netstats", CL_Netstats_f);
+	CL_InitMaster();
+	CL_InitDownloads();
+	CL_InitCapture();
+	CL_InitCinematics();
+	CL_InitVoip();
+	EM_Init();
+	ED_Init();
 	IN_Init();
 }

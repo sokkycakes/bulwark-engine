@@ -9,7 +9,7 @@
 
 rscene_t r_scene;
 rstats_t r_stats;
-static cvar_t *fov, *r_nearclip;
+static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch;
 
 /* entity fields addentity reads, looked up once per client game */
 static struct {
@@ -177,6 +177,7 @@ void R_ClearScene(void)
 	r_scene.farclip = 0;
 	r_scene.drawworld = true;
 	r_scene.perspective = true;
+	r_scene.skyroom = false;
 	r_scene.viewentity = cl.playerent;
 	memset(r_scene.origin, 0, sizeof(r_scene.origin));
 	memset(r_scene.angles, 0, sizeof(r_scene.angles));
@@ -244,10 +245,14 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	if (EF.forceshader >= 0 && f[EF.forceshader].f > 0)
 		e->forceshader = R_MaterialForHandle((int)f[EF.forceshader].f);
 	/* models face their angles with pitch inverted, as in Quake; brush
-	 * models use the angles as given */
+	 * models use the angles as given. View models (RF_VIEWMODEL or
+	 * RF_DEPTHHACK) are given the camera's angles by games such as Nuclide,
+	 * so they keep the camera's convention and point where the camera does;
+	 * r_viewmodel_quakepitch 1 inverts them like other models, as FTE does */
 	{
 		float a[3] = {e->angles[0], e->angles[1], e->angles[2]};
-		if (e->model && e->model->type != MOD_BRUSH)
+		bool vm = (e->renderflags & (1 | 4)) && !(r_viewmodel_quakepitch && r_viewmodel_quakepitch->ivalue);
+		if (e->model && e->model->type != MOD_BRUSH && !vm)
 			a[0] = -a[0];
 		AnglesToAxis(a, e->axis);
 	}
@@ -333,8 +338,44 @@ void R_SetupView(void)
 		Mat4_Ortho(r_scene.proj, -fx, fx, -fy, fy, -65536, 65536);
 	}
 	Mat4_Multiply(r_scene.viewproj, r_scene.proj, r_scene.view);
+	/* view models (RF_VIEWMODEL, RF_DEPTHHACK) get their own projection: a
+	 * near plane close enough that the gun never clips, and optionally their
+	 * own field of view, as Source's viewmodel_fov */
+	{
+		float vproj[16], vfx = fx, vfy = fy;
+		if (r_viewmodel_fov && r_viewmodel_fov->value > 0 && r_scene.perspective) {
+			float saved = r_scene.afov, sx = r_scene.fov_x, sy = r_scene.fov_y;
+			r_scene.afov = r_viewmodel_fov->value;
+			r_scene.fov_x = r_scene.fov_y = 0;
+			compute_fov(&vfx, &vfy);
+			r_scene.afov = saved, r_scene.fov_x = sx, r_scene.fov_y = sy;
+		}
+		if (r_scene.perspective)
+			Mat4_Perspective(vproj, vfx, vfy, 1, r_scene.farclip);
+		else
+			memcpy(vproj, r_scene.proj, sizeof(vproj));
+		Mat4_Multiply(r_scene.vmviewproj, vproj, r_scene.view);
+	}
 	AngleVectors(r_scene.angles, r_scene.forward, r_scene.right, r_scene.up);
+	/* the map's fog, waterfog when the eye is under water, skyroomfog in the skyroom */
+	{
+		static const float zero[3];
+		const float *f = NULL;
+		r_viewfog[3] = 0;
+		if (r_scene.noskyroom && r_world.skyroomfog[0] > 0)
+			f = r_world.skyroomfog;
+		else if (!r_scene.noskyroom && r_world.waterfog[0] > 0 && cl.world &&
+		         (BSP_PointContents(cl.world, 0, zero, r_scene.origin) & (CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA)))
+			f = r_world.waterfog;
+		if (f) {
+			r_viewfog[0] = f[1], r_viewfog[1] = f[2], r_viewfog[2] = f[3], r_viewfog[3] = f[0];
+		} else if (r_world.hasfog) {
+			memcpy(r_viewfog, r_world.fog, sizeof(r_viewfog));
+		}
+	}
 }
+
+float r_viewfog[4];
 
 /* world point to virtual screen point; z is the distance in front of the view */
 void R_Project(const float *in, float *out)
@@ -404,13 +445,37 @@ void R_RenderScene(void)
 		qglClear(GL_COLOR_BUFFER_BIT);
 	}
 
-	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight) {
+	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight && !R_ToolsRedrawing()) {
+		float fx, fy;
+		compute_fov(&fx, &fy);
 		VectorCopy(r_scene.origin, r_scene.mainorigin);
 		VectorCopy(r_scene.forward, r_scene.mainforward);
+		VectorCopy(r_scene.angles, r_scene.mainangles);
+		r_scene.mainfov[0] = fx, r_scene.mainfov[1] = fy;
+		r_scene.maindrawworld = r_scene.drawworld;
+		memcpy(r_scene.mainviewproj, r_scene.viewproj, sizeof(r_scene.mainviewproj));
+		r_scene.mainvp[0] = r_scene.vx, r_scene.mainvp[1] = r_scene.vy;
+		r_scene.mainvp[2] = r_scene.vw, r_scene.mainvp[3] = r_scene.vh;
+		r_scene.havemain = true;
 	}
 	R_UpdateParticles();
+	R_AddRTLights();
 	R_AddParticleLights();
 	Mat4_Identity(model);
+	/* the skyroom first, seen through the sky: then the sky itself isn't drawn */
+	if (r_scene.skyroom && r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels) {
+		float saved[3];
+		VectorCopy(r_scene.origin, saved);
+		VectorCopy(r_scene.skyroom_origin, r_scene.origin);
+		r_scene.noskyroom = true;
+		R_SetupView();
+		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
+		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, true);
+		r_scene.noskyroom = false;
+		VectorCopy(saved, r_scene.origin);
+		R_SetupView();
+		qglClear(GL_DEPTH_BUFFER_BIT);
+	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
 	if (r_scene.drawworld && r_drawworld->ivalue)
@@ -419,8 +484,10 @@ void R_RenderScene(void)
 		for (int i = 0; i < r_scene.numents; i++)
 			R_DrawModelEntity(&r_scene.ents[i], false);
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue) {
-		R_DrawSky(r_scene.viewproj);
+		if (!r_scene.skyroom)
+			R_DrawSky(r_scene.viewproj);
 		R_DrawDecals();
+		R_DrawToolsWorld();
 	}
 
 	/* translucent: world water and glass, then entities back to front, then polygons */
@@ -466,6 +533,10 @@ void R_RenderScene(void)
 void R_InitScene(void)
 {
 	fov = Cvar_Get("fov", "90", CVAR_ARCHIVE, "Horizontal field of view at 4:3, widened for wider screens");
+	r_viewmodel_quakepitch = Cvar_Get("r_viewmodel_quakepitch", "0", CVAR_ARCHIVE,
+	                                  "1 inverts view model pitch like other models (FTE's behaviour); 0 makes them follow the camera");
+	r_viewmodel_fov = Cvar_Get("r_viewmodel_fov", "0", CVAR_ARCHIVE,
+	                           "Field of view for view models (like Source's viewmodel_fov); 0 uses the view's");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");
 	R_InitDecals();
 	R_InitParticles();

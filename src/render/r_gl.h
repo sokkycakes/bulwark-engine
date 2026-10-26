@@ -101,6 +101,15 @@ typedef ptrdiff_t GLintptr;
 #define GL_COLOR_BUFFER_BIT 0x00004000
 #define GL_DEPTH_BUFFER_BIT 0x00000100
 #define GL_STENCIL_BUFFER_BIT 0x00000400
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_RENDERBUFFER 0x8D41
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_DEPTH_ATTACHMENT 0x8D00
+#define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
+#define GL_DEPTH24_STENCIL8 0x88F0
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#define GL_MAX_RENDERBUFFER_SIZE 0x84E8
+#define GL_MAX_TEXTURE_SIZE 0x0D33
 
 /* return type, name, parameters */
 #define BW_GL_FUNCS(X)                                                                                         \
@@ -173,7 +182,16 @@ typedef ptrdiff_t GLintptr;
 	X(void, glUniform4f, (GLint l, GLfloat a, GLfloat b, GLfloat c, GLfloat d))                                \
 	X(void, glUniform3fv, (GLint l, GLsizei n, const GLfloat *v))                                              \
 	X(void, glUniform4fv, (GLint l, GLsizei n, const GLfloat *v))                                              \
-	X(void, glUniformMatrix4fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v))
+	X(void, glUniformMatrix4fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v))                         \
+	X(void, glGenFramebuffers, (GLsizei n, GLuint *f))                                                         \
+	X(void, glDeleteFramebuffers, (GLsizei n, const GLuint *f))                                                \
+	X(void, glBindFramebuffer, (GLenum t, GLuint f))                                                           \
+	X(GLenum, glCheckFramebufferStatus, (GLenum t))                                                            \
+	X(void, glGenRenderbuffers, (GLsizei n, GLuint *r))                                                        \
+	X(void, glDeleteRenderbuffers, (GLsizei n, const GLuint *r))                                               \
+	X(void, glBindRenderbuffer, (GLenum t, GLuint r))                                                          \
+	X(void, glRenderbufferStorage, (GLenum t, GLenum f, GLsizei w, GLsizei h))                                 \
+	X(void, glFramebufferRenderbuffer, (GLenum t, GLenum a, GLenum rt, GLuint r))
 
 #define X(ret, name, args) typedef ret(BWGLAPI *PFN_##name) args;
 BW_GL_FUNCS(X)

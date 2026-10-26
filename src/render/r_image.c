@@ -511,11 +511,42 @@ void R_ShutdownImages(void)
 		while (img) {
 			image_t *next = img->next;
 			if (img->tex && !img->missing && R_Active())
-				qglDeleteTextures(1, &img->tex);
+				GL_DeleteTextures(1, &img->tex);
 			Mem_Free(img);
 			img = next;
 		}
 		images[i] = NULL;
 	}
 	r_whiteimage = r_blackimage = r_checkerimage = r_flatnormal = NULL;
+}
+
+void R_ForEachImage(void (*fn)(image_t *img, void *ctx), void *ctx)
+{
+	for (int i = 0; i < IMAGE_HASH; i++)
+		for (image_t *img = images[i]; img; img = img->next)
+			fn(img, ctx);
+}
+
+/* loads an image's file again (skins after new ones were added); one that
+ * was missing gets a texture of its own */
+void R_ReloadImage(const char *name)
+{
+	image_t *img;
+	uint8_t *pix;
+	int w, h;
+	for (img = images[name_hash(name)]; img; img = img->next)
+		if (!Str_ICmp(img->name, name))
+			break;
+	if (!img) {
+		R_FindImage(name, 0);
+		return;
+	}
+	if (!(pix = R_LoadPixels(name, &w, &h)))
+		return;
+	if (img->missing) {
+		img->missing = false;
+		img->tex = 0;
+	}
+	upload(img, pix, w, h, 0);
+	Mem_Free(pix);
 }

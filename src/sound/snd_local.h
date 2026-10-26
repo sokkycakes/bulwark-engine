@@ -24,6 +24,7 @@ typedef struct sfx_s {
 sfx_t *S_FindSfx(const char *name, bool load);
 bool S_LoadSfx(sfx_t *sfx);
 void S_FreeAllSfx(void);
+void S_ForEachSfx(void (*fn)(const sfx_t *sfx, void *ctx), void *ctx);
 
 /* --- music --------------------------------------------------------------- */
 
@@ -31,6 +32,9 @@ bool S_OpenMusic(const char *path, bool loop);
 void S_CloseMusic(void);
 /* adds the music into a stereo float buffer at the device rate */
 void S_MixMusic(float *out, int frames, int rate, float volume);
+bool S_MusicActive(void);
+double S_MusicTime(void);
+void S_SeekMusic(double seconds);
 
 /* --- room effects (snd_dsp.c) ---------------------------------------------- */
 
