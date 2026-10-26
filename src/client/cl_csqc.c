@@ -846,6 +846,27 @@ static void cl_registercommand(qcvm_t *vm)
 		registered[numregistered++] = Mem_Strdup(n);
 }
 
+/* getentitytoken([resetstring]): the next token of the map's entity lump.
+ * An empty or null argument starts over from the map; any other text is
+ * tokenised instead of the map. Returns "" at the end. */
+static char *enttok_text;
+static const char *enttok_pos;
+static void cl_getentitytoken(qcvm_t *vm)
+{
+	char tok[1024];
+	if (vm->argc > 0) {
+		const char *s = QC_GetString(vm, QC_Parm(vm, 0)->i);
+		Mem_Free(enttok_text);
+		enttok_text = Mem_Strdup(s && *s ? s : (cl.world && cl.world->entities ? cl.world->entities : ""));
+		enttok_pos = enttok_text;
+	}
+	if (!enttok_pos || !(enttok_pos = COM_Parse(enttok_pos, tok, sizeof(tok)))) {
+		QC_ReturnString(vm, "");
+		return;
+	}
+	QC_ReturnString(vm, tok);
+}
+
 static void cl_isserver(qcvm_t *vm) { QC_ReturnFloat(vm, cl.listen ? 1 : 0); }
 /* 2 for a demo holding every player's view (a server demo or QTV stream) */
 static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, !cl.demoplayback ? 0 : CL_DemoMultiview() ? 2 : 1); }
@@ -1037,7 +1058,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"getplayerkeyblob", cl_getplayerkeyblob}, {"getlocaluserinfoblob", cl_getlocaluserinfoblob},
 	{"setlocaluserinfoblob", cl_setlocaluserinfoblob}, {"getlocaluserinfo", cl_getlocaluserinfo},
 	{"setlocaluserinfo", cl_setlocaluserinfo}, {"registercommand", cl_registercommand},
-	{"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
+	{"getentitytoken", cl_getentitytoken}, {"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
 	{"setpause", cl_setpause}, {"particleeffectnum", cl_particleeffectnum},
 	{"setorigin", cl_setorigin}, {"setsize", cl_setsize}, {"setmodel", cl_setmodel}, {"setmodelindex", cl_setmodelindex},
 	{"precache_model", cl_precache_model}, {"getmodelindex", cl_getmodelindex},
