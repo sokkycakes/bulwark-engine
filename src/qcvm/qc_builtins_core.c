@@ -1106,8 +1106,26 @@ static void bi_cvar_description(qcvm_t *vm)
 	QC_ReturnString(vm, v && v->description ? v->description : "");
 }
 
-static void bi_cvar_set(qcvm_t *vm) { Cvar_Set(QC_PSTR(vm, 0), QC_PSTR(vm, 1)); }
-static void bi_cvar_setf(qcvm_t *vm) { Cvar_SetValue(QC_PSTR(vm, 0), QC_PFLOAT(vm, 1)); }
+/* the execution level QC's commands and cvar changes get: the menu is the
+ * player's own front end; the client game can come from a server */
+static int qc_execlevel(const qcvm_t *vm)
+{
+	return vm->kind == QCVM_MENU ? RESTRICT_MAX : (int)Cvar_Value("cmd_gamecodelevel");
+}
+
+static void bi_cvar_set(qcvm_t *vm)
+{
+	int saved = Cmd_LowerExecLevel(qc_execlevel(vm));
+	Cvar_Set(QC_PSTR(vm, 0), QC_PSTR(vm, 1));
+	Cmd_RestoreExecLevel(saved);
+}
+
+static void bi_cvar_setf(qcvm_t *vm)
+{
+	int saved = Cmd_LowerExecLevel(qc_execlevel(vm));
+	Cvar_SetValue(QC_PSTR(vm, 0), QC_PFLOAT(vm, 1));
+	Cmd_RestoreExecLevel(saved);
+}
 
 static void bi_registercvar(qcvm_t *vm)
 {
@@ -1143,7 +1161,7 @@ static void bi_localcmd(qcvm_t *vm)
 	strbuf_t sb = {0};
 	concat_args(vm, 0, &sb);
 	/* game code runs at cmd_gamecodelevel, so restricted commands stay out of its reach */
-	Cbuf_AddTextAtLevel(sb.data ? sb.data : "", (int)Cvar_Value("cmd_gamecodelevel"));
+	Cbuf_AddTextAtLevel(sb.data ? sb.data : "", qc_execlevel(vm));
 	SB_Free(&sb);
 }
 

@@ -55,6 +55,8 @@ static void Setfl_f(int argc, const char **argv)
 	}
 	if (!(v = Cvar_Find(argv[1])))
 		v = Cvar_Get(argv[1], "", CVAR_USERCREATED, NULL);
+	if (!Cvar_MayFlag(v, flags))
+		return;
 	v->flags |= flags;
 	Cvar_Set(v->name, argv[2]);
 }
@@ -267,6 +269,41 @@ static void Obsolete_f(int argc, const char **argv)
 	Con_Printf("%s is obsolete, redundant, or otherwise outdated.\n", argv[0]);
 }
 
+/* What a server's text and game code must not reach: anything that loads
+ * code, writes or deletes files, reaches outside the game, sends the rcon
+ * password somewhere or throws the player out. The player's own console,
+ * configs, binds and the menu run at RESTRICT_MAX and keep them. "restrict"
+ * lowers one again for a server that is trusted. */
+void Cmd_ProtectLocal(void)
+{
+	static const char *const cmds[] = {
+		/* code */
+		"plug_load", "plug_close", "plug_closeall", "compile", "applycompile", "decompile",
+		/* files written or removed */
+		"wf", "writeconfig", "saveconfig", "host_writeconfig", "cfg_save", "cfg_save_ifmodified", "condump",
+		"logfile", "fraglogfile", "logplayers", "logrcon", "writeid", "writeip", "deletesave", "unsavegame",
+		"rmdemo", "rmdemonum", "record", "easyrecord", "rerecord", "mvdrecord", "sv_demorecord",
+		"sv_demoeasyrecord", "sv_demoremove", "sv_demonumremove", "edit", "aliasedit", "mod_terrain_save",
+		"mod_terrain_convert", "mod_terrain_create", "r_editlights_save", "pin_save", "mod_bspx_strip",
+		"mod_bspx_injest", "r_exportalleffects", "r_exportbuiltinparticles", "r_converteffectinfo",
+		"sv_saveentfile", "pr_dumpplatform", "coredump_csqc", "coredump_menuqc", "coredump_ssqc",
+		/* outside the game */
+		"pkg", "curl", "download_map_url", "gamedir", "fs_changegame", "fs_changemod", "dtls_importtrust",
+		"dtls_untrustall", "rcon",
+		/* the player's own setup */
+		"quit", "exit", "unbindall", "cvar_resettodefaults_all", "cvar_lockdefaults", "cvar_purgedefaults",
+		"resetcfg", "cfg_reset"};
+	static const char *const cvars[] = {"cmd_gamecodelevel", "cmd_serverlevel", "rcon_password", "rcon_address",
+	                                    "rcon_level", "pr_sourcedir", "log_dir", "sv_snapdir", "cl_downloads"};
+	for (size_t i = 0; i < BW_ARRAY_COUNT(cmds); i++)
+		Cmd_SetRestriction(cmds[i], RESTRICT_MAX);
+	for (size_t i = 0; i < BW_ARRAY_COUNT(cvars); i++) {
+		cvar_t *v = Cvar_Find(cvars[i]);
+		if (v)
+			v->restriction = RESTRICT_MAX;
+	}
+}
+
 void Cmd_InitCompat(void)
 {
 	static const char *const obsolete[] = {"check_maps", "download_map_url", "sv_downloadchunksperframe",
@@ -284,6 +321,7 @@ void Cmd_InitCompat(void)
 	Cmd_AddD("colorize", Colorize_f, "colorize <text>: print text with &cRGB colours");
 	Cmd_AddD("colourise", Colorize_f, "colourise <text>: print text with &cRGB colours");
 	Cvar_Get("cmd_gamecodelevel", "29", 0, "The execution level of commands the game's QC runs (localcmd)");
+	Cvar_Get("cmd_serverlevel", "29", 0, "The execution level of commands a server sends (stufftext)");
 	BSP_InitTools();
 	Cmd_AddD("wf", Wf_f, "wf <file> <text>: write text to a file in the game directory");
 	Cmd_AddD("df", Df_f, "df <file>: print a file");

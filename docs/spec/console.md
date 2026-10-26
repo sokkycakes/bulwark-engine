@@ -184,6 +184,44 @@ edit heights by writing section files.
 - **Downloads and media:** `download`, `dlsize`, `skipdl`, `finishdl`,
   `curl`, `capture*`, `playfilm`, `playvideo`, `cinematic`, `media_*`.
 
+## Who may run what
+
+Every line runs at an execution level from 0 to 50. Commands, cvars and
+aliases each need a level (`restrict` shows or changes it, but never above
+the level of whoever asks).
+
+| Source | Level |
+|---|---|
+| The console, configs, the command line, binds the player made, the menu (`menu.dat`) | 50 |
+| Text a server sends (`stufftext`), also when a demo plays it back | `cmd_serverlevel`, 29 |
+| `localcmd` and `cvar_set` from the client and server games | `cmd_gamecodelevel`, 29 |
+| rcon | `rcon_level` or the ranking's rights |
+
+What a lower level makes keeps that level: an alias a server defines runs
+at 29 when the player uses it, a bind it makes is written as `bindlevel`,
+`vstr` runs a cvar's text no higher than whoever last set it, and `in`
+or `defer` commands run at the level that queued them.
+
+These need level 50, so neither a server nor game code reaches them:
+loading code (`plug_load`, `plug_close`, `plug_closeall`, `compile`,
+`applycompile`, `decompile`); writing or removing files (`wf`, the config
+writers, `condump`, the log files, `writeid`, `writeip`, `deletesave`,
+`unsavegame`, `rmdemo`, the demo recorders, `edit`, `aliasedit`, the
+terrain, light, pin, BSPX and effect exporters, the QC core dumps);
+reaching outside the game (`pkg`, `curl`, `download_map_url`, `gamedir`,
+`fs_changegame`, `fs_changemod`, `dtls_*`, `rcon`); and the player's own
+setup (`quit`, `exit`, `unbindall`, the cvar default resets, `resetcfg`,
+`cfg_reset`). So do the cvars `cmd_gamecodelevel`, `cmd_serverlevel`,
+`rcon_password`, `rcon_address`, `rcon_level`, `pr_sourcedir`, `log_dir`,
+`sv_snapdir` and `cl_downloads`. Below 50, `setinfo`, `setu`, `sets` and
+`setfl` can't publish an engine cvar in userinfo or serverinfo, since that
+would send its value to the server. `restrict <command> 29` opens one up
+for servers the player trusts.
+
+The client won't download files that could run as code: `.cfg`, `.rc`,
+`.fmf`, libraries and programs, packages (`.pk3`, `.pak`, `.pk4`, `.zip`,
+`.bwp`), `menu.dat` and `progs.dat`.
+
 ## Where Bulwark differs from FTE
 
 The commands all exist; these behave differently from FTE's or stop short

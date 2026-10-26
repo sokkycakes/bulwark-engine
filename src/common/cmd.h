@@ -55,8 +55,14 @@ void Cmd_SetPreHook(cmd_fallback_fn fn);
 /* execution levels: what a command, alias or cvar needs ("restrict"), and
  * what the running text has. The local console has RESTRICT_MAX. */
 #define RESTRICT_MAX 50
+/* commands only the player's own console, configs, binds and menu may run:
+ * raised to RESTRICT_MAX once everything is registered. Text a server sends
+ * (cmd_serverlevel) and game code (cmd_gamecodelevel) run lower. */
+void Cmd_ProtectLocal(void);
 int Cmd_ExecLevel(void);
 void Cmd_ExecuteStringAtLevel(const char *line, int level); /* never above the current level */
+int Cmd_LowerExecLevel(int level);                          /* returns the level to restore */
+void Cmd_RestoreExecLevel(int saved);
 int Cmd_Restriction(const char *name);                      /* -1 if no such command */
 bool Cmd_SetRestriction(const char *name, int level);
 bool Cmd_AliasLevel(const char *name, int *level);          /* -1: runs at its caller's level */
@@ -65,6 +71,7 @@ bool Cmd_SetAliasLevel(const char *name, int level);
 void Cbuf_AddText(const char *text);
 void Cbuf_AddTextAtLevel(const char *text, int level); /* never above the current level */
 void Cbuf_InsertText(const char *text);
+void Cbuf_InsertTextAtLevel(const char *text, int level); /* never above the current level */
 void Cbuf_Execute(void);
 /* runs text once the given number of seconds have passed ("defer") */
 void Cbuf_AddDeferred(double seconds, const char *text);

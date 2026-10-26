@@ -162,6 +162,11 @@ static void Vstr_f(int argc, const char **argv)
 	cvar_t *v;
 	if (argc < 2 || !(v = need_cvar(argv[1])))
 		return;
+	/* text a server or game code put there runs at their level, not ours */
+	if (v->setlevel < Cmd_ExecLevel()) {
+		Cbuf_InsertTextAtLevel(v->string, v->setlevel);
+		return;
+	}
 	Cbuf_InsertText(v->string);
 }
 

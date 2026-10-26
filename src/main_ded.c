@@ -72,6 +72,7 @@ int main(int argc, char **argv)
 	Cmd_Add("quit", Quit_f);
 	Cmd_Add("path", Path_f);
 	Cmd_DescribeAll();
+	Cmd_ProtectLocal();
 	Cmd_SetPreHook(ServerFallback);
 
 	if (FS_FileExists("server.cfg"))

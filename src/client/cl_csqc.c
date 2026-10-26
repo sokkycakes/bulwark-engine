@@ -830,10 +830,16 @@ static void cl_setlocaluserinfo(qcvm_t *vm)
 {
 	const char *k = QC_PSTR(vm, 1), *val = QC_PSTR(vm, 2);
 	cvar_t *v = Cvar_Find(k);
+	int saved;
+	/* only userinfo: turning some other cvar (rcon_password) into userinfo
+	 * would send it to the server */
+	if (v && !(v->flags & CVAR_USERINFO))
+		return;
 	if (!v)
 		v = Cvar_Get(k, "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
-	v->flags |= CVAR_USERINFO;
+	saved = Cmd_LowerExecLevel((int)Cvar_Value("cmd_gamecodelevel"));
 	Cvar_Set(k, val);
+	Cmd_RestoreExecLevel(saved);
 }
 
 static void cl_registercommand(qcvm_t *vm)

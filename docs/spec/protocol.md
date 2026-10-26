@@ -62,7 +62,7 @@ update (the same idea as Source's).
 | 2 | `svc_disconnect` | string reason |
 | 3 | `svc_print` | byte level, string |
 | 4 | `svc_centerprint` | string |
-| 5 | `svc_stufftext` | string, run as console text |
+| 5 | `svc_stufftext` | string, run as console text at `cmd_serverlevel` (see console.md, "Who may run what") |
 | 6 | `svc_serverdata` | see below |
 | 7 | `svc_precache` | byte kind (0 model, 1 sound, 2 particle effect), varuint index, string name |
 | 8 | `svc_lightstyle` | byte index, string |
@@ -134,7 +134,9 @@ it has already run.
 The client asks with the `download <name>` string command. Files go to the
 writable game directory under their own name once the hash matches;
 `sv_allowdownload`, `sv_allowdownload_packages` and
-`sv_allowdownload_csprogs` say what a server hands out.
+`sv_allowdownload_csprogs` say what a server hands out. The client refuses
+names that could run as code (configs, libraries, programs, packages,
+`menu.dat`, `progs.dat`).
 
 ## Uploads
 

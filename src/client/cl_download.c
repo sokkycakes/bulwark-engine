@@ -84,10 +84,32 @@ static void start_next(void)
 		finish_all();
 }
 
+/* files a server must not plant: configs and the menu run with the player's
+ * full rights at the next start, libraries and programs run as code, and a
+ * package in the game directory would carry any of those */
+static bool dangerous_name(const char *name)
+{
+	static const char *const exts[] = {".cfg", ".rc", ".fmf", ".so", ".dll", ".dylib", ".exe", ".com", ".bat",
+	                                   ".cmd", ".sh", ".scr", ".pk3", ".pak", ".pk4", ".zip", ".bwp"};
+	const char *base = strrchr(name, '/'), *ext = strrchr(name, '.');
+	base = base ? base + 1 : name;
+	if (!Str_ICmp(base, "menu.dat") || !Str_ICmp(base, "progs.dat") || !Str_ICmp(base, "qwprogs.dat"))
+		return true;
+	if (ext)
+		for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++)
+			if (!Str_ICmp(ext, exts[i]))
+				return true;
+	return false;
+}
+
 static void queue(const char *name)
 {
 	if (!FS_SafeName(name) || !strcmp(name, dl.name))
 		return;
+	if (dangerous_name(name)) {
+		Con_Printf("^3won't download %s: that kind of file could run as code\n", name);
+		return;
+	}
 	for (int i = 0; i < dl.numqueued; i++)
 		if (!strcmp(dl.queue[i], name))
 			return;

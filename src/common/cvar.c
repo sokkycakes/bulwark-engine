@@ -60,6 +60,7 @@ cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *
 	v->engdefault = Mem_Strdup(v->defstring);
 	v->description = description ? Mem_Strdup(description) : NULL;
 	v->flags = flags;
+	v->setlevel = RESTRICT_MAX;
 	Cvar_Assign(v, v->defstring);
 	v->modified = 0;
 	v->next = cvar_list;
@@ -92,6 +93,7 @@ void Cvar_Set(const char *name, const char *value)
 		return;
 	}
 	Cvar_SetDirect(v, value);
+	v->setlevel = Cmd_ExecLevel();
 }
 
 void Cvar_SetValue(const char *name, float value)
@@ -186,6 +188,20 @@ void Cvar_WriteArchived(strbuf_t *sb)
 	Mem_Free(all);
 }
 
+/* whether the running text may add these flags to the cvar (and so set it):
+ * publishing an engine cvar in userinfo or serverinfo sends its value to the
+ * server, which only the player's own text may choose to do */
+bool Cvar_MayFlag(cvar_t *v, int flags)
+{
+	int level = Cmd_ExecLevel();
+	if (v->restriction > level ||
+	    (level < RESTRICT_MAX && (flags & ~v->flags & (CVAR_USERINFO | CVAR_SERVERINFO)) && !(v->flags & CVAR_USERCREATED))) {
+		Con_Printf("%s was restricted (level %d, you have %d)\n", v->name, v->restriction > level ? v->restriction : RESTRICT_MAX, level);
+		return false;
+	}
+	return true;
+}
+
 static void Cvar_Set_f(int argc, const char **argv)
 {
 	if (argc < 3) {
@@ -206,6 +222,8 @@ static void Cvar_Set_f(int argc, const char **argv)
 		v = Cvar_Find(argv[1]);
 		if (!v)
 			v = Cvar_Get(argv[1], "", CVAR_USERCREATED, argc > 3 ? argv[3] : NULL);
+		if (!Cvar_MayFlag(v, flag))
+			return;
 		if (flag && !(v->flags & flag)) {
 			v->flags |= flag;
 			if (flag == CVAR_ARCHIVE)

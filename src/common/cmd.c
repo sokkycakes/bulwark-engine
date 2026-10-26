@@ -98,6 +98,15 @@ bool Cmd_SetAliasLevel(const char *name, int level)
 	return false;
 }
 
+int Cmd_LowerExecLevel(int level)
+{
+	int saved = cmd_execlevel;
+	cmd_execlevel = BW_CLAMP(level, 0, saved);
+	return saved;
+}
+
+void Cmd_RestoreExecLevel(int saved) { cmd_execlevel = BW_CLAMP(saved, 0, RESTRICT_MAX); }
+
 void Cmd_ExecuteStringAtLevel(const char *line, int level)
 {
 	int saved = cmd_execlevel;
@@ -431,6 +440,14 @@ void Cbuf_AddTextAtLevel(const char *text, int level)
 	cmd_execlevel = saved;
 }
 
+void Cbuf_InsertTextAtLevel(const char *text, int level)
+{
+	int saved = cmd_execlevel;
+	cmd_execlevel = BW_CLAMP(level, 0, saved);
+	Cbuf_InsertText(text);
+	cmd_execlevel = saved;
+}
+
 void Cbuf_InsertText(const char *text)
 {
 	strbuf_t n = {0};
@@ -564,6 +581,14 @@ static void Cmd_Wait_f(int argc, const char **argv)
 	cbuf_wait = n > 0 ? n : 1;
 }
 
+/* an alias that lower-level text (a server, game code) defines runs at that
+ * level, or the player's binds and typing would run its text at theirs */
+static void alias_defined_at(alias_t *a)
+{
+	if (cmd_execlevel < RESTRICT_MAX && (a->level < 0 || a->level > cmd_execlevel))
+		a->level = cmd_execlevel;
+}
+
 void Cmd_SetAlias(const char *name, const char *text)
 {
 	alias_t *a;
@@ -579,6 +604,7 @@ void Cmd_SetAlias(const char *name, const char *text)
 	} else {
 		Mem_Free(a->text);
 	}
+	alias_defined_at(a);
 	a->text = Mem_Strdup(text);
 }
 
@@ -608,6 +634,7 @@ static void Cmd_Alias_f(int argc, const char **argv)
 	} else {
 		Mem_Free(a->text);
 	}
+	alias_defined_at(a);
 	/* the rest of the line, so unquoted multi-word text works too */
 	{
 		const char *rest = Cmd_Args();

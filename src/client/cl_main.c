@@ -497,7 +497,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 			break;
 		}
 		case svc_stufftext:
-			Cbuf_AddText(MSG_ReadString(m));
+			/* a server (or a demo) is not the player: its text runs at
+			 * cmd_serverlevel, below the commands Cmd_ProtectLocal keeps */
+			Cbuf_AddTextAtLevel(MSG_ReadString(m), (int)Cvar_Value("cmd_serverlevel"));
 			break;
 		case svc_serverdata:
 			parse_serverdata(m);
@@ -757,6 +759,8 @@ static void CL_SetInfo_f(int argc, const char **argv)
 	v = Cvar_Find(argv[1]);
 	if (!v)
 		v = Cvar_Get(argv[1], "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
+	if (!Cvar_MayFlag(v, CVAR_USERINFO))
+		return;
 	v->flags |= CVAR_USERINFO;
 	Cvar_Set(argv[1], argv[2]);
 }

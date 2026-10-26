@@ -95,7 +95,8 @@ void Key_SetBinding(int key, const char *b)
 		return;
 	Mem_Free(bindings[key]);
 	bindings[key] = b && *b ? Mem_Strdup(b) : NULL;
-	bindlevel[key] = RESTRICT_MAX;
+	/* a bind a server or game code made runs at their level when pressed */
+	bindlevel[key] = (uint8_t)BW_CLAMP(Cmd_ExecLevel(), 0, RESTRICT_MAX);
 }
 
 bool Key_IsDown(int key) { return key >= 0 && key < K_MAX && keydown[key]; }

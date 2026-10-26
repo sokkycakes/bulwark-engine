@@ -115,6 +115,7 @@ int main(int argc, char **argv)
 	cvar_t *host_framerate = Cvar_Get("host_framerate", "0", 0, "Fixed seconds per frame when above 0, for recording");
 	Cmd_Add("path", Path_f);
 	Cmd_DescribeAll();
+	Cmd_ProtectLocal();
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
 

@@ -22,12 +22,15 @@ typedef struct cvar_s {
 	char *engdefault; /* the default the engine or game registered; defstring can be relocked */
 	char *description;
 	int restriction; /* the execution level needed to change it ("restrict") */
+	int setlevel;    /* the execution level of what last set it: vstr runs its text no higher */
 	float value;
 	int ivalue;
 	int flags;
 	int modified;
 	struct cvar_s *next;
 } cvar_t;
+
+bool Cvar_MayFlag(cvar_t *v, int flags);
 
 /* bumped by every change to any cvar */
 extern int cvar_generation;
