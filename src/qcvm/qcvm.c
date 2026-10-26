@@ -642,7 +642,7 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	if (vm->edict_words < 1)
 		vm->edict_words = 1;
 	vm->edict_words_used = vm->edict_words;
-	vm->edict_words += 64;
+	vm->edict_words += 256;	/* multiprogs rules (Nuclide) add their own fields */
 
 	vm->max_edicts = max_edicts > 0 ? max_edicts : 1;
 	globals_bytes = ((size_t)p->globalslots * 4 + 63) & ~(size_t)63;

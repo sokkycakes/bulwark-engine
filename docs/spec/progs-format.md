@@ -79,7 +79,7 @@ client. This VM implements it like this:
   24-30 (0 for the main progs). A call switches the active progs and
   switches back on return; strings decode against their own progs.
 - Fields of an added progs are matched by name onto the main progs' entity
-  layout. Fields the main progs lacks get one of 64 spare words reserved
+  layout. Fields the main progs lacks get one of 256 spare words reserved
   past the main layout. Nuclide's added progs needed none.
 - The system globals (up to `end_sys_globals`, or the first 28 words) are
   copied across on every switch, so `self`, `time` and the rest are shared.
