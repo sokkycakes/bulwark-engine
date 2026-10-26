@@ -677,6 +677,12 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	int oldlocals = vm->localstack_used;
 	int oldprogs = vm->curprogs, pn = QC_FUNC_PROGS(fnum);
 	qcfunc_t *f = QC_Function(vm, fnum);
+	/* a call made from inside a builtin (predraw from addentities, touch
+	 * from a trace...) hands self and other back as it found them: the QC
+	 * that called the builtin is a method that still relies on self */
+	bool nested = oldjmp != NULL;
+	int oldself = nested ? QC_GInt(vm, vm->gofs.self) : 0;
+	int oldother = nested ? QC_GInt(vm, vm->gofs.other) : 0;
 
 	if (!f) {
 		Con_Printf("%s: tried to execute a NULL function\n", vm->name);
@@ -733,6 +739,10 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	vm->xstatement = oldstmt;
 	executing_count--;
 	vm->exec_depth--;
+	if (nested) {
+		QC_SetGInt(vm, vm->gofs.self, oldself);
+		QC_SetGInt(vm, vm->gofs.other, oldother);
+	}
 	return true;
 }
 

@@ -26,4 +26,23 @@ void R_NewMap(void);             /* cl.world is loaded */
 void R_BeginFrame(void);
 void R_EndFrame(void);          /* draws the console and presents */
 
+/* 2D drawing for other modules (UI toolkits and the like). Coordinates are
+ * virtual pixels from the top left, as R_GetSize reports them; colours are
+ * 0-255 RGBA. Calls are only valid between R_BeginFrame and R_EndFrame. */
+typedef struct {
+	float x, y;
+	float s, t;
+	uint8_t rgba[4];
+} r2dvert_t;
+
+enum { R2D_ALPHA, R2D_ADD, R2D_PREMULTIPLIED };
+
+int R_ImageHandle(const char *name);    /* image or material by name, 0 if none */
+int R_UploadImage(const char *name, const uint8_t *rgba, int w, int h); /* creates or replaces */
+void R_ImageSize(int handle, int *w, int *h);
+void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const uint16_t *idx, int numidx,
+                       int blend);      /* image 0 draws untextured */
+void R_Set2DClip(float x, float y, float w, float h);
+void R_Reset2DClip(void);
+
 #endif

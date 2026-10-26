@@ -1,6 +1,7 @@
 /* Bulwark engine - client connection, server message parsing and timing.
  * ISC licence, see LICENSE. */
 #include "client.h"
+#include "console.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
@@ -482,6 +483,7 @@ static void parse_server_message(msg_t *m, bool reliable)
 				finish_signon();
 			else if (stage == 2 && cl.state == ca_loading) {
 				cl.state = ca_active;
+				Con_SetActive(false); /* the console gets out of the way once in game */
 				cl.next_cmd = cl.realtime;
 				cl.cmd_start = cl.realtime;
 			}

@@ -47,6 +47,8 @@ char *Mem_Strdup(const char *s);
 size_t Str_Copy(char *dst, const char *src, size_t dstsize);
 size_t Str_Cat(char *dst, const char *src, size_t dstsize);
 int Str_ICmp(const char *a, const char *b);
+/* printf into one of a few rotating static buffers, for short-lived strings */
+const char *va(const char *fmt, ...) BW_PRINTF(1, 2);
 int Str_NICmp(const char *a, const char *b, size_t n);
 bool Str_WildMatch(const char *pattern, const char *s, bool nocase);
 

@@ -296,3 +296,15 @@ float VectorNormalize(float *v)
 	}
 	return len;
 }
+
+const char *va(const char *fmt, ...)
+{
+	static char bufs[8][1024];
+	static int which;
+	char *b = bufs[which++ & 7];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(b, sizeof(bufs[0]), fmt, ap);
+	va_end(ap);
+	return b;
+}

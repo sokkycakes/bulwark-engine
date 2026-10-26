@@ -181,11 +181,9 @@ void Cbuf_Execute(void)
 
 static void Cmd_Echo_f(int argc, const char **argv)
 {
-	(void)argv;
-	if (argc > 1)
-		Con_Printf("%s\n", Cmd_Args());
-	else
-		Con_Printf("\n");
+	for (int i = 1; i < argc; i++)
+		Con_Printf(i + 1 < argc ? "%s " : "%s", argv[i]);
+	Con_Printf("\n");
 }
 
 static void Cmd_Exec_f(int argc, const char **argv)

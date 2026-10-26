@@ -506,7 +506,7 @@ void CSQC_Frame(int width, int height)
 	QC_SetGVec(vm, CS.view_angles, cl.viewangles);
 	vm->globals[OFS_PARM(0)].f = (float)width;
 	vm->globals[OFS_PARM(1)].f = (float)height;
-	vm->globals[OFS_PARM(2)].f = Con_IsActive() ? 0 : 1;
+	vm->globals[OFS_PARM(2)].f = 1; /* "notmenu": no menu progs yet */
 	vm->argc = 3;
 	QC_Execute(vm, CS.UpdateView);
 	if (CS.view_angles >= 0)

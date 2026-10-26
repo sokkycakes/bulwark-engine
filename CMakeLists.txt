@@ -67,6 +67,13 @@ add_library(bwclient STATIC
 	src/client/cl_csqc.c
 	src/client/console.c
 	src/render/r_main.c
+	src/render/r_gl.c
+	src/render/r_image.c
+	src/render/r_material.c
+	src/render/r_world.c
+	src/render/r_draw.c
+	src/render/r_model.c
+	src/render/r_scene.c
 	src/sound/snd_main.c)
 target_link_libraries(bwclient PUBLIC bwserver)
 
