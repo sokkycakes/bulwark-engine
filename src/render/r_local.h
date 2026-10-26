@@ -289,6 +289,7 @@ typedef struct {
 	int numdlights;
 	/* matrices for the frame being drawn */
 	float view[16], proj[16], viewproj[16];
+	float vmviewproj[16]; /* the projection view models use */
 	float forward[3], right[3], up[3];
 	/* the last view that filled most of the screen, for console tests */
 	float mainorigin[3], mainforward[3];

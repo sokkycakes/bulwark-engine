@@ -50,3 +50,26 @@ an entity replace each other, and `SOUNDFLAG_NOREPLACE` leaves a playing
 channel alone, as `fteextensions.qc` describes. Attenuation 1 fades a sound
 out over `snd_nominaldistance` (1000) units; 0 plays it everywhere. A WAV
 `cue ` chunk marks the frame a sample loops back to.
+
+## The camera and view models
+
+- `view_angles` is set from the player's aim before `CSQC_UpdateView`. It
+  is the game's working copy for that view: Nuclide adds bob and strafe
+  roll to it and hands it to the camera. Changes to it are not fed back
+  into the aim. The game turns the player with `setproperty(VF_CL_VIEWANGLES)`
+  or `input_angles`. Feeding the bobbed angles back used to make the pitch
+  run into the ±89° clamp and the roll build up to 76° within a second of
+  walking.
+- Models are drawn with their pitch inverted, as in Quake. View models
+  (RF_VIEWMODEL or RF_DEPTHHACK) are the exception: Nuclide gives them the
+  camera's own angles, so drawing them with the camera's convention keeps
+  the gun pointing where the camera does. FTE, run as a black box, inverts
+  them too, so its gun swings up when the player looks down.
+  `r_viewmodel_quakepitch 1` restores that behaviour.
+- View models are drawn with a near plane of 1 unit, so the gun doesn't
+  clip, and with `r_viewmodel_fov` as their field of view when it is set
+  (0 uses the view's). RF_DEPTHHACK squeezes them into the front 30% of the
+  depth range.
+- When the command line starts a game, the menu progs load only once that
+  game is running. Their init then sees `clientstate()` as 2 and doesn't
+  queue the background map in front of the game.

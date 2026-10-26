@@ -519,18 +519,10 @@ void CSQC_Frame(int width, int height)
 	vm->globals[OFS_PARM(1)].f = (float)height;
 	vm->globals[OFS_PARM(2)].f = MQC_Active() ? 0 : 1; /* "notmenu" */
 	vm->argc = 3;
-	{
-		float before[3];
-		VectorCopy(cl.viewangles, before);
-		QC_Execute(vm, CS.UpdateView);
-		/* the game turns the player by writing view_angles or through
-		 * setproperty(VF_CL_VIEWANGLES); the latter must not be undone */
-		if (CS.view_angles >= 0) {
-			const float *va = &vm->globals[CS.view_angles].f;
-			if (va[0] != before[0] || va[1] != before[1] || va[2] != before[2])
-				VectorCopy(va, cl.viewangles);
-		}
-	}
+	/* view_angles is the game's working copy for this view: bob and roll
+	 * written to it change the camera only. The game turns the player
+	 * through setproperty(VF_CL_VIEWANGLES) or input_angles instead. */
+	QC_Execute(vm, CS.UpdateView);
 	QC_CollectGarbage(vm, false);
 }
 

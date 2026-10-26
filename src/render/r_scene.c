@@ -9,7 +9,7 @@
 
 rscene_t r_scene;
 rstats_t r_stats;
-static cvar_t *fov, *r_nearclip;
+static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch;
 
 /* entity fields addentity reads, looked up once per client game */
 static struct {
@@ -244,10 +244,14 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	if (EF.forceshader >= 0 && f[EF.forceshader].f > 0)
 		e->forceshader = R_MaterialForHandle((int)f[EF.forceshader].f);
 	/* models face their angles with pitch inverted, as in Quake; brush
-	 * models use the angles as given */
+	 * models use the angles as given. View models (RF_VIEWMODEL or
+	 * RF_DEPTHHACK) are given the camera's angles by games such as Nuclide,
+	 * so they keep the camera's convention and point where the camera does;
+	 * r_viewmodel_quakepitch 1 inverts them like other models, as FTE does */
 	{
 		float a[3] = {e->angles[0], e->angles[1], e->angles[2]};
-		if (e->model && e->model->type != MOD_BRUSH)
+		bool vm = (e->renderflags & (1 | 4)) && !(r_viewmodel_quakepitch && r_viewmodel_quakepitch->ivalue);
+		if (e->model && e->model->type != MOD_BRUSH && !vm)
 			a[0] = -a[0];
 		AnglesToAxis(a, e->axis);
 	}
@@ -333,6 +337,24 @@ void R_SetupView(void)
 		Mat4_Ortho(r_scene.proj, -fx, fx, -fy, fy, -65536, 65536);
 	}
 	Mat4_Multiply(r_scene.viewproj, r_scene.proj, r_scene.view);
+	/* view models (RF_VIEWMODEL, RF_DEPTHHACK) get their own projection: a
+	 * near plane close enough that the gun never clips, and optionally their
+	 * own field of view, as Source's viewmodel_fov */
+	{
+		float vproj[16], vfx = fx, vfy = fy;
+		if (r_viewmodel_fov && r_viewmodel_fov->value > 0 && r_scene.perspective) {
+			float saved = r_scene.afov, sx = r_scene.fov_x, sy = r_scene.fov_y;
+			r_scene.afov = r_viewmodel_fov->value;
+			r_scene.fov_x = r_scene.fov_y = 0;
+			compute_fov(&vfx, &vfy);
+			r_scene.afov = saved, r_scene.fov_x = sx, r_scene.fov_y = sy;
+		}
+		if (r_scene.perspective)
+			Mat4_Perspective(vproj, vfx, vfy, 1, r_scene.farclip);
+		else
+			memcpy(vproj, r_scene.proj, sizeof(vproj));
+		Mat4_Multiply(r_scene.vmviewproj, vproj, r_scene.view);
+	}
 	AngleVectors(r_scene.angles, r_scene.forward, r_scene.right, r_scene.up);
 }
 
@@ -460,6 +482,10 @@ void R_RenderScene(void)
 void R_InitScene(void)
 {
 	fov = Cvar_Get("fov", "90", CVAR_ARCHIVE, "Horizontal field of view at 4:3, widened for wider screens");
+	r_viewmodel_quakepitch = Cvar_Get("r_viewmodel_quakepitch", "0", CVAR_ARCHIVE,
+	                                  "1 inverts view model pitch like other models (FTE's behaviour); 0 makes them follow the camera");
+	r_viewmodel_fov = Cvar_Get("r_viewmodel_fov", "0", CVAR_ARCHIVE,
+	                           "Field of view for view models (like Source's viewmodel_fov); 0 uses the view's");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");
 	R_InitDecals();
 	R_InitParticles();

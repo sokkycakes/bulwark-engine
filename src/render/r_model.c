@@ -765,10 +765,11 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	float model[16], mvp[16];
 	const glprog_t *p = &r_progs[PROG_MODEL];
 	bool depthhack = (e->renderflags & 4) != 0; /* RF_DEPTHHACK */
+	bool viewmodel = (e->renderflags & (1 | 4)) != 0; /* RF_VIEWMODEL or RF_DEPTHHACK */
 	if (!m || !m->loaded)
 		return;
 	Mat4_FromAxis(model, e->axis, e->origin, e->scale);
-	Mat4_Multiply(mvp, r_scene.viewproj, model);
+	Mat4_Multiply(mvp, viewmodel ? r_scene.vmviewproj : r_scene.viewproj, model);
 
 	if (m->type == MOD_BRUSH) {
 		bool trans = e->alpha < 1 || (e->renderflags & 8);

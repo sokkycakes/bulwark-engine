@@ -126,7 +126,12 @@ int main(int argc, char **argv)
 	if (cmds.data)
 		Cbuf_AddText(cmds.data);
 	SB_Free(&cmds);
-	if (MQC_Load() && !starts_game)
+	/* when the command line starts a game, the menu loads once that game is
+	 * running, so its init sees clientstate() 2 and skips the background
+	 * map and intro it would otherwise queue in front of the game */
+	bool menu_pending = starts_game;
+	double menu_deadline = Sys_Seconds() + 30;
+	if (!starts_game && MQC_Load())
 		MQC_Toggle(1);
 
 	double last = Sys_Seconds();
@@ -160,6 +165,10 @@ int main(int argc, char **argv)
 		if (!sv.active && server_was_active)
 			cl.listen = false;
 		server_was_active = sv.active;
+		if (menu_pending && (cl.state == ca_active || Sys_Seconds() > menu_deadline)) {
+			menu_pending = false;
+			MQC_Load();
+		}
 
 		host_time += dt;
 		NET_RunDelayed();
