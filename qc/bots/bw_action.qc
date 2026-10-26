@@ -495,7 +495,14 @@ entity BWIntention::SelectMoreDangerousThreat(entity a, entity b)
 		if (r)
 			return r;
 	}
-	if (vlen(a.origin - m_bot.origin) <= vlen(b.origin - m_bot.origin))
+	/* the closer one; the current threat keeps its place unless the other
+	 * is clearly closer, so two at about the same range don't alternate */
+	float da = vlen(a.origin - m_bot.origin), db = vlen(b.origin - m_bot.origin);
+	if (a == m_bot.m_vision.m_last_threat)
+		da *= 0.85;
+	else if (b == m_bot.m_vision.m_last_threat)
+		db *= 0.85;
+	if (da <= db)
 		return a;
 	return b;
 }

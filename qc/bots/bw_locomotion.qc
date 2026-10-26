@@ -70,6 +70,8 @@ float BWLocomotion::IsClimbingOrJumping(void) { return (m_jumping || m_climbing)
 float BWLocomotion::IsStuck(void) { return m_stuck; }
 float BWLocomotion::GetStuckDuration(void) { return m_stuck ? time - m_stuck_since : 0; }
 float BWLocomotion::GetStillDuration(void) { return time - m_still_since; }
+/* bumped into a player or bot, or saw one in the way, in the last half second */
+float BWLocomotion::IsBlockedByActor(void) { return (time - m_actor_blocked < 0.5) ? TRUE : FALSE; }
 float BWLocomotion::IsImmobile(void) { return (GetStillDuration() > 1) ? TRUE : FALSE; }
 
 void BWLocomotion::ClearStuck(void)
@@ -153,6 +155,7 @@ float BWLocomotion::ClimbUpToLedge(vector ledge, vector fwd)
 	m_climbing = TRUE;
 	m_air_goal = ledge;
 	m_air_speed = max(m_walk_speed, m_run_speed * 0.6);
+	m_air_accel = 0;
 	bw_log(m_bot, BWD_LOCOMOTION, sprintf("climb to %v (%g up)", ledge, dz));
 	bw_ev_clear();
 	m_bot.SendEvent(BWE_LEAVE_GROUND);
@@ -324,6 +327,7 @@ void BWLocomotion::CheckGround(float was)
 		m_bot.flags |= FL_ONGROUND;
 		if (!was) {
 			m_jumping = m_climbing = FALSE;
+			m_air_speed = m_air_accel = 0;
 			bw_log(m_bot, BWD_LOCOMOTION, "landed");
 			bw_ev_clear();
 			bw_ev_e1 = m_bot.groundentity;
@@ -468,9 +472,10 @@ void BWLocomotion::FrameUpdate(float dt)
 			vector want = normalize(bw_flat(m_air_goal - m_bot.origin)) * m_air_speed, have = bw_flat(vel), dv;
 			if (bw_dist2d(m_bot.origin, m_air_goal) < 4)
 				want = '0 0 0';
+			float acc = m_air_accel ? m_air_accel : BW_AIR_ACCEL;
 			dv = want - have;
-			if (vlen(dv) > BW_AIR_ACCEL * dt)
-				dv = normalize(dv) * BW_AIR_ACCEL * dt;
+			if (vlen(dv) > acc * dt)
+				dv = normalize(dv) * acc * dt;
 			vel += dv;
 		}
 	}
@@ -489,6 +494,8 @@ void BWLocomotion::FrameUpdate(float dt)
 		if (wasfreed(e))
 			continue;
 		bw_run_touch(e, m_bot);
+		if (e.flags & (FL_CLIENT | FL_MONSTER))
+			m_actor_blocked = time;
 		bw_ev_clear();
 		bw_ev_e1 = e;
 		m_bot.SendEvent(BWE_CONTACT);

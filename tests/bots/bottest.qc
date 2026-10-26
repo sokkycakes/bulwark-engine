@@ -198,7 +198,9 @@ class HunterPinned : BWAction {
 	};
 	virtual float Update(float interval)
 	{
-		if (wasfreed(m_target) || !m_target.IsAlive())
+		if (wasfreed(m_target))
+			return Done("target gone");
+		if (!m_target.IsAlive())
 			return Done("victim dead");
 		m_bot.m_loco.Stop();
 		m_bot.m_body.AimHeadTowardsEntity(m_target, BWLOOK_CRITICAL, 0.3, __NULL__, "pinning");
@@ -210,8 +212,9 @@ class HunterPinned : BWAction {
 	};
 	virtual void OnEnd(BWAction next)
 	{
-		if (!wasfreed(m_target) && m_target.m_pinned_by == m_bot)
-			m_target.m_pinned_by = world;
+		if (!wasfreed(m_target))
+			if (m_target.m_pinned_by == m_bot)
+				m_target.m_pinned_by = world;
 	};
 };
 
@@ -231,7 +234,9 @@ class HunterPounce : BWAction {
 	{
 		vector pred, v;
 		float d, t, g = cvar("sv_gravity");
-		if (wasfreed(m_target) || !m_target.IsAlive())
+		if (wasfreed(m_target))
+			return Done("target gone");
+		if (!m_target.IsAlive())
 			return Done("target gone");
 		switch (m_phase) {
 		case 0:	/* crouch, then leap at where the target will be */
@@ -239,6 +244,9 @@ class HunterPounce : BWAction {
 			m_bot.m_loco.FaceTowards(m_target.origin);
 			m_bot.m_body.AimHeadTowardsEntity(m_target, BWLOOK_IMPORTANT, 0.3, __NULL__, "pounce");
 			if (time < m_until)
+				return Continue();
+			/* a target flying from a punch can't be led; wait for it to land */
+			if (!m_target.m_loco.IsOnGround() && time < m_until + 1)
 				return Continue();
 			d = bw_dist2d(m_bot.origin, m_target.origin);
 			pred = m_target.origin + bw_flat(m_target.velocity) * (d / 700);
@@ -249,10 +257,16 @@ class HunterPounce : BWAction {
 			m_bot.m_body.SetDesiredPosture(BWPOSTURE_STAND);
 			m_bot.m_body.StartActivity(BWACT_JUMP, 0);
 			m_bot.m_loco.Leap(v);
+			/* a little air control keeps it on a target that turns */
+			m_bot.m_loco.m_air_goal = pred;
+			m_bot.m_loco.m_air_speed = 700;
+			m_bot.m_loco.m_air_accel = 400;
 			m_phase = 1;
 			m_until = time + 3;
 			return Continue();
 		case 1:	/* in the air */
+			if (!m_bot.m_loco.IsOnGround())
+				m_bot.m_loco.m_air_goal = m_target.origin;
 			if (m_touched || (m_bot.m_loco.IsOnGround() && vlen(m_target.origin - m_bot.origin) < 48)) {
 				g_pounces++;
 				g_best_pounce = max(g_best_pounce, m_launch_dist);
@@ -299,7 +313,7 @@ class HunterMain : BWAction {
 		}
 		t = k.m_subject;
 		if (k.m_visible && vlen(t.origin - m_bot.origin) < 600 && m_bot.m_loco.IsOnGround() &&
-		    !((TestBot)t).m_pinned_by)
+		    !((TestBot)t).m_pinned_by && ((TestBot)t).m_loco.IsOnGround())
 			return SuspendFor(spawn(HunterPounce, m_target: t), "target in range");
 		m_chase.Chase(m_bot, t);
 		m_bot.m_body.AimHeadTowardsEntity(t, BWLOOK_IMPORTANT, 0.3, __NULL__, "hunting");
@@ -322,7 +336,9 @@ class TankPunch : BWAction {
 	virtual float Update(float interval)
 	{
 		vector dir;
-		if (wasfreed(m_target) || !m_target.IsAlive())
+		if (wasfreed(m_target))
+			return Done("target gone");
+		if (!m_target.IsAlive())
 			return Done("target gone");
 		m_bot.m_loco.Stop();
 		m_bot.m_loco.FaceTowards(m_target.origin);

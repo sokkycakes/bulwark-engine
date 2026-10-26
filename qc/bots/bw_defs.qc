@@ -240,6 +240,7 @@ class BWLocomotion : BWComponent {
 	float m_climbing;
 	vector m_air_goal;
 	float m_air_speed;
+	float m_air_accel;	/* air control strength; 0 means the default */
 
 	vector m_last_good;
 	vector m_stuck_anchor;
@@ -248,6 +249,7 @@ class BWLocomotion : BWComponent {
 	float m_wants_move;
 	entity m_contacts[4];
 	float m_ncontacts;
+	float m_actor_blocked;	/* last time an actor was in the way */
 
 	virtual void Reset(void);
 	virtual void FrameUpdate(float dt);
@@ -266,6 +268,7 @@ class BWLocomotion : BWComponent {
 	nonvirtual float IsImmobile(void);
 	nonvirtual float GetStillDuration(void);
 	nonvirtual void ClearStuck(void);
+	nonvirtual float IsBlockedByActor(void);
 
 	nonvirtual void Jump(float height);
 	nonvirtual void Leap(vector vel);
@@ -332,6 +335,7 @@ class BWKnown {
 class BWVision : BWComponent {
 	float m_fov, m_cos_half_fov, m_reaction, m_range;
 	BWKnown m_known;
+	entity m_last_threat;	/* the last primary threat, for hysteresis */
 	float m_last_update;
 	float m_team_last_seen[8];
 
@@ -449,6 +453,9 @@ class BWPathFollower : BWPath {
 	float m_best, m_progress_time;
 	float m_failed;
 	float m_last_follow;
+	float m_block_since;
+	vector m_dodge_dir;
+	float m_dodge_until;
 	float m_speed;		/* base speed; 0 uses the bot's run speed */
 	entity m_ignore;	/* not avoided (a chased subject) */
 
@@ -459,6 +466,7 @@ class BWPathFollower : BWPath {
 	nonvirtual vector Avoid(BWBot bot, vector goal);
 	nonvirtual void Fail(BWBot bot, float reason);
 	nonvirtual vector CurrentGoal(void);
+	nonvirtual float Sidestep(BWBot bot);
 };
 
 class BWChasePath : BWPathFollower {

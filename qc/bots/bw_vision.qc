@@ -246,6 +246,7 @@ BWKnown BWVision::GetPrimaryKnownThreat(float only_visible)
 		if (t == k.m_subject)
 			best = k;
 	}
+	m_last_threat = best ? best.m_subject : world;
 	return best;
 }
 

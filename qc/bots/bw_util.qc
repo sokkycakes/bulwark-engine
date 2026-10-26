@@ -48,8 +48,9 @@ void bw_log(BWBot bot, float cat, string msg)
 {
 	if (!(bw_debug_flags & cat))
 		return;
-	if (bot && !bw_debug_matches(bot))
-		return;
+	if (bot)
+		if (!bw_debug_matches(bot))
+			return;
 	if (bot)
 		print(sprintf("%.2f %s(%d): %s\n", time, bot.BotName(), num_for_edict(bot), msg));
 	else

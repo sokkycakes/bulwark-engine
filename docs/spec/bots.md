@@ -83,12 +83,22 @@ the desired speed (6.7 s at run speed).
   60 units below the path.
 - Avoidance uses two line feelers at knee height on the box's sides, 40 units
   plus 0.4 s of travel long, and ignores a chased subject.
+- Being held up by another actor (touching one, or a feeler hitting one) is
+  never a reason to give up: the no-progress timer pauses, and being stuck
+  only counts once no actor has been in the way for 2 s, and only after the
+  current path has existed for a second (a fresh path gets a fair try). After 1.5 s of
+  being held up, a climb, drop or gap jump moves 56 units to one side if
+  there is room, and otherwise the bot steps aside for a moment. A ground
+  point with an actor on it counts as reached within 64 units.
 
 ## Vision and the Body
 
 - Candidates are entities with `FL_CLIENT` or `FL_MONSTER`, culled with
   `checkpvs` from the eye, then the field of view (90°), then a sight line
   (`MOVE_NOMONSTERS`) to the middle of the box or the eye.
+- The default threat comparison picks the closer threat, but the previous
+  primary threat wins unless the other is more than 15% closer, so a bot
+  doesn't alternate between two threats at about the same range.
 - An actor the game tells the bot about (`AddKnownEntity`) counts as known
   for 10 s from the telling; it is "aware" at once. Seen actors are aware
   after the reaction time (0 by default).
@@ -102,9 +112,11 @@ the desired speed (6.7 s at run speed).
 
 ## Learned by probing
 
-- Bulwark has no autocvar support; the framework reads cvars with `cvar()`.
-- Bulwark's `random()` is not seeded from the clock, so a headless run is
-  repeatable. The tests take a `bottest_seed` to vary runs.
+- The framework reads cvars with `cvar()`, which works with or without
+  autocvar support (Bulwark gained autocvars after this was written).
+- `random()` is seeded from the clock, so every test run differs;
+  `bottest_seed` adds further variation. The scenarios were soaked over
+  2000 runs each.
 - `.customphysics` replaces the movetype and is followed by the entity's
   think, as its doc comment says.
 - On BSP29/BSP30 maps a box trace uses the map's fixed hull whose bottom lines
@@ -118,6 +130,8 @@ the desired speed (6.7 s at run speed).
   (`findflags(e, flags, ...)`) or the global `self` lives in plain
   functions. `float *a, *b` makes `b` a `float **`. Class-typed global arrays
   are refused (an `entity` array works). `1e9` is not a valid literal.
+  `&&` and `||` evaluate both sides (no short circuit), so guards against a
+  null or freed entity are nested `if`s.
   Fields that are arrays work in classes.
 - The framework compiles inside Nuclide's server progs (with its
   `fteextensions.qc`) without warnings.
@@ -144,5 +158,6 @@ with a 96 unit gap; `tests/data/botmap.way` holds 22 waypoints.
   (team 3, 1500 hp, speed 210, acceleration 800) chases leading its target
   and punches within 70 after a 0.4 s wind-up (24 damage, 450 u/s away and
   300 up, 1.5 s cooldown). A pass needs a pounce, a punch and a fleeing
-  survivor; in 8 seeded runs the infected won every time, with pounces
-  landing from up to about 600 units.
+  survivor. The infected nearly always win, with pounces landing from up to
+  about 600 units. The test's Hunter steers its leap a little (400 u/s² of
+  air control towards the target) and won't pounce at a target in the air.

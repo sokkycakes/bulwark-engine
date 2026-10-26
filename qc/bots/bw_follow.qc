@@ -63,6 +63,9 @@ float BWPathFollower::IsReached(BWBot bot, float i)
 	}
 	if (d2 < BW_REACH)
 		return TRUE;
+	/* someone is standing on it: close is close enough */
+	if (i < m_count - 1 && m_segs[i].type == BWSEG_GROUND && d2 < 64 && bot.m_loco.IsBlockedByActor())
+		return TRUE;
 	/* passed it in the path's direction */
 	if (i < m_count - 1 && d2 < 120 && bw_flat(o - p) * m_segs[i].fwd >= 0)
 		return TRUE;
@@ -89,8 +92,11 @@ float BWPathFollower::CheckProgress(BWBot bot)
 			m_goal_idx++;
 		}
 
-	while (m_goal_idx < m_count && IsReached(bot, m_goal_idx))
+	while (m_goal_idx < m_count) {
+		if (!IsReached(bot, m_goal_idx))
+			break;
 		m_goal_idx++;
+	}
 	if (m_goal_idx >= m_count) {
 		m_valid = FALSE;
 		bw_log(bot, BWD_PATH, "reached the end of the path");
@@ -105,15 +111,17 @@ float BWPathFollower::CheckProgress(BWBot bot)
 	}
 
 	/* progress towards the current point */
+	/* waiting on another actor to move is not a reason to give up */
 	d = vlen(m_segs[m_goal_idx].pos - o);
-	if (d < m_best - 8 || loco.IsClimbingOrJumping()) {
+	if (d < m_best - 8 || loco.IsClimbingOrJumping() || loco.IsBlockedByActor()) {
 		m_best = min(m_best, d);
 		m_progress_time = time;
 	} else if (time - m_progress_time > BW_GIVEUP) {
 		Fail(bot, BWFAIL_STUCK);
 		return FALSE;
 	}
-	if (loco.IsStuck() && loco.GetStuckDuration() > 1) {
+	/* stuck counts only once no actor has been in the way for a couple of seconds */
+	if (loco.IsStuck() && time - max(loco.m_stuck_since, m_computed) > 1 && time - loco.m_actor_blocked > 2) {
 		Fail(bot, BWFAIL_STUCK);
 		return FALSE;
 	}
@@ -153,6 +161,8 @@ vector BWPathFollower::Avoid(BWBot bot, vector goal)
 
 	if (lf == 1 && rf == 1)
 		return goal;
+	if ((le.flags & (FL_CLIENT | FL_MONSTER)) || (re.flags & (FL_CLIENT | FL_MONSTER)))
+		bot.m_loco.m_actor_blocked = time;
 	if (lf < 1 && rf < 1) {
 		/* both blocked: only actors are worth steering round */
 		if (!(le.flags & (FL_CLIENT | FL_MONSTER)) && !(re.flags & (FL_CLIENT | FL_MONSTER)))
@@ -164,6 +174,34 @@ vector BWPathFollower::Avoid(BWBot bot, vector goal)
 	if (lf < 1)
 		return bot.origin + normalize(fwd - left * (1 - lf)) * range;
 	return bot.origin + normalize(fwd + left * (1 - rf)) * range;
+}
+
+/* moves a climb, drop or gap jump (both of its points) sideways, for when
+ * another actor holds the spot; FALSE if neither side has room */
+float BWPathFollower::Sidestep(BWBot bot)
+{
+	float i, side = (random() < 0.5) ? 1 : -1, g = m_goal_idx;
+	vector fwd = m_segs[g].fwd, off, a, b, na, nb, up = '0 0 1' * bot.m_loco.m_max_jump;
+	if (g < 2)
+		return FALSE;	/* point 0 is where the bot started */
+	a = m_segs[g - 1].pos;
+	b = m_segs[g].pos;
+	for (i = 0; i < 2; i++, side = -side) {
+		off = [-fwd_y, fwd_x, 0] * side * 56;
+		tracebox(a + off + '0 0 18', bot.mins, bot.maxs, a + off - '0 0 18', MOVE_NOMONSTERS, bot);
+		if (trace_startsolid || trace_fraction == 1)
+			continue;
+		na = trace_endpos;
+		tracebox(b + off + up, bot.mins, bot.maxs, b + off - '0 0 18', MOVE_NOMONSTERS, bot);
+		if (trace_startsolid || trace_fraction == 1 || fabs(trace_endpos_z - b_z) > bot.m_loco.m_step)
+			continue;
+		nb = trace_endpos;
+		m_segs[g - 1].pos = na;
+		m_segs[g].pos = nb;
+		bw_log(bot, BWD_PATH, sprintf("an actor holds the spot, moving over to %v", nb));
+		return TRUE;
+	}
+	return FALSE;
 }
 
 void BWPathFollower::Follow(BWBot bot)
@@ -180,6 +218,29 @@ void BWPathFollower::Follow(BWBot bot)
 
 	if (!CheckProgress(bot))
 		return;
+
+	/* two bots wanting the same climb or drop: one of them moves over */
+	if (!loco.IsBlockedByActor())
+		m_block_since = 0;
+	else if (!m_block_since)
+		m_block_since = time;
+	else if (time - m_block_since > 1.5) {
+		/* held up by other actors: move a climb or drop over, or step aside */
+		float moved = FALSE;	/* (QC's || doesn't short-circuit) */
+		if (m_segs[m_goal_idx].type != BWSEG_GROUND)
+			moved = Sidestep(bot);
+		if (!moved) {
+			vector f = normalize(bw_flat(m_segs[m_goal_idx].pos - bot.origin));
+			m_dodge_dir = [-f_y, f_x, 0] * ((random() < 0.5) ? 1 : -1);
+			m_dodge_until = time + 0.4 + random() * 0.4;
+			bw_log(bot, BWD_PATH, "held up by actors, stepping aside");
+		}
+		m_block_since = time;
+	}
+	if (time < m_dodge_until && loco.IsOnGround()) {
+		loco.Approach(bot.origin + m_dodge_dir * 64, 1);
+		return;
+	}
 
 	/* slow down for sharp corners coming up */
 	for (i = m_goal_idx; i < m_count; i++) {
