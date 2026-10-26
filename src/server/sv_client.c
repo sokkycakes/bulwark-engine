@@ -252,6 +252,7 @@ static void free_client_state(client_t *c)
 	SB_Free(&c->datagram);
 	Blob_Clear(c->blobs);
 	SV_ResetStats(c);
+	SV_FreeTransfers(c);
 }
 
 static void write_blob(msg_t *m, int slot, const infoblob_t *b)
@@ -1177,6 +1178,9 @@ static void parse_stringcmd(client_t *c, const char *s)
 		}
 		goto done;
 	}
+	/* downloads happen while loading, before the client spawns */
+	if (SV_DownloadCommand(c, t->argc, t->argv))
+		goto done;
 	if (c->state != CS_SPAWNED)
 		goto done;
 	/* everything else is the game's to handle, chat after moderation */
@@ -1331,6 +1335,9 @@ static void parse_client_message(client_t *c, msg_t *m)
 		case clc_userblob:
 			parse_userblob(c, m);
 			break;
+		case clc_upload:
+			SV_ParseUpload(c, m);
+			break;
 		default:
 			Con_DPrintf("bad message %d from %s\n", cmd, c->name);
 			m->badread = true;
@@ -1465,6 +1472,7 @@ void SV_SendClientMessages(void)
 			continue;
 		}
 		flush_qcrel(c);
+		SV_DownloadFrame(c);
 		/* connecting clients only need their reliable stream pushed along */
 		if (c->state != CS_SPAWNED) {
 			if (Netchan_HasPendingReliable(&c->chan) || now - c->chan.last_received < 1.0)

@@ -14,6 +14,9 @@
 extern const qc_builtin_t r_builtins[];
 
 bool R_Init(bool headless);
+/* fn gets the next frame as a JPEG; false when nothing is drawn (headless) */
+typedef void (*r_capture_fn)(const void *jpeg, size_t len);
+bool R_CaptureScreen(r_capture_fn fn);
 void R_Shutdown(void);
 bool R_Active(void);           /* true when there is a window to draw into */
 void R_GetSize(int *w, int *h);

@@ -791,4 +791,5 @@ void SV_Init(void)
 	SV_InitRoutes();
 	SV_InitMVD();
 	SV_InitMaster();
+	SV_InitDownloads();
 }

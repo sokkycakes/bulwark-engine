@@ -225,6 +225,7 @@ void CL_Disconnect(const char *reason)
 	if (cl.state != ca_disconnected)
 		Con_Printf("disconnected%s%s\n", reason ? ": " : "", reason ? reason : "");
 	CL_DemoDisconnected();
+	CL_DownloadsReset();
 	clear_map_state();
 	S_StopAllSounds();
 	cl.state = ca_disconnected;
@@ -385,9 +386,19 @@ static void parse_serverdata(msg_t *m)
 	Con_Printf("map %s\n", cl.mapname);
 }
 
+/* the precaches are all in: load the map, unless files have to come first */
 static void finish_signon(void)
 {
+	if (CL_StartMissingDownloads())
+		return;
+	CL_FinishSignon();
+}
+
+void CL_FinishSignon(void)
+{
 	char cmd[64];
+	if (cl.state != ca_loading)
+		return;
 	load_world();
 	R_NewMap();
 	for (int i = 1; i < cl.numsounds; i++)
@@ -475,6 +486,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 			break;
 		case svc_serverdata:
 			parse_serverdata(m);
+			break;
+		case svc_download:
+			CL_ParseDownload(m);
 			break;
 		case svc_precache: {
 			int kind = MSG_ReadByte(m);
@@ -865,6 +879,7 @@ void CL_Frame(double dt)
 	read_packets();
 	check_connect();
 	CL_MasterFrame();
+	CL_DownloadFrame();
 	update_clock(dt);
 	check_userinfo();
 
@@ -990,5 +1005,6 @@ void CL_Init(void)
 	Cmd_Add("pingserver", CL_Ping_f);
 	Cmd_Add("netstats", CL_Netstats_f);
 	CL_InitMaster();
+	CL_InitDownloads();
 	IN_Init();
 }

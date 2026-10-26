@@ -215,6 +215,13 @@ bool CSQC_CenterPrint(const char *text);
 void CSQC_ServerInfoChanged(void);
 void CSQC_PlayerInfoChanged(int slot);
 /* menu progs (cl_menu.c) */
+/* cl_download.c */
+void CL_InitDownloads(void);
+bool CL_StartMissingDownloads(void); /* true: the signon waits for them */
+void CL_ParseDownload(msg_t *m);
+void CL_DownloadFrame(void);
+void CL_DownloadsReset(void);
+void CL_FinishSignon(void); /* cl_main.c: loads the map once the files are here */
 /* cl_master.c */
 void CL_InitMaster(void);
 bool CL_MasterConnectionless(const netadr_t *from, const uint8_t *data, size_t len);

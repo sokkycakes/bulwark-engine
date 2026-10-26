@@ -26,7 +26,7 @@ enum {
 	svc_setpause,     /* byte paused */
 	svc_sound,        /* see protocol.md */
 	svc_setangle,     /* angle16 x3 */
-	svc_download,     /* reserved */
+	svc_download,     /* byte op (DL_), then by op: see below */
 	svc_pointparticles, /* varuint effect, coord x3 origin, float x3 direction, float count */
 	svc_trailparticles, /* varuint effect, entity, coord x3 start, coord x3 end */
 	svc_playerblob,   /* byte slot, string key, varuint length, bytes */
@@ -43,8 +43,16 @@ enum {
 	clc_stringcmd, /* string */
 	clc_event,     /* string function, then typed arguments */
 	clc_userblob,  /* string key, varuint length, bytes */
+	clc_upload,    /* byte op (UL_), then by op: see below */
 	clc_count
 };
+
+/* svc_download ops: START string name, long size; DATA long offset, short
+ * length, bytes; DONE string sha256 hex; REFUSED string name, string why */
+enum { DL_START, DL_DATA, DL_DONE, DL_REFUSED };
+/* clc_upload ops: START string name, long size; DATA long offset, short
+ * length, bytes; WINDOW (waiting for "nextul"); DONE */
+enum { UL_START, UL_DATA, UL_WINDOW, UL_DONE };
 
 /* svc_precache kinds */
 enum { PRECACHE_MODEL = 0, PRECACHE_SOUND = 1, PRECACHE_PARTICLE = 2 };

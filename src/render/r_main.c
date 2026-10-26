@@ -18,6 +18,8 @@ cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
 static cvar_t *scr_scale, *r_screenshot_format, *jpeg_quality;
 static bool cursor_mode;
 static char screenshot_pending[256];
+static r_capture_fn capture_fn; /* wants the next frame as a JPEG */
+static void capture_jpeg(r_capture_fn fn);
 
 bool R_Active(void) { return r_active; }
 
@@ -143,6 +145,11 @@ void R_EndFrame(void)
 		take_screenshot(screenshot_pending);
 		screenshot_pending[0] = 0;
 	}
+	if (capture_fn) {
+		r_capture_fn fn = capture_fn;
+		capture_fn = NULL;
+		capture_jpeg(fn);
+	}
 	VID_Swap();
 }
 
@@ -203,6 +210,30 @@ static void take_screenshot(const char *name)
 	fclose(f);
 	Con_Printf("wrote %s\n", rel);
 	Mem_Free(px);
+}
+
+static void sb_write(void *ctx, void *data, int size) { SB_Append((strbuf_t *)ctx, data, (size_t)size); }
+
+/* the frame as a JPEG in memory, for screenshots sent to the server */
+static void capture_jpeg(r_capture_fn fn)
+{
+	strbuf_t sb = {0};
+	uint8_t *px = Mem_Alloc((size_t)r_pwidth * r_pheight * 3);
+	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
+	qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+	stbi_flip_vertically_on_write(1);
+	stbi_write_jpg_to_func(sb_write, &sb, r_pwidth, r_pheight, 3, px, 70);
+	Mem_Free(px);
+	fn(sb.data, sb.len);
+	SB_Free(&sb);
+}
+
+bool R_CaptureScreen(r_capture_fn fn)
+{
+	if (!r_active)
+		return false;
+	capture_fn = fn;
+	return true;
 }
 
 static void Screenshot_f(int argc, const char **argv)

@@ -63,6 +63,7 @@ add_library(bwserver STATIC
 	src/server/sv_admin.c
 	src/server/sv_mvd.c
 	src/server/sv_master.c
+	src/server/sv_download.c
 	src/server/sv_stats.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
@@ -87,6 +88,7 @@ endif()
 
 add_library(bwclient STATIC
 	src/client/cl_master.c
+	src/client/cl_download.c
 	src/client/cl_main.c
 	src/client/cl_input.c
 	src/client/cl_csqc.c

@@ -316,6 +316,12 @@ void SV_MasterPortsOpened(void);
 void SV_MasterMapSpawned(void);
 void SV_MasterFrame(void);
 void SV_GreetPins(client_t *c);
+/* sv_download.c */
+void SV_InitDownloads(void);
+bool SV_DownloadCommand(client_t *c, int argc, const char **argv);
+void SV_DownloadFrame(client_t *c);
+void SV_ParseUpload(client_t *c, msg_t *m);
+void SV_FreeTransfers(client_t *c);
 void SV_MVDFrame(void);
 void SV_MVDMapChanged(void);
 void SV_MVDMapSpawned(void);
