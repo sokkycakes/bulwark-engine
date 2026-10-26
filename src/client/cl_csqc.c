@@ -538,11 +538,13 @@ void CSQC_Frame(int width, int height)
 	QC_CollectGarbage(vm, false);
 }
 
+static bool cmd_forced;
+
 bool CSQC_ConsoleCommand(const char *line)
 {
 	qcvm_t *vm = cl.csqc;
 	cmd_tokens_t *t;
-	bool known = false;
+	bool known = cmd_forced;
 	if (!vm || !CS.ConsoleCommand)
 		return false;
 	t = Mem_Alloc(sizeof(*t));
@@ -990,3 +992,14 @@ const qc_builtin_t cl_builtins[] = {
 	{"setwatchpoint", cl_nop}, {"gp_rumble", cl_nop}, {"gp_rumbletriggers", cl_nop}, {"gp_setledcolor", cl_nop},
 	{"gp_settriggerfx", cl_nop},
 	{NULL, NULL}};
+
+/* cl_cmd: the line goes to CSQC_ConsoleCommand whether or not the client
+ * game registered the command */
+bool CSQC_ForceCommand(const char *line)
+{
+	bool r;
+	cmd_forced = true;
+	r = CSQC_ConsoleCommand(line);
+	cmd_forced = false;
+	return r;
+}

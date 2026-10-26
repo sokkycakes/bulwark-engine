@@ -248,8 +248,23 @@ static void Serverinfo_f(int argc, const char **argv)
 	CL_PrintServerinfo();
 }
 
+/* cl_cmd and menu_cmd: a command for the client game or the menu, even one
+ * it didn't register */
+static void ClCmd_f(int argc, const char **argv)
+{
+	bool menu = !Str_ICmp(argv[0], "menu_cmd");
+	if (argc < 2) {
+		Con_Printf("usage: %s <command> [args]\n", argv[0]);
+		return;
+	}
+	if (!(menu ? MQC_ForceCommand(Cmd_Args()) : CSQC_ForceCommand(Cmd_Args())))
+		Con_Printf("the %s isn't running or doesn't know \"%s\"\n", menu ? "menu" : "client game", argv[1]);
+}
+
 void CL_InitCommands(void)
 {
+	Cmd_AddD("cl_cmd", ClCmd_f, "cl_cmd <command>: run a command of the client game (CSQC_ConsoleCommand)");
+	Cmd_AddD("menu_cmd", ClCmd_f, "menu_cmd <command>: run a command of the menu (m_consolecommand)");
 	CL_InitDemos();
 	cfg_write_hook = write_binds;
 	cfg_reset_hook = reset_binds;

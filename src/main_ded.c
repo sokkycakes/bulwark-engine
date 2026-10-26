@@ -67,6 +67,7 @@ int main(int argc, char **argv)
 		FS_AddGameDir(games[i]);
 	NET_Init();
 	SV_Init();
+	QC_InitDebugCommands();
 	Cmd_Add("quit", Quit_f);
 	Cmd_Add("path", Path_f);
 	Cmd_SetPreHook(ServerFallback);

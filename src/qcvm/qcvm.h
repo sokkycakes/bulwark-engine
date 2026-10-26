@@ -38,6 +38,9 @@ typedef struct {
 	const char *file;
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
+	/* profile_ssqc and friends */
+	uint64_t prof_statements, prof_calls;
+	double prof_time; /* builtins only */
 } qcfunc_t;
 
 typedef struct {
@@ -217,6 +220,13 @@ struct qcvm_s {
 
 	/* the model name behind a modelindex, for skeletons and tags */
 	const char *(*modelname)(qcvm_t *vm, int modelindex);
+
+	/* debugging (qc_debug.c): any of these makes the interpreter call in */
+	bool debug_hooks;
+	bool profiling;
+	double profile_start;
+	char breakpoint[64];
+	struct qc_watch_s *watch;
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs
@@ -343,6 +353,15 @@ static inline void QC_SetEInt(qcvm_t *vm, int e, int ofs, int32_t v)
 	if (ofs >= 0)
 		QC_EdictFields(vm, e)[ofs].i = v;
 }
+
+/* qc_debug.c: profile_*, coredump_*, extensionlist_*, breakpoint, watchpoint,
+ * poke and pr_dumpplatform for each VM */
+void QC_InitDebugCommands(void);
+void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f);
+void QC_DebugStatement(qcvm_t *vm, int s);
+void QC_DebugUpdateHooks(qcvm_t *vm);
+void QC_CoreDump(qcvm_t *vm, const char *why);
+extern const char *const qc_supported_extensions[];
 
 /* builtin tables shared by every module */
 extern const qc_builtin_t qc_builtins_core[];

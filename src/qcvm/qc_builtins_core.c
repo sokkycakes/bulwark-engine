@@ -1152,7 +1152,7 @@ static void bi_checkcommand(qcvm_t *vm)
 	QC_ReturnFloat(vm, (Cmd_Exists(n) || Cvar_Find(n)) ? 1 : 0);
 }
 
-static const char *const supported_extensions[] = {
+const char *const qc_supported_extensions[] = {
 	"FRIK_FILE", "FTE_STRINGS", "DP_QC_SPRINTF", "DP_QC_TOKENIZEBYSEPARATOR", "DP_QC_FINDFLOAT",
 	"DP_QC_FINDFLAGS", "DP_QC_MINMAXBOUND", "DP_QC_SINCOSSQRTPOW", "DP_QC_RANDOMVEC",
 	"DP_QC_CVAR_STRING", "DP_QC_CVAR_DEFSTRING", "DP_QC_CVAR_TYPE", "DP_QC_ETOS", "DP_QC_EDICT_NUM",
@@ -1165,8 +1165,8 @@ static const char *const supported_extensions[] = {
 static void bi_checkextension(qcvm_t *vm)
 {
 	const char *n = QC_PSTR(vm, 0);
-	for (int i = 0; supported_extensions[i]; i++)
-		if (!Str_ICmp(supported_extensions[i], n)) {
+	for (int i = 0; qc_supported_extensions[i]; i++)
+		if (!Str_ICmp(qc_supported_extensions[i], n)) {
 			QC_ReturnFloat(vm, 1);
 			return;
 		}

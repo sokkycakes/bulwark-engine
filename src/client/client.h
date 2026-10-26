@@ -202,6 +202,8 @@ void MQC_Toggle(int mode);
 void MQC_Frame(int width, int height);
 bool MQC_InputEvent(int type, float a, float b, int device);
 bool MQC_ConsoleCommand(const char *line);
+bool MQC_ForceCommand(const char *line);  /* menu_cmd, registered or not */
+bool CSQC_ForceCommand(const char *line); /* cl_cmd, registered or not */
 void CSQC_SetInputGlobals(qcvm_t *vm, const usercmd_t *u);
 void CSQC_ReadInputGlobals(qcvm_t *vm, usercmd_t *u);
 extern msg_t *csqc_readmsg;

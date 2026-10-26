@@ -29,6 +29,8 @@ static struct {
 	double lasttime;
 } M;
 
+static bool cmd_forced; /* menu_cmd: pass the line on even if unregistered */
+
 static void m_setkeydest(qcvm_t *vm) { M.keydest = (int)QC_PFLOAT(vm, 0); }
 static void m_getkeydest(qcvm_t *vm) { QC_ReturnFloat(vm, (float)M.keydest); }
 static void m_setmousetarget(qcvm_t *vm) { M.mousetarget = (int)QC_PFLOAT(vm, 0); }
@@ -185,7 +187,7 @@ bool MQC_InputEvent(int type, float a, float b, int device)
 bool MQC_ConsoleCommand(const char *line)
 {
 	cmd_tokens_t *t;
-	bool known = false;
+	bool known = cmd_forced;
 	if (!M.vm || !M.consolecommand)
 		return false;
 	t = Mem_Alloc(sizeof(*t));
@@ -219,4 +221,13 @@ void MQC_Init(void)
 {
 	Cmd_Add("togglemenu", Menu_Toggle_f);
 	Cmd_Add("menu_restart", Menu_Restart_f);
+}
+
+bool MQC_ForceCommand(const char *line)
+{
+	bool r;
+	cmd_forced = true;
+	r = MQC_ConsoleCommand(line);
+	cmd_forced = false;
+	return r;
 }

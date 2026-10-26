@@ -95,6 +95,7 @@ int main(int argc, char **argv)
 		FS_AddGameDir(games[i]);
 	NET_Init();
 	SV_Init();
+	QC_InitDebugCommands();
 	CL_Init();
 	CL_InitCommands();
 	MQC_Init();
