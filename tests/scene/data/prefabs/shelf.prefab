@@ -1,0 +1,33 @@
+{
+  "RootObject": {
+    "__guid": "22222222-0000-4000-8000-000000000001",
+    "__version": 2,
+    "Flags": 0,
+    "Name": "shelf",
+    "Enabled": true,
+    "Components": [],
+    "Children": [
+      {
+        "__guid": "22222222-0000-4000-8000-000000000002",
+        "__version": 2,
+        "__Prefab": "prefabs/crate.prefab",
+        "__PrefabInstancePatch": {
+          "AddedObjects": [],
+          "RemovedObjects": [],
+          "PropertyOverrides": [
+            {
+              "Target": { "Type": "GameObject", "IdValue": "11111111-0000-4000-8000-000000000001" },
+              "Property": "Position",
+              "Value": "0,0,32"
+            }
+          ],
+          "MovedObjects": []
+        },
+        "__PrefabIdToInstanceId": {}
+      }
+    ]
+  },
+  "ResourceVersion": 2,
+  "__references": [],
+  "__version": 2
+}

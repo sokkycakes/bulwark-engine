@@ -17,6 +17,10 @@ new games.
   FBSP) with brush collision, and Q1 BSPs for entities only. Runs Nuclide's
   server progs: the map spawns and frames run (think, toss, fly, step, push,
   noclip movement, triggers).
+- **Scenes** (`bwscene`, `src/scene`): s&box's `.scene` and `.prefab` JSON
+  format. Loads and saves s&box files, expands prefab instances, and spawns
+  `Bulwark.Entity` components as QuakeC entities. `map foo` loads
+  `maps/foo.scene` when it exists. See [docs/spec/scene-format.md](docs/spec/scene-format.md).
 - Not yet: client, renderer, networking, pk3 files, Q1 collision, PVS,
   multiprogs.
 
@@ -38,9 +42,19 @@ ctest --test-dir build        # needs FTEQCC=/path/to/fteqcc to rebuild the test
 Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 `-frames n`, `-developer`, and `+command args` for console commands.
 
+## Scenes
+
+```sh
+./build/bwscene -basedir /path/to/nuclide -game base frombsp maps/ai.bsp ai.scene   # BSP entities into a scene
+./build/bwscene -basedir /path/to/nuclide -game base check ai.scene                 # expand prefabs, count entities
+./build/bwscene ents ai.scene                                                      # the entity text it spawns
+./build/bwscene resave old.scene new.scene                                         # upgrade to the current format
+```
+
 ## Docs
 
 - [docs/spec/progs-format.md](docs/spec/progs-format.md)
 - [docs/spec/opcodes.md](docs/spec/opcodes.md)
 - [docs/spec/builtins.md](docs/spec/builtins.md)
 - [docs/spec/bsp.md](docs/spec/bsp.md)
+- [docs/spec/scene-format.md](docs/spec/scene-format.md)

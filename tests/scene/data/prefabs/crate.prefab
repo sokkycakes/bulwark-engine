@@ -1,0 +1,68 @@
+{
+  "RootObject": {
+    "__guid": "11111111-0000-4000-8000-000000000001",
+    "__version": 2,
+    "Flags": 0,
+    "Name": "crate",
+    "Position": "0,0,0",
+    "Rotation": "0,0,0,1",
+    "Scale": "1,1,1",
+    "Tags": "",
+    "Enabled": true,
+    "Components": [
+      {
+        "__type": "Bulwark.Entity",
+        "__guid": "11111111-0000-4000-8000-000000000002",
+        "__enabled": true,
+        "Flags": 0,
+        "classname": "prop_physics",
+        "model": "models/crate.iqm",
+        "target": {
+          "_type": "gameobject",
+          "go": "11111111-0000-4000-8000-000000000003"
+        }
+      }
+    ],
+    "Children": [
+      {
+        "__guid": "11111111-0000-4000-8000-000000000003",
+        "__version": 2,
+        "Flags": 0,
+        "Name": "lid",
+        "Position": "0,0,16",
+        "Enabled": true,
+        "Components": [
+          {
+            "__type": "Bulwark.Entity",
+            "__guid": "11111111-0000-4000-8000-000000000004",
+            "__enabled": true,
+            "Flags": 0,
+            "classname": "info_null"
+          }
+        ],
+        "Children": []
+      },
+      {
+        "__guid": "11111111-0000-4000-8000-000000000005",
+        "__version": 2,
+        "Flags": 0,
+        "Name": "decal",
+        "Enabled": true,
+        "Components": [
+          {
+            "__type": "Sandbox.Decal",
+            "__guid": "11111111-0000-4000-8000-000000000006",
+            "__enabled": true,
+            "Flags": 0
+          }
+        ],
+        "Children": []
+      }
+    ]
+  },
+  "ShowInMenu": false,
+  "DontBreakAsTemplate": false,
+  "ResourceVersion": 2,
+  "__references": [],
+  "__version": 2
+}
