@@ -176,6 +176,15 @@ void W_RunPlayerPhysics(qcvm_t *vm, int e, const struct pmvars_s *vars);
 void SV_SyncServerinfoCvars(bool broadcast);
 extern const qc_builtin_t sv_client_builtins[];
 
+/* sv_save.c: saved games */
+void SV_InitSaves(void);
+bool SV_SaveGame(const char *name, const char *comment);
+bool SV_LoadGame(const char *name);
+void SV_SaveLevelChanged(void);        /* after changelevel: autosave once the player is in */
+void SV_SaveClientSpawned(client_t *c); /* a player entered the game */
+/* true once for each player whose entity a loaded game put back */
+bool SV_SaveTakeRestored(client_t *c);
+
 /* sv_main.c */
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);

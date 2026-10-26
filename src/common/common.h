@@ -55,6 +55,13 @@ int Str_ICmp(const char *a, const char *b);
 const char *va(const char *fmt, ...) BW_PRINTF(1, 2);
 int Str_NICmp(const char *a, const char *b, size_t n);
 bool Str_WildMatch(const char *pattern, const char *s, bool nocase);
+/* Escaped strings: \"text" with \n \t \r \" and \\ inside, the form
+ * sprintf's %S uses for text that a plain quoted string can't hold.
+ * Str_NeedsEscape says whether s needs it; Str_ParseEscaped reads one at *p
+ * (which points at the backslash) into out, returns its length and moves *p
+ * past the closing quote. */
+bool Str_NeedsEscape(const char *s);
+size_t Str_ParseEscaped(const char **p, char *out, size_t outsize);
 
 /* growable byte buffer */
 typedef struct {

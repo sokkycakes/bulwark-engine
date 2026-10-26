@@ -44,7 +44,9 @@ void Cmd_TokenizeInto(cmd_tokens_t *t, const char *text)
 		if (p[0] == '/' && p[1] == '/')
 			break;
 		start = p;
-		if (*p == '"') {
+		if (p[0] == '\\' && p[1] == '"') {
+			n = Str_ParseEscaped(&p, out, room);
+		} else if (*p == '"') {
 			p++;
 			while (*p && *p != '"' && *p != '\n') {
 				if (n + 1 < room)

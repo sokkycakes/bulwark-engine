@@ -13,6 +13,8 @@
 #include "../common/common.h"
 #include "progs.h"
 
+#include <stdio.h>
+
 typedef int32_t string_t;
 typedef int32_t func_t;
 
@@ -272,6 +274,12 @@ bool QC_ValidEdict(qcvm_t *vm, int e);
 const char *QC_ParseEdict(qcvm_t *vm, int e, const char *data, bool *ok);
 bool QC_SetFieldFromString(qcvm_t *vm, int e, qcdef_t *field, const char *value);
 void QC_FieldToString(qcvm_t *vm, int e, qcdef_t *field, char *out, size_t outsize);
+
+/* file handles opened by the engine for the game (qc_extra.c); the game
+ * normally closes them with fclose, QC_CloseHandle covers when it doesn't */
+int QC_OpenWriteHandle(qcvm_t *vm, FILE *fp);
+int QC_OpenReadHandle(qcvm_t *vm, const char *data, size_t len);
+void QC_CloseHandle(qcvm_t *vm, int h);
 
 /* memory */
 void *QC_Pointer(qcvm_t *vm, uint32_t addr, size_t bytes); /* errors if out of range */

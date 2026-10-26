@@ -592,6 +592,12 @@ static void spawn_client(client_t *c)
 	c->lastcmd = 0;
 	memset(&c->lastucmd, 0, sizeof(c->lastucmd));
 	c->cmd_budget = 0.25f;
+	if (SV_SaveTakeRestored(c)) {
+		/* a loaded game put the player's entity back as it was */
+		c->state = CS_SPAWNED;
+		SV_SaveClientSpawned(c);
+		return;
+	}
 	prepare_client_edict(c);
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGInt(vm, G.self, c->edict);
@@ -608,6 +614,7 @@ static void spawn_client(client_t *c)
 	if (QC_FindFunction(vm, "PutClientInServer"))
 		QC_ExecuteByName(vm, "PutClientInServer");
 	c->state = CS_SPAWNED;
+	SV_SaveClientSpawned(c);
 	if (!c->bot) {
 		LOCALMSG(p, 8);
 		MSG_WriteByte(&p, svc_signon);

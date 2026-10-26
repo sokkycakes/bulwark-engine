@@ -714,7 +714,8 @@ static void SV_Changelevel_f(int argc, const char **argv)
 		return;
 	}
 	SV_SaveSpawnParms();
-	SV_SpawnServer(argv[1]);
+	if (SV_SpawnServer(argv[1]))
+		SV_SaveLevelChanged();
 }
 
 static void SV_Status_f(int argc, const char **argv)
@@ -780,4 +781,5 @@ void SV_Init(void)
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);
 	SV_InitCommands();
+	SV_InitSaves();
 }

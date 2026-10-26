@@ -146,6 +146,37 @@ int Str_NICmp(const char *a, const char *b, size_t n)
 	return 0;
 }
 
+bool Str_NeedsEscape(const char *s)
+{
+	return strpbrk(s, "\"\\\n\r\t") != NULL;
+}
+
+size_t Str_ParseEscaped(const char **pp, char *out, size_t outsize)
+{
+	const char *p = *pp + 2; /* past \" */
+	size_t n = 0;
+	while (*p && *p != '"') {
+		char c = *p++;
+		if (c == '\\' && *p) {
+			c = *p++;
+			if (c == 'n')
+				c = '\n';
+			else if (c == 't')
+				c = '\t';
+			else if (c == 'r')
+				c = '\r';
+		}
+		if (n + 1 < outsize)
+			out[n++] = c;
+	}
+	if (*p == '"')
+		p++;
+	if (outsize)
+		out[n] = 0;
+	*pp = p;
+	return n;
+}
+
 bool Str_WildMatch(const char *p, const char *s, bool nocase)
 {
 	for (; *p; p++, s++) {
