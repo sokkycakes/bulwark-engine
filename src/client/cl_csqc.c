@@ -73,6 +73,7 @@ WORLD_WRAP(droptofloor)
 WORLD_WRAP(checkbottom)
 WORLD_WRAP(walkmove)
 WORLD_WRAP(changeyaw)
+WORLD_WRAP(checkpvs)
 WORLD_WRAP(touchtriggers)
 
 static float info_float(const char *key, float def)
@@ -818,6 +819,10 @@ static void cl_setpause(qcvm_t *vm)
 static void cl_particleeffectnum(qcvm_t *vm)
 {
 	const char *n = QC_PSTR(vm, 0);
+	if (!*n) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
 	for (int i = 1; i < CL_MAX_PARTICLES; i++)
 		if (cl.particles[i] && !strcmp(cl.particles[i], n)) {
 			QC_ReturnFloat(vm, (float)i);
@@ -930,7 +935,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"precache_model", cl_precache_model}, {"getmodelindex", cl_getmodelindex},
 	{"modelnameforindex", cl_modelnameforindex}, {"traceline", cl_traceline}, {"tracebox", cl_tracebox},
 	{"pointcontents", cl_pointcontents}, {"droptofloor", cl_droptofloor}, {"checkbottom", cl_checkbottom},
-	{"walkmove", cl_walkmove}, {"changeyaw", cl_changeyaw}, {"touchtriggers", cl_touchtriggers},
+	{"walkmove", cl_walkmove}, {"changeyaw", cl_changeyaw}, {"checkpvs", cl_checkpvs}, {"touchtriggers", cl_touchtriggers},
 	{"getkeybind", cl_getkeybind}, {"setkeybind", cl_setkeybind}, {"keynumtostring", cl_keynumtostring},
 	{"keynumtostring_csqc", cl_keynumtostring}, {"keynumtostring_omgwtf", cl_keynumtostring},
 	{"stringtokeynum", cl_stringtokeynum}, {"stringtokeynum_csqc", cl_stringtokeynum},

@@ -1323,6 +1323,19 @@ static void bi_WriteUnterminatedString(qcvm_t *vm)
 	write_bytes(vm, s, strlen(s));
 }
 
+/* whether a client's view may see a point */
+static bool client_sees(const client_t *c, const float *org)
+{
+	float view[3];
+	const qcval_t *f;
+	if (!sv.world || !sv.world->vis)
+		return true;
+	f = QC_EdictFields(sv.vm, c->edict);
+	for (int k = 0; k < 3; k++)
+		view[k] = f[F.origin + k].f + (F.view_ofs >= 0 ? f[F.view_ofs + k].f : 0);
+	return BSP_CheckPVS(sv.world, view, org);
+}
+
 static void bi_multicast(qcvm_t *vm)
 {
 	int to = (int)QC_PFLOAT(vm, 1);
@@ -1334,13 +1347,15 @@ static void bi_multicast(qcvm_t *vm)
 		return;
 	MSG_WriteByte(&h, svc_qcmessage);
 	MSG_WriteVarUInt(&h, (uint32_t)msg_multicast.len);
-	/* TODO: PVS/PHS filtering once visibility data is loaded; for now every
-	 * spawned client receives PVS and PHS multicasts */
+	/* PVS multicasts go to clients that may see the point; PHS ones (sounds
+	 * carry around corners) go to everyone */
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		if (c->state != CS_SPAWNED || c->bot)
 			continue;
 		if (one && c->edict != target)
+			continue;
+		if ((to == 2 || to == 5) && !client_sees(c, QC_PVEC(vm, 0)))
 			continue;
 		if (reliable)
 			SB_Append(&c->qcrel, msg_multicast.data, msg_multicast.len);
@@ -1566,6 +1581,43 @@ static void bi_setsendneeded(qcvm_t *vm)
 	}
 }
 
+static void bi_pointparticles(qcvm_t *vm)
+{
+	const float *org = QC_PVEC(vm, 1), *dir = vm->argc > 2 ? QC_PVEC(vm, 2) : NULL;
+	LOCALMSG(m, 64);
+	MSG_WriteByte(&m, svc_pointparticles);
+	MSG_WriteVarUInt(&m, (uint32_t)BW_MAX(0, (int)QC_PFLOAT(vm, 0)));
+	for (int i = 0; i < 3; i++)
+		MSG_WriteCoord(&m, org[i]);
+	for (int i = 0; i < 3; i++)
+		MSG_WriteFloat(&m, dir ? dir[i] : 0);
+	MSG_WriteFloat(&m, vm->argc > 3 ? QC_PFLOAT(vm, 3) : 1);
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state == CS_SPAWNED && !c->bot && client_sees(c, org))
+			sb_write(&c->datagram, &m);
+	}
+}
+
+static void bi_trailparticles(qcvm_t *vm)
+{
+	/* trailparticles(effect, entity, start, end) */
+	const float *start = QC_PVEC(vm, 2), *end = QC_PVEC(vm, 3);
+	LOCALMSG(m, 64);
+	MSG_WriteByte(&m, svc_trailparticles);
+	MSG_WriteVarUInt(&m, (uint32_t)BW_MAX(0, (int)QC_PFLOAT(vm, 0)));
+	MSG_WriteEntity(&m, QC_PENT(vm, 1));
+	for (int i = 0; i < 3; i++)
+		MSG_WriteCoord(&m, start[i]);
+	for (int i = 0; i < 3; i++)
+		MSG_WriteCoord(&m, end[i]);
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state == CS_SPAWNED && !c->bot && (client_sees(c, start) || client_sees(c, end)))
+			sb_write(&c->datagram, &m);
+	}
+}
+
 static void write_sound(int e, int chan, int idx, float vol, float atten, float pitch, int flags, const float *org)
 {
 	LOCALMSG(m, 64);
@@ -1631,6 +1683,7 @@ const qc_builtin_t sv_client_builtins[] = {
 	{"WriteEntity", bi_WriteEntity}, {"WriteInt64", bi_WriteInt64}, {"WriteUInt64", bi_WriteInt64},
 	{"WriteDouble", bi_WriteDouble}, {"WriteString", bi_WriteString},
 	{"WriteUnterminatedString", bi_WriteUnterminatedString}, {"multicast", bi_multicast},
+	{"pointparticles", bi_pointparticles}, {"trailparticles", bi_trailparticles},
 	{"sprint", bi_sprint}, {"bprint", bi_bprint}, {"centerprint", bi_centerprint}, {"stuffcmd", bi_stuffcmd},
 	{"stuffcmdflags", bi_stuffcmdflags}, {"clientcommand", bi_clientcommand}, {"infokey", bi_infokey},
 	{"infokeyf", bi_infokeyf}, {"forceinfokey", bi_forceinfokey}, {"setspawnparms", bi_setspawnparms},

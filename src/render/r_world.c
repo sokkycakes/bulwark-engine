@@ -205,6 +205,7 @@ static void load_lightgrid(const uint8_t *d, size_t size, const int32_t *lumps, 
 
 void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numidx)
 {
+	R_WorldKeepGeometry(v, numverts, idx, numidx);
 	if (!R_Active() || !numverts || !numidx)
 		return;
 	qglGenVertexArrays(1, &r_world.vao);
@@ -470,6 +471,7 @@ void R_FreeWorld(void)
 	Mem_Free(r_world.lightgrid);
 	Mem_Free(r_world.surfmap);
 	R_FreeQ1World();
+	R_FreeWorldGeometry();
 	{
 		image_t *sky = r_world.skybox;
 		char skyname[64];

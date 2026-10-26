@@ -224,7 +224,31 @@ void W_bi_touchtriggers(qcvm_t *vm)
 	SV_LinkEdict(e, true);
 }
 
-static void bi_checkpvs(qcvm_t *vm) { QC_ReturnFloat(vm, 1); /* TODO: real PVS once vis data is loaded */ }
+/* checkpvs(viewpos, entity): whether any of the entity's box may be seen
+ * from the point; its centre and corners are tested */
+void W_bi_checkpvs(qcvm_t *vm)
+{
+	const bspmap_t *map = SV_CurrentWorld();
+	const float *view = QC_PVEC(vm, 0);
+	int e = QC_PENT(vm, 1);
+	float *org = ev(vm, e, F.origin), *mins = ev(vm, e, F.mins), *maxs = ev(vm, e, F.maxs);
+	if (!map || !map->vis || !org) {
+		QC_ReturnFloat(vm, 1);
+		return;
+	}
+	for (int i = -1; i < 8; i++) {
+		float p[3];
+		for (int k = 0; k < 3; k++) {
+			float lo = mins ? mins[k] : 0, hi = maxs ? maxs[k] : 0;
+			p[k] = org[k] + (i < 0 ? (lo + hi) * 0.5f : ((i >> k) & 1) ? hi : lo);
+		}
+		if (BSP_CheckPVS(map, view, p)) {
+			QC_ReturnFloat(vm, 1);
+			return;
+		}
+	}
+	QC_ReturnFloat(vm, 0);
+}
 static void bi_aim(qcvm_t *vm)
 {
 	float v[3];
@@ -259,6 +283,10 @@ static void bi_getlight(qcvm_t *vm)
 static void bi_particleeffectnum(qcvm_t *vm)
 {
 	const char *n = QC_PSTR(vm, 0);
+	if (!*n) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
 	for (int i = 0; i < sv.numparticles; i++)
 		if (!strcmp(sv.particles[i], n)) {
 			QC_ReturnFloat(vm, (float)(i + 1));
@@ -425,11 +453,10 @@ const qc_builtin_t sv_builtins[] = {
 	{"getsoundindex", bi_getsoundindex}, {"soundnameforindex", bi_soundnameforindex},
 	{"traceline", W_bi_traceline}, {"tracebox", W_bi_tracebox}, {"pointcontents", W_bi_pointcontents},
 	{"droptofloor", W_bi_droptofloor}, {"checkbottom", W_bi_checkbottom}, {"walkmove", W_bi_walkmove},
-	{"changeyaw", W_bi_changeyaw}, {"touchtriggers", W_bi_touchtriggers}, {"checkpvs", bi_checkpvs},
+	{"changeyaw", W_bi_changeyaw}, {"touchtriggers", W_bi_touchtriggers}, {"checkpvs", W_bi_checkpvs},
 	{"aim", bi_aim}, {"lightstyle", bi_lightstyle}, {"lightstylestatic", bi_lightstyle},
 	{"getlightstyle", bi_getlightstyle}, {"getlight", bi_getlight},
-	{"particleeffectnum", bi_particleeffectnum}, {"pointparticles", bi_dropped},
-	{"trailparticles", bi_dropped}, {"particle", bi_dropped}, {"effect", bi_dropped},
+	{"particleeffectnum", bi_particleeffectnum}, {"particle", bi_dropped}, {"effect", bi_dropped},
 	{"ambientsound", bi_dropped},
 	{"localsound", bi_localsound}, {"serverkey", bi_serverkey}, {"serverkeyfloat", bi_serverkeyfloat},
 	{"setserverkey", bi_setserverkey}, {"setlocalinfo", bi_setlocalinfo},

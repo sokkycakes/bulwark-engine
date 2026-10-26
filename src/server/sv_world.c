@@ -28,6 +28,8 @@ static inline worldctx_t *cur(void)
 	return W;
 }
 
+bspmap_t *SV_CurrentWorld(void) { return cur()->world; }
+
 worldctx_t *SV_SetWorldContext(worldctx_t *w)
 {
 	worldctx_t *old = W;

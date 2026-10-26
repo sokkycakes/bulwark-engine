@@ -507,6 +507,28 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_sound:
 			parse_sound(m);
 			break;
+		case svc_pointparticles: {
+			int fx = (int)MSG_ReadVarUInt(m);
+			float org[3], dir[3], count;
+			for (int i = 0; i < 3; i++)
+				org[i] = MSG_ReadCoord(m);
+			for (int i = 0; i < 3; i++)
+				dir[i] = MSG_ReadFloat(m);
+			count = MSG_ReadFloat(m);
+			R_PointParticles(fx, org, dir, count);
+			break;
+		}
+		case svc_trailparticles: {
+			int fx = (int)MSG_ReadVarUInt(m);
+			float start[3], end[3];
+			MSG_ReadEntity(m);
+			for (int i = 0; i < 3; i++)
+				start[i] = MSG_ReadCoord(m);
+			for (int i = 0; i < 3; i++)
+				end[i] = MSG_ReadCoord(m);
+			R_TrailParticles(fx, start, end);
+			break;
+		}
 		case svc_setangle:
 			for (int i = 0; i < 3; i++)
 				cl.viewangles[i] = MSG_ReadAngle(m);

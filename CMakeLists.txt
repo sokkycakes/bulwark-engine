@@ -78,6 +78,8 @@ add_library(bwclient STATIC
 	src/render/r_material.c
 	src/render/r_world.c
 	src/render/r_q1world.c
+	src/render/r_decal.c
+	src/render/r_part.c
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c

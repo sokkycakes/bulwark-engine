@@ -62,6 +62,7 @@ bool R_ModelBounds(int index, float *mins, float *maxs)
 
 void R_ClearMap(void)
 {
+	R_ClearParticles();
 	R_FreeWorld();
 	R_FreeModels();
 	for (int i = 0; i < cl.nummodels; i++)
@@ -245,6 +246,7 @@ bool R_Init(bool headless)
 void R_Shutdown(void)
 {
 	R_ClearMap();
+	R_ShutdownParticles();
 	R_ShutdownMaterials();
 	R_ShutdownDraw();
 	R_ShutdownImages();
@@ -670,6 +672,168 @@ static void r_minus1(qcvm_t *vm) { QC_ReturnFloat(vm, -1); }
 static void r_zero(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 static void r_nop(qcvm_t *vm) { (void)vm; }
 
+/* --- effects and surfaces ---------------------------------------------------- */
+
+static void r_pointparticles(qcvm_t *vm)
+{
+	R_PointParticles((int)QC_PFLOAT(vm, 0), QC_PVEC(vm, 1), vm->argc > 2 ? QC_PVEC(vm, 2) : NULL,
+	                 vm->argc > 3 ? QC_PFLOAT(vm, 3) : 1);
+}
+
+static void r_trailparticles(qcvm_t *vm)
+{
+	/* trailparticles(effect, entity, start, end) */
+	R_TrailParticles((int)QC_PFLOAT(vm, 0), QC_PVEC(vm, 2), QC_PVEC(vm, 3));
+}
+
+static void r_particleeffectquery(qcvm_t *vm)
+{
+	QC_ReturnString(vm, QC_PFLOAT(vm, 1) ? "" : R_ParticleEffectName((int)QC_PFLOAT(vm, 0)));
+}
+
+static void r_adddecal(qcvm_t *vm)
+{
+	material_t *m = R_FindMaterial(QC_PSTR(vm, 0), 0);
+	R_AddDecal(m, QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3), QC_PVEC(vm, 4), QC_PFLOAT(vm, 5));
+}
+
+/* the brush model an entity shows, and its origin; the world for entity 0 */
+static rmodel_t *surface_model(qcvm_t *vm, int ent, float *origin)
+{
+	int mi;
+	VectorClear(origin);
+	if (ent <= 0)
+		return r_world.loaded && r_world.numsubmodels ? &r_world.submodels[0] : NULL;
+	mi = (int)QC_EFloat(vm, ent, QC_FieldOfs(vm, "modelindex"));
+	{
+		qcval_t *o = QC_EField(vm, ent, QC_FieldOfs(vm, "origin"));
+		if (o)
+			VectorCopy(&o->f, origin);
+	}
+	{
+		rmodel_t *m = R_ModelForIndex(mi);
+		return m && m->type == MOD_BRUSH ? m : NULL;
+	}
+}
+
+static const rsurface_t *surface_arg(qcvm_t *vm, float *origin)
+{
+	return R_ModelSurface(surface_model(vm, QC_PENT(vm, 0), origin), (int)QC_PFLOAT(vm, 1));
+}
+
+static void r_getsurfacenearpoint(qcvm_t *vm)
+{
+	float o[3], p[3];
+	rmodel_t *m = surface_model(vm, QC_PENT(vm, 0), o);
+	const float *in = QC_PVEC(vm, 1);
+	for (int k = 0; k < 3; k++)
+		p[k] = in[k] - o[k];
+	QC_ReturnFloat(vm, (float)R_SurfaceNearPoint(m, p));
+}
+
+static void r_getsurfacetexture(qcvm_t *vm)
+{
+	float o[3];
+	const rsurface_t *rs = surface_arg(vm, o);
+	QC_ReturnString(vm, rs ? rs->material->name : "");
+}
+
+static void r_getsurfacenormal(qcvm_t *vm)
+{
+	float o[3], s[3], t[3], n[3] = {0, 0, 0};
+	const rsurface_t *rs = surface_arg(vm, o);
+	if (rs)
+		R_SurfaceAxes(rs, s, t, n);
+	QC_ReturnVector(vm, n);
+}
+
+static void r_getsurfacenumpoints(qcvm_t *vm)
+{
+	float o[3];
+	const rsurface_t *rs = surface_arg(vm, o);
+	const rvert_t *pts[256];
+	QC_ReturnFloat(vm, rs ? (float)R_SurfacePoints(rs, pts, 256) : 0);
+}
+
+static void r_getsurfacepointattribute(qcvm_t *vm)
+{
+	/* getsurfacepointattribute(e, s, n, attribute), and getsurfacepoint(e, s, n) as attribute 0 */
+	float o[3], v[3] = {0, 0, 0}, sa[3], ta[3], na[3];
+	const rsurface_t *rs = surface_arg(vm, o);
+	const rvert_t *pts[256];
+	int n = (int)QC_PFLOAT(vm, 2), attr = vm->argc > 3 ? (int)QC_PFLOAT(vm, 3) : 0;
+	if (rs && n >= 0 && n < R_SurfacePoints(rs, pts, 256)) {
+		const rvert_t *p = pts[n];
+		R_SurfaceAxes(rs, sa, ta, na);
+		switch (attr) {
+		case 0:
+			for (int k = 0; k < 3; k++)
+				v[k] = p->xyz[k] + o[k];
+			break;
+		case 1: VectorCopy(sa, v); break;
+		case 2: VectorCopy(ta, v); break;
+		case 3: VectorCopy(p->normal, v); break;
+		case 4: v[0] = p->st[0], v[1] = p->st[1]; break;
+		case 5: v[0] = p->lm[0], v[1] = p->lm[1]; break;
+		case 6: for (int k = 0; k < 3; k++) v[k] = p->color[k] / 255.0f; break;
+		default: break;
+		}
+	}
+	QC_ReturnVector(vm, v);
+}
+
+static void r_getsurfacenumtriangles(qcvm_t *vm)
+{
+	float o[3];
+	const rsurface_t *rs = surface_arg(vm, o);
+	QC_ReturnFloat(vm, rs ? (float)(rs->numindexes / 3) : 0);
+}
+
+static void r_getsurfacetriangle(qcvm_t *vm)
+{
+	/* the triangle's corners as indices into getsurfacepoint's numbering */
+	float o[3], v[3] = {0, 0, 0};
+	const rsurface_t *rs = surface_arg(vm, o);
+	const rvert_t *pts[256];
+	if (rs) {
+		int np = R_SurfacePoints(rs, pts, 256);
+		for (int c = 0; c < 3; c++) {
+			const rvert_t *p = R_SurfaceTriangle(rs, (int)QC_PFLOAT(vm, 2), c);
+			for (int i = 0; i < np; i++)
+				if (pts[i] == p)
+					v[c] = (float)i;
+		}
+	}
+	QC_ReturnVector(vm, v);
+}
+
+static void r_getsurfaceclippedpoint(qcvm_t *vm)
+{
+	/* the nearest point of the surface to p */
+	float o[3], p[3], best[3], bestd = 1e30f;
+	const rsurface_t *rs = surface_arg(vm, o);
+	const float *in = QC_PVEC(vm, 2);
+	for (int k = 0; k < 3; k++)
+		p[k] = in[k] - o[k];
+	VectorCopy(in, best);
+	if (rs) {
+		const rvert_t *pts[256];
+		int np = R_SurfacePoints(rs, pts, 256);
+		for (int i = 0; i < np; i++) {
+			float d[3], dd;
+			for (int k = 0; k < 3; k++)
+				d[k] = pts[i]->xyz[k] - p[k];
+			dd = DotProduct(d, d);
+			if (dd < bestd) {
+				bestd = dd;
+				for (int k = 0; k < 3; k++)
+					best[k] = pts[i]->xyz[k] + o[k];
+			}
+		}
+	}
+	QC_ReturnVector(vm, best);
+}
+
 static void r_setcursormode(qcvm_t *vm) { cursor_mode = QC_PFLOAT(vm, 0) != 0; }
 static void r_getcursormode(qcvm_t *vm) { QC_ReturnFloat(vm, cursor_mode ? 1 : 0); }
 
@@ -701,14 +865,19 @@ const qc_builtin_t r_builtins[] = {
 	{"setcursormode", r_setcursormode},
 	{"getcursormode", r_getcursormode}, {"getmousepos", r_getmousepos}, {"setwindowcaption", r_setwindowcaption},
 	{"spriteframe", r_spriteframe},
+	{"pointparticles", r_pointparticles}, {"trailparticles", r_trailparticles},
+	{"particleeffectquery", r_particleeffectquery}, {"adddecal", r_adddecal},
+	{"getsurfacenearpoint", r_getsurfacenearpoint}, {"getsurfacetexture", r_getsurfacetexture},
+	{"getsurfacenormal", r_getsurfacenormal}, {"getsurfacenumpoints", r_getsurfacenumpoints},
+	{"getsurfacepoint", r_getsurfacepointattribute}, {"getsurfacepointattribute", r_getsurfacepointattribute},
+	{"getsurfacenumtriangles", r_getsurfacenumtriangles}, {"getsurfacetriangle", r_getsurfacetriangle},
+	{"getsurfaceclippedpoint", r_getsurfaceclippedpoint},
 	/* not done yet: accepted so games carry on */
-	{"adddecal", r_nop}, {"remapshader", r_nop}, {"setcustomskin", r_nop}, {"loadcustomskin", r_zero},
+	{"remapshader", r_nop}, {"setcustomskin", r_nop}, {"loadcustomskin", r_zero},
 	{"applycustomskin", r_nop}, {"releasecustomskin", r_nop}, {"dynamiclight_get", r_zero},
-	{"dynamiclight_set", r_nop}, {"dynamiclight_spawnstatic", r_zero}, {"pointparticles", r_nop},
-	{"trailparticles", r_nop}, {"boxparticles", r_nop}, {"particleeffectquery", r_zero},
+	{"dynamiclight_set", r_nop}, {"dynamiclight_spawnstatic", r_zero}, {"boxparticles", r_nop},
 	{"getmodeleventidx", r_zero}, {"getnextmodelevent", r_zero}, {"processmodelevents", r_nop},
 	{"skinforname", r_zero}, {"cin_open", r_zero}, {"cin_close", r_nop}, {"cin_setstate", r_nop},
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
-	{"r_uploadimage", r_nop}, {"r_readimage", r_zero}, {"getsurfacenumpoints", r_zero},
-	{"getsurfacenearpoint", r_minus1}, {"getsurfacetexture", r_zero},
+	{"r_uploadimage", r_nop}, {"r_readimage", r_zero},
 	{NULL, NULL}};
