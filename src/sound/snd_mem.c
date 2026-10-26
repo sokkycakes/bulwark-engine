@@ -119,7 +119,7 @@ static bool decode_wav(const uint8_t *buf, size_t len, pcm_t *out)
 	out->frames = (int)(pcmlen / (uint32_t)(bits / 8 * channels));
 	out->data = Mem_Alloc((size_t)out->frames * channels * sizeof(int16_t) + 2);
 	for (int i = 0; i < out->frames * channels; i++)
-		out->data[i] = bits == 8 ? (int16_t)((pcm[i] - 128) << 8) : (int16_t)le16(pcm + i * 2);
+		out->data[i] = bits == 8 ? (int16_t)((pcm[i] - 128) * 256) : (int16_t)le16(pcm + i * 2);
 	out->loopstart = loop >= 0 && loop < out->frames ? loop : -1;
 	return true;
 }

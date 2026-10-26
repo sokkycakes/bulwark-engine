@@ -19,6 +19,7 @@ add_library(bwcommon STATIC
 	src/common/fs.c
 	src/common/pmove.c
 	src/common/skel.c
+	src/common/studio.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m)
 
@@ -52,8 +53,18 @@ target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 add_executable(bulwark-ded src/main_ded.c)
 target_link_libraries(bulwark-ded bwserver)
 
+add_executable(mdlcheck tools/mdlcheck.c)
+target_link_libraries(mdlcheck bwcommon)
+add_executable(studiotest tools/studiotest.c)
+target_link_libraries(studiotest bwcommon)
+add_executable(wavcheck tools/wavcheck.c)
+target_link_libraries(wavcheck bwcommon)
+
 enable_testing()
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
+add_test(NAME studio COMMAND studiotest)
+# real content, if BULWARK_STUDIO_FIXTURES names a folder of models (never committed)
+add_test(NAME studio-fixtures COMMAND ${CMAKE_SOURCE_DIR}/tests/run_studio_fixtures.sh $<TARGET_FILE:mdlcheck>)
 
 # game client with a listen server
 find_package(SDL2 QUIET)
