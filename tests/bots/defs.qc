@@ -154,3 +154,4 @@ float(entity e) clienttype = #0:clienttype;
 void(entity e) runstandardplayerphysics = #0:runstandardplayerphysics;
 void(entity e, string key, string value) forceinfokey = #0:forceinfokey;
 float(float f) tan = #0:tan;
+.float dimension_solid, dimension_hit;

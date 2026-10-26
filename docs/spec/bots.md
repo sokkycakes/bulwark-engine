@@ -230,7 +230,9 @@ with a 96 unit gap; `tests/data/botmap.way` holds 22 waypoints.
   damage is 150% up close, 100% at 512 and 50% from 1024. The point unlocks
   after 10 s, takes 6 s for one capper (more cap faster, Scouts count
   double, contested points stop), and holding it 60 s wins. Health packs at
-  each spawn and mid-way; respawn after 5 s.
+  each spawn and mid-way; respawn after 5 s. As in TF2, teammates pass
+  through each other and their own team's shots (each team is solid in one
+  `dimension_solid` bit and hits the other's).
   The behaviour, in the style of TF2's bots: a main action aims and fires
   at the most dangerous visible enemy every think (class aim points: head
   for the Sniper, the feet ahead of a walker for rockets, the chest
@@ -238,7 +240,8 @@ with a 96 unit gap; `tests/data/botmap.way` holds 22 waypoints.
   3 s after a fight. Inside it a tactical action breaks off for a health
   pack below 40% health unless a Medic is on it. Inside that, the class
   role: Scout, Soldier and Heavy take the point or spread around it to
-  defend, strafing (and the Scout jumping) while fighting there; the
+  defend, strafing (and the Scout jumping) while fighting there, which
+  doesn't count as stuck; the
   Sniper picks a waypoint 600–1400 from the point with a view of it, scopes
   in and moves on when hurt below 60%; the Medic follows the most hurt
   teammate, leaning towards Heavies and Soldiers, and ubers when it or its
@@ -246,4 +249,6 @@ with a 96 unit gap; `tests/data/botmap.way` holds 22 waypoints.
   1) sets aim error, tracking, turning speed and reaction time.
   A pass needs a capture, 6 kills by at least 3 classes, 300 healed, a
   respawn, and no living bot stuck for 10 s. A match usually ends in a win
-  after 80–160 s with several captures and 40–70 kills.
+  after 80–160 s with several captures and 40–70 kills. RED wins about
+  70% of matches: the test map isn't symmetric (BLU's side has the ledge).
+  Soaked over 400 seeds (pnav, basic and l4d over 300 each).

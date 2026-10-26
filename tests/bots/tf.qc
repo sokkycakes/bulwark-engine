@@ -386,6 +386,10 @@ void tf_place(entity p, vector org, float yaw)
 	p.view_ofs = '0 0 64';
 	p.angles = [0, yaw, 0];
 	p.v_angle = p.angles;
+	/* as in TF2, teammates pass through each other and their own team's
+	 * shots: each team is solid in its own dimension bit and hits the other */
+	p.dimension_solid = (p.team == TF_RED) ? 1 : 2;
+	p.dimension_hit = (p.team == TF_RED) ? 2 : 1;
 	setsize(p, '-16 -16 0', '16 16 72');
 	setorigin(p, org + '0 0 1');
 }
@@ -706,6 +710,7 @@ float TFPoint::Update(float interval)
 	if (bw_dist2d(m_bot.origin + m_strafe * 48, m_spot) > 96)
 		m_strafe = -m_strafe;
 	m_bot.m_loco.Approach(m_bot.origin + m_strafe * 64, 1);
+	m_bot.m_loco.ClearStuck();	/* dodging about one spot isn't being stuck */
 	return Continue();
 }
 
