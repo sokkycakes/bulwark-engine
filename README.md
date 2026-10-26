@@ -77,6 +77,11 @@ Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 ./build/bwscene resave old.scene new.scene                                         # upgrade to the current format
 ```
 
+Scenes are edited in Godot with the addon in [tools/godot](tools/godot/README.md):
+an entity browser and typed key editor built from Nuclide's entity
+definitions, previews of BSP and FTEW worlds, Hammer-style views and grid,
+and export straight to `.scene` and `.prefab` with a Run map button.
+
 ## Docs
 
 - [docs/spec/progs-format.md](docs/spec/progs-format.md)

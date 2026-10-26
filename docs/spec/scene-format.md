@@ -231,4 +231,9 @@ running the BSP.
   (fixed update rate, time scale and so on) are kept but unused.
 - Component property upgrades. s&box versions individual component types;
   Bulwark keeps their data as is.
-- Saving a scene back after the game changes it, and an editor.
+- Saving a scene back after the game changes it.
+
+The editor is the Godot addon in `tools/godot` (see its README). Godot
+saves dictionaries with sorted keys, so spawn keys in a scene that went
+through Godot come back in alphabetical order; Nuclide reads them by name,
+so this changes nothing in game.
