@@ -1,0 +1,591 @@
+#pragma once
+
+#include "ui/panorama/panorama_dom.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iterator>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Dialog-variable token replacement: resolves Valve `#SFUI_...`-style tokens
+// (from Source's Steamworks localization file format, `"tokens" { "#Key"
+// "Value" }`) against `resource/valve_english.txt`/`resource/csgo_english.txt`
+// found by walking up from a resource root, falling back to a small built-in
+// English default set so common menu strings resolve even without a real game
+// resource tree. Only English is loaded — there is no runtime language switch.
+namespace panorama
+{
+class PanoramaLocalization
+{
+public:
+    // A parsed token table: normalized, lower-cased key -> localized string, exactly the shape
+    // load() builds and localize() looks up in.
+    using TokenTable = std::unordered_map<std::string, std::string>;
+
+    // One parsed localization document. `language` is the file's own `"Language"` value when it
+    // declares one (Valve's token files all do); it is informational here -- this class only
+    // ever loads English -- and exists so a host that compiles these documents into a native
+    // asset can carry the culture instead of inventing one.
+    struct TokenDocument
+    {
+        std::string language;
+        TokenTable tokens;
+    };
+
+    // The two logical documents load() looks for, in load order, relative to each probed root.
+    // Named here (rather than spelled inline) because they are also the identities the native
+    // override below is asked about, and the two must not drift.
+    static constexpr std::string_view kValveTokenDocument = "resource/valve_english.txt";
+    static constexpr std::string_view kCsgoTokenDocument = "resource/csgo_english.txt";
+
+    // Consulted immediately before each existing localization file is read, with that file's
+    // path; returning false skips the read. The host installs this to apply its own asset
+    // policy to these reads (OpenStrike routes it into the engine's resolver telemetry and
+    // native-only enforcement); PanoramaEngine itself has no such policy and, with no gate
+    // installed, reads every file it finds exactly as before.
+    using ReadGate = std::function<bool(const std::filesystem::path& file)>;
+
+    // Survives load(): it is host policy, not part of the loaded token set.
+    void set_read_gate(ReadGate gate) { read_gate_ = std::move(gate); }
+
+    // The host's NATIVE-FIRST probe, in the same shape as
+    // sourceloader::SourceSoundLibrary::ScriptLoaderOverride and
+    // PanoramaFontAtlasLoadOptions::font_bytes_provider: consulted once per logical document
+    // (kValveTokenDocument / kCsgoTokenDocument) at the START of load(), before any resource
+    // root is probed on disk. Returning a table makes that document resolve natively -- it is
+    // merged exactly as the parsed file would have been, and no root is then searched for it.
+    // Returning nullopt falls through to the existing per-root file search and its read gate.
+    //
+    // This is what lets a host serve these documents out of its own cooked content instead of
+    // reading Valve's text off disk, without PanoramaEngine gaining any knowledge of the host's
+    // asset system. Survives load(), like the gate: it is host policy, not loaded data.
+    using NativeTokenTableOverride =
+        std::function<std::optional<TokenTable>(std::string_view logical_path)>;
+    void set_native_token_table_override(NativeTokenTableOverride override_fn)
+    {
+        native_token_table_override_ = std::move(override_fn);
+    }
+
+    // How many localization documents the last load() actually resolved -- natively or by
+    // reading a file. Zero means the token table is built-in defaults only: nothing was found,
+    // or every candidate was refused by the read gate. Hosts distinguish those two by whether
+    // their own gate refused anything.
+    [[nodiscard]] std::size_t loaded_file_count() const noexcept { return loaded_file_count_; }
+
+    // Decodes a localization file's bytes (UTF-16 LE/BE or UTF-8/ANSI, BOM-aware) and parses
+    // its `"Tokens"` block. Public and static because it is the ONE parse of this format:
+    // a host that compiles these documents into a native asset must run exactly this, not a
+    // second implementation that could drift from what load() does at runtime.
+    [[nodiscard]] static TokenDocument parse_token_file(std::span<const unsigned char> bytes)
+    {
+        return parse_token_document(decode_text_file(bytes));
+    }
+
+    // Clears all previously loaded tokens (built-in defaults are reloaded), consults the
+    // native override for each logical document, then searches `resource_root` and its two
+    // parent directories for whichever documents the override did not serve, loading those
+    // that exist. Safe to call again with a different root; each call fully replaces the
+    // previous token set rather than merging into it.
+    void load(const std::filesystem::path& resource_root)
+    {
+        tokens_.clear();
+        loaded_file_count_ = 0;
+        load_builtin_defaults();
+
+        // Native first, once per logical document -- a native document has no per-root
+        // spelling, so probing it per root would resolve the same asset up to three times.
+        bool served_natively[2] = {false, false};
+        const std::string_view documents[2] = {kValveTokenDocument, kCsgoTokenDocument};
+        if (native_token_table_override_)
+        {
+            for (std::size_t index = 0; index < 2; ++index)
+            {
+                if (std::optional<TokenTable> table = native_token_table_override_(documents[index]))
+                {
+                    merge_tokens(*table);
+                    served_natively[index] = true;
+                    ++loaded_file_count_;
+                }
+            }
+        }
+
+        std::vector<std::filesystem::path> roots;
+        if (!resource_root.empty())
+        {
+            roots.push_back(resource_root);
+            roots.push_back(resource_root.parent_path());
+            roots.push_back(resource_root.parent_path().parent_path());
+        }
+
+        std::unordered_set<std::string> visited;
+        const auto try_file = [&](const std::filesystem::path& file) {
+            if (file.empty())
+            {
+                return;
+            }
+            const std::filesystem::path normalized = file.lexically_normal();
+            const std::string key = normalized.generic_string();
+            if (!visited.insert(key).second)
+            {
+                return;
+            }
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(normalized, error))
+            {
+                return;
+            }
+            if (read_gate_ && !read_gate_(normalized))
+            {
+                return;
+            }
+            if (load_file(normalized))
+            {
+                ++loaded_file_count_;
+            }
+        };
+
+        for (const std::filesystem::path& root : roots)
+        {
+            if (root.empty())
+            {
+                continue;
+            }
+            for (std::size_t index = 0; index < 2; ++index)
+            {
+                if (!served_natively[index])
+                {
+                    try_file(root / std::filesystem::path(documents[index]));
+                }
+            }
+        }
+    }
+
+    // Resolves a `#Token` (or bare `Token`) against the loaded table, case-
+    // insensitively. An `@`-suffixed gender/plural marker is stripped before
+    // lookup. If the token isn't found: returns the token text unchanged when
+    // `text` started with `#` (so an unresolved token stays visibly a token
+    // rather than silently vanishing), or returns `text` verbatim when it
+    // didn't (plain text passed through localize() is not a lookup failure).
+    [[nodiscard]] std::string localize(std::string_view text) const
+    {
+        const std::string token = normalize_token(text);
+        if (token.empty())
+        {
+            return {};
+        }
+
+        const auto it = tokens_.find(lower_ascii(token));
+        if (it != tokens_.end())
+        {
+            return it->second;
+        }
+        return has_token_marker(text) ? token : std::string(text);
+    }
+
+    // Recursively localizes every node's `text` in place, but only touches
+    // strings that already look like a token (leading `#`) — plain authored
+    // text is left untouched, so this is safe to run over a whole tree
+    // without double-localizing.
+    void localize_tree(PanoramaNode& node) const
+    {
+        if (!node.text.empty() && has_token_marker(node.text))
+        {
+            node.text = localize(node.text);
+        }
+        for (const auto& child : node.children)
+        {
+            localize_tree(*child);
+        }
+    }
+
+private:
+    class TokenStream
+    {
+    public:
+        explicit TokenStream(std::string_view text) : text_(text) {}
+
+        [[nodiscard]] std::size_t mark() const noexcept { return pos_; }
+        void restore(std::size_t mark) noexcept { pos_ = mark; }
+
+        bool next(std::string& out, bool& quoted)
+        {
+            skip_space_and_comments();
+            if (pos_ >= text_.size())
+            {
+                return false;
+            }
+
+            quoted = false;
+            out.clear();
+            if (text_[pos_] == '"')
+            {
+                quoted = true;
+                ++pos_;
+                while (pos_ < text_.size())
+                {
+                    const char ch = text_[pos_++];
+                    if (ch == '"')
+                    {
+                        return true;
+                    }
+                    if (ch == '\\' && pos_ < text_.size())
+                    {
+                        const char escaped = text_[pos_++];
+                        switch (escaped)
+                        {
+                        case 'n': out.push_back('\n'); break;
+                        case 't': out.push_back('\t'); break;
+                        case 'r': out.push_back('\r'); break;
+                        case '"': out.push_back('"'); break;
+                        case '\\': out.push_back('\\'); break;
+                        default: out.push_back(escaped); break;
+                        }
+                    }
+                    else
+                    {
+                        out.push_back(ch);
+                    }
+                }
+                return true;
+            }
+
+            if (text_[pos_] == '{' || text_[pos_] == '}')
+            {
+                out.push_back(text_[pos_++]);
+                return true;
+            }
+
+            while (pos_ < text_.size())
+            {
+                const char ch = text_[pos_];
+                if (std::isspace(static_cast<unsigned char>(ch)) != 0 || ch == '{' || ch == '}' || ch == '"')
+                {
+                    break;
+                }
+                if (ch == '/' && pos_ + 1 < text_.size() && text_[pos_ + 1] == '/')
+                {
+                    break;
+                }
+                out.push_back(ch);
+                ++pos_;
+            }
+            return !out.empty();
+        }
+
+    private:
+        void skip_space_and_comments()
+        {
+            for (;;)
+            {
+                while (pos_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[pos_])) != 0)
+                {
+                    ++pos_;
+                }
+                if (pos_ + 1 >= text_.size() || text_[pos_] != '/' || text_[pos_ + 1] != '/')
+                {
+                    return;
+                }
+                pos_ += 2;
+                while (pos_ < text_.size() && text_[pos_] != '\n' && text_[pos_] != '\r')
+                {
+                    ++pos_;
+                }
+            }
+        }
+
+        std::string_view text_;
+        std::size_t pos_ = 0;
+    };
+
+    static bool has_token_marker(std::string_view text)
+    {
+        return !text.empty() && text.front() == '#';
+    }
+
+    static std::string lower_ascii(std::string_view text)
+    {
+        std::string out(text);
+        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return out;
+    }
+
+    static std::string normalize_token(std::string_view text)
+    {
+        if (text.empty())
+        {
+            return {};
+        }
+        if (text.front() == '#')
+        {
+            text.remove_prefix(1);
+        }
+
+        std::string out;
+        out.reserve(text.size());
+        bool escaped = false;
+        for (char ch : text)
+        {
+            if (ch == '@' && !escaped)
+            {
+                break;
+            }
+            if (escaped)
+            {
+                out.push_back(ch);
+                escaped = false;
+            }
+            else if (ch == '\\')
+            {
+                escaped = true;
+            }
+            else
+            {
+                out.push_back(ch);
+            }
+        }
+        if (escaped)
+        {
+            out.push_back('\\');
+        }
+        return out;
+    }
+
+    static void append_utf8(std::string& out, std::uint32_t cp)
+    {
+        if (cp <= 0x7F)
+        {
+            out.push_back(static_cast<char>(cp));
+        }
+        else if (cp <= 0x7FF)
+        {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        else if (cp <= 0xFFFF)
+        {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        else
+        {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+
+    static std::string decode_text_file(std::span<const unsigned char> bytes)
+    {
+        if (bytes.size() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+        {
+            std::string out;
+            for (std::size_t i = 2; i + 1 < bytes.size(); i += 2)
+            {
+                std::uint32_t cp = static_cast<std::uint32_t>(bytes[i]) |
+                                   (static_cast<std::uint32_t>(bytes[i + 1]) << 8);
+                if (cp == 0)
+                {
+                    break;
+                }
+                append_utf8(out, cp);
+            }
+            return out;
+        }
+        if (bytes.size() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+        {
+            std::string out;
+            for (std::size_t i = 2; i + 1 < bytes.size(); i += 2)
+            {
+                std::uint32_t cp = (static_cast<std::uint32_t>(bytes[i]) << 8) |
+                                   static_cast<std::uint32_t>(bytes[i + 1]);
+                if (cp == 0)
+                {
+                    break;
+                }
+                append_utf8(out, cp);
+            }
+            return out;
+        }
+
+        std::size_t start = 0;
+        if (bytes.size() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
+            start = 3;
+        }
+        return std::string(reinterpret_cast<const char*>(bytes.data() + start), bytes.size() - start);
+    }
+
+    bool load_file(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file)
+        {
+            return false;
+        }
+
+        const std::vector<unsigned char> bytes(
+            (std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+        if (bytes.empty())
+        {
+            return false;
+        }
+
+        merge_tokens(parse_token_document(decode_text_file(bytes)).tokens);
+        return true;
+    }
+
+    void merge_tokens(const TokenTable& table)
+    {
+        for (const auto& [key, value] : table)
+        {
+            tokens_[key] = value;
+        }
+    }
+
+    static TokenDocument parse_token_document(std::string_view text)
+    {
+        TokenDocument document;
+        TokenStream stream(text);
+        std::string token;
+        bool quoted = false;
+        while (stream.next(token, quoted))
+        {
+            // The file's own culture, e.g. `"Language" "English"`. Only read OUTSIDE a
+            // Tokens block (this loop only runs there), so a token whose KEY is "Language"
+            // can never steal its value's place in the key/value pairing below.
+            if (document.language.empty() && lower_ascii(token) == "language")
+            {
+                std::string language;
+                bool language_quoted = false;
+                if (stream.next(language, language_quoted) && language != "{" && language != "}")
+                {
+                    document.language = std::move(language);
+                }
+                continue;
+            }
+            if (lower_ascii(token) != "tokens")
+            {
+                continue;
+            }
+
+            if (!stream.next(token, quoted) || token != "{")
+            {
+                continue;
+            }
+
+            int depth = 1;
+            while (depth > 0 && stream.next(token, quoted))
+            {
+                if (token == "{")
+                {
+                    ++depth;
+                    continue;
+                }
+                if (token == "}")
+                {
+                    --depth;
+                    continue;
+                }
+                if (depth != 1)
+                {
+                    continue;
+                }
+
+                std::string value;
+                bool value_quoted = false;
+                if (!stream.next(value, value_quoted))
+                {
+                    break;
+                }
+                if (value == "{" || value == "}")
+                {
+                    continue;
+                }
+
+                const std::size_t mark = stream.mark();
+                std::string condition;
+                bool condition_quoted = false;
+                if (stream.next(condition, condition_quoted))
+                {
+                    if (condition_quoted || (condition.rfind("[$", 0) != 0 && condition.rfind("[!$", 0) != 0))
+                    {
+                        stream.restore(mark);
+                    }
+                }
+
+                document.tokens[lower_ascii(normalize_token(token))] = value;
+            }
+        }
+        return document;
+    }
+
+    void add_builtin(std::string_view key, std::string_view value)
+    {
+        tokens_[lower_ascii(normalize_token(key))] = std::string(value);
+    }
+
+    void load_builtin_defaults()
+    {
+        add_builtin("SFUI_MainMenu_PlayButton", "PLAY");
+        add_builtin("play_setting_offline", "Practice With Bots");
+        add_builtin("play_setting_training_course", "Training Course");
+        add_builtin("play_setting_workshop", "Workshop Maps");
+        add_builtin("play_setting_community", "Community Server Browser");
+        add_builtin("SFUI_GameModeCompetitive", "Competitive");
+        add_builtin("SFUI_GameModeScrimComp2v2", "Wingman");
+        add_builtin("SFUI_GameModeCasual", "Casual");
+        add_builtin("SFUI_Deathmatch", "Deathmatch");
+        add_builtin("SFUI_GameModeSkirmish", "War Games");
+        add_builtin("SFUI_GameModeSurvival", "Danger Zone");
+        add_builtin("SFUI_BotDifficulty", "Bot Difficulty");
+        add_builtin("presets_title", "Presets");
+        add_builtin("mg_quick_favorites", "Favorites");
+        add_builtin("mg_quick_new", "New");
+        add_builtin("mg_quick_premier", "Premier");
+        add_builtin("mg_quick_activeduty", "Active Duty");
+        add_builtin("mg_quick_hostage", "Hostage");
+        add_builtin("mg_quick_select_all", "Select All");
+        add_builtin("mg_quick_clear_all", "Clear All");
+        add_builtin("mg_quick_save_favorites", "Save Favorites");
+        add_builtin("SFUI_Map_lobby_mapveto", "Premier");
+        add_builtin("SFUI_Mapgroup_casualsigma", "Defusal Group Sigma");
+        add_builtin("SFUI_Mapgroup_casualdelta", "Defusal Group Delta");
+        add_builtin("SFUI_Mapgroup_hostage", "Hostage Group");
+        add_builtin("SFUI_Mapgroup_allclassic", "All Classic Maps");
+        add_builtin("SFUI_Map_de_ancient", "Ancient");
+        add_builtin("SFUI_Map_de_anubis", "Anubis");
+        add_builtin("SFUI_Map_de_inferno", "Inferno");
+        add_builtin("SFUI_Map_de_mirage", "Mirage");
+        add_builtin("SFUI_Map_de_nuke", "Nuke");
+        add_builtin("SFUI_Map_de_overpass", "Overpass");
+        add_builtin("SFUI_Map_de_vertigo", "Vertigo");
+        add_builtin("SFUI_Map_de_dust2", "Dust II");
+        add_builtin("SFUI_Map_de_train", "Train");
+        add_builtin("SFUI_Map_de_cache", "Cache");
+        add_builtin("SFUI_Map_cs_office", "Office");
+        add_builtin("SFUI_Map_cs_italy", "Italy");
+    }
+
+    TokenTable tokens_;
+    ReadGate read_gate_;
+    NativeTokenTableOverride native_token_table_override_;
+    std::size_t loaded_file_count_ = 0;
+};
+}
