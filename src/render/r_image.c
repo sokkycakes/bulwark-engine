@@ -80,6 +80,13 @@ static uint8_t *decode_file(const char *path, int *w, int *h)
 	return out;
 }
 
+/* an image file already in memory, as RGBA (Mem_Free the result) */
+uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h)
+{
+	int comp;
+	return len > 0 && len < (size_t)1 << 30 ? stbi_load_from_memory(data, (int)len, w, h, &comp, 4) : NULL;
+}
+
 /* tries the name as given, then with each known extension in turn */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h)
 {
@@ -171,6 +178,8 @@ image_t *R_ImageFromPixels(const char *name, const uint8_t *rgba, int w, int h, 
 		}
 	if (!img)
 		img = new_image(name);
+	if (img->missing)
+		img->tex = 0; /* it borrowed the checker texture */
 	img->missing = false;
 	upload(img, rgba, w, h, flags);
 	return img;
@@ -183,6 +192,9 @@ image_t *R_FindImage(const char *name, int flags)
 	int w, h;
 	if (!name || !*name)
 		return r_checkerimage;
+	/* $rt:name is an image the game uploads itself (r_uploadimage) */
+	if (!Str_NICmp(name, "$rt:", 4))
+		name += 4;
 	for (img = images[name_hash(name)]; img; img = img->next)
 		if (!Str_ICmp(img->name, name))
 			return img;
@@ -240,6 +252,11 @@ image_t *R_LoadCubemap(const char *basename)
 		uint8_t *pix;
 		snprintf(path, sizeof(path), "%s_%s", basename, suffix[f]);
 		pix = R_LoadPixels(path, &w, &h);
+		if (!pix) {
+			/* GoldSrc names its faces without the underscore: desertrt */
+			snprintf(path, sizeof(path), "%s%s", basename, suffix[f]);
+			pix = R_LoadPixels(path, &w, &h);
+		}
 		if (!pix) {
 			Con_DPrintf("sky %s: missing %s\n", basename, path);
 			img->missing = true;

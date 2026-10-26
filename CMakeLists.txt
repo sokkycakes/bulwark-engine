@@ -22,6 +22,7 @@ add_library(bwcommon STATIC
 	src/common/studio.c
 	src/common/keyvalues.c
 	src/common/vgui_res.c
+	src/common/infoblob.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m)
 
@@ -98,6 +99,8 @@ add_library(bwclient STATIC
 	src/render/r_material.c
 	src/render/r_world.c
 	src/render/r_q1world.c
+	src/render/r_decal.c
+	src/render/r_part.c
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c

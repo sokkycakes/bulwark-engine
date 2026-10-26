@@ -205,6 +205,7 @@ static void load_lightgrid(const uint8_t *d, size_t size, const int32_t *lumps, 
 
 void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numidx)
 {
+	R_WorldKeepGeometry(v, numverts, idx, numidx);
 	if (!R_Active() || !numverts || !numidx)
 		return;
 	qglGenVertexArrays(1, &r_world.vao);
@@ -268,7 +269,7 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 	d = (uint8_t *)FS_LoadFile(path, &size);
 	if (!d || size < 8 + 17 * 8)
 		goto fail;
-	if (rd32(d) == 29 || !memcmp(d, "BSP2", 4)) {
+	if (rd32(d) == 29 || rd32(d) == 30 || !memcmp(d, "BSP2", 4)) {
 		if (!R_LoadQ1World(bsp, path, d, size))
 			goto fail;
 		Mem_Free(d);
@@ -470,6 +471,7 @@ void R_FreeWorld(void)
 	Mem_Free(r_world.lightgrid);
 	Mem_Free(r_world.surfmap);
 	R_FreeQ1World();
+	R_FreeWorldGeometry();
 	{
 		image_t *sky = r_world.skybox;
 		char skyname[64];
@@ -682,12 +684,17 @@ void R_DrawSky(const float *mvp)
 	if (!r_world.loaded || !r_world.vao || !r_world.numsubmodels)
 		return;
 	if (!r_world.skybox && r_world.skyname[0]) {
-		/* worldspawn and the sky command name either a path or a set in env/ */
+		/* worldspawn and the sky command name either a path or a set in
+		 * env/, or gfx/env/ where GoldSrc keeps them */
 		char env[96];
 		snprintf(env, sizeof(env), "env/%s", r_world.skyname);
 		r_world.skybox = R_LoadCubemap(r_world.skyname);
 		if (!r_world.skybox)
 			r_world.skybox = R_LoadCubemap(env);
+		if (!r_world.skybox) {
+			snprintf(env, sizeof(env), "gfx/env/%s", r_world.skyname);
+			r_world.skybox = R_LoadCubemap(env);
+		}
 	}
 	m = &r_world.submodels[0];
 	R_UseProgram(PROG_SKY);

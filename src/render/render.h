@@ -23,6 +23,10 @@ bool R_ModelBounds(int index, float *mins, float *maxs);
 void R_ClearMap(void);
 void R_NewMap(void);             /* cl.world is loaded */
 
+/* particle effects by their index in cl.particles */
+void R_PointParticles(int index, const float *org, const float *dir, float count);
+void R_TrailParticles(int index, const float *start, const float *end);
+
 void R_BeginFrame(void);
 void R_EndFrame(void);          /* draws the console and presents */
 

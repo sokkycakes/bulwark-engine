@@ -1,5 +1,6 @@
 /* Bulwark engine - checks Q1 hull collision and visibility on the generated
- * map tests/data/maps/q1test.bsp (tools/mkq1map_test.py). Run from the
+ * map tests/data/maps/q1test.bsp, and GoldSrc hulls on its BSP30 twin
+ * hltest.bsp (tools/mkq1map_test.py, with --hl for the second). Run from the
  * source tree's root. ISC licence, see LICENSE. */
 #include "../../src/server/bspfile.h"
 #include "../../src/common/fs.h"
@@ -58,6 +59,24 @@ int main(void)
 	check(BSP_PointLeaf(m, (float[]){96, 96, 40}) > 0, "leaf in room A");
 	check(BSP_CheckPVS(m, (float[]){96, 96, 40}, (float[]){480, 480, 200}), "room A sees itself");
 	check(!BSP_CheckPVS(m, (float[]){96, 96, 40}, (float[]){1200, 100, 40}), "room A can't see room B");
+	BSP_Free(m);
+
+	/* GoldSrc: the hull follows the box's width and height */
+	m = BSP_Load("maps/hltest.bsp");
+	check(m && m->type == BSP_Q1 && m->hl, "load BSP30");
+	if (!m)
+		return 1;
+	BSP_TraceModel(m, 0, zero, (float[]){96, 96, 100}, bmins, bmaxs, (float[]){96, 96, -100}, CONTENTS_SOLID, &tr);
+	check(tr.fraction < 1 && near(tr.endpos, 96, 96, 36), "HL player stands on the floor");
+	BSP_TraceModel(m, 0, zero, (float[]){96, 96, 100}, (float[]){-16, -16, -18}, (float[]){16, 16, 18},
+	               (float[]){96, 96, -100}, CONTENTS_SOLID, &tr);
+	check(tr.fraction < 1 && near(tr.endpos, 96, 96, 18), "HL crouching player uses hull 3");
+	BSP_TraceModel(m, 0, zero, (float[]){100, 256, 40}, (float[]){-32, -32, -32}, (float[]){32, 32, 32},
+	               (float[]){400, 256, 40}, CONTENTS_SOLID, &tr);
+	check(tr.fraction < 1 && fabsf(tr.endpos[0] - 160) < 0.1f, "HL large hull stops at the block");
+	BSP_TraceModel(m, 0, zero, (float[]){256, 256, 200}, bmins, bmaxs, (float[]){256, 256, 0}, CONTENTS_SOLID, &tr);
+	check(tr.fraction < 1 && near(tr.endpos, 256, 256, 100), "HL player stands on the block");
+	check(!BSP_CheckPVS(m, (float[]){96, 96, 40}, (float[]){1200, 100, 40}), "BSP30 visibility");
 	BSP_Free(m);
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

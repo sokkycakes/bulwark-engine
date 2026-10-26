@@ -7,6 +7,7 @@
 #include "../net/protocol.h"
 #include "../qcvm/qcvm.h"
 #include "../server/bspfile.h"
+#include "../common/infoblob.h"
 
 #define CL_MAX_MODELS 4096
 #define CL_MAX_SOUNDS 4096
@@ -67,6 +68,7 @@ typedef struct {
 	uint16_t csprogscrc;
 	char serverinfo[8192];
 	char playerinfo[CL_MAX_PLAYERS][2048];
+	infoblob_t playerblobs[CL_MAX_PLAYERS][MAX_INFOBLOBS];
 
 	clmodel_t models[CL_MAX_MODELS];
 	int nummodels;
@@ -114,6 +116,8 @@ void CL_Frame(double dt);
 void CL_Disconnect(const char *reason);
 void CL_Connect(const char *address);
 void CL_SendStringCmd(const char *s);
+void CL_SetLocalBlob(const char *key, const void *data, int len);
+const infoblob_t *CL_GetLocalBlob(const char *key);
 void CL_SendEvent(const msg_t *m); /* clc_event body, written by sendevent */
 bool CL_ForwardToServer(const char *line, int argc, const char **argv);
 const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size);

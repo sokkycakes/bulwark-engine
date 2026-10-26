@@ -73,6 +73,7 @@ WORLD_WRAP(droptofloor)
 WORLD_WRAP(checkbottom)
 WORLD_WRAP(walkmove)
 WORLD_WRAP(changeyaw)
+WORLD_WRAP(checkpvs)
 WORLD_WRAP(touchtriggers)
 
 static float info_float(const char *key, float def)
@@ -771,7 +772,46 @@ static void cl_getplayerkeyfloat(qcvm_t *vm)
 	QC_ReturnFloat(vm, v[0] ? (float)atof(v) : (vm->argc > 2 ? QC_PFLOAT(vm, 2) : 0));
 }
 
-static void cl_getplayerkeyblob(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
+/* copies up to size bytes of a blob to a QC pointer and returns its full size */
+static void return_blob(qcvm_t *vm, const infoblob_t *b, uint32_t ptr, int size)
+{
+	if (!b) {
+		QC_ReturnInt(vm, 0);
+		return;
+	}
+	if (ptr && size > 0) {
+		int n = BW_MIN(size, b->len);
+		void *dst = QC_Pointer(vm, ptr, (size_t)n);
+		if (dst)
+			memcpy(dst, b->data, (size_t)n);
+	}
+	QC_ReturnInt(vm, b->len);
+}
+
+static void cl_getplayerkeyblob(qcvm_t *vm)
+{
+	int slot = (int)QC_PFLOAT(vm, 0);
+	if (slot < 0)
+		slot = -slot - 1;
+	if (slot < 0 || slot >= CL_MAX_PLAYERS) {
+		QC_ReturnInt(vm, 0);
+		return;
+	}
+	return_blob(vm, Blob_Get(cl.playerblobs[slot], QC_PSTR(vm, 1)), vm->argc > 2 ? (uint32_t)QC_PINT(vm, 2) : 0,
+	            vm->argc > 3 ? QC_PINT(vm, 3) : 0);
+}
+
+static void cl_getlocaluserinfoblob(qcvm_t *vm)
+{
+	return_blob(vm, CL_GetLocalBlob(QC_PSTR(vm, 1)), (uint32_t)QC_PINT(vm, 2), QC_PINT(vm, 3));
+}
+
+static void cl_setlocaluserinfoblob(qcvm_t *vm)
+{
+	int size = QC_PINT(vm, 3);
+	const void *src = size > 0 ? QC_Pointer(vm, (uint32_t)QC_PINT(vm, 2), (size_t)size) : NULL;
+	CL_SetLocalBlob(QC_PSTR(vm, 1), src, src ? size : 0);
+}
 
 static void cl_getlocaluserinfo(qcvm_t *vm)
 {
@@ -818,6 +858,10 @@ static void cl_setpause(qcvm_t *vm)
 static void cl_particleeffectnum(qcvm_t *vm)
 {
 	const char *n = QC_PSTR(vm, 0);
+	if (!*n) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
 	for (int i = 1; i < CL_MAX_PARTICLES; i++)
 		if (cl.particles[i] && !strcmp(cl.particles[i], n)) {
 			QC_ReturnFloat(vm, (float)i);
@@ -922,7 +966,8 @@ const qc_builtin_t cl_builtins[] = {
 	{"runstandardplayerphysics", cl_runstandardplayerphysics},
 	{"serverkey", cl_serverkey}, {"serverkeyfloat", cl_serverkeyfloat}, {"serverkeyblob", cl_serverkeyblob},
 	{"getplayerkeyvalue", cl_getplayerkeyvalue}, {"getplayerkeyfloat", cl_getplayerkeyfloat},
-	{"getplayerkeyblob", cl_getplayerkeyblob}, {"getlocaluserinfo", cl_getlocaluserinfo},
+	{"getplayerkeyblob", cl_getplayerkeyblob}, {"getlocaluserinfoblob", cl_getlocaluserinfoblob},
+	{"setlocaluserinfoblob", cl_setlocaluserinfoblob}, {"getlocaluserinfo", cl_getlocaluserinfo},
 	{"setlocaluserinfo", cl_setlocaluserinfo}, {"registercommand", cl_registercommand},
 	{"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
 	{"setpause", cl_setpause}, {"particleeffectnum", cl_particleeffectnum},
@@ -930,7 +975,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"precache_model", cl_precache_model}, {"getmodelindex", cl_getmodelindex},
 	{"modelnameforindex", cl_modelnameforindex}, {"traceline", cl_traceline}, {"tracebox", cl_tracebox},
 	{"pointcontents", cl_pointcontents}, {"droptofloor", cl_droptofloor}, {"checkbottom", cl_checkbottom},
-	{"walkmove", cl_walkmove}, {"changeyaw", cl_changeyaw}, {"touchtriggers", cl_touchtriggers},
+	{"walkmove", cl_walkmove}, {"changeyaw", cl_changeyaw}, {"checkpvs", cl_checkpvs}, {"touchtriggers", cl_touchtriggers},
 	{"getkeybind", cl_getkeybind}, {"setkeybind", cl_setkeybind}, {"keynumtostring", cl_keynumtostring},
 	{"keynumtostring_csqc", cl_keynumtostring}, {"keynumtostring_omgwtf", cl_keynumtostring},
 	{"stringtokeynum", cl_stringtokeynum}, {"stringtokeynum_csqc", cl_stringtokeynum},

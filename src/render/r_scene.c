@@ -163,6 +163,7 @@ void R_ClearScene(void)
 {
 	r_scene.numents = 0;
 	r_scene.numdlights = 0;
+	R_ClearTempDecals();
 	numpolys = 0;
 	numpolyverts = 0;
 	poly_start = 0;
@@ -402,14 +403,22 @@ void R_RenderScene(void)
 		qglClear(GL_COLOR_BUFFER_BIT);
 	}
 
+	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight) {
+		VectorCopy(r_scene.origin, r_scene.mainorigin);
+		VectorCopy(r_scene.forward, r_scene.mainforward);
+	}
+	R_UpdateParticles();
+	R_AddParticleLights();
 	Mat4_Identity(model);
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
 	if (r_drawentities->ivalue)
 		for (int i = 0; i < r_scene.numents; i++)
 			R_DrawModelEntity(&r_scene.ents[i], false);
-	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue)
+	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue) {
 		R_DrawSky(r_scene.viewproj);
+		R_DrawDecals();
+	}
 
 	/* translucent: world water and glass, then entities back to front, then polygons */
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
@@ -421,6 +430,7 @@ void R_RenderScene(void)
 		for (int i = 0; i < nsorted; i++)
 			R_DrawModelEntity(sorted[i], true);
 	}
+	R_DrawParticles();
 	r_stats.polys = numpolys;
 	R_DrawPolygons(false);
 	numpolys = 0;
@@ -428,9 +438,9 @@ void R_RenderScene(void)
 	poly_start = 0;
 
 	if (r_speeds->ivalue)
-		Con_Printf("view %dx%d at %.0f %.0f %.0f (%.0f %.0f): %d world surfaces, %d culled, %d entities, %d polys%s\n", w,
+		Con_Printf("view %dx%d at %.0f %.0f %.0f (%.0f %.0f): %d world surfaces, %d culled, %d entities, %d polys, %d particles%s\n", w,
 		           h, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2], r_scene.angles[0], r_scene.angles[1],
-		           r_stats.worldsurfs, r_stats.culled, r_scene.numents, r_stats.polys,
+		           r_stats.worldsurfs, r_stats.culled, r_scene.numents, r_stats.polys, r_stats.particles,
 		           r_scene.drawworld ? "" : ", no world");
 	if (r_speeds->ivalue > 1)
 		for (int i = 0; i < r_scene.numents; i++) {
@@ -451,5 +461,7 @@ void R_InitScene(void)
 {
 	fov = Cvar_Get("fov", "90", CVAR_ARCHIVE, "Horizontal field of view at 4:3, widened for wider screens");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");
+	R_InitDecals();
+	R_InitParticles();
 	R_ClearScene();
 }

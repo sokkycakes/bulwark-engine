@@ -1,5 +1,6 @@
-/* Bulwark engine - drawing Quake 1 worlds (BSP29 and BSP2): faces built
- * from edges, textures from the map's own miptex lump, lightmaps packed
+/* Bulwark engine - drawing Quake 1 worlds (BSP29 and BSP2) and GoldSrc
+ * ones (BSP30): faces built from edges, textures from the map's own miptex
+ * lump or the WAD3 files worldspawn names, lightmaps packed
  * into atlas pages, and model lighting sampled from the lightmap under a
  * point. Record layouts are in docs/spec/bsp.md. ISC licence, see LICENSE. */
 #include "r_local.h"
@@ -91,6 +92,105 @@ static bool atlas_alloc(int w, int h, int *page, int *x, int *y)
 	return true;
 }
 
+/* --- WAD3 texture files ------------------------------------------------------ */
+
+/* "WAD3", lump count, directory offset; 32-byte entries of file offset, size
+ * on disk, size, type, compression, two pad bytes and a 16-byte name */
+typedef struct {
+	uint8_t *data;
+	size_t size;
+	int numlumps, dir;
+} wad_t;
+
+static wad_t wads[16];
+static int numwads;
+
+static void free_wads(void)
+{
+	for (int i = 0; i < numwads; i++)
+		Mem_Free(wads[i].data);
+	numwads = 0;
+}
+
+static void open_wad(const char *name)
+{
+	wad_t *w = &wads[numwads];
+	char path[96];
+	if (numwads == BW_ARRAY_COUNT(wads))
+		return;
+	w->data = (uint8_t *)FS_LoadFile(name, &w->size);
+	if (!w->data) {
+		snprintf(path, sizeof(path), "wads/%s", name);
+		w->data = (uint8_t *)FS_LoadFile(path, &w->size);
+	}
+	if (!w->data) {
+		Con_DPrintf("wad %s not found\n", name);
+		return;
+	}
+	w->numlumps = rd32(w->data + 4);
+	w->dir = rd32(w->data + 8);
+	if (w->size < 12 || (memcmp(w->data, "WAD3", 4) && memcmp(w->data, "WAD2", 4)) || w->numlumps < 0 ||
+	    w->dir < 0 || (size_t)w->dir + (size_t)w->numlumps * 32 > w->size) {
+		Con_Printf("%s: not a WAD file\n", name);
+		Mem_Free(w->data);
+		return;
+	}
+	numwads++;
+}
+
+/* worldspawn's "wad" key lists paths from the mapper's machine, split by
+ * semicolons; only the file names count */
+static void open_wads(const uint8_t *ents, size_t len)
+{
+	const char *key, *end;
+	char list[1024], *tok;
+	size_t n;
+	if (!len)
+		return;
+	{
+		char *e = Mem_Alloc(len + 1);
+		memcpy(e, ents, len);
+		key = strstr(e, "\"wad\"");
+		end = strchr(e, '}');
+		list[0] = 0;
+		if (key && (!end || key < end)) {
+			key = strchr(key + 5, '"');
+			if (key) {
+				key++;
+				for (n = 0; key[n] && key[n] != '"' && n < sizeof(list) - 1; n++)
+					list[n] = key[n];
+				list[n] = 0;
+			}
+		}
+		Mem_Free(e);
+	}
+	for (tok = strtok(list, ";"); tok; tok = strtok(NULL, ";")) {
+		const char *base = tok;
+		for (const char *c = tok; *c; c++)
+			if (*c == '/' || *c == '\\' || *c == ':')
+				base = c + 1;
+		if (*base)
+			open_wad(base);
+	}
+}
+
+/* a miptex lump (type 0x43, or 0x44 in WAD2) by name, laid out as in the map */
+static const uint8_t *wad_miptex(const char *name, size_t *avail)
+{
+	for (int i = 0; i < numwads; i++)
+		for (int j = 0; j < wads[i].numlumps; j++) {
+			const uint8_t *e = wads[i].data + wads[i].dir + j * 32;
+			int32_t ofs = rd32(e), len = rd32(e + 4);
+			if ((e[12] != 0x43 && e[12] != 0x44) || e[13] || Str_NICmp((const char *)e + 16, name, 16))
+				continue;
+			if (ofs < 0 || len < 40 || (size_t)ofs + len > wads[i].size)
+				continue;
+			*avail = (size_t)len;
+			return wads[i].data + ofs;
+		}
+	return NULL;
+}
+
 /* --- textures ------------------------------------------------------------------ */
 
 typedef struct {
@@ -98,7 +198,9 @@ typedef struct {
 	int width, height;
 } q1tex_t;
 
-static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int *h)
+/* hl: GoldSrc, where each texture carries its own palette after the last mip
+ * and textures without pixels in the map come from the WADs */
+static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int *h, bool hl)
 {
 	char name[17];
 	const uint8_t *pal = R_Palette();
@@ -113,6 +215,22 @@ static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int
 	ofs0 = (uint32_t)rd32(mt + 24);
 	if (*w <= 0 || *h <= 0 || *w > 4096 || *h > 4096)
 		*w = *h = 64;
+	if (hl && !ofs0 && !R_MaterialFileExists(name) && !R_ImageExists(name)) {
+		size_t wl;
+		const uint8_t *wm = wad_miptex(name, &wl);
+		if (wm && rd32(wm + 16) == *w && rd32(wm + 20) == *h) {
+			mt = wm;
+			avail = wl;
+			ofs0 = (uint32_t)rd32(mt + 24);
+		}
+	}
+	if (hl && ofs0) {
+		uint64_t po = (uint64_t)(uint32_t)rd32(mt + 36) + (uint64_t)(*w / 8) * (*h / 8);
+		if (po + 2 + 768 <= avail)
+			pal = mt + po + 2;
+		else
+			ofs0 = 0; /* no palette: treat as missing */
+	}
 	/* a replacement texture or material on disk wins over the map's own pixels */
 	if (R_MaterialFileExists(name) || R_ImageExists(name) || !ofs0 || ofs0 + (uint64_t)*w * *h > avail) {
 		m = R_FindMaterial(name, 0);
@@ -129,7 +247,7 @@ static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int
 			rgba[i * 4 + 2] = pal[c * 3 + 2];
 			rgba[i * 4 + 3] = fence && c == 255 ? 0 : 255;
 			/* the palette's last 32 colours glow in the dark */
-			if (c >= 224 && c < 255 && !sky) {
+			if (c >= 224 && c < 255 && !sky && !hl) {
 				if (!glow)
 					glow = Mem_Alloc((size_t)pixels * 4);
 				memcpy(glow + i * 4, rgba + i * 4, 4);
@@ -149,7 +267,8 @@ static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int
 		m->sky = true;
 	else if (name[0] == '*' || name[0] == '!')
 		m->program = MP_WATER;
-	else if (!Str_NICmp(name, "clip", 4) || !Str_ICmp(name, "trigger"))
+	else if (!Str_NICmp(name, "clip", 4) || !Str_ICmp(name, "trigger") || !Str_ICmp(name, "aaatrigger") ||
+	         !Str_ICmp(name, "null") || !Str_ICmp(name, "origin"))
 		m->nodraw = true;
 	return m;
 }
@@ -194,7 +313,7 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 	struct {
 		int32_t ofs, len;
 	} l[L_COUNT];
-	bool b2 = !memcmp(d, "BSP2", 4);
+	bool b2 = !memcmp(d, "BSP2", 4), hl = rd32(d) == 30;
 	int facesize = b2 ? 28 : 20, edgesize = b2 ? 8 : 4, nodesize = b2 ? 44 : 24;
 	int numverts, numedges, numsurfedges, numtexinfo, numfaces, nummodels, numtex = 0;
 	q1tex_t *texs = NULL;
@@ -221,6 +340,8 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 	nummodels = l[L_MODELS].len / 64;
 
 	/* textures */
+	if (hl)
+		open_wads(d + l[L_ENTITIES].ofs, (size_t)l[L_ENTITIES].len);
 	if (l[L_TEXTURES].len >= 4) {
 		const uint8_t *tl = d + l[L_TEXTURES].ofs;
 		numtex = rd32(tl);
@@ -234,15 +355,16 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 				texs[i].width = texs[i].height = 64;
 				continue;
 			}
-			texs[i].mat = texture_material(tl + o, (size_t)(l[L_TEXTURES].len - o), &texs[i].width, &texs[i].height);
+			texs[i].mat = texture_material(tl + o, (size_t)(l[L_TEXTURES].len - o), &texs[i].width, &texs[i].height, hl);
 		}
 	}
+	free_wads();
 
 	/* coloured light from a .lit file next to the map: "QLIT", version 1, then RGB */
 	{
 		const char *dot = strrchr(path, '.');
 		snprintf(litname, sizeof(litname), "%.*s.lit", dot ? (int)(dot - path) : (int)strlen(path), path);
-		lit = (uint8_t *)FS_LoadFile(litname, &litlen);
+		lit = hl ? NULL : (uint8_t *)FS_LoadFile(litname, &litlen);
 		if (lit && (litlen < 8 || memcmp(lit, "QLIT", 4) || rd32(lit + 4) != 1 ||
 		            litlen - 8 < (size_t)l[L_LIGHTING].len * 3)) {
 			Mem_Free(lit);
@@ -335,14 +457,19 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 			int n = qf->w * qf->h;
 			uint8_t *page = q1.pages[qf->page];
 			memset(styled, 0, (size_t)n * 3);
-			/* every style at its normal strength, added up */
+			/* every style at its normal strength, added up. GoldSrc light is
+			 * RGB with lightofs counting bytes, and full brightness at 255
+			 * rather than Quake's 128: halved to share the scale */
 			for (int st = 0; st < 4 && styles[st] != 255; st++) {
-				size_t o = (size_t)lightofs + (size_t)st * n;
-				if (o + n > (size_t)l[L_LIGHTING].len)
+				size_t o = hl ? (size_t)lightofs + (size_t)st * n * 3 : (size_t)lightofs + (size_t)st * n;
+				if (o + (hl ? n * 3 : n) > (size_t)l[L_LIGHTING].len)
 					break;
 				for (int i = 0; i < n; i++)
 					for (int c = 0; c < 3; c++) {
-						int v = styled[i * 3 + c] + (lit ? lit[8 + (o + i) * 3 + c] : d[l[L_LIGHTING].ofs + o + i]);
+						int v = styled[i * 3 + c] +
+						        (hl    ? (d[l[L_LIGHTING].ofs + o + i * 3 + c] + 1) / 2
+						         : lit ? lit[8 + (o + i) * 3 + c]
+						               : d[l[L_LIGHTING].ofs + o + i]);
 						styled[i * 3 + c] = (uint8_t)BW_MIN(v, 255);
 					}
 			}

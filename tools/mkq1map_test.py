@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Writes tests/data/maps/q1test.bsp: a small Quake 1 (BSP29) map for
-testing Q1 rendering, collision and visibility. The layout follows the
+testing Q1 rendering, collision and visibility. With --hl it writes the same
+map as GoldSrc BSP30 (tests/data/maps/hltest.bsp): four Half-Life sized
+hulls, RGB lighting, a palette after each texture's mips, and the floor
+texture kept outside the map in tests/data/hltest.wad (WAD3). The layout follows the
 public descriptions of the format (the "Unofficial Quake Specs").
 
 Two closed rooms, A at x 0..512 and B at x 1024..1536 (both y 0..512,
@@ -11,12 +14,19 @@ import math
 import struct
 import sys
 
-out = sys.argv[1] if len(sys.argv) > 1 else "tests/data/maps/q1test.bsp"
+import os
+
+args = [a for a in sys.argv[1:] if a != "--hl"]
+HL = "--hl" in sys.argv[1:]
+out = args[0] if args else ("tests/data/maps/hltest.bsp" if HL else "tests/data/maps/q1test.bsp")
 
 ROOMS = [((0, 0, 0), (512, 512, 256)), ((1024, 0, 0), (1536, 512, 256))]
 BLOCKS = [((192, 192, 0), (320, 320, 64))]
 BIG = 4096
 HULLS = [((0, 0, 0), (0, 0, 0)), ((-16, -16, -24), (16, 16, 32)), ((-32, -32, -24), (32, 32, 64))]
+if HL:  # standing, large, crouching
+    HULLS = [((0, 0, 0), (0, 0, 0)), ((-16, -16, -36), (16, 16, 36)), ((-32, -32, -32), (32, 32, 32)),
+             ((-16, -16, -18), (16, 16, 18))]
 
 def empty(p, hull):
     mins, maxs = hull
@@ -80,7 +90,7 @@ clipnodes = []
 def clip_leaf(is_empty, lo, hi):
     return -1 if is_empty else -2
 clip_roots = []
-for h in (1, 2):
+for h in range(1, len(HULLS)):
     clip_roots.append(build([-BIG] * 3, [BIG] * 3, HULLS[h], split_planes(HULLS[h]), clipnodes, clip_leaf))
 
 # --- faces -------------------------------------------------------------------------
@@ -165,7 +175,12 @@ for axis, dist, sign, lo, hi in rect_faces():
             p[axis] = dist
             for k in (a1, a2):
                 p[k] = s * s_vec[k] + t * t_vec[k]
-            lighting.append(light_at(p, room))
+            v = light_at(p, room)
+            if HL:  # 255 is full brightness; room A warm, room B cool
+                v = min(255, v * 2)
+                lighting.extend((v, v * 3 // 4, v // 2) if room == 0 else (v // 2, v * 3 // 4, v))
+            else:
+                lighting.append(v)
     faces.append(dict(plane=pn, side=side, firstedge=first, numedges=4, texinfo=ti, lightofs=lightofs,
                       axis=axis, dist=dist, sign=sign, lo=lo, hi=hi))
 
@@ -235,9 +250,11 @@ for li, lf in enumerate(leafs):
 
 # --- textures ------------------------------------------------------------------------------
 
-def miptex(name, a, b):
+def miptex(name, a, b, pixels=True):
     size = 64
     hdr = name.encode().ljust(16, b"\0") + struct.pack("<II", size, size)
+    if not pixels:
+        return hdr + bytes(16)
     data = b""
     offs = []
     for m in range(4):
@@ -245,9 +262,19 @@ def miptex(name, a, b):
         offs.append(40 + len(data))
         data += bytes(a if ((x * (1 << m) // 16) + (y * (1 << m) // 16)) % 2 else b
                       for y in range(s) for x in range(s))
+    if HL:  # 256 colours: a ramp per channel so indexes give distinct colours
+        data += struct.pack("<H", 256) + bytes(c for i in range(256) for c in (i, 255 - i, (i * 7) & 255)) + b"\0\0"
     return hdr + struct.pack("<4I", *offs) + data
 
-texs = [miptex("bwall", 6, 9), miptex("bfloor", 21, 26)]
+if HL:
+    texs = [miptex("bwall", 6, 9), miptex("bfloor", 21, 26, pixels=False)]
+    floor = miptex("bfloor", 21, 26)
+    wad = bytearray(b"WAD3" + struct.pack("<ii", 1, 12 + len(floor)))
+    wad += floor
+    wad += struct.pack("<iiiBBH", 12, len(floor), len(floor), 0x43, 0, 0) + b"BFLOOR".ljust(16, b"\0")
+    open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(out))), "hltest.wad"), "wb").write(wad)
+else:
+    texs = [miptex("bwall", 6, 9), miptex("bfloor", 21, 26)]
 texlump = struct.pack("<I", len(texs))
 ofs = 4 + 4 * len(texs)
 blob = b""
@@ -258,9 +285,10 @@ texlump += blob
 
 # --- entities and lumps ------------------------------------------------------------------
 
-entities = (b'{\n"classname" "worldspawn"\n"message" "Bulwark Q1 test"\n"wad" ""\n}\n'
+entities = (b'{\n"classname" "worldspawn"\n"message" "Bulwark Q1 test"\n"wad" "%s"\n}\n'
             b'{\n"classname" "info_player_start"\n"origin" "96 96 40"\n"angle" "45"\n}\n'
             b'{\n"classname" "info_player_deathmatch"\n"origin" "96 96 40"\n"angle" "45"\n}\n\0')
+entities = entities.replace(b"%s", b"\\sierra\\half-life\\valve\\hltest.wad;other.wad" if HL else b"")
 
 def pack_planes():
     b = b""
@@ -294,10 +322,11 @@ lumps[10] = b"".join(struct.pack("<ii6h2H4B", lf["contents"], lf["visofs"], *bbo
 lumps[11] = b"".join(struct.pack("<H", m) for m in marksurfaces)
 lumps[12] = b"".join(struct.pack("<2H", *e) for e in edges)
 lumps[13] = b"".join(struct.pack("<i", e) for e in surfedges)
-lumps[14] = struct.pack("<9f4i3i", 0, 0, 0, 1536, 512, 256, 0, 0, 0, root0, clip_roots[0], clip_roots[1], 0,
+lumps[14] = struct.pack("<9f4i3i", 0, 0, 0, 1536, 512, 256, 0, 0, 0, root0, clip_roots[0], clip_roots[1],
+                        clip_roots[2] if HL else 0,
                         len(leafs) - 1, 0, len(faces))
 
-data = bytearray(struct.pack("<i", 29) + b"\0" * (15 * 8))
+data = bytearray(struct.pack("<i", 30 if HL else 29) + b"\0" * (15 * 8))
 for i, l in enumerate(lumps):
     while len(data) % 4:
         data.append(0)

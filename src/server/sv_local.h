@@ -6,6 +6,7 @@
 #include "bspfile.h"
 #include "../net/netchan.h"
 #include "../net/protocol.h"
+#include "../common/infoblob.h"
 
 #define SV_MAX_MODELS 4096
 #define SV_MAX_SOUNDS 4096
@@ -98,6 +99,7 @@ typedef struct client_s {
 	netchan_t chan;
 	char name[64];
 	char userinfo[2048];
+	infoblob_t blobs[MAX_INFOBLOBS];
 	int edict;
 	int spawncount; /* map the client was last told about */
 	double connect_time, last_ping_update;
@@ -196,6 +198,7 @@ typedef struct worldctx_s {
  * entities, e.g. the client's; NULL restores the server. Returns the previous
  * context (NULL for the server). */
 worldctx_t *SV_SetWorldContext(worldctx_t *w);
+bspmap_t *SV_CurrentWorld(void); /* the map of the current context */
 
 void SV_LinkEdict(int e, bool touch_triggers);
 void SV_UnlinkEdict(int e);
@@ -224,5 +227,6 @@ void W_bi_checkbottom(qcvm_t *vm);
 void W_bi_walkmove(qcvm_t *vm);
 void W_bi_changeyaw(qcvm_t *vm);
 void W_bi_touchtriggers(qcvm_t *vm);
+void W_bi_checkpvs(qcvm_t *vm);
 
 #endif

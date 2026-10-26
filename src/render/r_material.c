@@ -223,7 +223,7 @@ static void parse_stage(material_t *m, lexer_t *l, int flags)
 				st->lightmap = true;
 			else if (!Str_ICmp(img, "$whiteimage") || !Str_ICmp(img, "$whitetexture"))
 				st->image = r_whiteimage;
-			else if (img[0] && img[0] != '$')
+			else if (img[0] && (img[0] != '$' || !Str_NICmp(img, "$rt:", 4)))
 				st->image = R_FindImage(img, image_flags(m, flags) | (!Str_ICmp(k, "clampmap") ? IMG_CLAMP : 0));
 		} else if (!Str_ICmp(k, "blendFunc") && n > 0) {
 			if (!Str_ICmp(args[0], "add"))
@@ -440,6 +440,21 @@ material_t *R_MaterialForImage(const char *name, image_t *img, int flags)
 	m = new_material(name);
 	m->diffuse = img;
 	m->program = (flags & MATF_2D) ? MP_UNLIT : (flags & MATF_MODEL) ? MP_SKIN : MP_WALL;
+	finish(m, flags);
+	return m;
+}
+
+material_t *R_MaterialFromText(const char *name, const char *text, int flags)
+{
+	material_t *m;
+	lexer_t l = {text, "", false};
+	for (m = materials[name_hash(name)]; m; m = m->next)
+		if (!Str_ICmp(m->name, name))
+			return m;
+	m = new_material(name);
+	m->program = (flags & MATF_2D) ? MP_UNLIT : (flags & MATF_MODEL) ? MP_SKIN : MP_WALL;
+	parse_body(m, &l, flags);
+	m->fromfile = true;
 	finish(m, flags);
 	return m;
 }

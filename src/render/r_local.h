@@ -38,6 +38,7 @@ void R_ShutdownImages(void);
 extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal, *r_whitecube;
 /* decodes an image file into RGBA (Mem_Free the result) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h);
+uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h);
 
 /* --- materials ----------------------------------------------------------- */
 
@@ -80,6 +81,7 @@ typedef struct material_s {
 #define MATF_2D 1    /* defaults suit a HUD picture: no lightmap */
 #define MATF_MODEL 2 /* defaults suit a model skin */
 material_t *R_FindMaterial(const char *name, int flags);
+material_t *R_MaterialFromText(const char *name, const char *text, int flags); /* unless it exists */
 bool R_MaterialFileExists(const char *name);
 /* numeric handles for shaderforname and .forceshader; 0 is none */
 int R_MaterialHandle(material_t *m);
@@ -202,6 +204,37 @@ void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numi
 bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size);
 void R_FreeQ1World(void);
 bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
+
+/* --- decals and surface queries (r_decal.c) -------------------------------- */
+
+void R_WorldKeepGeometry(const rvert_t *v, int numverts, const uint32_t *idx, int numidx);
+void R_FreeWorldGeometry(void);
+int R_SurfacesInBox(const float *mins, const float *maxs, int *out, int max);
+int R_SurfaceNearPoint(const rmodel_t *m, const float *p);
+const rsurface_t *R_ModelSurface(const rmodel_t *m, int s);
+int R_SurfacePoints(const rsurface_t *rs, const rvert_t **out, int max);
+const rvert_t *R_SurfaceTriangle(const rsurface_t *rs, int tri, int corner);
+void R_SurfaceAxes(const rsurface_t *rs, float *saxis, float *taxis, float *normal);
+void R_SpawnDecal(material_t *mat, int blend, GLenum src, GLenum dst, const float *org, const float *normal,
+                  float radius, float angle, const float *tc, const float *rgba, float alphadelta, float life);
+void R_AddDecal(material_t *mat, const float *org, const float *up, const float *side, const float *rgb, float alpha);
+void R_ClearTempDecals(void);
+void R_ClearDecals(void);
+void R_UpdateDecals(void);
+void R_DrawDecals(void);
+void R_InitDecals(void);
+void R_PickBlend(const material_t *m, int blend, GLenum src, GLenum dst, int *ob, GLenum *os, GLenum *od);
+void R_BlendColor(GLenum src, const float *rgba, float *out);
+
+/* --- particles (r_part.c) ------------------------------------------------ */
+
+const char *R_ParticleEffectName(int index);
+void R_UpdateParticles(void);
+void R_AddParticleLights(void);
+void R_DrawParticles(void);
+void R_ClearParticles(void);
+void R_InitParticles(void);
+void R_ShutdownParticles(void);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);
 void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
@@ -257,13 +290,15 @@ typedef struct {
 	/* matrices for the frame being drawn */
 	float view[16], proj[16], viewproj[16];
 	float forward[3], right[3], up[3];
+	/* the last view that filled most of the screen, for console tests */
+	float mainorigin[3], mainforward[3];
 } rscene_t;
 
 extern rscene_t r_scene;
 
 /* counters for r_speeds, per view */
 typedef struct {
-	int worldsurfs, culled, entities, polys;
+	int worldsurfs, culled, entities, polys, particles;
 } rstats_t;
 extern rstats_t r_stats;
 extern double r_time;

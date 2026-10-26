@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <string.h>
+#include <math.h>
 
 typedef float vec3_t[3];
 
@@ -70,6 +71,13 @@ const char *COM_Parse(const char *data, char *token, size_t tokensize);
 static inline void VectorCopy(const float *a, float *b) { b[0] = a[0]; b[1] = a[1]; b[2] = a[2]; }
 static inline void VectorClear(float *a) { a[0] = a[1] = a[2] = 0; }
 static inline float DotProduct(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+static inline float VectorLength(const float *a) { return sqrtf(DotProduct(a, a)); }
+static inline void CrossProduct(const float *a, const float *b, float *c)
+{
+	c[0] = a[1] * b[2] - a[2] * b[1];
+	c[1] = a[2] * b[0] - a[0] * b[2];
+	c[2] = a[0] * b[1] - a[1] * b[0];
+}
 void AngleVectors(const float *angles, float *forward, float *right, float *up);
 float VectorNormalize(float *v);
 
