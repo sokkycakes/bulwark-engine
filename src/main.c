@@ -51,9 +51,19 @@ static void WriteConfig_f(int argc, const char **argv)
 		Con_DPrintf("wrote %s\n", path);
 }
 
+/* set when the command line starts a game: the menu's start-up request for
+ * its background map (Nuclide: map_background) is dropped once, otherwise it
+ * replaces the game the command line asked for */
+static bool drop_menu_map;
+
 /* commands the game modules registered come before the engine's own */
 static bool GamePreHook(const char *line, int argc, const char **argv)
 {
+	if (drop_menu_map && argc > 0 && !strcmp(argv[0], "map_background")) {
+		drop_menu_map = false;
+		Con_DPrintf("the command line starts a game: menu background map skipped\n");
+		return true;
+	}
 	if (MQC_ConsoleCommand(line))
 		return true;
 	if (CSQC_ConsoleCommand(line))
@@ -154,6 +164,7 @@ int main(int argc, char **argv)
 		if (!strncmp(l, "map ", 4) || !strncmp(l, "connect ", 8) || !strncmp(l, "playdemo ", 9))
 			starts_game = true;
 	}
+	drop_menu_map = starts_game;
 	if (cmds.data)
 		Cbuf_AddText(cmds.data);
 	SB_Free(&cmds);

@@ -54,6 +54,7 @@ static worldctx_t *enter_world(void)
 	clw.vm = cl.csqc;
 	clw.world = cl.world;
 	clw.brushmodel = cl_brushmodel;
+	clw.voxel = vx_clientworld;
 	return SV_SetWorldContext(&clw);
 }
 
@@ -992,4 +993,9 @@ const qc_builtin_t cl_builtins[] = {
 	{"getstatf", cl_zero}, {"getstati", cl_zero}, {"getstats", cl_zero}, {"getplayerstat", cl_zero},
 	{"setwatchpoint", cl_nop}, {"gp_rumble", cl_nop}, {"gp_rumbletriggers", cl_nop}, {"gp_setledcolor", cl_nop},
 	{"gp_settriggerfx", cl_nop},
+	{"voxel_get", VX_bi_voxel_client_get}, {"voxel_getrot", VX_bi_voxel_client_getrot},
+	{"voxel_cellforpoint", VX_bi_voxel_cellforpoint}, {"voxel_cellorigin", VX_bi_voxel_cellorigin},
+	{"voxel_size", VX_bi_voxel_size}, {"voxel_blocksize", VX_bi_voxel_blocksize}, {"voxel_count", VX_bi_voxel_count},
+	{"voxel_typeforname", VX_bi_voxel_typeforname}, {"voxel_typename", VX_bi_voxel_typename},
+	{"voxel_tracecell", VX_bi_voxel_tracecell}, {"voxel_tracetype", VX_bi_voxel_tracetype},
 	{NULL, NULL}};

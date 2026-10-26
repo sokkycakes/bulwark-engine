@@ -29,6 +29,7 @@ typedef struct {
 static loopback_t loops[2]; /* [NS_CLIENT] is what the client receives */
 
 static int sockets[2] = {-1, -1};
+static int families[2] = {AF_INET6, AF_INET6}; /* AF_INET on hosts without IPv6 */
 static int server_port;
 
 /* --- simulated lag/loss --- */
@@ -63,20 +64,37 @@ void NET_Shutdown(void)
 	close_socket(1);
 }
 
-static int open_udp(int port)
+/* a dual-stack IPv6 socket, or plain IPv4 where the host has no IPv6 */
+static int open_udp(int port, int *family)
 {
-	struct sockaddr_in6 sa;
+	struct sockaddr_storage ss;
+	socklen_t sslen;
 	int s = socket(AF_INET6, SOCK_DGRAM, 0), off = 0, on = 1;
-	if (s < 0)
-		return -1;
-	/* dual-stack: accept IPv4 peers as v4-mapped addresses */
-	setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
+	memset(&ss, 0, sizeof(ss));
+	if (s >= 0) {
+		struct sockaddr_in6 *sa = (struct sockaddr_in6 *)&ss;
+		/* dual-stack: accept IPv4 peers as v4-mapped addresses */
+		setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
+		sa->sin6_family = AF_INET6;
+		sa->sin6_addr = in6addr_any;
+		sa->sin6_port = htons((uint16_t)port);
+		sslen = sizeof(*sa);
+		*family = AF_INET6;
+	} else {
+		struct sockaddr_in *sa = (struct sockaddr_in *)&ss;
+		s = socket(AF_INET, SOCK_DGRAM, 0);
+		if (s < 0) {
+			Con_Printf("^3UDP socket failed: %s\n", strerror(errno));
+			return -1;
+		}
+		sa->sin_family = AF_INET;
+		sa->sin_addr.s_addr = htonl(INADDR_ANY);
+		sa->sin_port = htons((uint16_t)port);
+		sslen = sizeof(*sa);
+		*family = AF_INET;
+	}
 	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-	memset(&sa, 0, sizeof(sa));
-	sa.sin6_family = AF_INET6;
-	sa.sin6_addr = in6addr_any;
-	sa.sin6_port = htons((uint16_t)port);
-	if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) < 0 || fcntl(s, F_SETFL, O_NONBLOCK) < 0) {
+	if (bind(s, (struct sockaddr *)&ss, sslen) < 0 || fcntl(s, F_SETFL, O_NONBLOCK) < 0) {
 		Con_Printf("^3UDP bind to port %d failed: %s\n", port, strerror(errno));
 		close(s);
 		return -1;
@@ -86,14 +104,15 @@ static int open_udp(int port)
 
 bool NET_OpenServer(int port)
 {
-	struct sockaddr_in6 sa;
-	socklen_t len = sizeof(sa);
+	struct sockaddr_storage ss;
+	socklen_t len = sizeof(ss);
 	close_socket(NS_SERVER);
-	sockets[NS_SERVER] = open_udp(port);
+	sockets[NS_SERVER] = open_udp(port, &families[NS_SERVER]);
 	if (sockets[NS_SERVER] < 0)
 		return false;
-	getsockname(sockets[NS_SERVER], (struct sockaddr *)&sa, &len);
-	server_port = ntohs(sa.sin6_port);
+	getsockname(sockets[NS_SERVER], (struct sockaddr *)&ss, &len);
+	server_port = ss.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&ss)->sin_port)
+	                                      : ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
 	Con_Printf("UDP server listening on port %d\n", server_port);
 	return true;
 }
@@ -105,7 +124,7 @@ bool NET_OpenClient(void)
 {
 	if (sockets[NS_CLIENT] >= 0)
 		return true;
-	sockets[NS_CLIENT] = open_udp(0);
+	sockets[NS_CLIENT] = open_udp(0, &families[NS_CLIENT]);
 	return sockets[NS_CLIENT] >= 0;
 }
 
@@ -226,7 +245,16 @@ static void send_now(netsrc_t src, const void *data, size_t len, const netadr_t 
 	}
 	if (sockets[src] < 0 && !(src == NS_CLIENT && NET_OpenClient()))
 		return;
-	{
+	if (families[src] == AF_INET) {
+		struct sockaddr_in sa;
+		if (to->type != NA_IP4)
+			return; /* an IPv6 peer cannot be reached from an IPv4-only socket */
+		memset(&sa, 0, sizeof(sa));
+		sa.sin_family = AF_INET;
+		sa.sin_port = htons(to->port);
+		memcpy(&sa.sin_addr, to->ip, 4);
+		sendto(sockets[src], data, len, 0, (struct sockaddr *)&sa, sizeof(sa));
+	} else {
 		struct sockaddr_in6 sa;
 		adr_to_sockaddr(to, &sa);
 		sendto(sockets[src], data, len, 0, (struct sockaddr *)&sa, sizeof(sa));
@@ -281,11 +309,19 @@ size_t NET_GetPacket(netsrc_t src, void *buf, size_t bufsize, netadr_t *from)
 		return n;
 	}
 	if (sockets[src] >= 0) {
-		struct sockaddr_in6 sa;
-		socklen_t salen = sizeof(sa);
-		ssize_t n = recvfrom(sockets[src], buf, bufsize, 0, (struct sockaddr *)&sa, &salen);
+		struct sockaddr_storage ss;
+		socklen_t salen = sizeof(ss);
+		ssize_t n = recvfrom(sockets[src], buf, bufsize, 0, (struct sockaddr *)&ss, &salen);
 		if (n > 0) {
-			sockaddr_to_adr(&sa, from);
+			if (ss.ss_family == AF_INET) {
+				const struct sockaddr_in *sa = (const struct sockaddr_in *)&ss;
+				memset(from, 0, sizeof(*from));
+				from->type = NA_IP4;
+				from->port = ntohs(sa->sin_port);
+				memcpy(from->ip, &sa->sin_addr, 4);
+			} else {
+				sockaddr_to_adr((const struct sockaddr_in6 *)&ss, from);
+			}
 			return (size_t)n;
 		}
 	}

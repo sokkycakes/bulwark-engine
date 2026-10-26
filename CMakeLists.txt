@@ -23,6 +23,7 @@ add_library(bwcommon STATIC
 	src/common/keyvalues.c
 	src/common/vgui_res.c
 	src/common/infoblob.c
+	src/common/voxel.c
 	src/common/stb_image_impl.c)
 target_link_libraries(bwcommon PUBLIC m)
 
@@ -53,6 +54,7 @@ add_library(bwserver STATIC
 	src/server/sv_client.c
 	src/server/sv_pmove.c
 	src/server/sv_route.c
+	src/server/sv_voxel.c
 	src/server/bspfile.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
 
@@ -73,6 +75,9 @@ target_link_libraries(vguitest bwcommon)
 enable_testing()
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
 add_test(NAME studio COMMAND studiotest)
+add_executable(voxeltest tools/voxeltest.c)
+target_link_libraries(voxeltest bwcommon)
+add_test(NAME voxel COMMAND voxeltest)
 # real content, if BULWARK_STUDIO_FIXTURES names a folder of models (never committed)
 add_test(NAME studio-fixtures COMMAND ${CMAKE_SOURCE_DIR}/tests/run_studio_fixtures.sh $<TARGET_FILE:mdlcheck>)
 add_test(NAME vgui COMMAND vguitest)
@@ -108,6 +113,7 @@ add_library(bwclient STATIC
 	src/render/r_draw.c
 	src/render/r_model.c
 	src/render/r_scene.c
+	src/render/r_voxel.c
 	src/sound/snd_main.c
 	src/sound/snd_dsp.c
 	src/sound/snd_mem.c)

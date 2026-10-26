@@ -239,7 +239,7 @@ static void spawn_map_entities(const char *data)
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
@@ -263,6 +263,7 @@ void SV_Shutdown(void)
 	for (int i = 0; i < sv.numcommands; i++)
 		Mem_Free(sv.commands[i]);
 	BSP_Free(sv.world);
+	SV_VoxelShutdown();
 	memset(&sv, 0, sizeof(sv));
 }
 
@@ -282,6 +283,13 @@ bool SV_SpawnServer(const char *mapname)
 
 	snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
 	Host_Loading("server_world", mapname, 0.0f);
+	if (!FS_FileExists(path)) {
+		/* a void map: entities only, the level is built from voxels */
+		char vpath[160];
+		snprintf(vpath, sizeof(vpath), "maps/%s.vxmap", mapname);
+		if (FS_FileExists(vpath))
+			Str_Copy(path, vpath, sizeof(path));
+	}
 	sv.world = BSP_Load(path);
 	if (!sv.world) {
 		Con_Printf("couldn't load map %s\n", path);

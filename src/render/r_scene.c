@@ -412,6 +412,8 @@ void R_RenderScene(void)
 	Mat4_Identity(model);
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
+	if (r_scene.drawworld && r_drawworld->ivalue)
+		R_DrawVoxels(false);
 	if (r_drawentities->ivalue)
 		for (int i = 0; i < r_scene.numents; i++)
 			R_DrawModelEntity(&r_scene.ents[i], false);
@@ -423,6 +425,8 @@ void R_RenderScene(void)
 	/* translucent: world water and glass, then entities back to front, then polygons */
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, true);
+	if (r_scene.drawworld && r_drawworld->ivalue)
+		R_DrawVoxels(true);
 	if (r_drawentities->ivalue) {
 		for (int i = 0; i < r_scene.numents; i++)
 			sorted[nsorted++] = &r_scene.ents[i];

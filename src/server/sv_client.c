@@ -81,6 +81,8 @@ static void client_reliable(client_t *c, const msg_t *m)
 	Netchan_WriteReliable(&c->chan, m->data, m->cursize);
 }
 
+void SV_ClientReliable(client_t *c, const msg_t *m) { client_reliable(c, m); }
+
 static void broadcast_reliable(const msg_t *m, bool spawned_only)
 {
 	for (int i = 0; i < svs.maxclients; i++) {
@@ -126,6 +128,8 @@ void SV_BroadcastLightstyle(int index, const char *style)
 	MSG_WriteString(&m, style);
 	broadcast_reliable(&m, false);
 }
+
+void SV_BroadcastReliable(const msg_t *m) { broadcast_reliable(m, false); }
 
 void SV_BroadcastServerinfo(const char *key, const char *value)
 {
@@ -518,6 +522,7 @@ static void send_serverdata(client_t *c)
 			Mem_Free(bm.data);
 		}
 	}
+	SV_VoxelSignon(c);
 	if (svs.signonlen) {
 		MSG_Init(&m, Mem_Alloc(svs.signonlen + 16), svs.signonlen + 16);
 		MSG_WriteByte(&m, svc_qcmessage);
