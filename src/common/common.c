@@ -53,6 +53,8 @@ void Sys_Error(const char *fmt, ...)
 	exit(1);
 }
 
+double host_time;
+
 double Sys_Seconds(void)
 {
 	struct timespec ts;

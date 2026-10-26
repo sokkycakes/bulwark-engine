@@ -4,6 +4,7 @@
 #include "fs.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 typedef struct cmd_s {
 	char *name;
@@ -13,6 +14,7 @@ typedef struct cmd_s {
 
 static cmd_t *cmd_list;
 static cmd_fallback_fn cmd_fallback;
+static cmd_fallback_fn cmd_prehook;
 static strbuf_t cbuf;
 static const char *cmd_args = "";
 static int cbuf_wait;
@@ -97,6 +99,7 @@ void Cmd_Remove(const char *name)
 }
 
 void Cmd_SetFallback(cmd_fallback_fn fn) { cmd_fallback = fn; }
+void Cmd_SetPreHook(cmd_fallback_fn fn) { cmd_prehook = fn; }
 
 const char *Cmd_Args(void) { return cmd_args; }
 
@@ -109,6 +112,11 @@ void Cmd_ExecuteString(const char *line)
 		return;
 	cmd_args = local.argc > 1 ? line + local.argstart[1] : "";
 
+	/* commands the game registered come first, so it can override ours */
+	if (cmd_prehook && cmd_prehook(line, local.argc, local.argv)) {
+		cmd_args = saved_args;
+		return;
+	}
 	for (cmd_t *c = cmd_list; c; c = c->next) {
 		if (!Str_ICmp(c->name, local.argv[0])) {
 			c->fn(local.argc, local.argv);
@@ -116,11 +124,11 @@ void Cmd_ExecuteString(const char *line)
 			return;
 		}
 	}
-	if (cmd_fallback && cmd_fallback(line, local.argc, local.argv)) {
+	if (Cvar_Command(local.argc, local.argv)) {
 		cmd_args = saved_args;
 		return;
 	}
-	if (!Cvar_Command(local.argc, local.argv))
+	if (!cmd_fallback || !cmd_fallback(line, local.argc, local.argv))
 		Con_Printf("unknown command \"%s\"\n", local.argv[0]);
 	cmd_args = saved_args;
 }
@@ -142,6 +150,10 @@ void Cbuf_InsertText(const char *text)
 void Cbuf_Execute(void)
 {
 	char line[8192];
+	if (cbuf_wait > 0) {
+		cbuf_wait--;
+		return;
+	}
 	while (cbuf.len && !cbuf_wait) {
 		size_t i, n;
 		int quotes = 0;
@@ -162,7 +174,9 @@ void Cbuf_Execute(void)
 		cbuf.data[cbuf.len] = 0;
 		Cmd_ExecuteString(line);
 	}
-	cbuf_wait = 0;
+	/* "wait" paused the buffer: this frame counts as the first one waited */
+	if (cbuf_wait > 0)
+		cbuf_wait--;
 }
 
 static void Cmd_Echo_f(int argc, const char **argv)
@@ -192,11 +206,11 @@ static void Cmd_Exec_f(int argc, const char **argv)
 	Mem_Free(text);
 }
 
+/* "wait [frames]" holds the rest of the buffer for that many frames */
 static void Cmd_Wait_f(int argc, const char **argv)
 {
-	(void)argc;
-	(void)argv;
-	cbuf_wait = 1;
+	int n = argc > 1 ? atoi(argv[1]) : 1;
+	cbuf_wait = n > 0 ? n : 1;
 }
 
 static void Cmd_List_f(int argc, const char **argv)

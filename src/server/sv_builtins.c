@@ -27,7 +27,7 @@ static void bi_remove(qcvm_t *vm)
 	QC_FreeEdict(vm, e, (float)sv.time);
 }
 
-static void bi_setorigin(qcvm_t *vm)
+void W_bi_setorigin(qcvm_t *vm)
 {
 	int e = QC_PENT(vm, 0);
 	float *org = ev(vm, e, F.origin);
@@ -50,7 +50,7 @@ static void set_size(qcvm_t *vm, int e, const float *mins, const float *maxs)
 	}
 }
 
-static void bi_setsize(qcvm_t *vm)
+void W_bi_setsize(qcvm_t *vm)
 {
 	int e = QC_PENT(vm, 0);
 	set_size(vm, e, QC_PVEC(vm, 1), QC_PVEC(vm, 2));
@@ -136,25 +136,25 @@ static void do_trace(qcvm_t *vm, const float *start, const float *mins, const fl
 	SV_SetTraceGlobals(&tr);
 }
 
-static void bi_traceline(qcvm_t *vm)
+void W_bi_traceline(qcvm_t *vm)
 {
 	float zero[3] = {0, 0, 0};
 	do_trace(vm, QC_PVEC(vm, 0), zero, zero, QC_PVEC(vm, 1), (int)QC_PFLOAT(vm, 2), QC_PENT(vm, 3));
 }
 
-static void bi_tracebox(qcvm_t *vm)
+void W_bi_tracebox(qcvm_t *vm)
 {
 	do_trace(vm, QC_PVEC(vm, 0), QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3), (int)QC_PFLOAT(vm, 4), QC_PENT(vm, 5));
 }
 
-static void bi_pointcontents(qcvm_t *vm) { QC_ReturnFloat(vm, (float)SV_ContentsToQuake(SV_PointContentsBits(QC_PVEC(vm, 0)))); }
+void W_bi_pointcontents(qcvm_t *vm) { QC_ReturnFloat(vm, (float)SV_ContentsToQuake(SV_PointContentsBits(QC_PVEC(vm, 0)))); }
 
-static void bi_droptofloor(qcvm_t *vm)
+void W_bi_droptofloor(qcvm_t *vm)
 {
 	QC_ReturnFloat(vm, SV_DropToFloor(QC_GInt(vm, G.self)) ? 1 : 0);
 }
 
-static void bi_checkbottom(qcvm_t *vm)
+void W_bi_checkbottom(qcvm_t *vm)
 {
 	int e = QC_PENT(vm, 0);
 	float *org = ev(vm, e, F.origin), end[3], zero[3] = {0, 0, 0};
@@ -165,7 +165,7 @@ static void bi_checkbottom(qcvm_t *vm)
 	QC_ReturnFloat(vm, tr.fraction < 1 ? 1 : 0);
 }
 
-static void bi_walkmove(qcvm_t *vm)
+void W_bi_walkmove(qcvm_t *vm)
 {
 	int e = QC_GInt(vm, G.self);
 	float yaw = QC_PFLOAT(vm, 0) * (float)(M_PI / 180), dist = QC_PFLOAT(vm, 1);
@@ -188,7 +188,7 @@ static void bi_walkmove(qcvm_t *vm)
 	QC_ReturnFloat(vm, 1);
 }
 
-static void bi_changeyaw(qcvm_t *vm)
+void W_bi_changeyaw(qcvm_t *vm)
 {
 	int e = QC_GInt(vm, G.self);
 	int ideal = QC_FieldOfs(vm, "ideal_yaw"), speed = QC_FieldOfs(vm, "yaw_speed");
@@ -212,7 +212,7 @@ static void bi_changeyaw(qcvm_t *vm)
 	ang[1] = fmodf(cur + move, 360);
 }
 
-static void bi_touchtriggers(qcvm_t *vm)
+void W_bi_touchtriggers(qcvm_t *vm)
 {
 	int e = vm->argc >= 1 ? QC_PENT(vm, 0) : QC_GInt(vm, G.self);
 	if (vm->argc >= 2) {
@@ -239,6 +239,8 @@ static void bi_lightstyle(qcvm_t *vm)
 		return;
 	Mem_Free(sv.lightstyles[s]);
 	sv.lightstyles[s] = Mem_Strdup(QC_PSTR(vm, 1));
+	if (!sv.spawning)
+		SV_BroadcastLightstyle(s, sv.lightstyles[s]);
 }
 
 static void bi_getlightstyle(qcvm_t *vm)
@@ -266,76 +268,19 @@ static void bi_particleeffectnum(qcvm_t *vm)
 		return;
 	}
 	sv.particles[sv.numparticles++] = Mem_Strdup(n);
+	if (!sv.spawning)
+		SV_BroadcastPrecache(PRECACHE_PARTICLE, sv.numparticles, n);
 	QC_ReturnFloat(vm, (float)sv.numparticles);
 }
 
-static void bi_print_to_console(qcvm_t *vm, int first)
-{
-	strbuf_t sb = {0};
-	for (int i = first; i < vm->argc; i++)
-		SB_AppendStr(&sb, QC_PSTR(vm, i));
-	if (sb.data)
-		Con_Print(sb.data);
-	SB_Free(&sb);
-}
 
-/* with no clients yet, client-directed text goes to the server console */
-static void bi_bprint(qcvm_t *vm)
-{
-	/* the QW form takes a print level first */
-	bool qw = vm->argc >= 2 && !((uint32_t)QC_PINT(vm, 0) & QC_STRING_RUNTIME) && QC_PFLOAT(vm, 0) < 16 && QC_PFLOAT(vm, 0) >= 0 &&
-	          QC_PINT(vm, 0) != 0 && QC_PFLOAT(vm, 0) == (int)QC_PFLOAT(vm, 0);
-	bi_print_to_console(vm, qw ? 1 : 0);
-}
-static void bi_sprint(qcvm_t *vm) { bi_print_to_console(vm, vm->argc >= 3 ? 2 : 1); }
-static void bi_centerprint(qcvm_t *vm) { bi_print_to_console(vm, 1); }
 static void bi_dropped(qcvm_t *vm) { (void)vm; }
 
 static void bi_localsound(qcvm_t *vm) { (void)vm; }
 
-static void bi_sound(qcvm_t *vm)
-{
-	const char *s = QC_PSTR(vm, 2);
-	if (*s && !SV_SoundIndex(s, false))
-		Con_DPrintf("sound: %s was not precached\n", s);
-}
 
-static void bi_forceinfokey(qcvm_t *vm)
-{
-	int e = QC_PENT(vm, 0);
-	if (e == 0)
-		SV_InfoSet(sv.serverinfo, sizeof(sv.serverinfo), QC_PSTR(vm, 1), QC_PSTR(vm, 2));
-	/* TODO: per-client userinfo */
-}
 
-static void bi_infokey(qcvm_t *vm)
-{
-	char buf[1024];
-	int e = QC_PENT(vm, 0);
-	const char *key = QC_PSTR(vm, 1);
-	if (e != 0) {
-		QC_ReturnInt(vm, 0);
-		return;
-	}
-	SV_InfoGet(sv.serverinfo, key, buf, sizeof(buf));
-	if (!buf[0])
-		SV_InfoGet(sv.localinfo, key, buf, sizeof(buf));
-	if (buf[0])
-		QC_ReturnString(vm, buf);
-	else
-		QC_ReturnInt(vm, 0);
-}
 
-static void bi_infokeyf(qcvm_t *vm)
-{
-	char buf[1024];
-	if (QC_PENT(vm, 0) != 0) {
-		QC_ReturnFloat(vm, 0);
-		return;
-	}
-	SV_InfoGet(sv.serverinfo, QC_PSTR(vm, 1), buf, sizeof(buf));
-	QC_ReturnFloat(vm, (float)atof(buf));
-}
 
 static void bi_serverkey(qcvm_t *vm)
 {
@@ -354,7 +299,11 @@ static void bi_serverkeyfloat(qcvm_t *vm)
 	QC_ReturnFloat(vm, buf[0] ? (float)atof(buf) : (vm->argc >= 2 ? QC_PFLOAT(vm, 1) : 0));
 }
 
-static void bi_setserverkey(qcvm_t *vm) { SV_InfoSet(sv.serverinfo, sizeof(sv.serverinfo), QC_PSTR(vm, 0), QC_PSTR(vm, 1)); }
+static void bi_setserverkey(qcvm_t *vm)
+{
+	SV_InfoSet(sv.serverinfo, sizeof(sv.serverinfo), QC_PSTR(vm, 0), QC_PSTR(vm, 1));
+	SV_BroadcastServerinfo(QC_PSTR(vm, 0), QC_PSTR(vm, 1));
+}
 
 static void bi_setlocalinfo(qcvm_t *vm) { SV_InfoSet(sv.localinfo, sizeof(sv.localinfo), QC_PSTR(vm, 0), QC_PSTR(vm, 1)); }
 
@@ -368,7 +317,7 @@ static void bi_getlocalinfo(qcvm_t *vm)
 static void bi_changelevel(qcvm_t *vm)
 {
 	char cmd[256];
-	snprintf(cmd, sizeof(cmd), "map \"%s\"\n", QC_PSTR(vm, 0));
+	snprintf(cmd, sizeof(cmd), "changelevel \"%s\"\n", QC_PSTR(vm, 0));
 	Cbuf_AddText(cmd);
 }
 
@@ -380,8 +329,6 @@ static void bi_makestatic(qcvm_t *vm)
 		QC_FreeEdict(vm, e, (float)sv.time);
 }
 
-static void bi_clienttype(qcvm_t *vm) { QC_ReturnFloat(vm, 3); /* CLIENTTYPE_NOTACLIENT until clients exist */ }
-static void bi_return_world(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 
 static void bi_registercommand(qcvm_t *vm)
 {
@@ -411,59 +358,7 @@ static void bi_getentitytoken(qcvm_t *vm)
 static void bi_frameforname(qcvm_t *vm) { QC_ReturnFloat(vm, -1); /* TODO: model framegroups */ }
 static void bi_zero(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
 
-static void bi_addprogs(qcvm_t *vm)
-{
-	/* TODO: multiple progs sharing one entity space */
-	Con_DPrintf("addprogs(%s): not supported yet\n", QC_PSTR(vm, 0));
-	QC_ReturnFloat(vm, -1);
-}
 
-static bool same_progs(qcvm_t *vm, float prnum)
-{
-	return prnum == 0 || prnum == -1 || prnum == -2;
-}
-
-static void bi_externvalue(qcvm_t *vm)
-{
-	qcdef_t *d;
-	memset(QC_RETURN(vm), 0, sizeof(qcval_t) * 3);
-	if (!same_progs(vm, QC_PFLOAT(vm, 0)))
-		return;
-	d = QC_FindGlobal(vm, QC_PSTR(vm, 1));
-	if (d) {
-		int words = (d->type & ~DEF_SAVEGLOBAL) == ev_vector ? 3 : 1;
-		memcpy(QC_RETURN(vm), vm->globals + d->ofs, sizeof(qcval_t) * words);
-	} else {
-		QC_ReturnInt(vm, QC_FindFunction(vm, QC_PSTR(vm, 1)));
-	}
-}
-
-static void bi_externset(qcvm_t *vm)
-{
-	qcdef_t *d;
-	if (!same_progs(vm, QC_PFLOAT(vm, 0)))
-		return;
-	d = QC_FindGlobal(vm, QC_PSTR(vm, 2));
-	if (d)
-		vm->globals[d->ofs] = *QC_Parm(vm, 1);
-}
-
-static void bi_externcall(qcvm_t *vm)
-{
-	int f;
-	int argc = vm->argc;
-	if (!same_progs(vm, QC_PFLOAT(vm, 0)) || !(f = QC_FindFunction(vm, QC_PSTR(vm, 1)))) {
-		QC_ReturnInt(vm, 0);
-		return;
-	}
-	/* shift the remaining arguments down by two */
-	for (int i = 2; i < argc && i < MAX_PARMS; i++)
-		memcpy(QC_Parm(vm, i - 2), QC_Parm(vm, i), sizeof(qcval_t) * 3);
-	vm->argc = argc - 2;
-	QC_Execute(vm, f);
-}
-
-static void bi_setspawnparms(qcvm_t *vm) { (void)vm; }
 
 /* no rigid-body physics yet; Nuclide falls back to its own movement */
 static void bi_physics_supported(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
@@ -471,38 +366,26 @@ static void bi_physics_supported(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
 const qc_builtin_t sv_builtins[] = {
 	{"physics_supported", bi_physics_supported},
 	{"spawn", bi_spawn}, {"remove", bi_remove}, {"removeinstant", bi_remove},
-	{"setorigin", bi_setorigin}, {"setsize", bi_setsize}, {"setmodel", bi_setmodel},
+	{"setorigin", W_bi_setorigin}, {"setsize", W_bi_setsize}, {"setmodel", bi_setmodel},
 	{"setmodelindex", bi_setmodelindex}, {"precache_model", bi_precache_model},
 	{"precache_model2", bi_precache_model}, {"precache_vwep_model", bi_precache_model},
 	{"precache_sound", bi_precache_sound}, {"precache_sound2", bi_precache_sound},
 	{"precache_file", bi_precache_file}, {"precache_file2", bi_precache_file},
 	{"getmodelindex", bi_getmodelindex}, {"modelnameforindex", bi_modelnameforindex},
 	{"getsoundindex", bi_getsoundindex}, {"soundnameforindex", bi_soundnameforindex},
-	{"traceline", bi_traceline}, {"tracebox", bi_tracebox}, {"pointcontents", bi_pointcontents},
-	{"droptofloor", bi_droptofloor}, {"checkbottom", bi_checkbottom}, {"walkmove", bi_walkmove},
-	{"changeyaw", bi_changeyaw}, {"touchtriggers", bi_touchtriggers}, {"checkpvs", bi_checkpvs},
+	{"traceline", W_bi_traceline}, {"tracebox", W_bi_tracebox}, {"pointcontents", W_bi_pointcontents},
+	{"droptofloor", W_bi_droptofloor}, {"checkbottom", W_bi_checkbottom}, {"walkmove", W_bi_walkmove},
+	{"changeyaw", W_bi_changeyaw}, {"touchtriggers", W_bi_touchtriggers}, {"checkpvs", bi_checkpvs},
 	{"aim", bi_aim}, {"lightstyle", bi_lightstyle}, {"lightstylestatic", bi_lightstyle},
 	{"getlightstyle", bi_getlightstyle}, {"getlight", bi_getlight},
 	{"particleeffectnum", bi_particleeffectnum}, {"pointparticles", bi_dropped},
 	{"trailparticles", bi_dropped}, {"particle", bi_dropped}, {"effect", bi_dropped},
-	{"sound", bi_sound}, {"pointsound", bi_dropped}, {"ambientsound", bi_dropped},
-	{"localsound", bi_localsound}, {"bprint", bi_bprint}, {"sprint", bi_sprint},
-	{"centerprint", bi_centerprint}, {"stuffcmd", bi_dropped}, {"stuffcmdflags", bi_dropped},
-	{"clientcommand", bi_dropped}, {"multicast", bi_dropped}, {"WriteByte", bi_dropped},
-	{"WriteChar", bi_dropped}, {"WriteShort", bi_dropped}, {"WriteLong", bi_dropped},
-	{"WriteCoord", bi_dropped}, {"WriteAngle", bi_dropped}, {"WriteString", bi_dropped},
-	{"WriteEntity", bi_dropped}, {"WriteFloat", bi_dropped}, {"WriteInt", bi_dropped},
-	{"WriteUInt", bi_dropped}, {"WriteInt64", bi_dropped}, {"WriteUInt64", bi_dropped},
-	{"WriteDouble", bi_dropped}, {"WriteUnterminatedString", bi_dropped},
-	{"setsendneeded", bi_dropped}, {"forceinfokey", bi_forceinfokey}, {"infokey", bi_infokey},
-	{"infokeyf", bi_infokeyf}, {"serverkey", bi_serverkey}, {"serverkeyfloat", bi_serverkeyfloat},
+	{"ambientsound", bi_dropped},
+	{"localsound", bi_localsound}, {"serverkey", bi_serverkey}, {"serverkeyfloat", bi_serverkeyfloat},
 	{"setserverkey", bi_setserverkey}, {"setlocalinfo", bi_setlocalinfo},
 	{"getlocalinfo", bi_getlocalinfo}, {"changelevel", bi_changelevel},
-	{"makestatic", bi_makestatic}, {"clienttype", bi_clienttype}, {"checkclient", bi_return_world},
-	{"spawnclient", bi_return_world}, {"dropclient", bi_dropped}, {"setpause", bi_dropped},
-	{"registercommand", bi_registercommand}, {"getentitytoken", bi_getentitytoken},
+	{"makestatic", bi_makestatic}, {"registercommand", bi_registercommand}, {"getentitytoken", bi_getentitytoken},
 	{"frameforname", bi_frameforname}, {"frameduration", bi_zero}, {"modelframecount", bi_zero},
-	{"setattachment", bi_dropped}, {"setspawnparms", bi_setspawnparms}, {"logfrag", bi_dropped},
-	{"addprogs", bi_addprogs}, {"externvalue", bi_externvalue}, {"externset", bi_externset},
-	{"externcall", bi_externcall}, {"openportal", bi_dropped},
+	{"setattachment", bi_dropped}, {"logfrag", bi_dropped},
+	{"openportal", bi_dropped},
 	{NULL, NULL}};

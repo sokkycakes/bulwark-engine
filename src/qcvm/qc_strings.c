@@ -48,10 +48,11 @@ char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len)
 	if (!s)
 		return NULL;
 	if (!(u & QC_STRING_RUNTIME)) {
-		if (s < 0 || s >= vm->stringsize)
+		int pn = QC_FUNC_PROGS(s), ofs = QC_FUNC_INDEX(s);
+		if (pn >= vm->numprogs || ofs >= vm->progs[pn].stringsize)
 			return NULL;
-		*len = strlen(vm->strings + s);
-		return vm->strings + s;
+		*len = strlen(vm->progs[pn].strings + ofs);
+		return vm->progs[pn].strings + ofs;
 	}
 	u &= SLOT_MASK;
 	if (u >= nstrs || !strs[u].used)
@@ -111,7 +112,8 @@ static void mark_words(const qcval_t *w, size_t count)
 
 static void mark_vm(qcvm_t *vm)
 {
-	mark_words(vm->globals, (size_t)vm->globalslots);
+	for (int i = 0; i < vm->numprogs; i++)
+		mark_words(QC_ProgsGlobals(vm, i), (size_t)vm->progs[i].globalslots);
 	for (int e = 0; e < vm->num_edicts; e++) {
 		/* recently freed entities can still be read, so keep their strings too */
 		mark_words(QC_EdictFields(vm, e), (size_t)vm->edict_words);

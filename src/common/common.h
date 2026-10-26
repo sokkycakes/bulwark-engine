@@ -33,6 +33,9 @@ extern int developer;
 BW_NORETURN void Sys_Error(const char *fmt, ...) BW_PRINTF(1, 2);
 double Sys_Milliseconds(void);
 double Sys_Seconds(void);
+/* the host clock: advanced by the main loop each frame, so scripted runs that
+ * step frames faster than real time still see consistent timing */
+extern double host_time;
 void Sys_Sleep(double seconds);
 
 void *Mem_Alloc(size_t size);        /* zeroed, aborts on failure */

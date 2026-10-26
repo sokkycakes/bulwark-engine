@@ -73,14 +73,62 @@ typedef struct {
 	int msg_entity, parm1, cltime, thisprogs, deathmatch, coop;
 } qcglobalofs_t;
 
+#define QC_MAX_DEPTH 1024
+#define QC_MAX_EXTPARMS 24
+
 typedef struct {
 	int s; /* statement to resume at */
 	int f; /* function index */
+	int progs; /* which progs f belongs to */
 	int localbase; /* where the callee's saved locals start on the local stack */
 } qcframe_t;
 
-#define QC_MAX_DEPTH 1024
-#define QC_MAX_EXTPARMS 24
+typedef struct {
+	int *slots;
+	int size;
+} qc_namehash_t;
+
+/* Several progs can share one VM (FTE_MULTIPROGS): they share the entity
+ * space, the heap and the system globals, and each keeps its own code,
+ * strings and other globals. Function and static string values carry their
+ * progs number in bits 24-30 so they stay valid wherever they are stored;
+ * the main progs is number 0, so its values are plain indices. Fields of
+ * an added progs are mapped onto the main progs' layout by name. */
+#define QC_MAX_PROGS 16
+#define QC_PROGS_SHIFT 24
+#define QC_INDEX_MASK 0x00ffffff
+#define QC_FUNC_PROGS(f) ((int)(((uint32_t)(f) >> QC_PROGS_SHIFT) & 0x7f))
+#define QC_FUNC_INDEX(f) ((int)((uint32_t)(f) & QC_INDEX_MASK))
+
+/* the parts of a VM that belong to one progs; the VM's own copies of these
+ * fields are those of the progs that is running now */
+typedef struct {
+	char name[64];
+	uint8_t *progsdata;
+	size_t progssize;
+	progs_header_t hdr;
+	bool stmt32;
+	dstatement32_t *statements;
+	int numstatements;
+	qcfunc_t *functions;
+	int numfunctions;
+	qcdef_t *globaldefs;
+	int numglobaldefs;
+	qcdef_t *fielddefs;
+	int numfielddefs;
+	char *strings;
+	int stringsize;
+	qcval_t *globals;
+	uint32_t globals_addr;
+	int numglobals;
+	int globalslots;
+	int sysglobals;
+	qcglobalofs_t gofs;
+	int extparm_ofs[QC_MAX_EXTPARMS];
+	uint8_t *missing_reported;
+	qc_namehash_t globalhash, fieldhash, funchash;
+} qcprogs_t;
+
 
 struct qcvm_s {
 	qcvm_kind_t kind;
@@ -110,13 +158,17 @@ struct qcvm_s {
 	/* the arena */
 	uint8_t *mem;
 	size_t memsize;
-	qcval_t *globals; /* == mem */
+	qcval_t *globals; /* the running progs' globals: mem for the main progs */
+	uint32_t globals_addr; /* their byte address in the arena */
 	int numglobals; /* as declared by the progs */
 	int globalslots; /* words reserved for globals in the arena */
+	int sysglobals; /* leading globals shared by every progs (up to end_sys_globals) */
 	size_t edicts_ofs; /* byte offset of entity 0 */
 	int edict_words; /* field storage per entity in words */
+	int edict_words_used; /* the rest is spare room for fields added progs declare */
 	int max_edicts;
 	int num_edicts; /* highest slot in use + 1 */
+	int reserved_edicts; /* slots 1..reserved are never handed out by spawn() (player slots) */
 	qcedict_t *edicts;
 	size_t heap_ofs, heap_size;
 
@@ -150,6 +202,12 @@ struct qcvm_s {
 
 	/* builtins that could not be bound, reported once each when called */
 	uint8_t *missing_reported;
+
+	/* multiprogs */
+	qcprogs_t progs[QC_MAX_PROGS];
+	int numprogs;
+	int curprogs;
+	const qc_builtin_t *const *tables;
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs
@@ -161,7 +219,19 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize);
 void QC_Free(qcvm_t *vm);
 
-/* lookup */
+/* multiprogs: adds a progs to the VM and runs its init(); returns its number or -1 */
+int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size);
+void QC_SwitchProgs(qcvm_t *vm, int progs);
+/* the FTE_MULTIPROGS handle convention: 0 main, -1 the running progs, -2
+ * whichever progs defines name first; returns -1 when there is no match */
+int QC_ResolveProgs(qcvm_t *vm, float handle, const char *name, bool function);
+int QC_FindFunctionIn(qcvm_t *vm, int progs, const char *name);
+qcdef_t *QC_FindGlobalIn(qcvm_t *vm, int progs, const char *name);
+qcval_t *QC_ProgsGlobals(qcvm_t *vm, int progs);
+/* the definition of a (possibly progs-tagged) function value, or NULL */
+qcfunc_t *QC_Function(qcvm_t *vm, func_t f);
+
+/* lookup in the running progs; function results are progs-tagged */
 int QC_FindFunction(qcvm_t *vm, const char *name);
 qcdef_t *QC_FindGlobal(qcvm_t *vm, const char *name);
 qcdef_t *QC_FindField(qcvm_t *vm, const char *name);

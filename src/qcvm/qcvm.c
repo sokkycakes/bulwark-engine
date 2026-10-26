@@ -14,11 +14,20 @@ qcvm_t *QC_VMAt(int i) { return vm_list[i]; }
 
 static int32_t rd32(const uint8_t *p) { return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
 
+static const char *progs_string(const qcprogs_t *p, int32_t ofs)
+{
+	if (ofs <= 0 || ofs >= p->stringsize)
+		return "";
+	return p->strings + ofs;
+}
+
+/* a static string value: an offset into its progs' table, tagged with the progs number */
 const char *QC_ProgsString(qcvm_t *vm, int32_t ofs)
 {
-	if (ofs <= 0 || ofs >= vm->stringsize)
+	int pn = QC_FUNC_PROGS(ofs);
+	if (pn >= vm->numprogs)
 		return "";
-	return vm->strings + ofs;
+	return progs_string(&vm->progs[pn], QC_FUNC_INDEX(ofs));
 }
 
 /* --- lookups --------------------------------------------------------- */
@@ -71,26 +80,51 @@ static int find_hash(const qc_namehash_t *h, const char *name, const char *(*get
 	return -1;
 }
 
-static const char *gdef_name(void *ctx, int i) { return ((qcvm_t *)ctx)->globaldefs[i].name; }
-static const char *fdef_name(void *ctx, int i) { return ((qcvm_t *)ctx)->fielddefs[i].name; }
-static const char *func_name(void *ctx, int i) { return ((qcvm_t *)ctx)->functions[i].name; }
+static const char *gdef_name(void *ctx, int i) { return ((qcprogs_t *)ctx)->globaldefs[i].name; }
+static const char *fdef_name(void *ctx, int i) { return ((qcprogs_t *)ctx)->fielddefs[i].name; }
+static const char *func_name(void *ctx, int i) { return ((qcprogs_t *)ctx)->functions[i].name; }
 
-int QC_FindFunction(qcvm_t *vm, const char *name)
+int QC_FindFunctionIn(qcvm_t *vm, int pn, const char *name)
 {
-	int i = find_hash(&vm->extra->funchash, name, func_name, vm);
-	return i > 0 ? i : 0;
+	qcprogs_t *p;
+	int i;
+	if (pn < 0 || pn >= vm->numprogs)
+		return 0;
+	p = &vm->progs[pn];
+	i = find_hash(&p->funchash, name, func_name, p);
+	return i > 0 ? (i | (pn << QC_PROGS_SHIFT)) : 0;
 }
 
-qcdef_t *QC_FindGlobal(qcvm_t *vm, const char *name)
+qcdef_t *QC_FindGlobalIn(qcvm_t *vm, int pn, const char *name)
 {
-	int i = find_hash(&vm->extra->globalhash, name, gdef_name, vm);
-	return i < 0 ? NULL : &vm->globaldefs[i];
+	qcprogs_t *p;
+	int i;
+	if (pn < 0 || pn >= vm->numprogs)
+		return NULL;
+	p = &vm->progs[pn];
+	i = find_hash(&p->globalhash, name, gdef_name, p);
+	return i < 0 ? NULL : &p->globaldefs[i];
 }
+
+qcval_t *QC_ProgsGlobals(qcvm_t *vm, int pn) { return pn == vm->curprogs ? vm->globals : vm->progs[pn].globals; }
+
+int QC_FindFunction(qcvm_t *vm, const char *name) { return QC_FindFunctionIn(vm, vm->curprogs, name); }
+
+qcdef_t *QC_FindGlobal(qcvm_t *vm, const char *name) { return QC_FindGlobalIn(vm, vm->curprogs, name); }
 
 qcdef_t *QC_FindField(qcvm_t *vm, const char *name)
 {
-	int i = find_hash(&vm->extra->fieldhash, name, fdef_name, vm);
-	return i < 0 ? NULL : &vm->fielddefs[i];
+	qcprogs_t *p = &vm->progs[vm->curprogs];
+	int i = find_hash(&p->fieldhash, name, fdef_name, p);
+	return i < 0 ? NULL : &p->fielddefs[i];
+}
+
+qcfunc_t *QC_Function(qcvm_t *vm, func_t f)
+{
+	int pn = QC_FUNC_PROGS(f), i = QC_FUNC_INDEX(f);
+	if (pn >= vm->numprogs || i <= 0 || i >= vm->progs[pn].numfunctions)
+		return NULL;
+	return &vm->progs[pn].functions[i];
 }
 
 int QC_GlobalOfs(qcvm_t *vm, const char *name)
@@ -107,9 +141,8 @@ int QC_FieldOfs(qcvm_t *vm, const char *name)
 
 const char *QC_FunctionName(qcvm_t *vm, func_t f)
 {
-	if (f <= 0 || f >= vm->numfunctions)
-		return "(null)";
-	return vm->functions[f].name;
+	qcfunc_t *fn = QC_Function(vm, f);
+	return fn ? fn->name : "(null)";
 }
 
 /* --- loading --------------------------------------------------------- */
@@ -135,10 +168,9 @@ static int section_end(const progs_header_t *h, int32_t ofs, size_t filesize)
 	return best;
 }
 
-static void resolve_offsets(qcvm_t *vm)
+static void resolve_fields(qcvm_t *vm)
 {
 	qcfieldofs_t *f = &vm->fofs;
-	qcglobalofs_t *g = &vm->gofs;
 #define FLD(x) f->x = QC_FieldOfs(vm, #x)
 	FLD(classname); FLD(model); FLD(modelindex); FLD(origin); FLD(angles); FLD(velocity);
 	FLD(avelocity); FLD(mins); FLD(maxs); FLD(size); FLD(absmin); FLD(absmax); FLD(solid);
@@ -152,6 +184,13 @@ static void resolve_offsets(qcvm_t *vm)
 	f->sendentity = QC_FieldOfs(vm, "SendEntity");
 	f->sendflags = QC_FieldOfs(vm, "SendFlags");
 	f->nextthink_lerp = -1;
+}
+
+/* engine-known globals of the running progs */
+static void resolve_globals(qcvm_t *vm)
+{
+	qcglobalofs_t *g = &vm->gofs;
+	qcdef_t *end = QC_FindGlobal(vm, "end_sys_globals");
 #define GLB(x) g->x = QC_GlobalOfs(vm, #x)
 	GLB(self); GLB(other); GLB(world); GLB(time); GLB(frametime); GLB(mapname); GLB(serverflags);
 	GLB(force_retouch); GLB(v_forward); GLB(v_up); GLB(v_right); GLB(trace_allsolid);
@@ -166,6 +205,10 @@ static void resolve_offsets(qcvm_t *vm)
 		snprintf(name, sizeof(name), "$parm%d", i + MAX_PARMS);
 		vm->extparm_ofs[i] = QC_GlobalOfs(vm, name);
 	}
+	/* without the marker only the return value and parameters are shared */
+	vm->sysglobals = end ? (int)end->ofs : RESERVED_OFS;
+	if (vm->sysglobals > vm->numglobals)
+		vm->sysglobals = vm->numglobals;
 }
 
 static qc_builtin_fn lookup_builtin(const qc_builtin_t *const *tables, const char *name)
@@ -210,38 +253,301 @@ static void bind_builtins(qcvm_t *vm, const qc_builtin_t *const *tables)
 	}
 }
 
-static void unpack_defs(qcvm_t *vm, int32_t ofs, int count, bool wide, qcdef_t **out)
+
+static void unpack_defs(qcprogs_t *p, int32_t ofs, int count, bool wide, qcdef_t **out)
 {
 	qcdef_t *defs = Mem_Alloc(sizeof(qcdef_t) * (count ? count : 1));
-	const uint8_t *p = vm->progsdata + ofs;
+	const uint8_t *d = p->progsdata + ofs;
 	for (int i = 0; i < count; i++) {
 		if (wide) {
-			defs[i].type = (uint32_t)rd32(p);
-			defs[i].ofs = (uint32_t)rd32(p + 4);
-			defs[i].name = QC_ProgsString(vm, rd32(p + 8));
-			p += 12;
+			defs[i].type = (uint32_t)rd32(d);
+			defs[i].ofs = (uint32_t)rd32(d + 4);
+			defs[i].name = progs_string(p, rd32(d + 8));
+			d += 12;
 		} else {
-			defs[i].type = p[0] | (p[1] << 8);
-			defs[i].ofs = p[2] | (p[3] << 8);
-			defs[i].name = QC_ProgsString(vm, rd32(p + 4));
-			p += 8;
+			defs[i].type = d[0] | (d[1] << 8);
+			defs[i].ofs = d[2] | (d[3] << 8);
+			defs[i].name = progs_string(p, rd32(d + 4));
+			d += 8;
 		}
 	}
 	*out = defs;
+}
+
+static void free_progs(qcprogs_t *p)
+{
+	Mem_Free(p->progsdata);
+	Mem_Free(p->statements);
+	Mem_Free(p->functions);
+	Mem_Free(p->globaldefs);
+	Mem_Free(p->fielddefs);
+	Mem_Free(p->strings);
+	Mem_Free(p->missing_reported);
+	Mem_Free(p->globalhash.slots);
+	Mem_Free(p->fieldhash.slots);
+	Mem_Free(p->funchash.slots);
+	memset(p, 0, sizeof(*p));
+}
+
+/* reads a progs file image into p: code, defs, strings, functions and the
+ * size of its globals; the globals themselves are placed by the caller */
+static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t size)
+{
+	progs_header_t *h = &p->hdr;
+	int stmt_bytes, def_bytes;
+
+	if (size < PROGS_HEADER_V6_SIZE) {
+		Con_Printf("%s: too small to be a progs file\n", name);
+		return false;
+	}
+	Str_Copy(p->name, name, sizeof(p->name));
+	p->progsdata = Mem_Alloc(size);
+	memcpy(p->progsdata, data, size);
+	p->progssize = size;
+	for (int i = 0; i < 14; i++)
+		((int32_t *)h)[i] = rd32(p->progsdata + i * 4);
+	if (h->version != PROGS_VERSION_QUAKE && h->version != PROGS_VERSION_EXTENDED) {
+		Con_Printf("%s: unsupported progs version %d\n", name, h->version);
+		return false;
+	}
+	h->entityfields = 0;
+	if (h->version == PROGS_VERSION_EXTENDED && size >= PROGS_HEADER_V6_SIZE + 4)
+		h->entityfields = rd32(p->progsdata + PROGS_HEADER_V6_SIZE);
+
+	stmt_bytes = h->numstatements ? (section_end(h, h->ofs_statements, size) - h->ofs_statements) / h->numstatements : 8;
+	def_bytes = h->numglobaldefs ? (section_end(h, h->ofs_globaldefs, size) - h->ofs_globaldefs) / h->numglobaldefs : 8;
+	p->stmt32 = stmt_bytes >= 16;
+	if (!section_ok(size, h->ofs_statements, h->numstatements, p->stmt32 ? 16 : 8) ||
+	    !section_ok(size, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12 ? 12 : 8) ||
+	    !section_ok(size, h->ofs_fielddefs, h->numfielddefs, def_bytes >= 12 ? 12 : 8) ||
+	    !section_ok(size, h->ofs_functions, h->numfunctions, sizeof(dfunction_t)) ||
+	    !section_ok(size, h->ofs_strings, h->numstrings, 1) ||
+	    !section_ok(size, h->ofs_globals, h->numglobals, 4) || h->numfunctions < 1) {
+		Con_Printf("%s: corrupt progs header\n", name);
+		return false;
+	}
+	if (h->numstrings > QC_INDEX_MASK || h->numfunctions > QC_INDEX_MASK) {
+		Con_Printf("%s: string table or function list too large\n", name);
+		return false;
+	}
+
+	/* string table, NUL terminated defensively */
+	p->stringsize = h->numstrings;
+	p->strings = Mem_Alloc((size_t)h->numstrings + 1);
+	memcpy(p->strings, p->progsdata + h->ofs_strings, (size_t)h->numstrings);
+
+	/* statements */
+	p->numstatements = h->numstatements;
+	p->statements = Mem_Alloc(sizeof(dstatement32_t) * (h->numstatements + 1));
+	for (int i = 0; i < h->numstatements; i++) {
+		const uint8_t *d = p->progsdata + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
+		dstatement32_t *st = &p->statements[i];
+		if (p->stmt32) {
+			st->op = (uint32_t)rd32(d);
+			st->a = (uint32_t)rd32(d + 4);
+			st->b = (uint32_t)rd32(d + 8);
+			st->c = (uint32_t)rd32(d + 12);
+		} else {
+			st->op = d[0] | (d[1] << 8);
+			st->a = d[2] | (d[3] << 8);
+			st->b = d[4] | (d[5] << 8);
+			st->c = d[6] | (d[7] << 8);
+		}
+	}
+
+	unpack_defs(p, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12, &p->globaldefs);
+	p->numglobaldefs = h->numglobaldefs;
+	unpack_defs(p, h->ofs_fielddefs, h->numfielddefs, def_bytes >= 12, &p->fielddefs);
+	p->numfielddefs = h->numfielddefs;
+
+	/* functions */
+	p->numfunctions = h->numfunctions;
+	p->functions = Mem_Alloc(sizeof(qcfunc_t) * h->numfunctions);
+	for (int i = 0; i < h->numfunctions; i++) {
+		const uint8_t *d = p->progsdata + h->ofs_functions + (size_t)i * sizeof(dfunction_t);
+		qcfunc_t *f = &p->functions[i];
+		f->d.first_statement = rd32(d);
+		f->d.parm_start = rd32(d + 4);
+		f->d.locals = rd32(d + 8);
+		f->d.profile = rd32(d + 12);
+		f->d.s_name = rd32(d + 16);
+		f->d.s_file = rd32(d + 20);
+		f->d.numparms = rd32(d + 24);
+		memcpy(f->d.parm_size, d + 28, 8);
+		f->name = progs_string(p, f->d.s_name);
+		f->file = progs_string(p, f->d.s_file);
+		if (f->d.first_statement >= h->numstatements || f->d.locals < 0 || f->d.parm_start < 0) {
+			Con_Printf("%s: function %s has a bad header\n", name, f->name);
+			return false;
+		}
+	}
+
+	build_hash(&p->globalhash, p->numglobaldefs, gdef_name, p);
+	build_hash(&p->fieldhash, p->numfielddefs, fdef_name, p);
+	build_hash(&p->funchash, p->numfunctions, func_name, p);
+
+	/* Globals are given room for every index a statement can encode, so
+	 * operand decoding never needs a range check: 16-bit statements can only
+	 * name the first 65536 words. 32-bit ones are validated below. */
+	p->numglobals = h->numglobals;
+	p->globalslots = p->stmt32 ? h->numglobals + 4 : BW_MAX(h->numglobals + 4, 65536 + 4);
+	for (int i = 0; i < p->numfunctions; i++) {
+		int end = p->functions[i].d.parm_start + p->functions[i].d.locals;
+		if (end > p->globalslots) {
+			Con_Printf("%s: function %s locals exceed the globals\n", name, p->functions[i].name);
+			return false;
+		}
+	}
+	if (p->stmt32) {
+		/* TODO: 32-bit statements can name any global, so operands need a
+		 * per-opcode range check before this format can be run safely. */
+		Con_Printf("%s: 32-bit statement progs are not supported yet\n", name);
+		return false;
+	}
+	return true;
+}
+
+/* makes progs n the running one, without any sharing of globals */
+static void activate(qcvm_t *vm, int n)
+{
+	qcprogs_t *p = &vm->progs[n];
+	vm->progsdata = p->progsdata;
+	vm->progssize = p->progssize;
+	vm->hdr = p->hdr;
+	vm->stmt32 = p->stmt32;
+	vm->statements = p->statements;
+	vm->numstatements = p->numstatements;
+	vm->functions = p->functions;
+	vm->numfunctions = p->numfunctions;
+	vm->globaldefs = p->globaldefs;
+	vm->numglobaldefs = p->numglobaldefs;
+	vm->fielddefs = p->fielddefs;
+	vm->numfielddefs = p->numfielddefs;
+	vm->strings = p->strings;
+	vm->stringsize = p->stringsize;
+	vm->globals = p->globals;
+	vm->globals_addr = p->globals_addr;
+	vm->numglobals = p->numglobals;
+	vm->globalslots = p->globalslots;
+	vm->sysglobals = p->sysglobals;
+	vm->gofs = p->gofs;
+	memcpy(vm->extparm_ofs, p->extparm_ofs, sizeof(vm->extparm_ofs));
+	vm->missing_reported = p->missing_reported;
+	vm->curprogs = n;
+}
+
+/* the engine-derived parts of the running progs, kept for later switches */
+static void store_derived(qcvm_t *vm, int n)
+{
+	qcprogs_t *p = &vm->progs[n];
+	p->sysglobals = vm->sysglobals;
+	p->gofs = vm->gofs;
+	memcpy(p->extparm_ofs, vm->extparm_ofs, sizeof(p->extparm_ofs));
+	p->missing_reported = vm->missing_reported;
+}
+
+void QC_SwitchProgs(qcvm_t *vm, int n)
+{
+	qcval_t *from;
+	int shared, oldext[QC_MAX_EXTPARMS];
+	if (n == vm->curprogs || n < 0 || n >= vm->numprogs)
+		return;
+	from = vm->globals;
+	shared = vm->sysglobals;
+	memcpy(oldext, vm->extparm_ofs, sizeof(oldext));
+	activate(vm, n);
+	/* the system globals (self, other, time, parameters, return value...)
+	 * behave as one set: hand them over to the progs taking control */
+	if (shared > vm->sysglobals)
+		shared = vm->sysglobals;
+	memcpy(vm->globals, from, sizeof(qcval_t) * shared);
+	for (int i = 0; i < QC_MAX_EXTPARMS && i + MAX_PARMS < vm->argc; i++)
+		if (oldext[i] >= 0 && vm->extparm_ofs[i] >= 0)
+			memcpy(vm->globals + vm->extparm_ofs[i], from + oldext[i], sizeof(qcval_t) * 3);
+}
+
+int QC_ResolveProgs(qcvm_t *vm, float handle, const char *name, bool function)
+{
+	int h = (int)handle;
+	if (h == -1)
+		return vm->curprogs;
+	if (h == -2) {
+		for (int i = 0; i < vm->numprogs; i++)
+			if (function ? QC_FindFunctionIn(vm, i, name) != 0 : QC_FindGlobalIn(vm, i, name) != NULL)
+				return i;
+		return -1;
+	}
+	return h >= 0 && h < vm->numprogs ? h : -1;
+}
+
+/* tags the function and static string values in progs n's initial globals
+ * with its number, and maps its field offsets onto the main progs' layout */
+static bool link_progs(qcvm_t *vm, int n)
+{
+	qcprogs_t *p = &vm->progs[n], *main = &vm->progs[0];
+	int words = BW_MAX(p->hdr.entityfields, 1);
+	int *map;
+	for (int i = 0; i < p->numfielddefs; i++) {
+		int t = p->fielddefs[i].type & ~DEF_SAVEGLOBAL;
+		int end = (int)p->fielddefs[i].ofs + (t == ev_vector ? 3 : (t == ev_int64 || t == ev_uint64 || t == ev_double) ? 2 : 1);
+		if (end > words)
+			words = end;
+	}
+	map = Mem_Alloc(sizeof(int) * words);
+	for (int i = 0; i < words; i++)
+		map[i] = -1;
+	/* by name first; vectors before their _x/_y/_z components */
+	for (int pass = 0; pass < 2; pass++)
+		for (int i = 0; i < p->numfielddefs; i++) {
+			qcdef_t *d = &p->fielddefs[i];
+			int t = d->type & ~DEF_SAVEGLOBAL;
+			int len = t == ev_vector ? 3 : (t == ev_int64 || t == ev_uint64 || t == ev_double) ? 2 : 1;
+			int k = find_hash(&main->fieldhash, d->name, fdef_name, main);
+			if ((pass == 0) != (t == ev_vector) || !d->name[0])
+				continue;
+			if (k >= 0) {
+				for (int j = 0; j < len && d->ofs + j < (uint32_t)words; j++)
+					if (map[d->ofs + j] < 0)
+						map[d->ofs + j] = (int)main->fielddefs[k].ofs + j;
+			}
+		}
+	/* anything left gets room from the spare words */
+	for (int i = 0; i < words; i++)
+		if (map[i] < 0) {
+			if (vm->edict_words_used >= vm->edict_words) {
+				Con_Printf("%s: no room left for its own entity fields\n", p->name);
+				Mem_Free(map);
+				return false;
+			}
+			map[i] = vm->edict_words_used++;
+		}
+	for (int i = 0; i < p->numfielddefs; i++)
+		if (p->fielddefs[i].ofs < (uint32_t)words)
+			p->fielddefs[i].ofs = (uint32_t)map[p->fielddefs[i].ofs];
+	for (int i = 0; i < p->numglobaldefs; i++) {
+		qcdef_t *d = &p->globaldefs[i];
+		int t = d->type & ~DEF_SAVEGLOBAL;
+		qcval_t *v = p->globals + d->ofs;
+		if (d->ofs >= (uint32_t)p->numglobals)
+			continue;
+		if (t == ev_field && v->i >= 0 && v->i < words)
+			v->i = map[v->i];
+		else if (t == ev_function && v->i > 0 && v->i < p->numfunctions)
+			v->i |= n << QC_PROGS_SHIFT;
+		else if (t == ev_string && v->i > 0 && v->i < p->stringsize)
+			v->i |= n << QC_PROGS_SHIFT;
+	}
+	Mem_Free(map);
+	return true;
 }
 
 qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kind,
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize)
 {
 	qcvm_t *vm;
-	progs_header_t *h;
-	int stmt_bytes, def_bytes;
+	qcprogs_t *p;
 	size_t globals_bytes, edict_bytes;
 
-	if (size < PROGS_HEADER_V6_SIZE) {
-		Con_Printf("%s: too small to be a progs file\n", name);
-		return NULL;
-	}
 	if (vm_count >= (int)BW_ARRAY_COUNT(vm_list)) {
 		Con_Printf("%s: too many progs loaded\n", name);
 		return NULL;
@@ -249,129 +555,33 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 
 	vm = Mem_Alloc(sizeof(*vm));
 	vm->kind = kind;
+	vm->tables = tables;
 	Str_Copy(vm->name, name, sizeof(vm->name));
-	vm->progsdata = Mem_Alloc(size);
-	memcpy(vm->progsdata, data, size);
-	vm->progssize = size;
-	h = &vm->hdr;
-	for (int i = 0; i < 14; i++)
-		((int32_t *)h)[i] = rd32(vm->progsdata + i * 4);
-	if (h->version != PROGS_VERSION_QUAKE && h->version != PROGS_VERSION_EXTENDED) {
-		Con_Printf("%s: unsupported progs version %d\n", name, h->version);
-		QC_Free(vm);
-		return NULL;
-	}
-	h->entityfields = 0;
-	if (h->version == PROGS_VERSION_EXTENDED && size >= PROGS_HEADER_V6_SIZE + 4)
-		h->entityfields = rd32(vm->progsdata + PROGS_HEADER_V6_SIZE);
-
-	stmt_bytes = h->numstatements ? (section_end(h, h->ofs_statements, size) - h->ofs_statements) / h->numstatements : 8;
-	def_bytes = h->numglobaldefs ? (section_end(h, h->ofs_globaldefs, size) - h->ofs_globaldefs) / h->numglobaldefs : 8;
-	vm->stmt32 = stmt_bytes >= 16;
-	if (!section_ok(size, h->ofs_statements, h->numstatements, vm->stmt32 ? 16 : 8) ||
-	    !section_ok(size, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12 ? 12 : 8) ||
-	    !section_ok(size, h->ofs_fielddefs, h->numfielddefs, def_bytes >= 12 ? 12 : 8) ||
-	    !section_ok(size, h->ofs_functions, h->numfunctions, sizeof(dfunction_t)) ||
-	    !section_ok(size, h->ofs_strings, h->numstrings, 1) ||
-	    !section_ok(size, h->ofs_globals, h->numglobals, 4) || h->numfunctions < 1) {
-		Con_Printf("%s: corrupt progs header\n", name);
-		QC_Free(vm);
-		return NULL;
-	}
-
-	/* string table, NUL terminated defensively */
-	vm->stringsize = h->numstrings;
-	vm->strings = Mem_Alloc((size_t)h->numstrings + 1);
-	memcpy(vm->strings, vm->progsdata + h->ofs_strings, (size_t)h->numstrings);
-
 	vm->extra = Mem_Alloc(sizeof(*vm->extra));
 	QC_ExtraInit(vm);
-
-	/* statements */
-	vm->numstatements = h->numstatements;
-	vm->statements = Mem_Alloc(sizeof(dstatement32_t) * (h->numstatements + 1));
-	for (int i = 0; i < h->numstatements; i++) {
-		const uint8_t *p = vm->progsdata + h->ofs_statements + (size_t)i * (vm->stmt32 ? 16 : 8);
-		dstatement32_t *s = &vm->statements[i];
-		if (vm->stmt32) {
-			s->op = (uint32_t)rd32(p);
-			s->a = (uint32_t)rd32(p + 4);
-			s->b = (uint32_t)rd32(p + 8);
-			s->c = (uint32_t)rd32(p + 12);
-		} else {
-			s->op = p[0] | (p[1] << 8);
-			s->a = p[2] | (p[3] << 8);
-			s->b = p[4] | (p[5] << 8);
-			s->c = p[6] | (p[7] << 8);
-		}
-	}
-
-	unpack_defs(vm, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12, &vm->globaldefs);
-	vm->numglobaldefs = h->numglobaldefs;
-	unpack_defs(vm, h->ofs_fielddefs, h->numfielddefs, def_bytes >= 12, &vm->fielddefs);
-	vm->numfielddefs = h->numfielddefs;
-
-	/* functions */
-	vm->numfunctions = h->numfunctions;
-	vm->functions = Mem_Alloc(sizeof(qcfunc_t) * h->numfunctions);
-	for (int i = 0; i < h->numfunctions; i++) {
-		const uint8_t *p = vm->progsdata + h->ofs_functions + (size_t)i * sizeof(dfunction_t);
-		qcfunc_t *f = &vm->functions[i];
-		f->d.first_statement = rd32(p);
-		f->d.parm_start = rd32(p + 4);
-		f->d.locals = rd32(p + 8);
-		f->d.profile = rd32(p + 12);
-		f->d.s_name = rd32(p + 16);
-		f->d.s_file = rd32(p + 20);
-		f->d.numparms = rd32(p + 24);
-		memcpy(f->d.parm_size, p + 28, 8);
-		f->name = QC_ProgsString(vm, f->d.s_name);
-		f->file = QC_ProgsString(vm, f->d.s_file);
-		if (f->d.first_statement >= h->numstatements || f->d.locals < 0 || f->d.parm_start < 0) {
-			Con_Printf("%s: function %s has a bad header\n", name, f->name);
-			QC_Free(vm);
-			return NULL;
-		}
-	}
-
-	build_hash(&vm->extra->globalhash, vm->numglobaldefs, gdef_name, vm);
-	build_hash(&vm->extra->fieldhash, vm->numfielddefs, fdef_name, vm);
-	build_hash(&vm->extra->funchash, vm->numfunctions, func_name, vm);
-
-	/* Globals are given room for every index a statement can encode, so
-	 * operand decoding never needs a range check: 16-bit statements can only
-	 * name the first 65536 words. 32-bit ones are validated below. */
-	vm->numglobals = h->numglobals;
-	vm->globalslots = vm->stmt32 ? h->numglobals + 4 : BW_MAX(h->numglobals + 4, 65536 + 4);
-	for (int i = 0; i < vm->numfunctions; i++) {
-		int end = vm->functions[i].d.parm_start + vm->functions[i].d.locals;
-		if (end > vm->globalslots) {
-			Con_Printf("%s: function %s locals exceed the globals\n", name, vm->functions[i].name);
-			QC_Free(vm);
-			return NULL;
-		}
-	}
-	if (vm->stmt32) {
-		/* TODO: 32-bit statements can name any global, so operands need a
-		 * per-opcode range check before this format can be run safely. */
-		Con_Printf("%s: 32-bit statement progs are not supported yet\n", name);
+	p = &vm->progs[0];
+	vm->numprogs = 1;
+	if (!parse_progs(p, name, data, size)) {
 		QC_Free(vm);
 		return NULL;
 	}
 
-	/* entity layout: the progs' declared size, grown to cover every field def */
-	vm->edict_words = h->entityfields;
-	for (int i = 0; i < vm->numfielddefs; i++) {
-		int t = vm->fielddefs[i].type & ~DEF_SAVEGLOBAL;
-		int end = (int)vm->fielddefs[i].ofs + (t == ev_vector ? 3 : (t == ev_int64 || t == ev_uint64 || t == ev_double) ? 2 : 1);
+	/* entity layout: the progs' declared size, grown to cover every field
+	 * def, plus spare words for fields that added progs bring */
+	vm->edict_words = p->hdr.entityfields;
+	for (int i = 0; i < p->numfielddefs; i++) {
+		int t = p->fielddefs[i].type & ~DEF_SAVEGLOBAL;
+		int end = (int)p->fielddefs[i].ofs + (t == ev_vector ? 3 : (t == ev_int64 || t == ev_uint64 || t == ev_double) ? 2 : 1);
 		if (end > vm->edict_words)
 			vm->edict_words = end;
 	}
 	if (vm->edict_words < 1)
 		vm->edict_words = 1;
+	vm->edict_words_used = vm->edict_words;
+	vm->edict_words += 64;
 
 	vm->max_edicts = max_edicts > 0 ? max_edicts : 1;
-	globals_bytes = ((size_t)vm->globalslots * 4 + 63) & ~(size_t)63;
+	globals_bytes = ((size_t)p->globalslots * 4 + 63) & ~(size_t)63;
 	edict_bytes = (size_t)vm->edict_words * 4 * vm->max_edicts;
 	vm->edicts_ofs = globals_bytes;
 	vm->heap_ofs = (globals_bytes + edict_bytes + 63) & ~(size_t)63;
@@ -383,9 +593,10 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 		return NULL;
 	}
 	vm->mem = Mem_Alloc(vm->memsize);
-	vm->globals = (qcval_t *)vm->mem;
-	for (int i = 0; i < h->numglobals; i++)
-		vm->globals[i].i = rd32(vm->progsdata + h->ofs_globals + (size_t)i * 4);
+	p->globals = (qcval_t *)vm->mem;
+	p->globals_addr = 0;
+	for (int i = 0; i < p->numglobals; i++)
+		p->globals[i].i = rd32(p->progsdata + p->hdr.ofs_globals + (size_t)i * 4);
 	vm->edicts = Mem_Alloc(sizeof(qcedict_t) * vm->max_edicts);
 	for (int i = 0; i < vm->max_edicts; i++)
 		vm->edicts[i].free = true;
@@ -397,13 +608,72 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	vm->localstack = Mem_Alloc(sizeof(qcval_t) * vm->localstack_size);
 	vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size;
 
-	resolve_offsets(vm);
+	activate(vm, 0);
+	resolve_fields(vm);
+	resolve_globals(vm);
 	bind_builtins(vm, tables);
+	store_derived(vm, 0);
 
 	vm_list[vm_count++] = vm;
 	Con_DPrintf("%s: %d functions, %d statements, %d globals, %d entity words\n", name,
-	            vm->numfunctions, vm->numstatements, vm->numglobals, vm->edict_words);
+	            vm->numfunctions, vm->numstatements, vm->numglobals, vm->edict_words_used);
 	return vm;
+}
+
+int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
+{
+	int n = vm->numprogs, prev = vm->curprogs;
+	qcprogs_t *p;
+	uint32_t addr;
+	int f;
+	for (int i = 0; i < vm->numprogs; i++)
+		if (!Str_ICmp(vm->progs[i].name, name))
+			return i;
+	if (n >= QC_MAX_PROGS) {
+		Con_Printf("%s: too many progs in %s\n", name, vm->name);
+		return -1;
+	}
+	p = &vm->progs[n];
+	if (!parse_progs(p, name, data, size)) {
+		free_progs(p);
+		return -1;
+	}
+	/* its globals live in the shared heap, so pointers to them work everywhere */
+	addr = QC_HeapAlloc(vm, (size_t)p->globalslots * 4);
+	if (!addr) {
+		Con_Printf("%s: no heap left for its globals\n", name);
+		free_progs(p);
+		return -1;
+	}
+	p->globals_addr = addr;
+	p->globals = (qcval_t *)(vm->mem + addr);
+	memset(p->globals, 0, (size_t)p->globalslots * 4);
+	for (int i = 0; i < p->numglobals; i++)
+		p->globals[i].i = rd32(p->progsdata + p->hdr.ofs_globals + (size_t)i * 4);
+	vm->numprogs++;
+	if (!link_progs(vm, n)) {
+		QC_HeapFree(vm, addr);
+		free_progs(p);
+		vm->numprogs--;
+		return -1;
+	}
+
+	/* engine-side setup happens with the new progs running */
+	activate(vm, n);
+	resolve_globals(vm);
+	bind_builtins(vm, vm->tables);
+	store_derived(vm, n);
+	activate(vm, prev);
+	Con_DPrintf("%s: added to %s as progs %d, %d functions\n", name, vm->name, n, p->numfunctions);
+
+	/* "init(float prevprogs)" runs as soon as a progs is loaded */
+	f = QC_FindFunctionIn(vm, n, "init");
+	if (f) {
+		QC_Parm(vm, 0)->f = (float)prev;
+		vm->argc = 1;
+		QC_Execute(vm, f);
+	}
+	return n;
 }
 
 void QC_Free(qcvm_t *vm)
@@ -418,16 +688,11 @@ void QC_Free(qcvm_t *vm)
 	if (vm->extra)
 		QC_ExtraFree(vm);
 	Mem_Free(vm->extra);
-	Mem_Free(vm->progsdata);
-	Mem_Free(vm->statements);
-	Mem_Free(vm->functions);
-	Mem_Free(vm->globaldefs);
-	Mem_Free(vm->fielddefs);
-	Mem_Free(vm->strings);
+	for (int i = 0; i < vm->numprogs; i++)
+		free_progs(&vm->progs[i]);
 	Mem_Free(vm->mem);
 	Mem_Free(vm->edicts);
 	Mem_Free(vm->localstack);
-	Mem_Free(vm->missing_reported);
 	Mem_Free(vm);
 }
 
@@ -468,7 +733,9 @@ int QC_SpawnEdict(qcvm_t *vm)
 	int e;
 	/* reuse a slot only after it has been free for a while, so stale
 	 * references can still detect the removal with wasfreed() */
-	for (e = 1; e < vm->num_edicts; e++) {
+	if (vm->num_edicts < vm->reserved_edicts + 1)
+		vm->num_edicts = vm->reserved_edicts + 1;
+	for (e = vm->reserved_edicts + 1; e < vm->num_edicts; e++) {
 		qcedict_t *ed = &vm->edicts[e];
 		if (ed->free && (ed->freetime < 2 || now - ed->freetime > 0.5f)) {
 			QC_ClearEdict(vm, e);
@@ -780,7 +1047,6 @@ float QC_Random(qcvm_t *vm)
 
 bool QC_BuiltinImplemented(qcvm_t *vm, int fnum)
 {
-	if (fnum <= 0 || fnum >= vm->numfunctions)
-		return false;
-	return vm->functions[fnum].builtin != bi_missing;
+	qcfunc_t *f = QC_Function(vm, fnum);
+	return f && f->builtin != bi_missing;
 }

@@ -844,12 +844,75 @@ void QC_ExtraFree(qcvm_t *vm)
 	for (int i = 0; i < QC_MAX_SEARCHES; i++)
 		if (x->searches[i].inuse)
 			free_search(&x->searches[i]);
-	Mem_Free(x->globalhash.slots);
-	Mem_Free(x->fieldhash.slots);
-	Mem_Free(x->funchash.slots);
+}
+
+/* --- FTE_MULTIPROGS ------------------------------------------------------- */
+
+static void bi_addprogs(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 0);
+	size_t len;
+	void *data = FS_LoadFile(name, &len);
+	int n = -1;
+	if (data) {
+		n = QC_AddProgs(vm, name, data, len);
+		Mem_Free(data);
+	} else {
+		Con_DPrintf("addprogs: %s not found\n", name);
+	}
+	QC_ReturnFloat(vm, (float)n);
+}
+
+static void bi_externvalue(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 1);
+	int pn = QC_ResolveProgs(vm, QC_PFLOAT(vm, 0), name, false);
+	qcdef_t *d;
+	int f;
+	memset(QC_RETURN(vm), 0, sizeof(qcval_t) * 3);
+	if (pn < 0 && QC_PFLOAT(vm, 0) == -2)
+		pn = QC_ResolveProgs(vm, -2, name, true);
+	if (pn < 0)
+		return;
+	d = QC_FindGlobalIn(vm, pn, name);
+	if (d) {
+		int words = (d->type & ~DEF_SAVEGLOBAL) == ev_vector ? 3 : 1;
+		memcpy(QC_RETURN(vm), QC_ProgsGlobals(vm, pn) + d->ofs, sizeof(qcval_t) * words);
+	} else if ((f = QC_FindFunctionIn(vm, pn, name))) {
+		QC_ReturnInt(vm, f);
+	}
+}
+
+static void bi_externset(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 2);
+	int pn = QC_ResolveProgs(vm, QC_PFLOAT(vm, 0), name, false);
+	qcdef_t *d;
+	if (pn < 0 || !(d = QC_FindGlobalIn(vm, pn, name)))
+		return;
+	memcpy(QC_ProgsGlobals(vm, pn) + d->ofs, QC_Parm(vm, 1),
+	       sizeof(qcval_t) * ((d->type & ~DEF_SAVEGLOBAL) == ev_vector ? 3 : 1));
+}
+
+static void bi_externcall(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 1);
+	int pn = QC_ResolveProgs(vm, QC_PFLOAT(vm, 0), name, true);
+	int f, argc = vm->argc;
+	if (pn < 0 || !(f = QC_FindFunctionIn(vm, pn, name))) {
+		QC_ReturnInt(vm, 0);
+		return;
+	}
+	/* shift the remaining arguments down by two */
+	for (int i = 2; i < argc && i < MAX_PARMS; i++)
+		memcpy(QC_Parm(vm, i - 2), QC_Parm(vm, i), sizeof(qcval_t) * 3);
+	vm->argc = argc - 2;
+	QC_Execute(vm, f);
 }
 
 const qc_builtin_t qc_builtins_extra[] = {
+	{"addprogs", bi_addprogs}, {"externvalue", bi_externvalue}, {"externset", bi_externset},
+	{"externcall", bi_externcall},
 	{"hash_createtab", bi_hash_createtab}, {"hash_destroytab", bi_hash_destroytab},
 	{"hash_add", bi_hash_add}, {"hash_get", bi_hash_get}, {"hash_delete", bi_hash_delete},
 	{"hash_getkey", bi_hash_getkey},

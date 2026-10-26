@@ -7,11 +7,6 @@
 #include "opcodes.h"
 #include <stdio.h>
 
-typedef struct {
-	int *slots;
-	int size;
-} qc_namehash_t;
-
 #define QC_MAX_TOKENS 256
 typedef struct qc_tokens_s {
 	int count;
@@ -41,7 +36,6 @@ struct qc_hashtab_s;
 struct qc_json_s;
 
 struct qc_extra_s {
-	qc_namehash_t globalhash, fieldhash, funchash;
 	int calling_builtin; /* function index of the builtin being run */
 	qc_file_t files[QC_MAX_FILES];
 	qc_search_t searches[QC_MAX_SEARCHES];
