@@ -126,6 +126,10 @@ void IN_KeyEvent(int key, bool down, int unicode);
 void IN_MouseMove(float dx, float dy);
 void IN_MouseAbs(float x, float y);
 void IN_ReleaseAll(void);
+/* controller axes in SDL's order (left x/y, right x/y, triggers), -1..1 */
+void IN_JoyAxis(int dev, int axis, float value);
+void IN_ControllerAdded(int dev);
+void IN_ControllerRemoved(int dev);
 extern float in_mouse_x, in_mouse_y;
 void CL_BuildCommand(double now);
 void CL_UpdateCurrentCommand(double now);

@@ -15,6 +15,10 @@ static bool keydown[K_MAX];
 
 static cvar_t *cl_forwardspeed, *cl_backspeed, *cl_sidespeed, *cl_upspeed, *cl_yawspeed, *cl_pitchspeed;
 static cvar_t *cl_movespeedkey, *sensitivity, *m_pitch, *m_yaw, *m_filter, *cl_run;
+static cvar_t *joy_enable, *joy_deadzone, *joy_curve, *joy_yawspeed, *joy_pitchspeed, *joy_invert, *joy_movescale;
+
+/* the newest value of each controller axis */
+static float joyaxis[6];
 
 /* --- key names ------------------------------------------------------------ */
 
@@ -43,7 +47,9 @@ static const keyname_t keynames[] = {
 	{"MINUS", '-'}, {"APOSTROPHE", '\''},
 	{"GP_A", K_GP_A}, {"GP_B", K_GP_B}, {"GP_X", K_GP_X}, {"GP_Y", K_GP_Y}, {"GP_LSHOULDER", K_GP_LSHOULDER},
 	{"GP_RSHOULDER", K_GP_RSHOULDER}, {"GP_LTRIGGER", K_GP_LTRIGGER}, {"GP_RTRIGGER", K_GP_RTRIGGER},
-	{"GP_START", K_GP_MENU}, {"GP_BACK", K_GP_VIEW},
+	{"GP_START", K_GP_MENU}, {"GP_BACK", K_GP_VIEW}, {"GP_MENU", K_GP_MENU}, {"GP_VIEW", K_GP_VIEW},
+	{"GP_LTHUMB", K_GP_LTHUMB}, {"GP_RTHUMB", K_GP_RTHUMB}, {"GP_DPAD_UP", K_GP_DPAD_UP},
+	{"GP_DPAD_DOWN", K_GP_DPAD_DOWN}, {"GP_DPAD_LEFT", K_GP_DPAD_LEFT}, {"GP_DPAD_RIGHT", K_GP_DPAD_RIGHT},
 	{NULL, 0}};
 
 int Key_NumForName(const char *name)
@@ -321,12 +327,66 @@ void IN_MouseMove(float dx, float dy)
 	cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
 }
 
+/* --- controllers ------------------------------------------------------------ */
+
+void IN_JoyAxis(int dev, int axis, float value)
+{
+	if (axis < 0 || axis >= 6)
+		return;
+	/* IE_JOYAXIS is only a report: Nuclide returns true for every event
+	 * type it doesn't handle, so its answer can't mean "taken" */
+	if (!Con_IsActive())
+		CSQC_InputEvent(6, (float)axis, value, dev);
+	joyaxis[axis] = value;
+}
+
+/* layout like a console shooter's, applied only to an unbound pad so a
+ * config's own choices win */
+static const struct {
+	int key;
+	const char *cmd;
+} pad_defaults[] = {
+	{K_GP_A, "+jump"}, {K_GP_B, "+duck"}, {K_GP_X, "+reload"}, {K_GP_Y, "+use"},
+	{K_GP_RTRIGGER, "+attack"}, {K_GP_LTRIGGER, "+attack2"}, {K_GP_RSHOULDER, "weapnext"},
+	{K_GP_LSHOULDER, "weapprev"}, {K_GP_LTHUMB, "+sprint"}, {K_GP_VIEW, "+showscores"},
+	{K_GP_MENU, "togglemenu"}, {K_GP_DPAD_UP, "slot1"}, {K_GP_DPAD_RIGHT, "slot2"},
+	{K_GP_DPAD_DOWN, "slot3"}, {K_GP_DPAD_LEFT, "slot4"},
+};
+
+void IN_ControllerAdded(int dev)
+{
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
+		if (bindings[pad_defaults[i].key])
+			return;
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
+		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
+}
+
+void IN_ControllerRemoved(int dev)
+{
+	memset(joyaxis, 0, sizeof(joyaxis));
+	IN_ReleaseAll();
+}
+
+/* a stick's deflection past the dead zone, rescaled to 0..1 and shaped */
+static float stick(float v)
+{
+	float dz = BW_MAX(0, BW_MIN(joy_deadzone->value, 0.95f));
+	float a = fabsf(v);
+	if (a <= dz)
+		return 0;
+	a = BW_MIN(1, (a - dz) / (1 - dz));
+	a = powf(a, BW_MAX(0.1f, joy_curve->value));
+	return v < 0 ? -a : a;
+}
+
 /* --- commands ------------------------------------------------------------- */
 
 static void fill_command(usercmd_t *u, double now)
 {
 	float speed = (cl_run->ivalue ^ buttons[B_SPEED].active) ? 1.0f : cl_movespeedkey->value;
 	float dt = (float)cl.frametime;
+	float joy_move[2];
 	unsigned bits = 0;
 	/* keyboard turning */
 	cl.viewangles[1] += dt * cl_yawspeed->value * (button_amount(&buttons[B_LEFT]) - button_amount(&buttons[B_RIGHT]));
@@ -336,11 +396,33 @@ static void fill_command(usercmd_t *u, double now)
 	if (cl.viewangles[0] < -89)
 		cl.viewangles[0] = -89;
 
+	/* controller sticks: right one turns, left one moves */
+	if (joy_enable->ivalue && !Con_IsActive()) {
+		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
+		cl.viewangles[1] -= dt * joy_yawspeed->value * rx;
+		cl.viewangles[0] += dt * joy_pitchspeed->value * ry * (joy_invert->ivalue ? -1 : 1);
+		if (cl.viewangles[0] > 89)
+			cl.viewangles[0] = 89;
+		if (cl.viewangles[0] < -89)
+			cl.viewangles[0] = -89;
+		joy_move[0] = -ly * joy_movescale->value;
+		joy_move[1] = lx * joy_movescale->value;
+	} else {
+		joy_move[0] = joy_move[1] = 0;
+	}
+
 	VectorCopy(cl.viewangles, u->angles);
 	u->movevalues[0] = speed * (cl_forwardspeed->value * button_amount(&buttons[B_FORWARD]) -
 	                            cl_backspeed->value * button_amount(&buttons[B_BACK]));
 	u->movevalues[1] = speed * cl_sidespeed->value *
 	                   (button_amount(&buttons[B_MOVERIGHT]) - button_amount(&buttons[B_MOVELEFT]));
+	u->movevalues[0] += speed * (joy_move[0] > 0 ? cl_forwardspeed->value : cl_backspeed->value) * joy_move[0];
+	u->movevalues[1] += speed * cl_sidespeed->value * joy_move[1];
+	for (int k = 0; k < 2; k++) {
+		/* keys and stick together never exceed full speed */
+		float lim = k ? speed * cl_sidespeed->value : speed * BW_MAX(cl_forwardspeed->value, cl_backspeed->value);
+		u->movevalues[k] = BW_MAX(-lim, BW_MIN(u->movevalues[k], lim));
+	}
 	u->movevalues[2] = speed * cl_upspeed->value * (button_amount(&buttons[B_MOVEUP]) - button_amount(&buttons[B_MOVEDOWN]));
 
 	/* the bit layout games expect: attack=1, jump=2, then button3.. */
@@ -414,6 +496,13 @@ void IN_Init(void)
 	sensitivity = Cvar_Get("sensitivity", "3", CVAR_ARCHIVE, "Mouse sensitivity");
 	m_pitch = Cvar_Get("m_pitch", "0.022", CVAR_ARCHIVE, "Degrees per mouse count vertically (negative inverts)");
 	m_yaw = Cvar_Get("m_yaw", "0.022", CVAR_ARCHIVE, "Degrees per mouse count horizontally");
+	joy_enable = Cvar_Get("joy_enable", "1", CVAR_ARCHIVE, "Use game controllers' sticks for moving and looking");
+	joy_deadzone = Cvar_Get("joy_deadzone", "0.2", CVAR_ARCHIVE, "Stick travel ignored around the centre, 0..1");
+	joy_curve = Cvar_Get("joy_curve", "2", CVAR_ARCHIVE, "Stick response exponent: 1 is linear, higher is finer near the centre");
+	joy_yawspeed = Cvar_Get("joy_yawspeed", "220", CVAR_ARCHIVE, "Turn speed at full right-stick deflection, degrees per second");
+	joy_pitchspeed = Cvar_Get("joy_pitchspeed", "160", CVAR_ARCHIVE, "Look speed at full right-stick deflection, degrees per second");
+	joy_invert = Cvar_Get("joy_invert", "0", CVAR_ARCHIVE, "Invert the right stick's vertical look");
+	joy_movescale = Cvar_Get("joy_movescale", "1", CVAR_ARCHIVE, "Scale for left-stick movement");
 	m_filter = Cvar_Get("m_filter", "0", CVAR_ARCHIVE, "Average mouse movement over two frames");
 
 	Cmd_Add("bind", Bind_f);

@@ -4,6 +4,9 @@
 #include "console.h"
 #include "keys.h"
 #include "../common/cvar.h"
+#include "../common/cmd.h"
+
+#include <stdlib.h>
 
 #include <SDL.h>
 
@@ -11,6 +14,147 @@ static SDL_Window *window;
 static SDL_GLContext glctx;
 static bool grabbed;
 static cvar_t *vid_vsync;
+
+/* --- game controllers ------------------------------------------------------ */
+
+#define MAX_PADS 4
+static struct {
+	SDL_GameController *gc;
+	SDL_JoystickID id;
+	bool ltrig, rtrig; /* trigger keys, pressed past half travel */
+} pads[MAX_PADS];
+
+static int pad_for_id(SDL_JoystickID id)
+{
+	for (int i = 0; i < MAX_PADS; i++)
+		if (pads[i].gc && pads[i].id == id)
+			return i;
+	return -1;
+}
+
+static void pad_open(int index)
+{
+	SDL_GameController *gc;
+	int slot = -1;
+	if (!SDL_IsGameController(index))
+		return;
+	for (int i = 0; i < MAX_PADS; i++)
+		if (!pads[i].gc) {
+			slot = i;
+			break;
+		}
+	if (slot < 0 || !(gc = SDL_GameControllerOpen(index)))
+		return;
+	pads[slot].gc = gc;
+	pads[slot].id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gc));
+	pads[slot].ltrig = pads[slot].rtrig = false;
+	Con_Printf("controller %d: %s\n", slot, SDL_GameControllerName(gc));
+	IN_ControllerAdded(slot);
+}
+
+static void pad_close(SDL_JoystickID id)
+{
+	int i = pad_for_id(id);
+	if (i < 0)
+		return;
+	Con_Printf("controller %d disconnected\n", i);
+	SDL_GameControllerClose(pads[i].gc);
+	memset(&pads[i], 0, sizeof(pads[i]));
+	IN_ControllerRemoved(i);
+}
+
+static int pad_button(int b)
+{
+	switch (b) {
+	case SDL_CONTROLLER_BUTTON_A: return K_GP_A;
+	case SDL_CONTROLLER_BUTTON_B: return K_GP_B;
+	case SDL_CONTROLLER_BUTTON_X: return K_GP_X;
+	case SDL_CONTROLLER_BUTTON_Y: return K_GP_Y;
+	case SDL_CONTROLLER_BUTTON_BACK: return K_GP_VIEW;
+	case SDL_CONTROLLER_BUTTON_START: return K_GP_MENU;
+	case SDL_CONTROLLER_BUTTON_LEFTSTICK: return K_GP_LTHUMB;
+	case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return K_GP_RTHUMB;
+	case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return K_GP_LSHOULDER;
+	case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return K_GP_RSHOULDER;
+	case SDL_CONTROLLER_BUTTON_DPAD_UP: return K_GP_DPAD_UP;
+	case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return K_GP_DPAD_DOWN;
+	case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return K_GP_DPAD_LEFT;
+	case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return K_GP_DPAD_RIGHT;
+	default: return 0;
+	}
+}
+
+static void pad_axis(int slot, int axis, int16_t raw)
+{
+	float v = raw < 0 ? raw / 32768.0f : raw / 32767.0f;
+	if (axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+		bool *held = axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? &pads[slot].ltrig : &pads[slot].rtrig;
+		int key = axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? K_GP_LTRIGGER : K_GP_RTRIGGER;
+		/* a little hysteresis so a resting finger doesn't chatter */
+		if (!*held && v > 0.5f)
+			*held = true, IN_KeyEvent(key, true, 0);
+		else if (*held && v < 0.4f)
+			*held = false, IN_KeyEvent(key, false, 0);
+	}
+	IN_JoyAxis(slot, axis, v);
+}
+
+/* "joy_virtual" attaches a pretend controller and "joy_virtual_set axis|button
+ * n value" moves it, for trying controller handling without hardware */
+static SDL_Joystick *virtual_pad;
+
+static void JoyVirtual_f(int argc, const char **argv)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+	int index;
+	if (virtual_pad)
+		return;
+	index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
+	                                  SDL_CONTROLLER_BUTTON_MAX, 0);
+	if (index < 0 || !(virtual_pad = SDL_JoystickOpen(index)))
+		Con_Printf("joy_virtual: %s\n", SDL_GetError());
+#endif
+}
+
+static void JoyVirtualSet_f(int argc, const char **argv)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+	if (!virtual_pad || argc < 4) {
+		Con_Printf("joy_virtual_set axis|button <n> <value>: after joy_virtual\n");
+		return;
+	}
+	if (!strcmp(argv[1], "axis"))
+		SDL_JoystickSetVirtualAxis(virtual_pad, atoi(argv[2]), (Sint16)BW_MAX(-32768, BW_MIN(32767, atof(argv[3]) * 32767)));
+	else
+		SDL_JoystickSetVirtualButton(virtual_pad, atoi(argv[2]), (Uint8)atoi(argv[3]));
+#endif
+}
+
+void VID_Rumble(int dev, float low, float high, float seconds)
+{
+	if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
+		SDL_GameControllerRumble(pads[dev].gc, (Uint16)(BW_MAX(0, BW_MIN(low, 1)) * 65535),
+		                         (Uint16)(BW_MAX(0, BW_MIN(high, 1)) * 65535), (Uint32)(BW_MAX(seconds, 0) * 1000));
+}
+
+void VID_RumbleTriggers(int dev, float left, float right, float seconds)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+	if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
+		SDL_GameControllerRumbleTriggers(pads[dev].gc, (Uint16)(BW_MAX(0, BW_MIN(left, 1)) * 65535),
+		                                 (Uint16)(BW_MAX(0, BW_MIN(right, 1)) * 65535),
+		                                 (Uint32)(BW_MAX(seconds, 0) * 1000));
+#endif
+}
+
+void VID_SetControllerLED(int dev, const float *rgb)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+	if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
+		SDL_GameControllerSetLED(pads[dev].gc, (Uint8)(BW_MAX(0, BW_MIN(rgb[0], 1)) * 255),
+		                         (Uint8)(BW_MAX(0, BW_MIN(rgb[1], 1)) * 255), (Uint8)(BW_MAX(0, BW_MIN(rgb[2], 1)) * 255));
+#endif
+}
 
 static int map_key(SDL_Keycode k)
 {
@@ -105,6 +249,12 @@ bool VID_Init(int width, int height, bool fullscreen)
 	vid_vsync = Cvar_Get("vid_vsync", "1", CVAR_ARCHIVE, "Wait for the display before showing a frame");
 	SDL_GL_SetSwapInterval(vid_vsync->value ? 1 : 0);
 	SDL_StartTextInput();
+	/* controllers are optional: devices already plugged in arrive as
+	 * CONTROLLERDEVICEADDED events */
+	if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0)
+		Con_DPrintf("no game controller support: %s\n", SDL_GetError());
+	Cmd_Add("joy_virtual", JoyVirtual_f);
+	Cmd_Add("joy_virtual_set", JoyVirtualSet_f);
 	return true;
 }
 
@@ -112,6 +262,10 @@ void VID_Shutdown(void)
 {
 	if (!window)
 		return;
+	for (int i = 0; i < MAX_PADS; i++)
+		if (pads[i].gc)
+			SDL_GameControllerClose(pads[i].gc);
+	memset(pads, 0, sizeof(pads));
 	SDL_GL_DeleteContext(glctx);
 	SDL_DestroyWindow(window);
 	window = NULL;
@@ -250,6 +404,25 @@ bool VID_PumpEvents(void)
 				IN_KeyEvent(K_MWHEELDOWN, false, 0);
 			}
 			break;
+		case SDL_CONTROLLERDEVICEADDED:
+			pad_open(ev.cdevice.which);
+			break;
+		case SDL_CONTROLLERDEVICEREMOVED:
+			pad_close(ev.cdevice.which);
+			break;
+		case SDL_CONTROLLERBUTTONDOWN:
+		case SDL_CONTROLLERBUTTONUP: {
+			int k = pad_button(ev.cbutton.button);
+			if (k && pad_for_id(ev.cbutton.which) >= 0)
+				IN_KeyEvent(k, ev.type == SDL_CONTROLLERBUTTONDOWN, 0);
+			break;
+		}
+		case SDL_CONTROLLERAXISMOTION: {
+			int slot = pad_for_id(ev.caxis.which);
+			if (slot >= 0)
+				pad_axis(slot, ev.caxis.axis, ev.caxis.value);
+			break;
+		}
 		case SDL_WINDOWEVENT:
 			if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
 				IN_ReleaseAll();

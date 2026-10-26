@@ -12,3 +12,6 @@ void VID_SetMouseGrab(bool grab) {}
 void VID_SetCaption(const char *text) {}
 void VID_GetMousePos(float *x, float *y) { *x = *y = 0; }
 void VID_SetMousePos(float x, float y) {}
+void VID_Rumble(int dev, float low, float high, float seconds) {}
+void VID_RumbleTriggers(int dev, float left, float right, float seconds) {}
+void VID_SetControllerLED(int dev, const float *rgb) {}

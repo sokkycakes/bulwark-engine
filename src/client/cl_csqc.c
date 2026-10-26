@@ -4,6 +4,7 @@
 #include "client.h"
 #include "console.h"
 #include "keys.h"
+#include "vid.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/digest.h"
@@ -901,7 +902,18 @@ static void cl_anglesub(qcvm_t *vm)
 	QC_ReturnVector(vm, out);
 }
 
+static void cl_gp_rumble(qcvm_t *vm)
+{
+	VID_Rumble((int)QC_PFLOAT(vm, 0), QC_PFLOAT(vm, 1), QC_PFLOAT(vm, 2), QC_PFLOAT(vm, 3));
+}
+static void cl_gp_rumbletriggers(qcvm_t *vm)
+{
+	VID_RumbleTriggers((int)QC_PFLOAT(vm, 0), QC_PFLOAT(vm, 1), QC_PFLOAT(vm, 2), QC_PFLOAT(vm, 3));
+}
+static void cl_gp_setledcolor(qcvm_t *vm) { VID_SetControllerLED((int)QC_PFLOAT(vm, 0), QC_PVEC(vm, 1)); }
+
 const qc_builtin_t cl_builtins[] = {
+	{"gp_rumble", cl_gp_rumble}, {"gp_rumbletriggers", cl_gp_rumbletriggers}, {"gp_setledcolor", cl_gp_setledcolor},
 	{"readbyte", cl_readbyte}, {"readchar", cl_readchar}, {"readshort", cl_readshort}, {"readlong", cl_readlong},
 	{"readint", cl_readint}, {"readcoord", cl_readcoord}, {"readangle", cl_readangle}, {"readfloat", cl_readfloat},
 	{"readstring", cl_readstring}, {"readentitynum", cl_readentitynum}, {"readint64", cl_readint64},
