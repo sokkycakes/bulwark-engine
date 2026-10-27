@@ -9,6 +9,10 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 #define STBTT_malloc(x, u) ((void)(u), Mem_Alloc(x))
 #define STBTT_free(x, u) ((void)(u), Mem_Free(x))
@@ -210,14 +214,21 @@ void R_End2D(void)
 
 /* --- fonts -------------------------------------------------------------- */
 
+/* Text whose font has no TrueType file (font slot 0, a game font that
+ * failed to load, the console without con_font) uses the default face,
+ * r_font, like Source's VGUI does with Tahoma. It is looked for in the
+ * game folders, then the system's font folders, and the bundled DejaVu
+ * Sans Condensed stands in when it isn't installed: Tahoma is Microsoft's
+ * and can't be shipped. r_quakefont 1 brings back the 8x8 bitmap font. */
+
 #define MAX_FONTS 32
-#define MAX_FONT_SIZES 8
-#define FONT_ATLAS 1024
+#define MAX_FONT_SIZES 16
 #define FONT_FIRST 32
 #define FONT_COUNT 224 /* 32..255 */
 
 typedef struct {
 	int pixelsize;
+	int atlasdim;
 	image_t *atlas;
 	stbtt_bakedchar chars[FONT_COUNT];
 	float ascent;
@@ -226,17 +237,24 @@ typedef struct {
 typedef struct {
 	bool used;
 	char name[128];
-	uint8_t *ttf; /* NULL: the built-in bitmap font */
+	char file[256]; /* where the TrueType data came from */
+	uint8_t *ttf; /* NULL: the built-in bitmap font, or the default face */
+	bool embedded; /* ttf is the bundled font, not to be freed */
+	bool shadow, outline; /* asked for in loadfont's sizes ("outline=1") */
 	stbtt_fontinfo info;
-	int requested[MAX_FONT_SIZES];
-	int numrequested;
 	fontsize_t sizes[MAX_FONT_SIZES];
 	int numsizes;
 } font_t;
 
+extern const unsigned char bw_deffont[];
+extern const size_t bw_deffont_size;
+
+static cvar_t *r_font, *r_quakefont, *r_font_shadow, *r_font_outline;
 static font_t fonts[MAX_FONTS];
+static font_t deffont; /* the default face */
 static image_t *bitmapfont;
 static int r_drawfont; /* the font text uses, from the client game's drawfont global */
+static bool plaintext; /* no default shadow or outline (the console) */
 
 void R_SetDrawFont(int slot) { r_drawfont = slot >= 0 && slot < MAX_FONTS && fonts[slot].used ? slot : 0; }
 
@@ -276,25 +294,34 @@ static fontsize_t *font_size(font_t *f, float height)
 		if (d < bestdiff)
 			bestdiff = d, best = i;
 	}
-	/* bake a new size when none is close enough */
-	if ((best < 0 || bestdiff > 1) && f->numsizes < MAX_FONT_SIZES) {
+	/* bake each size exactly, so glyphs land one texel per screen pixel */
+	if (bestdiff && f->numsizes < MAX_FONT_SIZES) {
 		fontsize_t *fs = &f->sizes[f->numsizes];
-		uint8_t *alpha = Mem_Alloc(FONT_ATLAS * FONT_ATLAS);
-		uint8_t *rgba = Mem_Alloc(FONT_ATLAS * FONT_ATLAS * 4);
-		char name[160];
-		int asc, desc, gap;
+		uint8_t *alpha = NULL, *rgba;
+		char name[300];
+		int asc, desc, gap, dim;
 		float scale;
 		fs->pixelsize = want;
-		if (stbtt_BakeFontBitmap(f->ttf, stbtt_GetFontOffsetForIndex(f->ttf, 0), (float)want, alpha, FONT_ATLAS,
-		                         FONT_ATLAS, FONT_FIRST, FONT_COUNT, fs->chars) == 0) {
+		/* the smallest square atlas the glyphs fit in */
+		for (dim = 128; dim <= 2048; dim *= 2) {
+			Mem_Free(alpha);
+			alpha = Mem_Alloc((size_t)dim * dim);
+			if (stbtt_BakeFontBitmap(f->ttf, stbtt_GetFontOffsetForIndex(f->ttf, 0), (float)want, alpha, dim, dim,
+			                         FONT_FIRST, FONT_COUNT, fs->chars) > 0)
+				break;
+		}
+		if (dim > 2048) {
+			dim = 2048;
 			Con_DPrintf("font %s: size %d did not fit\n", f->name, want);
 		}
-		for (int i = 0; i < FONT_ATLAS * FONT_ATLAS; i++) {
+		fs->atlasdim = dim;
+		rgba = Mem_Alloc((size_t)dim * dim * 4);
+		for (int i = 0; i < dim * dim; i++) {
 			rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
 			rgba[i * 4 + 3] = alpha[i];
 		}
-		snprintf(name, sizeof(name), "$font:%s:%d", f->name, want);
-		fs->atlas = R_ImageFromPixels(name, rgba, FONT_ATLAS, FONT_ATLAS, IMG_NOMIP | IMG_CLAMP);
+		snprintf(name, sizeof(name), "$font:%s:%d", f->file[0] ? f->file : f->name, want);
+		fs->atlas = R_ImageFromPixels(name, rgba, dim, dim, IMG_NOMIP | IMG_CLAMP);
 		stbtt_GetFontVMetrics(&f->info, &asc, &desc, &gap);
 		scale = stbtt_ScaleForPixelHeight(&f->info, (float)want);
 		fs->ascent = asc * scale;
@@ -305,25 +332,215 @@ static fontsize_t *font_size(font_t *f, float height)
 	return best >= 0 ? &f->sizes[best] : NULL;
 }
 
-static bool load_ttf(font_t *f, const char *path)
+static bool take_ttf(font_t *f, uint8_t *data, const char *from)
 {
-	static const char *exts[] = {"", ".ttf", ".otf"};
-	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
-		char name[160];
-		size_t len;
-		uint8_t *data;
-		snprintf(name, sizeof(name), "%s%s", path, exts[i]);
-		data = (uint8_t *)FS_LoadFile(name, &len);
-		if (!data)
+	if (!stbtt_InitFont(&f->info, data, stbtt_GetFontOffsetForIndex(data, 0))) {
+		Mem_Free(data);
+		return false;
+	}
+	f->ttf = data;
+	Str_Copy(f->file, from, sizeof(f->file));
+	return true;
+}
+
+static uint8_t *read_os_file(const char *path)
+{
+	FILE *fp = fopen(path, "rb");
+	uint8_t *data;
+	long len;
+	if (!fp)
+		return NULL;
+	fseek(fp, 0, SEEK_END);
+	len = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+	if (len <= 0 || len > 64 << 20) {
+		fclose(fp);
+		return NULL;
+	}
+	data = Mem_Alloc((size_t)len);
+	if (fread(data, 1, (size_t)len, fp) != (size_t)len) {
+		Mem_Free(data);
+		data = NULL;
+	}
+	fclose(fp);
+	return data;
+}
+
+/* the file names a font goes by: VGUI schemes and QC name fonts by family
+ * ("Tahoma", "Lucida Console"), Windows by short file name */
+static int font_filenames(const char *name, char out[][64], int max)
+{
+	static const char *const aliases[][2] = {
+		{"tahoma", "tahoma.ttf"},         {"tahoma bold", "tahomabd.ttf"}, {"verdana", "verdana.ttf"},
+		{"verdana bold", "verdanab.ttf"}, {"lucida console", "lucon.ttf"}, {"courier new", "cour.ttf"},
+		{"cour", "cour.ttf"},             {"arial", "arial.ttf"},          {"trebuchet ms", "trebuc.ttf"},
+		{"marlett", "marlett.ttf"},
+	};
+	char lower[48], packed[48];
+	int n = 0, k = 0;
+	size_t i;
+	for (i = 0; name[i] && i < sizeof(lower) - 1; i++)
+		lower[i] = (char)(name[i] >= 'A' && name[i] <= 'Z' ? name[i] + 32 : name[i]);
+	lower[i] = 0;
+	for (i = 0; lower[i]; i++)
+		if (lower[i] != ' ')
+			packed[k++] = lower[i];
+	packed[k] = 0;
+	for (i = 0; i < BW_ARRAY_COUNT(aliases) && n < max; i++)
+		if (!strcmp(lower, aliases[i][0]))
+			Str_Copy(out[n++], aliases[i][1], 64);
+	if (strchr(lower, '.')) {
+		if (n < max)
+			Str_Copy(out[n++], lower, 64);
+		return n;
+	}
+	if (n + 6 <= max) {
+		snprintf(out[n++], 64, "%s.ttf", lower);
+		snprintf(out[n++], 64, "%s.otf", lower);
+		snprintf(out[n++], 64, "%s.ttf", packed);
+		snprintf(out[n++], 64, "%s.otf", packed);
+		snprintf(out[n++], 64, "%s-regular.ttf", packed);
+		snprintf(out[n++], 64, "%s-regular.otf", packed);
+	}
+	return n;
+}
+
+#ifndef _WIN32
+/* looks for one of names (any case) in dir and its subfolders */
+static bool find_in_dir(const char *dir, char names[][64], int numnames, int depth, char *out, size_t outsize)
+{
+	DIR *d = opendir(dir);
+	struct dirent *de;
+	bool found = false;
+	if (!d)
+		return false;
+	while (!found && (de = readdir(d))) {
+		char path[1024];
+		struct stat st;
+		if (de->d_name[0] == '.')
 			continue;
-		if (!stbtt_InitFont(&f->info, data, stbtt_GetFontOffsetForIndex(data, 0))) {
-			Mem_Free(data);
+		snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+		if (stat(path, &st))
+			continue;
+		if (S_ISDIR(st.st_mode)) {
+			if (depth > 0)
+				found = find_in_dir(path, names, numnames, depth - 1, out, outsize);
 			continue;
 		}
-		f->ttf = data;
-		return true;
+		for (int i = 0; i < numnames; i++)
+			if (!Str_ICmp(de->d_name, names[i])) {
+				Str_Copy(out, path, outsize);
+				found = true;
+				break;
+			}
 	}
+	closedir(d);
+	return found;
+}
+#endif
+
+/* an installed copy of a font, by family or file name */
+static bool load_system_font(font_t *f, const char *name)
+{
+	char names[16][64], path[1024];
+	int n = font_filenames(name, names, 16);
+	uint8_t *data;
+#ifdef _WIN32
+	const char *windir = getenv("WINDIR");
+	for (int i = 0; i < n; i++) {
+		snprintf(path, sizeof(path), "%s/Fonts/%s", windir ? windir : "C:/Windows", names[i]);
+		if ((data = read_os_file(path)) && take_ttf(f, data, path))
+			return true;
+	}
+#else
+	const char *home = getenv("HOME");
+	const char *dirs[] = {
+#ifdef __APPLE__
+		"~/Library/Fonts", "/Library/Fonts", "/System/Library/Fonts/Supplemental", "/System/Library/Fonts",
+#else
+		"~/.local/share/fonts", "~/.fonts", "/usr/local/share/fonts", "/usr/share/fonts",
+		"~/.wine/drive_c/windows/Fonts",
+#endif
+	};
+	for (size_t i = 0; i < BW_ARRAY_COUNT(dirs); i++) {
+		char dir[512];
+		if (dirs[i][0] == '~') {
+			if (!home)
+				continue;
+			snprintf(dir, sizeof(dir), "%s%s", home, dirs[i] + 1);
+		} else {
+			Str_Copy(dir, dirs[i], sizeof(dir));
+		}
+		if (find_in_dir(dir, names, n, 4, path, sizeof(path)) && (data = read_os_file(path)) &&
+		    take_ttf(f, data, path))
+			return true;
+	}
+#endif
 	return false;
+}
+
+static bool load_ttf(font_t *f, const char *path)
+{
+	static const char *const forms[] = {"%s", "%s.ttf", "%s.otf", "fonts/%s.ttf", "fonts/%s.otf"};
+	if (!path[0])
+		return false;
+	for (size_t i = 0; i < BW_ARRAY_COUNT(forms); i++) {
+		char name[160];
+		uint8_t *data;
+		size_t len;
+		snprintf(name, sizeof(name), forms[i], path);
+		if ((data = (uint8_t *)FS_LoadFile(name, &len)) && take_ttf(f, data, name))
+			return true;
+	}
+	/* a bare name may be an installed font; a path may be a file outside
+	 * the game (r_font /usr/share/fonts/...) */
+	if (path[0] == '/' || (path[0] && path[1] == ':')) {
+		uint8_t *data = read_os_file(path);
+		return data && take_ttf(f, data, path);
+	}
+	return !strchr(path, '/') && load_system_font(f, path);
+}
+
+static void free_font(font_t *f)
+{
+	if (!f->embedded)
+		Mem_Free(f->ttf);
+	memset(f, 0, sizeof(*f));
+}
+
+/* loads the default face when r_font changes */
+static font_t *default_face(void)
+{
+	if (deffont.used && !strcmp(deffont.name, r_font->string))
+		return &deffont;
+	free_font(&deffont);
+	deffont.used = true;
+	Str_Copy(deffont.name, r_font->string, sizeof(deffont.name));
+	if (load_ttf(&deffont, r_font->string)) {
+		Con_DPrintf("default font %s from %s\n", deffont.name, deffont.file);
+	} else {
+		if (r_font->string[0])
+			Con_DPrintf("default font %s isn't installed, using DejaVu Sans Condensed\n", r_font->string);
+		stbtt_InitFont(&deffont.info, bw_deffont, stbtt_GetFontOffsetForIndex(bw_deffont, 0));
+		deffont.ttf = (uint8_t *)bw_deffont;
+		deffont.embedded = true;
+		Str_Copy(deffont.file, "(bundled) DejaVu Sans Condensed", sizeof(deffont.file));
+	}
+	return &deffont;
+}
+
+/* the font that draws slot's text */
+static font_t *face_for(int slot)
+{
+	font_t *f = &fonts[slot];
+	if (f->ttf || !r_quakefont || r_quakefont->value)
+		return f;
+	return default_face();
+}
+
+const char *R_DefaultFontFile(void)
+{
+	return r_quakefont && r_quakefont->value ? NULL : default_face()->file;
 }
 
 int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
@@ -339,14 +556,24 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	if (slot <= 0 || slot >= MAX_FONTS)
 		return 0;
 	f = &fonts[slot];
-	Mem_Free(f->ttf);
-	memset(f, 0, sizeof(*f));
+	free_font(f);
 	f->used = true;
 	Str_Copy(f->name, path, sizeof(f->name));
 	if (!load_ttf(f, path))
-		Con_DPrintf("font %s: no TrueType file, using the built-in font\n", path);
+		Con_DPrintf("font %s: no TrueType file, using the default font\n", path);
+	/* sizes are baked on demand; the string's flags are kept */
+	for (const char *s = sizes ? sizes : ""; *s;) {
+		size_t len = strcspn(s, " \t,");
+		if (len > 8 && !strncmp(s, "outline=", 8))
+			f->outline = atoi(s + 8) != 0;
+		else if (len > 7 && !strncmp(s, "shadow=", 7))
+			f->shadow = atoi(s + 7) != 0;
+		else if (len > 11 && !strncmp(s, "dropshadow=", 11))
+			f->shadow = atoi(s + 11) != 0;
+		s += len;
+		s += strspn(s, " \t,");
+	}
 	(void)name;
-	(void)sizes;
 	return slot;
 }
 
@@ -447,50 +674,107 @@ static float char_advance(font_t *f, fontsize_t *fs, int c, float sx, float sy)
 	return sx;
 }
 
+/* Effects, drawn under the text in black like Source's dropshadow and
+ * outline font flags: a shadow one screen pixel down and right, an outline
+ * one pixel all round (more for big text). */
+static const float effect_offsets[9][2] = {{1, 1}, {-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+                                           {1, 0}, {-1, 1},  {0, 1},  {1, 1}};
+
 static float draw_text(float x, float y, const char *text, float sx, float sy, const float *rgb, float alpha,
                        int flags, bool usemarkup, bool measure)
 {
-	font_t *f = &fonts[r_drawfont];
+	font_t *slot = &fonts[r_drawfont], *f = face_for(r_drawfont);
 	fontsize_t *fs = sy > 0 ? font_size(f, sy) : NULL;
-	float color[4] = {rgb[0], rgb[1], rgb[2], alpha};
-	float startx = x, maxx = x;
-	const char *p = text;
+	float color[4], black[4] = {0, 0, 0, alpha};
+	float startx = x, starty = y, maxx = x, px = 1 / r_2dscale, k = 1, kx = 1, ascent = 0;
+	bool shadow = slot->shadow, outline = slot->outline, snap = false;
+	int first = 0, numoffsets = 0;
 	GLuint tex = fs ? fs->atlas->tex : bitmapfont ? bitmapfont->tex : 0;
 	if (sx <= 0)
 		sx = sy;
+	if (fs) {
+		k = sy / fs->pixelsize; /* atlas pixels to virtual ones */
+		kx = k * (sx / sy);
+		ascent = fs->ascent * k;
+		/* glyphs baked at the size they're drawn are put on whole screen
+		 * pixels, which keeps small text sharp */
+		snap = sx == sy && fabsf(k * r_2dscale - 1) < 0.01f;
+	}
+	if (f != slot && !plaintext) {
+		shadow |= r_font_shadow->value != 0;
+		outline |= r_font_outline->value != 0;
+	}
+	if (measure || !in2d)
+		shadow = outline = false;
+	if (outline)
+		first = 1, numoffsets = 8;
+	else if (shadow)
+		first = 0, numoffsets = 1;
+	if (outline || shadow) {
+		/* thicker for big text: a pixel per 24 screen pixels of height */
+		float grow = BW_MAX(1.0f, floorf(sy * r_2dscale / 24));
+		px *= grow;
+	}
 	if (!measure && in2d)
 		set_state(tex, flag_blend(flags, BLEND_ALPHA), 0, 0, NULL, 0);
-	while (*p) {
-		int c;
-		if (usemarkup && p[0] == '^' && p[1] == '^') {
-			p++;
-		} else if (usemarkup && markup(&p, color, rgb)) {
-			continue;
-		}
-		if (*p == '\n') {
-			p++;
-			maxx = BW_MAX(maxx, x);
-			x = startx;
-			y += sy;
-			continue;
-		}
-		c = utf8_next(&p);
-		if (!measure && in2d) {
-			if (fs && c >= FONT_FIRST && c < FONT_FIRST + FONT_COUNT) {
-				stbtt_bakedchar *b = &fs->chars[c - FONT_FIRST];
-				float k = sy / fs->pixelsize; /* atlas pixels to virtual ones */
-				float kx = k * (sx / sy);
-				float base = y + fs->ascent * k;
-				set_state(tex, cur_blend, cur_src, cur_dst, NULL, 0);
-				quad(x + b->xoff * kx, base + b->yoff * k, (b->x1 - b->x0) * kx, (b->y1 - b->y0) * k,
-				     b->x0 / (float)FONT_ATLAS, b->y0 / (float)FONT_ATLAS, b->x1 / (float)FONT_ATLAS,
-				     b->y1 / (float)FONT_ATLAS, color);
-			} else if (!fs && c > 32 && c < 128) {
-				float s = (c % 16) / 16.0f, t = (c / 16) / 16.0f;
-				quad(x, y, sx, sy, s, t, s + 1 / 16.0f, t + 1 / 16.0f, color);
+	/* pass 0 draws the effect under all of the text, pass 1 the text */
+	for (int pass = numoffsets ? 0 : 1; pass < 2; pass++) {
+		const char *p = text;
+		x = startx;
+		y = starty;
+		color[0] = rgb[0], color[1] = rgb[1], color[2] = rgb[2], color[3] = alpha;
+		while (*p) {
+			int c;
+			if (usemarkup && p[0] == '^' && p[1] == '^') {
+				p++;
+			} else if (usemarkup && markup(&p, color, rgb)) {
+				continue;
 			}
+			if (*p == '\n') {
+				p++;
+				maxx = BW_MAX(maxx, x);
+				x = startx;
+				y += sy;
+				continue;
+			}
+			c = utf8_next(&p);
+			if (!measure && in2d) {
+				float gx, gy, gw, gh, s1, t1, s2, t2;
+				bool draw = false;
+				if (fs && c >= FONT_FIRST && c < FONT_FIRST + FONT_COUNT) {
+					stbtt_bakedchar *b = &fs->chars[c - FONT_FIRST];
+					float inv = 1.0f / fs->atlasdim, ox = x, base = y + ascent;
+					if (snap) {
+						ox = roundf(ox * r_2dscale) / r_2dscale;
+						base = roundf(base * r_2dscale) / r_2dscale;
+					}
+					gx = ox + b->xoff * kx, gy = base + b->yoff * k;
+					gw = (b->x1 - b->x0) * kx, gh = (b->y1 - b->y0) * k;
+					s1 = b->x0 * inv, t1 = b->y0 * inv, s2 = b->x1 * inv, t2 = b->y1 * inv;
+					draw = b->x1 > b->x0;
+				} else if (!fs && c > 32 && c < 128) {
+					gx = x, gy = y, gw = sx, gh = sy;
+					s1 = (c % 16) / 16.0f, t1 = (c / 16) / 16.0f, s2 = s1 + 1 / 16.0f, t2 = t1 + 1 / 16.0f;
+					draw = true;
+				}
+				if (draw)
+					set_state(tex, cur_blend, cur_src, cur_dst, NULL, 0);
+				if (draw && pass == 0) {
+					black[3] = color[3];
+					for (int o = first; o < first + numoffsets; o++) {
+						set_state(tex, cur_blend, cur_src, cur_dst, NULL, 0);
+						quad(gx + effect_offsets[o][0] * px, gy + effect_offsets[o][1] * px, gw, gh, s1, t1, s2, t2,
+						     black);
+					}
+					set_state(tex, cur_blend, cur_src, cur_dst, NULL, 0);
+					if (outline && shadow)
+						quad(gx + 2 * px, gy + 2 * px, gw, gh, s1, t1, s2, t2, black);
+				} else if (draw) {
+					quad(gx, gy, gw, gh, s1, t1, s2, t2, color);
+				}
+			}
+			x += char_advance(f, fs, c, sx, sy);
 		}
-		x += char_advance(f, fs, c, sx, sy);
 	}
 	return BW_MAX(maxx, x) - startx;
 }
@@ -556,13 +840,20 @@ static void draw_suggestions(int w, int h, float top, float size)
 void R_DrawConsole(int w, int h)
 {
 	static const float white[3] = {1, 1, 1}, dim[3] = {0, 0, 0};
-	float size = con_textsize->value > 0 ? con_textsize->value : 8;
-	float height, y;
+	float size, height, y;
 	int cursor, saved = r_drawfont;
 	const char *input;
 	if (!Con_IsActive())
 		return;
 	r_drawfont = con_font->string[0] ? R_LoadFont("", con_font->string, "", -1) : 0;
+	/* 0 picks a size for the font: 8 for the Quake font's 8x8 cells, 12 for
+	 * a TrueType face, whose letters sit smaller in their line. Configs
+	 * saved before the default face came in hold the old default, 8, which
+	 * is treated the same way. */
+	size = con_textsize->value;
+	if (size <= 0 || size == 8)
+		size = face_for(r_drawfont)->ttf ? 12 : 8;
+	plaintext = true;
 	height = floorf(h * BW_MAX(0.1f, BW_MIN(1.0f, scr_conheight->value)));
 	R_DrawFill(0, 0, (float)w, height, dim, scr_conalpha->value, 0);
 	{
@@ -600,6 +891,7 @@ void R_DrawConsole(int w, int h)
 	}
 	draw_suggestions(w, h, height, size);
 	r_drawfont = saved;
+	plaintext = false;
 }
 
 void R_InitDraw(void)
@@ -607,7 +899,17 @@ void R_InitDraw(void)
 	con_font = Cvar_Get("con_font", "", CVAR_ARCHIVE, "TrueType or OpenType font for the console, empty for the built-in one");
 	scr_conheight = Cvar_Get("scr_conheight", "0.5", CVAR_ARCHIVE, "Console height, as a fraction of the screen");
 	scr_conalpha = Cvar_Get("scr_conalpha", "0.85", CVAR_ARCHIVE, "Console background opacity");
-	con_textsize = Cvar_Get("con_textsize", "8", CVAR_ARCHIVE, "Console text height in virtual pixels");
+	con_textsize = Cvar_Get("con_textsize", "0", CVAR_ARCHIVE,
+	                        "Console text height in virtual pixels; 0 (or 8) picks 8 for the Quake font and 12 for TrueType");
+	r_font = Cvar_Get("r_font", "Tahoma", CVAR_ARCHIVE,
+	                  "Default font for text without a font of its own: a font file or an installed font's name. "
+	                  "DejaVu Sans Condensed stands in when it isn't found");
+	r_quakefont = Cvar_Get("r_quakefont", "0", CVAR_ARCHIVE,
+	                       "1 draws text without a font of its own in the Quake-style 8x8 bitmap font");
+	r_font_shadow = Cvar_Get("r_font_shadow", "1", CVAR_ARCHIVE,
+	                         "Drop shadow under text in the default font (not the console)");
+	r_font_outline = Cvar_Get("r_font_outline", "0", CVAR_ARCHIVE,
+	                          "Black outline round text in the default font (not the console)");
 	fonts[0].used = true;
 	Str_Copy(fonts[0].name, "$builtin", sizeof(fonts[0].name));
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(indices) / 6; i++) {
@@ -623,10 +925,9 @@ void R_InitDraw(void)
 
 void R_ShutdownDraw(void)
 {
-	for (int i = 0; i < MAX_FONTS; i++) {
-		Mem_Free(fonts[i].ttf);
-		memset(&fonts[i], 0, sizeof(fonts[i]));
-	}
+	for (int i = 0; i < MAX_FONTS; i++)
+		free_font(&fonts[i]);
+	free_font(&deffont);
 	bitmapfont = NULL;
 	memset(imagehandles, 0, sizeof(imagehandles));
 	numimagehandles = 1;

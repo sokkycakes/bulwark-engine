@@ -384,6 +384,7 @@ int R_NumWads(void);
 bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs);
 const char *R_GLSLHeader(void);
 bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *numsizes);
+const char *R_DefaultFontFile(void); /* NULL with r_quakefont 1 */
 bool R_ToolsRedrawing(void);   /* a screenshot tool is drawing the scene again */
 void R_DrawToolsWorld(void);   /* pointfile and route lines, in the 3D pass */
 void R_DrawToolsOverlay(int w, int h); /* showpic pictures */

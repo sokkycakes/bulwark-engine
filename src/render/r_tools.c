@@ -552,14 +552,15 @@ static void Listfonts_f(int argc, const char **argv)
 	FS_List("fonts/*.ttf", true, font_file, &count);
 	FS_List("fonts/*.otf", true, font_file, &count);
 	FS_List("fonts/*.font", true, font_file, &count);
-	Con_Printf("%d font files\nLoaded:\n", count);
+	Con_Printf("%d font files\nDefault font (r_font): %s\nLoaded:\n", count,
+	           R_DefaultFontFile() ? R_DefaultFontFile() : "Quake-style bitmap font (r_quakefont 1)");
 	for (int i = 0; i < 64; i++) {
 		const char *name;
 		bool ttf;
 		int sizes[16], n;
 		if (!R_FontInfo(i, &name, &ttf, sizes, &n))
 			continue;
-		Con_Printf("  %2d %s%s", i, name, ttf ? "" : " (built-in bitmap font)");
+		Con_Printf("  %2d %s%s", i, name, ttf ? "" : " (default font)");
 		for (int k = 0; k < n; k++)
 			Con_Printf("%s%d", k ? "," : " sizes ", sizes[k]);
 		Con_Printf("\n");

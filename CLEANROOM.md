@@ -40,3 +40,8 @@ unmodified, with their licence text kept at the end of each file:
   Sean Barrett and contributors: public domain (or MIT, at your choice).
 - `font8x8_basic.h` by Daniel Hepper, from Marcel Sondaar's and IBM's 8x8
   fonts: public domain.
+
+Fonts in `data/fonts/` are shipped unmodified, each with its own licence file:
+
+- `DejaVuSansCondensed.ttf` from DejaVu Fonts 2.37: Bitstream Vera and Arev
+  font licences (permissive, see `data/fonts/DejaVu-LICENSE.txt`).
