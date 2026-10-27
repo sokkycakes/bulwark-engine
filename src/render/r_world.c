@@ -695,6 +695,7 @@ fail:
 
 void R_FreeWorld(void)
 {
+	R_FreeStaticProps();
 	if (R_Active()) {
 		if (r_world.vao)
 			qglDeleteVertexArrays(1, &r_world.vao);

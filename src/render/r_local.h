@@ -328,6 +328,9 @@ void R_ClearScene(void);
 rentity_t *R_AllocEntity(void);
 void R_RenderScene(void);
 void R_DrawModelEntity(rentity_t *e, bool translucentpass);
+/* r_srcworld.c: a Source map's prop_static models */
+void R_DrawStaticProps(bool translucentpass);
+void R_FreeStaticProps(void);
 void R_DrawPolygons(bool twod);
 void R_BeginPolygon(const char *shader, int flags, bool twod);
 void R_PolygonVertex(const float *org, const float *tc, const float *rgb, float alpha);

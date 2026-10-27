@@ -184,6 +184,67 @@ typedef struct {
 	int flags, texdata;
 } texinfo_t;
 
+/* --- static props ---------------------------------------------------------------- */
+
+/* the map's prop_static models, drawn with the world. Their .mdl files come
+ * from the game (the Source plugin reads them); a prop whose model isn't
+ * there is left out, as its collision box still is on the server. */
+typedef struct {
+	rmodel_t *model;
+	float origin[3];
+	float axis[3][3];
+} sprop_t;
+static sprop_t *sprops;
+static int numsprops;
+
+static void load_static_props(const vbsp_t *v)
+{
+	vbsp_staticprops_t sp;
+	int missing = 0;
+	if (!VBSP_StaticProps(v, &sp))
+		return;
+	sprops = Mem_Alloc(sizeof(sprop_t) * (sp.numprops + 1));
+	for (int i = 0; i < sp.numprops; i++) {
+		const vbsp_staticprop_t *p = &sp.props[i];
+		rmodel_t *m = p->model >= 0 ? R_LoadModel(sp.names[p->model]) : NULL;
+		sprop_t *o = &sprops[numsprops];
+		if (!m || !m->loaded) {
+			missing++;
+			continue;
+		}
+		o->model = m;
+		VectorCopy(p->origin, o->origin);
+		/* Source's angles, as given: pitch down is positive, like a view */
+		AnglesToAxis(p->angles, o->axis);
+		numsprops++;
+	}
+	if (missing)
+		Con_DPrintf("%d of %d static props have no model here\n", missing, sp.numprops);
+	VBSP_FreeStaticProps(&sp);
+}
+
+void R_FreeStaticProps(void)
+{
+	Mem_Free(sprops);
+	sprops = NULL;
+	numsprops = 0;
+}
+
+void R_DrawStaticProps(bool translucentpass)
+{
+	for (int i = 0; i < numsprops; i++) {
+		rentity_t e;
+		memset(&e, 0, sizeof(e));
+		e.model = sprops[i].model;
+		VectorCopy(sprops[i].origin, e.origin);
+		memcpy(e.axis, sprops[i].axis, sizeof(e.axis));
+		e.scale = e.alpha = 1;
+		e.colormod[0] = e.colormod[1] = e.colormod[2] = 1;
+		e.entnum = -1;
+		R_DrawModelEntity(&e, translucentpass);
+	}
+}
+
 bool R_LoadSourceWorld(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size)
 {
 	vbsp_t v;
@@ -458,6 +519,7 @@ bool R_LoadSourceWorld(bspmap_t *bsp, const char *path, const uint8_t *d, size_t
 	(void)bsp;
 	R_WorldUpload(g.v, g.num, g.i, g.numi);
 	Con_DPrintf("%s: Source BSP, %d faces, %d lightmap pages\n", path, numfaces, atlas.num);
+	load_static_props(&v);
 	ok = true;
 
 done:

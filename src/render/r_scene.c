@@ -480,9 +480,12 @@ void R_RenderScene(void)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
 	if (r_scene.drawworld && r_drawworld->ivalue)
 		R_DrawVoxels(false);
-	if (r_drawentities->ivalue)
+	if (r_drawentities->ivalue) {
+		if (r_scene.drawworld && r_world.loaded)
+			R_DrawStaticProps(false);
 		for (int i = 0; i < r_scene.numents; i++)
 			R_DrawModelEntity(&r_scene.ents[i], false);
+	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue) {
 		if (!r_scene.skyroom)
 			R_DrawSky(r_scene.viewproj);
@@ -496,6 +499,8 @@ void R_RenderScene(void)
 	if (r_scene.drawworld && r_drawworld->ivalue)
 		R_DrawVoxels(true);
 	if (r_drawentities->ivalue) {
+		if (r_scene.drawworld && r_world.loaded)
+			R_DrawStaticProps(true);
 		for (int i = 0; i < r_scene.numents; i++)
 			sorted[nsorted++] = &r_scene.ents[i];
 		qsort(sorted, nsorted, sizeof(sorted[0]), dist_cmp);
