@@ -224,9 +224,8 @@ void R_End2D(void)
  * failed to load, the console without con_font) uses the default face,
  * r_font, like Source's VGUI does with Tahoma. It is looked for in the
  * game folders, then the system's font folders, and the bundled DejaVu
- * Sans stands in when it isn't installed, as it does for Source on Linux:
- * Tahoma is Microsoft's and can't be shipped. Rendering follows
- * docs/spec/fonts.md. r_quakefont 1 brings back the 8x8 bitmap font. */
+ * Sans Condensed stands in when it isn't installed: Tahoma is Microsoft's
+ * and can't be shipped. r_quakefont 1 brings back the 8x8 bitmap font. */
 
 #define MAX_FONTS 32
 #define MAX_FONT_SIZES 16
@@ -275,8 +274,8 @@ typedef struct {
 	int numsizes;
 } font_t;
 
-extern const unsigned char bw_deffont[], bw_deffont_bold[];
-extern const size_t bw_deffont_size, bw_deffont_bold_size;
+extern const unsigned char bw_deffont[], bw_deffont_bold[], bw_widefont[];
+extern const size_t bw_deffont_size, bw_deffont_bold_size, bw_widefont_size;
 
 static cvar_t *r_font, *r_quakefont, *r_font_shadow, *r_font_outline, *r_font_antialias;
 static font_t fonts[MAX_FONTS];
@@ -458,8 +457,8 @@ static fontsize_t *font_size(font_t *f, float height, bool aa)
 			rgba[i * 4 + 3] = alpha[i];
 		}
 		snprintf(name, sizeof(name), "$font:%s:%d%s", f->file[0] ? f->file : f->name, want, aa ? "" : ":mono");
-		/* point sampled: each texel lands on one screen pixel */
-		fs->atlas = R_ImageFromPixels(name, rgba, dim, dim, IMG_NOMIP | IMG_CLAMP | IMG_NEAREST);
+		/* crisp glyphs are drawn texel for pixel; nearest keeps their edges hard */
+		fs->atlas = R_ImageFromPixels(name, rgba, dim, dim, IMG_NOMIP | IMG_CLAMP | (aa ? 0 : IMG_NEAREST));
 		Mem_Free(alpha);
 		Mem_Free(rgba);
 		return &f->sizes[f->numsizes++];
@@ -658,8 +657,8 @@ static font_t *default_face(bool bold)
 		const unsigned char *data;
 		const size_t *size;
 		const char *name;
-	} bundled[2] = {{bw_deffont, &bw_deffont_size, "DejaVu Sans"},
-	                {bw_deffont_bold, &bw_deffont_bold_size, "DejaVu Sans Bold"}};
+	} bundled[2] = {{bw_deffont, &bw_deffont_size, "DejaVu Sans Condensed"},
+	                {bw_deffont_bold, &bw_deffont_bold_size, "DejaVu Sans Condensed Bold"}};
 	font_t *f = &deffonts[bold];
 	char want[140];
 	if (f->used && !strcmp(f->name, r_font->string))
@@ -744,9 +743,21 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	Str_Copy(f->name, path, sizeof(f->name));
 	if (!load_ttf(f, path)) {
 		/* a missing "Verdana Bold" or "fonts/x-bold.ttf" falls back to the
-		 * default face's bold */
-		for (const char *p = path; *p && !f->bold; p++)
-			f->bold = !Str_NICmp(p, "bold", 4);
+		 * default face's bold, a missing Verdana to DejaVu Sans, which has
+		 * Verdana's wide letters (CS:S chat is Verdana) */
+		bool verdana = false;
+		for (const char *p = path; *p; p++) {
+			f->bold |= !Str_NICmp(p, "bold", 4);
+			verdana |= !Str_NICmp(p, "verdana", 7);
+		}
+		if (verdana && !f->bold) {
+			stbtt_InitFont(&f->info, bw_widefont, stbtt_GetFontOffsetForIndex(bw_widefont, 0));
+			f->ttf = (uint8_t *)bw_widefont;
+			f->ttfsize = bw_widefont_size;
+			f->embedded = true;
+			f->system = true; /* stands in for an installed font, so drawn like one */
+			Str_Copy(f->file, "(bundled) DejaVu Sans", sizeof(f->file));
+		}
 		Con_DPrintf("font %s: no TrueType file, using %s\n", path, f->ttf ? f->file : "the default font");
 	}
 	(void)name;
@@ -851,9 +862,9 @@ static float char_advance(font_t *f, fontsize_t *fs, int c, float sx, float sy)
 	return sx;
 }
 
-/* Effects in black under the text, like Source's dropshadow and outline
- * font flags: a shadow one screen pixel down and right, an outline one
- * pixel all round (docs/spec/fonts.md). */
+/* Effects, drawn under the text in black like Source's dropshadow and
+ * outline font flags: a shadow one screen pixel down and right, an outline
+ * one pixel all round (more for big text). */
 static const float effect_offsets[9][2] = {{1, 1}, {-1, -1}, {0, -1}, {1, -1}, {-1, 0},
                                            {1, 0}, {-1, 1},  {0, 1},  {1, 1}};
 
@@ -890,6 +901,11 @@ static float draw_text(float x, float y, const char *text, float sx, float sy, c
 		first = 1, numoffsets = 8;
 	else if (shadow)
 		first = 0, numoffsets = 1;
+	if (outline || shadow) {
+		/* thicker for big text: a pixel per 24 screen pixels of height */
+		float grow = BW_MAX(1.0f, floorf(sy * r_2dscale / 24));
+		px *= grow;
+	}
 	if (!measure && in2d)
 		set_state(tex, flag_blend(flags, BLEND_ALPHA), 0, 0, NULL, 0);
 	/* pass 0 draws the effect under all of the text, pass 1 the text */
@@ -1016,9 +1032,6 @@ static void draw_suggestions(int w, int h, float top, float size)
 void R_DrawConsole(int w, int h)
 {
 	static const float white[3] = {1, 1, 1}, dim[3] = {0, 0, 0};
-	/* Source's console text colour, off-white, with a TrueType face */
-	static const float source_text[3] = {216 / 255.0f, 222 / 255.0f, 211 / 255.0f};
-	const float *text;
 	float size, height, y;
 	int cursor, saved = r_drawfont;
 	const char *input;
@@ -1032,7 +1045,6 @@ void R_DrawConsole(int w, int h)
 	size = con_textsize->value;
 	if (size <= 0 || size == 8)
 		size = face_for(r_drawfont)->ttf ? 12 : 8;
-	text = face_for(r_drawfont)->ttf ? source_text : white;
 	plaintext = true;
 	height = floorf(h * BW_MAX(0.1f, BW_MIN(1.0f, scr_conheight->value)));
 	R_DrawFill(0, 0, (float)w, height, dim, scr_conalpha->value, 0);
@@ -1051,7 +1063,7 @@ void R_DrawConsole(int w, int h)
 	{
 		char line[300];
 		snprintf(line, sizeof(line), "]%s", input);
-		R_DrawString(4, y, line, size, size, text, 1, 0, false);
+		R_DrawString(4, y, line, size, size, white, 1, 0, false);
 		if (((int)(r_time * 3)) & 1) {
 			char pre[300];
 			float cx;
@@ -1067,7 +1079,7 @@ void R_DrawConsole(int w, int h)
 			break;
 		if (back == 0 && !*l)
 			continue; /* the line being written is empty */
-		R_DrawString(4, y, l, size, size, text, 1, 0, true);
+		R_DrawString(4, y, l, size, size, white, 1, 0, true);
 	}
 	draw_suggestions(w, h, height, size);
 	r_drawfont = saved;
@@ -1083,7 +1095,7 @@ void R_InitDraw(void)
 	                        "Console text height in virtual pixels; 0 (or 8) picks 8 for the Quake font and 12 for TrueType");
 	r_font = Cvar_Get("r_font", "Tahoma", CVAR_ARCHIVE,
 	                  "Default font for text without a font of its own: a font file or an installed font's name. "
-	                  "DejaVu Sans stands in when it isn't found");
+	                  "DejaVu Sans Condensed stands in when it isn't found");
 	r_quakefont = Cvar_Get("r_quakefont", "0", CVAR_ARCHIVE,
 	                       "1 draws text without a font of its own in the Quake-style 8x8 bitmap font");
 	r_font_shadow = Cvar_Get("r_font_shadow", "1", CVAR_ARCHIVE,
