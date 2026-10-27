@@ -64,6 +64,27 @@ jobs:
           ./build/gdidump out/windows/fonts out/gdifont
           ./build/gdidump --ppem-offset -1 out/windows/fonts out/gdifont-m1
           ./build/gdidump --ppem-offset 1 out/windows/fonts out/gdifont-p1
+      - name: Render tuning variants
+        # Each line is label and gdifont_tuning_t overrides (see gdifont.h);
+        # score.py ranks them against Windows below.
+        run: |
+          while read -r label tune; do
+            [ -n "$label" ] || continue
+            ./build/gdidump --tune "$tune" out/windows/fonts "out/var-$label"
+            echo "$label=out/var-$label" >> out/variants.txt
+          done <<'VARIANTS'
+          grey-centre-graymode gray_method=1
+          grey-centre-monomode gray_method=1,gray_hint=1
+          grey-corner-graymode gray_method=1,sample_phase=1
+          grey-corner-monomode gray_method=1,gray_hint=1,sample_phase=1
+          nogridfit-mono nogridfit=1
+          nogridfit-grey nogridfit=2
+          nogridfit-grey-sampled nogridfit=2,gray_method=1
+          abc-graymode aa_measure=1
+          abc-graymode-gasp aa_measure=2
+          abc-greybox aa_measure=3
+          abc-greybox-gasp aa_measure=4
+          VARIANTS
       - name: Compare with Windows
         run: |
           python3 -I tools/gdiref/compare.py out/windows out/gdifont --md out/summary.md > /dev/null
@@ -72,8 +93,12 @@ jobs:
           sed -n '/identical fraction/,$p' out/summary.md | grep -v "^- ("
           echo "===== BEST PPEM ====="
           python3 -I tools/gdiref/best_ppem.py out/windows m1=out/gdifont-m1 0=out/gdifont p1=out/gdifont-p1
+          echo "===== VARIANTS ====="
+          python3 -I tools/gdiref/score.py out/windows default=out/gdifont $(cat out/variants.txt)
           echo "===== DIAGNOSTICS ====="
           python3 -I tools/gdiref/diagnose.py out/windows out/gdifont
+          echo "===== SHEETS ====="
+          python3 -I tools/gdiref/sheets.py out/windows out/gdifont
       - uses: actions/upload-artifact@v4
         with:
           name: gdifont-out

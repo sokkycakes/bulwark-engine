@@ -3,10 +3,12 @@
  * and write the same JSONL files, so tools/gdiref/compare.py can score it
  * against a Windows capture.
  *
- * usage: gdidump [--ppem-offset N] <fonts_dir> <outdir>
+ * usage: gdidump [--ppem-offset N] [--tune key=value,...] <fonts_dir> <outdir>
  *
  * --ppem-offset renders N ems away from the size rule's choice (for
- * tools/gdiref/best_ppem.py).
+ * tools/gdiref/best_ppem.py). --tune overrides gdifont_tuning_t fields
+ * (gray_method, gray_hint, sample_phase, nogridfit, aa_measure) to score
+ * alternatives against Windows.
  *
  * Font files are looked up as <fonts_dir>/<Face>_<weight>.ttf (or .ttc), the
  * names gdiref gives the files it captures with GetFontData. They are copied
@@ -28,7 +30,7 @@
 
 static const char *g_faces[] = { "Tahoma", "Verdana", "Arial", "Courier New", "Trebuchet MS", "Times New Roman" };
 static const int g_weights[] = { 400, 700 };
-static int g_ppem_offset;
+static gdifont_tuning_t g_tune;
 static const char b64tab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static void put_b64(FILE *f, const unsigned char *p, size_t n)
@@ -111,7 +113,7 @@ static void run_config(FILE *gl, FILE *cf, const char *face, const unsigned char
 {
 	const char *err = NULL;
 	gdifont_t *font = gdifont_create_memory_ex(file, len, tall, weight, 0,
-		aa ? GDIFONT_ANTIALIASED : GDIFONT_NONANTIALIASED, g_ppem_offset, &err);
+		aa ? GDIFONT_ANTIALIASED : GDIFONT_NONANTIALIASED, &g_tune, &err);
 	const gdifont_metrics_t *tm;
 	const int pad = 8;
 	int dibw, dibh, i;
@@ -194,13 +196,30 @@ int main(int argc, char **argv)
 	int ncp, fi, wi, t, aa, found = 0;
 	FILE *gl, *cf, *env;
 
-	if (argc == 5 && !strcmp(argv[1], "--ppem-offset")) {
-		g_ppem_offset = atoi(argv[2]);
+	g_tune = gdifont_default_tuning;
+	while (argc >= 5 && !strncmp(argv[1], "--", 2)) {
+		if (!strcmp(argv[1], "--ppem-offset"))
+			g_tune.ppem_delta = atoi(argv[2]);
+		else if (!strcmp(argv[1], "--tune")) {
+			char *opts = argv[2], *kv;
+			for (kv = strtok(opts, ","); kv; kv = strtok(NULL, ",")) {
+				char *eq = strchr(kv, '=');
+				int v = eq ? atoi(eq + 1) : 1;
+				if (eq) *eq = 0;
+				if (!strcmp(kv, "gray_method")) g_tune.gray_method = v;
+				else if (!strcmp(kv, "gray_hint")) g_tune.gray_hint = v;
+				else if (!strcmp(kv, "sample_phase")) g_tune.sample_phase = v;
+				else if (!strcmp(kv, "nogridfit")) g_tune.nogridfit = v;
+				else if (!strcmp(kv, "aa_measure")) g_tune.aa_measure = v;
+				else { fprintf(stderr, "gdidump: unknown tuning %s\n", kv); return 2; }
+			}
+		} else
+			break;
 		argv += 2;
 		argc -= 2;
 	}
 	if (argc != 3) {
-		fprintf(stderr, "usage: gdidump [--ppem-offset N] <fonts_dir> <outdir>\n");
+		fprintf(stderr, "usage: gdidump [--ppem-offset N] [--tune k=v,...] <fonts_dir> <outdir>\n");
 		return 2;
 	}
 	mkdir_p(argv[2]);
