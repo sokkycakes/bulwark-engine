@@ -1,13 +1,17 @@
 # Fonts
 
-How Bulwark draws text that has no font of its own. This is a design
-choice, not something learned from another engine.
+How Bulwark draws text, aiming for the look of Source's VGUI text.
+
+**Sources.** Which fonts Source uses (Tahoma as the default VGUI font,
+Verdana for chat) is general knowledge plus a CS:S chat screenshot. How it
+rasterises and draws them comes from a behaviour-only spec, made in a
+two-party clean room: one session read Valve's code and wrote the spec, and
+the implementer worked only from the spec (see CLEANROOM.md). No Source code
+was read by the implementer or copied into Bulwark.
 
 ## The default face
 
-Source draws VGUI text with Windows fonts named in its scheme files, and
-its default control font is Tahoma. Bulwark does the same for any text
-without a TrueType font of its own:
+Text without a TrueType font of its own uses the default face:
 
 - font slot 0, which `drawstring` uses when the client game never set
   `drawfont`;
@@ -27,48 +31,73 @@ spaces, `name-Regular`, and a short list of Windows file names (`tahoma.ttf`,
   `/usr/local/share/fonts`, `/usr/share/fonts` and a Wine prefix's
   `~/.wine/drive_c/windows/Fonts`, four folders deep.
 
+A game font named by family (`loadfont("", "Verdana", ...)`) is looked for
+the same way. When it's missing it falls back to the default face, as
+Source's Windows fallback chain ends at Tahoma.
+
 Tahoma belongs to Microsoft and cannot be shipped. When it isn't found,
-the bundled **DejaVu Sans Condensed** (`data/fonts/`, Bitstream Vera and
-Arev licences, permissive and GPL-free) stands in. It is built into the
-executable by `cmake/embed.cmake`. Like Tahoma, it is a narrow humanist
-sans in the Verdana style. `listfonts` prints which file is in use.
-
-Bold works the same way. A font that failed to load and has "bold" in its
-name (`Verdana Bold`, `fonts/x-bold.ttf`) uses the default face's bold:
-`r_font` plus " Bold" (`tahomabd.ttf` for Tahoma), else the bundled
-DejaVu Sans Condensed Bold.
-
-A missing Verdana (Source's chat font, wider than Tahoma) uses the bundled
-**DejaVu Sans**, the uncondensed face, which is close to Verdana's width.
-Checked against a CS:S chat screenshot: the text is Verdana regular in
-white with a hard black shadow one pixel down and right.
+the bundled **DejaVu Sans** stands in (`data/fonts/`, Bitstream Vera and
+Arev licences, permissive and GPL-free). Source on Linux falls back to
+DejaVu Sans too. It is built into the executable by `cmake/embed.cmake`. A
+fallback font with "bold" in its name (`Verdana Bold`, `fonts/x-bold.ttf`)
+uses the bold: `r_font` plus " Bold" (`tahomabd.ttf`), else DejaVu Sans
+Bold. `listfonts` prints which file is in use.
 
 `r_quakefont 1` brings back the 8x8 bitmap font (font8x8, public domain)
 for that text, exactly as before. Fonts a game loads itself are not
 affected.
 
+## Rasterising
+
+- **Size.** The size is the character cell height (ascent plus descent), as
+  Windows reads a positive font height. The OS/2 table's usWinAscent and
+  usWinDescent give the cell (hhea ascender/descender if missing), and the
+  baseline sits `ascent` pixels below the top. Each size is baked when first
+  used, at the exact screen pixel height (virtual height times the 2D
+  scale).
+- **Hinting.** Glyphs are rasterised by FreeType with the font's hinting
+  when it is built in (PanoramaEngine's copy, else the system's), otherwise
+  by stb_truetype without hinting.
+- **Antialiasing.**
+  - Source draws scheme fonts without `antialias` as one bit per pixel. The
+    default face, installed fonts and fallbacks are drawn that way (FreeType
+    mono target). `r_font_antialias 1` smooths them.
+  - Fonts from game files are smoothed, since games design for that.
+  - `loadfont` takes `antialias=0` or `antialias=1` in its sizes string.
+  - Smoothed coverage maps linearly to alpha, with no gamma.
+- **Characters.** Latin-1, Greek, Cyrillic, general punctuation and
+  currency signs are baked for each size.
+- **Metrics.** Advances are whole pixels from the hinted glyphs. There is
+  no kerning, and line height is the cell height.
+
 ## Drawing
 
-- Each size is baked when first used, at the exact screen pixel height
-  (virtual height times the 2D scale), into the smallest atlas it fits.
-  Glyphs are then put on whole screen pixels, so small text stays sharp
-  the way GDI-drawn VGUI text does.
-- Source's `dropshadow` and `outline` font flags have counterparts here.
-  A shadow is the glyph in black one screen pixel down and right, and an
-  outline is the glyph in black one pixel out in all eight directions. Both
-  are drawn under the whole string before the text, and the offset grows
-  by a pixel for every 24 screen pixels of height.
-  - Text in the default face gets `r_font_shadow` (default 1) and
-    `r_font_outline` (default 0), except in the console, which has its
-    own dark background.
-  - A game asks for them per font through loadfont's sizes string:
-    `outline=1` (documented in fteextensions.qc), `shadow=1` or
-    `dropshadow=1`. The same file loaded with different effects gets a
-    slot of its own.
-- Each size bakes Latin-1, Greek, Cyrillic, punctuation and currency
-  signs (stb_truetype packing, up to a 4096 atlas).
-- `con_textsize 0` picks 8 for the Quake font and 12 for a TrueType face.
-  `8` counts as `0` because every config saved before this change holds
-  it.
-- The engine scoreboard used to line its columns up with spaces. Now
-  each field is placed on its own, which works with proportional fonts.
+- Atlases are point-sampled with no mipmaps. Glyphs baked at the drawn size
+  are put on whole screen pixels, so each texel lands on one pixel.
+- **Effects.** These work like Source's font flags:
+  - `dropshadow`: the glyph in black at full glyph alpha, one screen pixel
+    down and right.
+  - `outline`: the glyph in black one pixel out in all eight directions.
+  - Both stay one pixel at every size, and are drawn under the whole
+    string before the text.
+  - The default face gets `r_font_shadow` (default 1) and `r_font_outline`
+    (default 0), except in the console.
+  - A game asks per font through loadfont's sizes string: `outline=1`
+    (documented in fteextensions.qc), `shadow=1` or `dropshadow=1`.
+  - The same file loaded with different flags gets a slot of its own.
+- Text colour multiplies the white glyph, so effects stay black.
+- **Console.** With a TrueType face the console draws in Source's console
+  text colour, (216, 222, 211). `con_textsize 0` picks 8 for the Quake
+  font and 12 for a TrueType face. `8` counts as `0`, because every config
+  saved before this change holds it.
+- The engine scoreboard places each field on its own instead of padding
+  with spaces, which works with proportional fonts.
+
+## Not done
+
+- Source's `blur`, `scanlines` and `additive` flags.
+- Proportional sizing (Source scales `tall` by screen height / 480; Bulwark
+  uses its whole-number 2D scale).
+- Source leaves characters above U+00FF unsmoothed on Windows.
+- Chat layout belongs to the game. Source's chat line spacing is the font
+  height plus one pixel.

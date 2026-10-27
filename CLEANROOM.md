@@ -43,5 +43,12 @@ unmodified, with their licence text kept at the end of each file:
 
 Fonts in `data/fonts/` are shipped unmodified, each with its own licence file:
 
-- `DejaVuSansCondensed.ttf`, `DejaVuSansCondensed-Bold.ttf` and `DejaVuSans.ttf` from DejaVu Fonts 2.37: Bitstream Vera and Arev
+- `DejaVuSans.ttf` and `DejaVuSans-Bold.ttf` from DejaVu Fonts 2.37: Bitstream Vera and Arev
   font licences (permissive, see `data/fonts/DejaVu-LICENSE.txt`).
+
+## Two-party clean room
+
+When behaviour has to match another engine closely, one session reads that
+engine's code and writes a behaviour-only spec (no code, no copied
+comments). A different session implements from the spec without ever
+seeing the code. Font rendering was done this way (docs/spec/fonts.md).

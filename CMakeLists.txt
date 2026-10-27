@@ -93,20 +93,16 @@ if(NOT SDL2_FOUND)
 	endif()
 endif()
 
-# bundled stand-ins for Tahoma, Tahoma Bold and Verdana (DejaVu Sans Condensed, its bold, DejaVu Sans; see data/fonts)
+# the bundled default face: DejaVu Sans and its bold, see data/fonts
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont.c
-	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed.ttf
-		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont.c -DNAME=bw_deffont -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
-	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed-Bold.ttf
-		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c -DNAME=bw_deffont_bold -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed-Bold.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
-
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_widefont.c
 	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSans.ttf
-		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_widefont.c -DNAME=bw_widefont -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont.c -DNAME=bw_deffont -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
 	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSans.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
+	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSans-Bold.ttf
+		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c -DNAME=bw_deffont_bold -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSans-Bold.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
+
 add_library(bwclient STATIC
 	src/client/cl_master.c
 	src/client/cl_download.c
@@ -144,8 +140,7 @@ add_library(bwclient STATIC
 	src/sound/snd_dsp.c
 	src/sound/snd_mem.c
 	${CMAKE_BINARY_DIR}/generated/bw_deffont.c
-	${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
-	${CMAKE_BINARY_DIR}/generated/bw_widefont.c)
+	${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c)
 target_link_libraries(bwclient PUBLIC bwserver)
 # FreeType hints glyphs, which keeps small crisp text like Source's; without
 # it fonts are rasterised by stb_truetype. PanoramaEngine's copy is used when
