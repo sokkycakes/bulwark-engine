@@ -1,0 +1,1454 @@
+/* Bulwark engine - the engine's own menus, drawn over the game and any
+ * menu QC: the menu_* pages (options, server browser, saves, demos, mods,
+ * packages and the rest), and script menus that configs build with
+ * conmenu, menutext, menubind and the other menu* commands.
+ *
+ * Pages stack: Escape or menupop goes back one, closemenu shuts them all.
+ * Engine pages lay their rows out themselves; script menus place items on
+ * a 320x200 screen scaled to fit, as Quake's menus were. A script menu's
+ * text items run "<callback> <option>" when the menu has a callback, and
+ * their own command when it doesn't. ISC licence, see LICENSE. */
+#include "client.h"
+#include "console.h"
+#include "keys.h"
+#include "../common/cmd.h"
+#include "../common/cvar.h"
+#include "../common/fs.h"
+#include "../common/manifest.h"
+#include "../net/pkg.h"
+#include "../render/render.h"
+#include "../server/sv_local.h"
+#include "../sound/sound.h"
+
+#include <ctype.h>
+#include <math.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern float in_mouse_x, in_mouse_y;
+
+typedef enum { IT_TEXT, IT_COMMAND, IT_CHECK, IT_SLIDER, IT_COMBO, IT_EDIT, IT_BIND, IT_PIC, IT_BOX } itemtype_t;
+
+typedef struct {
+	itemtype_t type;
+	char *label;
+	char *cvar;     /* check, slider, combo, edit */
+	char *command;  /* command, bind, a script text's option */
+	char *value;    /* menueditpriv's own text */
+	float min, max, step;
+	int bitmask;    /* check: the bits it sets, 0 for 0/1 */
+	int numopts;
+	char **captions, **values;
+	float x, y, w, h; /* script menus: where; boxes: size in characters */
+	bool placed, big, header;
+	float rx, ry, rw, rh; /* where it was last drawn, for the mouse */
+} item_t;
+
+typedef struct page_s {
+	char name[32], title[64], footer[160];
+	item_t *items;
+	int numitems, cap;
+	int cursor, scroll;
+	bool script;
+	char callback[128];
+	void (*populate)(struct page_s *p); /* fills the items; again every refresh seconds if set */
+	double refresh, nextrefresh;
+	bool (*key)(struct page_s *p, int key); /* page keys before the usual ones */
+} page_t;
+
+#define MAX_DEPTH 16
+static page_t *stack[MAX_DEPTH];
+static int depth;
+static bool editing;     /* an edit field has the keys */
+static char editbuf[256];
+static bool binding;     /* waiting for the key to bind */
+static float lastmx = -1, lastmy = -1;
+
+static const float c_text[3] = {0.85f, 0.85f, 0.85f}, c_dim[3] = {0.5f, 0.5f, 0.5f}, c_title[3] = {1, 0.75f, 0.35f};
+static const float c_sel[3] = {1, 1, 1}, c_bar[3] = {0.25f, 0.45f, 0.8f}, c_panel[3] = {0.05f, 0.06f, 0.08f};
+static const float c_head[3] = {0.6f, 0.75f, 1};
+
+/* --- pages and items --------------------------------------------------------------------- */
+
+static void free_items(page_t *p)
+{
+	for (int i = 0; i < p->numitems; i++) {
+		item_t *it = &p->items[i];
+		Mem_Free(it->label);
+		Mem_Free(it->cvar);
+		Mem_Free(it->command);
+		Mem_Free(it->value);
+		for (int k = 0; k < it->numopts; k++) {
+			Mem_Free(it->captions[k]);
+			Mem_Free(it->values[k]);
+		}
+		Mem_Free(it->captions);
+		Mem_Free(it->values);
+	}
+	p->numitems = 0;
+}
+
+static item_t *add_item(page_t *p, itemtype_t type, const char *label)
+{
+	if (p->numitems == p->cap) {
+		p->cap = p->cap ? p->cap * 2 : 16;
+		p->items = Mem_Realloc(p->items, sizeof(item_t) * (size_t)p->cap);
+	}
+	item_t *it = &p->items[p->numitems++];
+	memset(it, 0, sizeof(*it));
+	it->type = type;
+	it->label = Mem_Strdup(label ? label : "");
+	return it;
+}
+
+static char *dup_or_null(const char *s) { return s ? Mem_Strdup(s) : NULL; }
+
+static item_t *add_text(page_t *p, const char *label) { return add_item(p, IT_TEXT, label); }
+
+static item_t *add_header(page_t *p, const char *label)
+{
+	item_t *it = add_item(p, IT_TEXT, label);
+	it->header = true;
+	return it;
+}
+
+static item_t *add_cmd(page_t *p, const char *label, const char *command)
+{
+	item_t *it = add_item(p, IT_COMMAND, label);
+	it->command = dup_or_null(command);
+	return it;
+}
+
+static item_t *add_check(page_t *p, const char *label, const char *cvar)
+{
+	item_t *it = add_item(p, IT_CHECK, label);
+	it->cvar = Mem_Strdup(cvar);
+	return it;
+}
+
+static item_t *add_slider(page_t *p, const char *label, const char *cvar, float min, float max, float step)
+{
+	item_t *it = add_item(p, IT_SLIDER, label);
+	it->cvar = Mem_Strdup(cvar);
+	it->min = min;
+	it->max = max;
+	it->step = step > 0 ? step : (max - min) / 20;
+	return it;
+}
+
+static void add_option(item_t *it, const char *caption, const char *value)
+{
+	it->captions = Mem_Realloc(it->captions, sizeof(char *) * (size_t)(it->numopts + 1));
+	it->values = Mem_Realloc(it->values, sizeof(char *) * (size_t)(it->numopts + 1));
+	it->captions[it->numopts] = Mem_Strdup(caption);
+	it->values[it->numopts] = Mem_Strdup(value);
+	it->numopts++;
+}
+
+/* caption, value, caption, value, ..., NULL */
+static item_t *add_combo(page_t *p, const char *label, const char *cvar, ...)
+{
+	va_list ap;
+	item_t *it = add_item(p, IT_COMBO, label);
+	it->cvar = Mem_Strdup(cvar);
+	va_start(ap, cvar);
+	for (const char *c; (c = va_arg(ap, const char *));) {
+		const char *v = va_arg(ap, const char *);
+		add_option(it, c, v ? v : c);
+	}
+	va_end(ap);
+	return it;
+}
+
+static item_t *add_edit(page_t *p, const char *label, const char *cvar)
+{
+	item_t *it = add_item(p, IT_EDIT, label);
+	it->cvar = Mem_Strdup(cvar);
+	return it;
+}
+
+static item_t *add_bind(page_t *p, const char *label, const char *command)
+{
+	item_t *it = add_item(p, IT_BIND, label);
+	it->command = Mem_Strdup(command);
+	return it;
+}
+
+static bool selectable(const item_t *it)
+{
+	switch (it->type) {
+	case IT_TEXT: case IT_PIC: case IT_BOX: return false;
+	case IT_COMMAND: return it->command != NULL;
+	default: return true;
+	}
+}
+
+static page_t *top(void) { return depth ? stack[depth - 1] : NULL; }
+
+static void fix_cursor(page_t *p, int dir)
+{
+	if (!p->numitems)
+		return;
+	if (p->cursor < 0)
+		p->cursor = 0;
+	if (p->cursor >= p->numitems)
+		p->cursor = p->numitems - 1;
+	for (int n = 0; n < p->numitems && !selectable(&p->items[p->cursor]); n++)
+		p->cursor = (p->cursor + (dir < 0 ? p->numitems - 1 : 1)) % p->numitems;
+}
+
+static void free_page(page_t *p)
+{
+	free_items(p);
+	Mem_Free(p->items);
+	Mem_Free(p);
+}
+
+static page_t *push(const char *name, const char *title, void (*populate)(page_t *))
+{
+	if (depth == MAX_DEPTH) {
+		free_page(stack[0]);
+		memmove(stack, stack + 1, sizeof(stack[0]) * (MAX_DEPTH - 1));
+		depth--;
+	}
+	page_t *p = Mem_Alloc(sizeof(*p));
+	memset(p, 0, sizeof(*p));
+	Str_Copy(p->name, name, sizeof(p->name));
+	Str_Copy(p->title, title, sizeof(p->title));
+	p->populate = populate;
+	if (populate)
+		populate(p);
+	fix_cursor(p, 1);
+	stack[depth++] = p;
+	editing = binding = false;
+	Con_SetActive(false);
+	return p;
+}
+
+static void pop(void)
+{
+	if (!depth)
+		return;
+	free_page(stack[--depth]);
+	editing = binding = false;
+}
+
+static void close_all(void)
+{
+	while (depth)
+		pop();
+}
+
+/* rebuilds a page's items, keeping the cursor on the same row */
+static void repopulate(page_t *p)
+{
+	int cursor = p->cursor, scroll = p->scroll;
+	free_items(p);
+	p->populate(p);
+	p->cursor = cursor;
+	p->scroll = scroll;
+	fix_cursor(p, 1);
+}
+
+bool EM_Active(void) { return depth > 0; }
+
+/* --- values ------------------------------------------------------------------------------ */
+
+/* "@resolution" stands for vid_width and vid_height together */
+static const char *get_value(const char *cvar, char *buf, size_t size)
+{
+	if (!strcmp(cvar, "@resolution")) {
+		snprintf(buf, size, "%dx%d", (int)Cvar_Value("vid_width"), (int)Cvar_Value("vid_height"));
+		return buf;
+	}
+	cvar_t *v = Cvar_Find(cvar);
+	return v ? v->string : "";
+}
+
+static void set_value(const char *cvar, const char *value)
+{
+	if (!strcmp(cvar, "@resolution")) {
+		int w = 0, h = 0;
+		if (sscanf(value, "%dx%d", &w, &h) == 2) {
+			Cvar_SetValue("vid_width", (float)w);
+			Cvar_SetValue("vid_height", (float)h);
+		}
+		return;
+	}
+	if (Cvar_Find(cvar))
+		Cvar_Set(cvar, value);
+	else
+		Cbuf_AddText(va("set \"%s\" \"%s\"\n", cvar, value));
+}
+
+static int combo_index(const item_t *it)
+{
+	char buf[64];
+	const char *v = get_value(it->cvar, buf, sizeof(buf));
+	for (int i = 0; i < it->numopts; i++)
+		if (!Str_ICmp(v, it->values[i]) || (atof(v) == atof(it->values[i]) && (isdigit((unsigned char)*v) || *v == '-')))
+			return i;
+	return -1;
+}
+
+static void run(page_t *p, const char *command)
+{
+	if (!strcmp(command, "@startserver")) { /* menu_newmulti's settings */
+		int dm = (int)Cvar_Value("deathmatch");
+		Cbuf_AddText(va("closemenu; set coop %d; map \"%s\"\n", dm ? 0 : 1, Cvar_String("_menu_map")));
+		return;
+	}
+	if (p->script && p->callback[0])
+		Cbuf_AddText(va("%s %s\n", p->callback, command));
+	else
+		Cbuf_AddText(va("%s\n", command));
+}
+
+/* the keys bound to a command, as "K, MOUSE1", or "" */
+static void keys_for(const char *command, char *out, size_t size)
+{
+	out[0] = 0;
+	for (int k = 0; k < K_MAX; k++) {
+		const char *b = Key_GetBinding(k);
+		if (b && *b && !Str_ICmp(b, command)) {
+			size_t n = strlen(out);
+			snprintf(out + n, size - n, "%s%s", n ? ", " : "", Key_NameForNum(k));
+		}
+	}
+}
+
+static void activate(page_t *p, item_t *it, int dir)
+{
+	char buf[256];
+	switch (it->type) {
+	case IT_COMMAND:
+		if (dir == 0 && it->command)
+			run(p, it->command);
+		break;
+	case IT_CHECK: {
+		int v = (int)atof(get_value(it->cvar, buf, sizeof(buf)));
+		if (it->bitmask)
+			v ^= it->bitmask;
+		else
+			v = !v;
+		set_value(it->cvar, va("%d", v));
+		break;
+	}
+	case IT_SLIDER: {
+		float v = (float)atof(get_value(it->cvar, buf, sizeof(buf)));
+		v += (dir ? dir : 1) * it->step * (it->min > it->max ? -1 : 1);
+		float lo = BW_MIN(it->min, it->max), hi = BW_MAX(it->min, it->max);
+		if (dir == 0 && v > hi + it->step * 0.5f)
+			v = lo; /* enter wraps round */
+		v = BW_MAX(lo, BW_MIN(v, hi));
+		snprintf(buf, sizeof(buf), "%g", roundf(v / it->step) * it->step);
+		set_value(it->cvar, buf);
+		break;
+	}
+	case IT_COMBO: {
+		if (!it->numopts)
+			break;
+		int i = combo_index(it);
+		i = i < 0 ? 0 : (i + (dir < 0 ? it->numopts - 1 : 1)) % it->numopts;
+		set_value(it->cvar, it->values[i]);
+		break;
+	}
+	case IT_EDIT:
+		if (dir == 0) {
+			editing = true;
+			Str_Copy(editbuf, it->cvar ? get_value(it->cvar, buf, sizeof(buf)) : (it->value ? it->value : ""), sizeof(editbuf));
+		}
+		break;
+	case IT_BIND:
+		if (dir == 0)
+			binding = true;
+		break;
+	default:
+		break;
+	}
+}
+
+static void finish_edit(page_t *p, item_t *it)
+{
+	editing = false;
+	if (it->cvar)
+		set_value(it->cvar, editbuf);
+	else {
+		Mem_Free(it->value);
+		it->value = Mem_Strdup(editbuf);
+		/* a private field tells the script what was typed */
+		if (p->script && p->callback[0])
+			Cbuf_AddText(va("%s \"%s\" \"%s\"\n", p->callback, it->label, editbuf));
+	}
+}
+
+/* --- drawing -------------------------------------------------------------------------- */
+
+static void value_text(const item_t *it, char *out, size_t size)
+{
+	char buf[256];
+	out[0] = 0;
+	switch (it->type) {
+	case IT_CHECK: {
+		int v = (int)atof(get_value(it->cvar, buf, sizeof(buf)));
+		bool on = it->bitmask ? (v & it->bitmask) == it->bitmask : v != 0;
+		Str_Copy(out, on ? "On" : "Off", size);
+		break;
+	}
+	case IT_COMBO: {
+		int i = combo_index(it);
+		Str_Copy(out, i >= 0 ? it->captions[i] : get_value(it->cvar, buf, sizeof(buf)), size);
+		break;
+	}
+	case IT_EDIT:
+		Str_Copy(out, it->cvar ? get_value(it->cvar, buf, sizeof(buf)) : (it->value ? it->value : ""), size);
+		break;
+	case IT_BIND:
+		keys_for(it->command, out, size);
+		if (!out[0])
+			Str_Copy(out, "???", size);
+		break;
+	case IT_SLIDER:
+		snprintf(out, size, "%g", atof(get_value(it->cvar, buf, sizeof(buf))));
+		break;
+	default:
+		break;
+	}
+}
+
+static void draw_slider(const item_t *it, float x, float y, float w, float size, bool sel)
+{
+	char buf[64];
+	float v = (float)atof(get_value(it->cvar, buf, sizeof(buf)));
+	float f = it->max != it->min ? (v - it->min) / (it->max - it->min) : 0;
+	f = BW_MAX(0.0f, BW_MIN(f, 1.0f));
+	R_Rect(x, y + size * 0.3f, w, size * 0.4f, c_dim, 0.6f);
+	R_Rect(x, y + size * 0.3f, w * f, size * 0.4f, sel ? c_sel : c_bar, 0.9f);
+	R_Rect(x + w * f - 1, y, 3, size, sel ? c_sel : c_text, 1);
+	snprintf(buf, sizeof(buf), "%g", v);
+	R_Text(x + w + size, y, buf, size, sel ? c_sel : c_text, 1);
+}
+
+/* the value part of a row, from x */
+static void draw_value(const item_t *it, float x, float y, float w, float size, bool sel)
+{
+	char buf[256];
+	const float *col = sel ? c_sel : c_text;
+	if (it->type == IT_SLIDER) {
+		draw_slider(it, x, y, BW_MIN(w * 0.6f, size * 14), size, sel);
+		return;
+	}
+	if (it->type == IT_EDIT) {
+		R_Rect(x - 2, y - 1, BW_MIN(w, size * 24), size + 2, c_dim, 0.35f);
+		if (sel && editing) {
+			float tw = R_Text(x, y, editbuf, size, c_sel, 1);
+			if ((int)(Sys_Seconds() * 3) & 1)
+				R_Rect(x + tw, y, size * 0.5f, size, c_sel, 1);
+			return;
+		}
+	}
+	if (it->type == IT_BIND && sel && binding) {
+		R_Text(x, y, "press a key...", size, c_title, 1);
+		return;
+	}
+	value_text(it, buf, sizeof(buf));
+	R_Text(x, y, buf, size, col, 1);
+}
+
+static void draw_box(float x, float y, float w, float h, float size)
+{
+	R_Rect(x, y, w * size, h * size, c_panel, 0.85f);
+	R_Rect(x, y, w * size, 1, c_dim, 1);
+	R_Rect(x, y + h * size - 1, w * size, 1, c_dim, 1);
+	R_Rect(x, y, 1, h * size, c_dim, 1);
+	R_Rect(x + w * size - 1, y, 1, h * size, c_dim, 1);
+}
+
+static void draw_script(page_t *p, int sw, int sh)
+{
+	float scale = BW_MIN(sw / 320.0f, sh / 200.0f);
+	float ox = (sw - 320 * scale) / 2, oy = (sh - 200 * scale) / 2, size = 8 * scale;
+	for (int i = 0; i < p->numitems; i++) {
+		item_t *it = &p->items[i];
+		float x = ox + it->x * scale, y = oy + it->y * scale, s = it->big ? size * 2 : size;
+		bool sel = i == p->cursor && selectable(it);
+		if (it->type == IT_PIC) {
+			int w, h;
+			if (R_PictureSize(it->label, &w, &h))
+				R_Picture(x, y, w * scale, h * scale, it->label, 1);
+			continue;
+		}
+		if (it->type == IT_BOX) {
+			draw_box(x, y, it->w, it->h, size);
+			continue;
+		}
+		if (sel)
+			R_Text(x - size * 1.5f, y, ">", s, c_title, (int)(Sys_Seconds() * 4) & 1 ? 1 : 0.4f);
+		float lw = R_Text(x, y, it->label, s, sel ? c_sel : c_text, 1);
+		it->rx = x, it->ry = y, it->rw = BW_MAX(lw, size * 12), it->rh = s;
+		if (it->type != IT_TEXT && it->type != IT_COMMAND) {
+			draw_value(it, x + lw + size, y, sw - (x + lw + size), s, sel);
+			it->rw = sw - x;
+		}
+	}
+}
+
+static void draw_page(page_t *p, int sw, int sh)
+{
+	/* about 40 rows on a 720 line screen, larger on bigger ones */
+	const float size = BW_MAX(10.0f, floorf(sh / 56.0f)), row = size * 1.5f;
+	float pw = BW_MIN(sw - 32.0f, size * 60), ph = BW_MIN(sh - 32.0f, size * 46);
+	float px = (sw - pw) / 2, py = (sh - ph) / 2;
+	int visible = (int)((ph - size * 6) / row);
+	R_Rect(0, 0, (float)sw, (float)sh, c_panel, 0.45f);
+	R_Rect(px, py, pw, ph, c_panel, 0.92f);
+	R_Rect(px, py, pw, 2, c_bar, 1);
+	R_Text(px + size, py + size, p->title, size * 2, c_title, 1);
+	/* keep the cursor in view */
+	if (p->cursor < p->scroll)
+		p->scroll = p->cursor;
+	if (p->cursor >= p->scroll + visible)
+		p->scroll = p->cursor - visible + 1;
+	p->scroll = BW_MAX(0, BW_MIN(p->scroll, p->numitems - visible));
+	float y = py + size * 4, valx = px + pw * 0.5f;
+	for (int i = 0; i < p->numitems; i++)
+		p->items[i].rw = 0;
+	for (int i = p->scroll; i < p->numitems && i < p->scroll + visible; i++, y += row) {
+		item_t *it = &p->items[i];
+		bool sel = i == p->cursor && selectable(it);
+		it->rx = px + 4, it->ry = y - 2, it->rw = pw - 8, it->rh = row;
+		if (sel)
+			R_Rect(px + 4, y - 2, pw - 8, row, c_bar, 0.5f);
+		if (it->header && !strchr(it->label, '\t')) {
+			R_Text(px + size, y, it->label, size, c_head, 1);
+			continue;
+		}
+		const float *col = it->header ? c_head : !selectable(it) && it->type != IT_TEXT ? c_dim : sel ? c_sel : c_text;
+		if (strchr(it->label, '\t')) {
+			/* columns: split at tabs */
+			static const float at[] = {0, 0.5f, 0.75f, 0.88f, 0.95f};
+			char cell[256];
+			const char *c = it->label;
+			for (int k = 0; *c && k < 5; k++) {
+				size_t n = strcspn(c, "\t");
+				Str_Copy(cell, c, BW_MIN(sizeof(cell), n + 1));
+				R_Text(px + size * 1.5f + (pw - size * 3) * at[k], y, cell, size, col, 1);
+				c += n + (c[n] == '\t');
+			}
+		} else
+			R_Text(px + size * 1.5f, y, it->label, size, col, 1);
+		if (it->type != IT_TEXT && it->type != IT_COMMAND)
+			draw_value(it, valx, y, px + pw - valx - 12, size, sel);
+	}
+	if (p->scroll > 0)
+		R_Text(px + pw - size * 2, py + size * 4, "^", size, c_dim, 1);
+	if (p->scroll + visible < p->numitems)
+		R_Text(px + pw - size * 2, py + ph - size * 3.5f, "v", size, c_dim, 1);
+	if (p->footer[0])
+		R_Text(px + size, py + ph - size * 2, p->footer, size, c_dim, 1);
+}
+
+void EM_Draw(int w, int h)
+{
+	page_t *p = top();
+	if (!p)
+		return;
+	if (p->populate && p->refresh > 0 && Sys_Seconds() >= p->nextrefresh) {
+		p->nextrefresh = Sys_Seconds() + p->refresh;
+		if (!editing && !binding)
+			repopulate(p);
+	}
+	/* the pointer picks the row under it when it moves */
+	float scale = R_Get2DScale(), mx = in_mouse_x / scale, my = in_mouse_y / scale;
+	if (mx != lastmx || my != lastmy) {
+		lastmx = mx, lastmy = my;
+		for (int i = 0; i < p->numitems && !editing && !binding; i++) {
+			const item_t *it = &p->items[i];
+			if (it->rw > 0 && selectable(it) && mx >= it->rx && mx < it->rx + it->rw && my >= it->ry && my < it->ry + it->rh)
+				p->cursor = i;
+		}
+	}
+	if (p->script)
+		draw_script(p, w, h);
+	else
+		draw_page(p, w, h);
+}
+
+/* --- keys ---------------------------------------------------------------------------------- */
+
+static void move_cursor(page_t *p, int dir)
+{
+	if (!p->numitems)
+		return;
+	for (int n = 0; n < p->numitems; n++) {
+		p->cursor = (p->cursor + dir + p->numitems) % p->numitems;
+		if (selectable(&p->items[p->cursor]))
+			return;
+	}
+}
+
+static bool edit_key(page_t *p, item_t *it, int key, int unicode)
+{
+	size_t n = strlen(editbuf);
+	if (key == K_ENTER || key == K_KP_ENTER)
+		finish_edit(p, it);
+	else if (key == K_ESCAPE)
+		editing = false;
+	else if (key == K_BACKSPACE) {
+		if (n)
+			editbuf[n - 1] = 0;
+	} else if (unicode >= 32 && unicode < 127 && n + 1 < sizeof(editbuf)) {
+		editbuf[n] = (char)unicode;
+		editbuf[n + 1] = 0;
+	}
+	return true;
+}
+
+bool EM_KeyEvent(int key, bool down, int unicode)
+{
+	page_t *p = top();
+	if (!p)
+		return false;
+	if (!down)
+		return true;
+	item_t *it = p->numitems ? &p->items[p->cursor] : NULL;
+	if (binding && it && it->type == IT_BIND) {
+		binding = false;
+		if (key != K_ESCAPE)
+			Key_SetBinding(key, it->command);
+		return true;
+	}
+	if (editing && it)
+		return edit_key(p, it, key, unicode);
+	if (p->key && p->key(p, key))
+		return true;
+	switch (key) {
+	case K_ESCAPE:
+	case K_MOUSE2:
+		pop();
+		break;
+	case K_UPARROW: case K_KP_UPARROW: case K_MWHEELUP: case K_GP_DPAD_UP:
+		move_cursor(p, -1);
+		break;
+	case K_DOWNARROW: case K_KP_DOWNARROW: case K_MWHEELDOWN: case K_GP_DPAD_DOWN:
+		move_cursor(p, 1);
+		break;
+	case K_PGUP:
+		for (int i = 0; i < 10; i++)
+			move_cursor(p, -1);
+		break;
+	case K_PGDN:
+		for (int i = 0; i < 10; i++)
+			move_cursor(p, 1);
+		break;
+	case K_HOME:
+		p->cursor = 0;
+		fix_cursor(p, 1);
+		break;
+	case K_END:
+		p->cursor = p->numitems - 1;
+		fix_cursor(p, -1);
+		break;
+	case K_LEFTARROW: case K_KP_LEFTARROW: case K_GP_DPAD_LEFT:
+		if (it && selectable(it))
+			activate(p, it, -1);
+		break;
+	case K_RIGHTARROW: case K_KP_RIGHTARROW: case K_GP_DPAD_RIGHT:
+		if (it && selectable(it))
+			activate(p, it, 1);
+		break;
+	case K_ENTER: case K_KP_ENTER: case K_MOUSE1: case K_GP_A:
+		if (key == K_MOUSE1) {
+			float scale = R_Get2DScale(), mx = in_mouse_x / scale, my = in_mouse_y / scale;
+			if (!it || !(mx >= it->rx && mx < it->rx + it->rw && my >= it->ry && my < it->ry + it->rh))
+				break; /* a click off the rows does nothing */
+		}
+		if (it && selectable(it))
+			activate(p, it, 0);
+		break;
+	case K_BACKSPACE: case K_DEL:
+		if (it && it->type == IT_BIND)
+			for (int k = 0; k < K_MAX; k++) {
+				const char *b = Key_GetBinding(k);
+				if (b && *b && !Str_ICmp(b, it->command))
+					Key_SetBinding(k, "");
+			}
+		break;
+	default:
+		break;
+	}
+	return true;
+}
+
+/* --- the pages ------------------------------------------------------------------------------ */
+
+static void open_page(const char *name);
+
+static void pg_main(page_t *p)
+{
+	add_cmd(p, "Single player", "menu_single");
+	add_cmd(p, "Multiplayer", "menu_multi");
+	add_cmd(p, "Options", "menu_options");
+	add_cmd(p, "Demos", "menu_demo");
+	add_cmd(p, "Mods", "menu_mods");
+	add_cmd(p, "Packages and updates", "menu_download");
+	add_cmd(p, "Media player", "menu_media");
+	add_cmd(p, "Credits", "menu_credits");
+	add_cmd(p, "Quit", "menu_quit");
+}
+
+static void pg_single(page_t *p)
+{
+	add_cmd(p, "New game", "closemenu; set deathmatch 0; set coop 0; maxplayers 1; map start");
+	add_combo(p, "Skill", "skill", "Easy", "0", "Normal", "1", "Hard", "2", "Nightmare", "3", NULL);
+	add_cmd(p, "Load a game", "menu_load");
+	add_cmd(p, sv.active ? "Save the game" : "Save the game (not playing)", sv.active ? "menu_save" : NULL);
+	add_cmd(p, "Cheats", "menu_spcheats");
+}
+
+typedef struct {
+	page_t *page;
+	const char *command; /* "load" or "save" */
+} savelist_t;
+
+static void list_save(const char *name, const char *searchpath, void *ctx)
+{
+	savelist_t *l = ctx;
+	char base[128], label[160];
+	const char *slash = strrchr(name, '/');
+	Str_Copy(base, slash ? slash + 1 : name, sizeof(base));
+	if (strlen(base) > 4)
+		base[strlen(base) - 4] = 0;
+	snprintf(label, sizeof(label), "%s", base);
+	add_cmd(l->page, label, va("closemenu; %s \"%s\"", l->command, base));
+}
+
+static void pg_load(page_t *p)
+{
+	savelist_t l = {p, "load"};
+	FS_List("saves/*.sav", true, list_save, &l);
+	if (!p->numitems)
+		add_text(p, "No saved games");
+	Str_Copy(p->footer, "Enter loads", sizeof(p->footer));
+}
+
+static void pg_save(page_t *p)
+{
+	for (int i = 0; i < 12; i++) {
+		char name[16], rel[64];
+		snprintf(name, sizeof(name), "s%d", i);
+		snprintf(rel, sizeof(rel), "saves/%s.sav", name);
+		add_cmd(p, va("Slot %d%s", i + 1, FS_FileExists(rel) ? " (in use)" : " (empty)"), va("closemenu; save %s", name));
+	}
+	Str_Copy(p->footer, "Enter saves over the slot", sizeof(p->footer));
+}
+
+static void pg_spcheats(page_t *p)
+{
+	add_cmd(p, "God mode", "god");
+	add_cmd(p, "No clipping", "noclip");
+	add_cmd(p, "Fly", "fly");
+	add_cmd(p, "Not a target", "notarget");
+	add_cmd(p, "Give everything", "give all");
+	add_cmd(p, "Kill yourself", "closemenu; kill");
+	add_cmd(p, "Restart the map", "closemenu; restart");
+}
+
+static void pg_multi(page_t *p)
+{
+	add_cmd(p, "Join a server", "menu_servers");
+	add_cmd(p, "Start a server", "menu_newmulti");
+	add_cmd(p, "Player setup", "menu_setup");
+	add_cmd(p, "Network settings", "menu_network");
+	add_cmd(p, "Teamplay messages", "menu_teamplay");
+	add_cmd(p, "Demos", "menu_demo");
+}
+
+static void pg_servers(page_t *p)
+{
+	char name[64], map[64], players[16], max[16], ping[16], addr[128];
+	int n = CL_HostcacheCount();
+	add_header(p, "Server\tMap\tPlayers\tPing");
+	for (int i = 0; i < n; i++) {
+		CL_HostcacheField(i, "name", name, sizeof(name));
+		CL_HostcacheField(i, "map", map, sizeof(map));
+		CL_HostcacheField(i, "numplayers", players, sizeof(players));
+		CL_HostcacheField(i, "maxplayers", max, sizeof(max));
+		CL_HostcacheField(i, "ping", ping, sizeof(ping));
+		CL_HostcacheField(i, "cname", addr, sizeof(addr));
+		add_cmd(p, va("%.40s\t%.20s\t%s/%s\t%s", name[0] ? name : addr, map, players, max, ping),
+		        va("closemenu; connect \"%s\"", addr));
+	}
+	if (!n)
+		add_text(p, "Looking for servers...");
+	snprintf(p->footer, sizeof(p->footer), "%d servers. Enter joins, F5 asks again, S sorts", n);
+}
+
+static bool servers_key(page_t *p, int key)
+{
+	static int sort;
+	static const char *const sorts[] = {"ping", "name", "map", "numplayers"};
+	if (key == K_F5) {
+		CL_HostcacheRefresh(true);
+		repopulate(p);
+		return true;
+	}
+	if (key == 's' || key == 'S') {
+		sort = (sort + 1) % 4;
+		CL_HostcacheSort(sorts[sort], sort == 3);
+		repopulate(p);
+		return true;
+	}
+	return false;
+}
+
+static void list_map(const char *name, const char *searchpath, void *ctx)
+{
+	item_t *it = ctx;
+	char base[128];
+	const char *slash = strrchr(name, '/');
+	Str_Copy(base, slash ? slash + 1 : name, sizeof(base));
+	if (strlen(base) > 4)
+		base[strlen(base) - 4] = 0;
+	for (int i = 0; i < it->numopts; i++)
+		if (!strcmp(it->values[i], base))
+			return;
+	if (it->numopts < 512)
+		add_option(it, base, base);
+}
+
+static void pg_newmulti(page_t *p)
+{
+	Cvar_Get("_menu_map", "start", 0, "The map menu_newmulti starts");
+	add_edit(p, "Server name", "hostname");
+	add_combo(p, "Players", "maxplayers", "2", "2", "4", "4", "8", "8", "16", "16", "32", "32", "64", "64", NULL);
+	add_combo(p, "Game", "deathmatch", "Cooperative", "0", "Deathmatch", "1", "Deathmatch 2", "2", "Deathmatch 3", "3", NULL);
+	add_check(p, "Teamplay", "teamplay");
+	add_edit(p, "Frag limit", "fraglimit");
+	add_edit(p, "Time limit", "timelimit");
+	add_check(p, "Public (tell the masters)", "sv_public");
+	item_t *maps = add_combo(p, "Map", "_menu_map", NULL);
+	FS_List("maps/*.bsp", true, list_map, maps);
+	add_cmd(p, "Start", "@startserver");
+}
+
+static void pg_setup(page_t *p)
+{
+	add_edit(p, "Name", "name");
+	add_edit(p, "Team", "team");
+	add_slider(p, "Shirt colour", "topcolor", 0, 13, 1);
+	add_slider(p, "Pants colour", "bottomcolor", 0, 13, 1);
+	add_combo(p, "Connection", "rate", "Modem", "5000", "ISDN", "10000", "DSL", "25000", "Fast", "50000", "LAN", "100000", NULL);
+}
+
+static void pg_network(page_t *p)
+{
+	add_combo(p, "Rate", "rate", "5000", "5000", "10000", "10000", "25000", "25000", "50000", "50000", "100000", "100000", NULL);
+	add_slider(p, "Updates a second", "cl_updaterate", 10, 120, 5);
+	add_slider(p, "Moves a second", "cl_cmdrate", 10, 250, 10);
+	add_slider(p, "Interpolation delay", "cl_interp", 0, 0.2f, 0.01f);
+	add_check(p, "Download missing files", "cl_downloads");
+	add_slider(p, "Connection timeout", "cl_timeout", 10, 120, 5);
+}
+
+static void pg_options(page_t *p)
+{
+	add_cmd(p, "Keys", "menu_keys");
+	add_cmd(p, "Video", "menu_video");
+	add_cmd(p, "Rendering", "menu_render");
+	add_cmd(p, "Textures", "menu_textures");
+	add_cmd(p, "Lighting", "menu_lighting");
+	add_cmd(p, "Particles and decals", "menu_particles");
+	add_cmd(p, "Audio and voice", "menu_audio");
+	add_cmd(p, "Speakers", "menu_speakers");
+	add_cmd(p, "Performance presets", "menu_fps");
+	add_cmd(p, "Network", "menu_network");
+	add_cmd(p, "Teamplay", "menu_teamplay");
+	add_header(p, "Controls");
+	add_slider(p, "Mouse speed", "sensitivity", 1, 20, 0.5f);
+	add_combo(p, "Mouse look", "m_pitch", "Normal", "0.022", "Inverted", "-0.022", NULL);
+	add_check(p, "Smooth the mouse", "m_filter");
+	add_check(p, "Always run", "cl_run");
+	add_header(p, "Screen");
+	add_slider(p, "Field of view", "fov", 70, 130, 5);
+	add_combo(p, "Crosshair", "crosshair", "Off", "0", "1", "1", "2", "2", "3", "3", "4", "4", "5", "5", NULL);
+	add_check(p, "Show the HUD", "cl_drawhud");
+	add_check(p, "Show frames a second", "cl_showfps");
+	add_header(p, "");
+	add_cmd(p, "Reset everything to defaults", "cfg_reset");
+}
+
+static void pg_keys(page_t *p)
+{
+	static const char *const binds[][2] = {
+		{"Attack", "+attack"}, {"Secondary attack", "+attack2"}, {"Reload", "+reload"}, {"Use", "+use"},
+		{"Jump", "+jump"}, {"Crouch", "+duck"}, {"Forward", "+forward"}, {"Back", "+back"},
+		{"Step left", "+moveleft"}, {"Step right", "+moveright"}, {"Walk", "+speed"}, {"Next weapon", "invnext"},
+		{"Previous weapon", "invprev"}, {"Last weapon", "lastinv"}, {"Flashlight", "impulse 100"},
+		{"Spray", "impulse 201"}, {"Scores", "+showscores"}, {"Chat", "messagemode"}, {"Team chat", "messagemode2"},
+		{"Voice chat", "+voip"}, {"Screenshot", "screenshot"}, {"Console", "toggleconsole"}, {"Quick save", "quicksave"},
+		{"Quick load", "quickload"}};
+	for (size_t i = 0; i < BW_ARRAY_COUNT(binds); i++)
+		add_bind(p, binds[i][0], binds[i][1]);
+	Str_Copy(p->footer, "Enter, then press the key. Backspace clears", sizeof(p->footer));
+}
+
+static void pg_video(page_t *p)
+{
+	add_check(p, "Full screen", "vid_fullscreen");
+	add_combo(p, "Resolution", "@resolution", "640x480", NULL, "800x600", NULL, "1024x768", NULL, "1280x720", NULL,
+	          "1280x1024", NULL, "1366x768", NULL, "1600x900", NULL, "1920x1080", NULL, "2560x1440", NULL,
+	          "3840x2160", NULL, NULL);
+	add_check(p, "Vertical sync", "vid_vsync");
+	add_combo(p, "2D scale", "scr_scale", "Automatic", "0", "1", "1", "2", "2", "3", "3", "4", "4", NULL);
+	add_slider(p, "Gamma", "vid_gamma", 0.5f, 2, 0.05f);
+	add_slider(p, "Brightness", "vid_brightness", 0, 1, 0.05f);
+	add_combo(p, "Frame limit", "cl_maxfps", "Unlimited", "0", "60", "60", "120", "120", "144", "144", "240", "240", NULL);
+	add_cmd(p, "Apply", "vid_restart");
+}
+
+static void pg_render(page_t *p)
+{
+	add_slider(p, "Weapon field of view", "r_viewmodel_fov", 50, 110, 5);
+	add_check(p, "Full bright", "r_fullbright");
+	add_check(p, "Wireframe", "r_wireframe");
+	add_check(p, "Decals", "r_drawdecals");
+	add_check(p, "Particles", "r_drawparticles");
+	add_check(p, "Realtime world lights", "r_shadow_realtime_world");
+	add_check(p, "Light coronas", "r_coronas");
+	add_check(p, "Show render speeds", "r_speeds");
+	add_combo(p, "Screenshot format", "r_screenshot_format", "PNG", "png", "JPEG", "jpg", "TGA", "tga", NULL);
+}
+
+static void pg_textures(page_t *p)
+{
+	add_combo(p, "Filtering", "gl_texturemode", "None", "GL_NEAREST", "Mipmapped", "GL_NEAREST_MIPMAP_LINEAR",
+	          "Bilinear", "GL_LINEAR_MIPMAP_NEAREST", "Trilinear", "GL_LINEAR_MIPMAP_LINEAR", NULL);
+	add_slider(p, "Lightmap brightness", "r_lightmapscale", 0.5f, 4, 0.25f);
+}
+
+static void pg_lighting(page_t *p)
+{
+	add_check(p, "Realtime world lights", "r_shadow_realtime_world");
+	add_check(p, "Lights from the map's entities", "r_shadow_realtime_world_importlightentitiesfrommap");
+	add_check(p, "Coronas", "r_coronas");
+	add_slider(p, "Corona brightness", "r_coronas_intensity", 0, 2, 0.1f);
+	add_slider(p, "Lightmap brightness", "r_lightmapscale", 0.5f, 4, 0.25f);
+	add_check(p, "Edit the lights", "r_editlights");
+	add_cmd(p, "Reload the lights", "r_editlights_reload");
+	add_cmd(p, "Save the lights", "r_editlights_save");
+}
+
+static void pg_particles(page_t *p)
+{
+	add_check(p, "Particles", "r_drawparticles");
+	add_slider(p, "Particle density", "r_part_density", 0.1f, 2, 0.1f);
+	add_combo(p, "Most particles", "r_particles_max", "2048", "2048", "8192", "8192", "32768", "32768", "65536", "65536", NULL);
+	add_check(p, "Decals", "r_drawdecals");
+	add_combo(p, "Most decals", "r_decal_max", "256", "256", "1024", "1024", "4096", "4096", NULL);
+}
+
+static void pg_audio(page_t *p)
+{
+	add_slider(p, "Volume", "volume", 0, 1, 0.05f);
+	add_slider(p, "Music volume", "bgmvolume", 0, 1, 0.05f);
+	add_slider(p, "Room effects", "dsp_volume", 0, 2, 0.1f);
+	add_cmd(p, "Restart sound", "snd_restart");
+	add_header(p, "Voice chat");
+	add_combo(p, "Send", "cl_voip_send", "While the talk key is held", "0", "When I speak", "1", "Always", "2", NULL);
+	add_combo(p, "Codec", "cl_voip_codec", "Best there is", "", "Opus", "2", "Speex", "0", "Raw", "1", "G.711 A-law", "6",
+	          "G.711 mu-law", "7", NULL);
+	add_slider(p, "Voices volume", "cl_voip_play", 0, 2, 0.1f);
+	add_slider(p, "Microphone boost", "cl_voip_micamp", 0, 8, 0.25f);
+	add_check(p, "Level the microphone", "cl_voip_autogain");
+	add_slider(p, "Speaking threshold", "cl_voip_vad_threshhold", 0, 50, 1);
+	add_slider(p, "Game volume while others talk", "cl_voip_ducking", 0, 1, 0.05f);
+	add_check(p, "Hear yourself", "cl_voip_test");
+}
+
+static void pg_speakers(page_t *p)
+{
+	add_cmd(p, "Stereo", "soundcontrol card0 stereo");
+	add_cmd(p, "Mono", "soundcontrol card0 mono");
+	add_cmd(p, "Speakers in front", "soundcontrol card0 front");
+	add_cmd(p, "Speakers behind", "soundcontrol card0 back");
+	add_cmd(p, "Sound off", "soundcontrol off");
+	add_cmd(p, "Sound on", "soundcontrol single");
+}
+
+static void pg_fps(page_t *p)
+{
+	add_cmd(p, "Fastest", "fps_preset fast");
+	add_cmd(p, "Normal", "fps_preset normal");
+	add_cmd(p, "Nicest", "fps_preset nice");
+	add_combo(p, "Frame limit", "cl_maxfps", "Unlimited", "0", "60", "60", "120", "120", "144", "144", "240", "240", NULL);
+	add_check(p, "Show frames a second", "cl_showfps");
+}
+
+static void pg_media(page_t *p)
+{
+	const char *t;
+	int cur = S_MediaCurrent();
+	add_cmd(p, "Next track", "media_next");
+	add_cmd(p, "Skip ahead", "music_fforward");
+	add_cmd(p, "Go back", "music_rewind");
+	add_cmd(p, "Stop", "stopmusic");
+	add_cmd(p, "Add music...", "menu_mediafiles");
+	add_header(p, "Playlist (Enter takes a track off)");
+	for (int i = 0; (t = S_MediaTrack(i)); i++)
+		add_cmd(p, va("%s%s", i == cur ? "> " : "  ", t), va("media_remove \"%s\"", t));
+	p->refresh = 1;
+}
+
+static void list_music(const char *name, const char *searchpath, void *ctx)
+{
+	page_t *p = ctx;
+	for (int i = 0; i < p->numitems; i++)
+		if (!strcmp(p->items[i].label, name))
+			return;
+	add_cmd(p, name, va("media_add \"%s\"", name));
+}
+
+static void pg_mediafiles(page_t *p)
+{
+	static const char *const pats[] = {"music/*.ogg", "music/*.wav", "sound/music/*.ogg", "sound/music/*.wav",
+	                                   "sound/cdtracks/*.ogg", "sound/cdtracks/*.wav", "music/*.mp3"};
+	for (size_t i = 0; i < BW_ARRAY_COUNT(pats); i++)
+		FS_List(pats[i], true, list_music, p);
+	if (!p->numitems)
+		add_text(p, "No music found in music/ or sound/music/");
+	Str_Copy(p->footer, "Enter adds the track to the playlist", sizeof(p->footer));
+}
+
+static void list_demo(const char *name, const char *searchpath, void *ctx)
+{
+	page_t *p = ctx;
+	add_cmd(p, name + 6, va("closemenu; playdemo \"%s\"", name + 6)); /* past "demos/" */
+}
+
+static void pg_demo(page_t *p)
+{
+	FS_List("demos/*.dem", true, list_demo, p);
+	FS_List("demos/*.mvd", true, list_demo, p);
+	if (!p->numitems)
+		add_text(p, "No demos in demos/");
+	Str_Copy(p->footer, "Enter plays", sizeof(p->footer));
+}
+
+static void pg_mods(page_t *p)
+{
+	const char *dir;
+	for (int i = 0; (dir = Mf_GameDirInfo(i, 0)); i++) {
+		char d[64];
+		Str_Copy(d, dir, sizeof(d));
+		const char *desc = Mf_GameDirInfo(i, 1), *load = Mf_GameDirInfo(i, 3);
+		add_cmd(p, desc && *desc ? va("%s (%s)", desc, d) : d, load && *load ? load : va("gamedir \"%s\"", d));
+	}
+	if (!p->numitems)
+		add_text(p, "No other game directories");
+}
+
+static void pg_download(page_t *p)
+{
+	const char *name;
+	add_cmd(p, "Apply the changes", "pkg apply");
+	add_cmd(p, "Look for updates", "pkg refresh");
+	add_header(p, "Package\tState\tChange");
+	for (int i = 0; (name = PKG_Info(i, 0)); i++) {
+		char n[96], title[96], state[32], action[32];
+		Str_Copy(n, name, sizeof(n));
+		if (strchr(n, '='))
+			*strchr(n, '=') = 0;
+		Str_Copy(title, PKG_Info(i, 2) ? PKG_Info(i, 2) : n, sizeof(title));
+		Str_Copy(state, PKG_Info(i, 8) ? PKG_Info(i, 8) : "", sizeof(state));
+		Str_Copy(action, PKG_Info(i, 9) ? PKG_Info(i, 9) : "", sizeof(action));
+		bool installed = !strcmp(state, "enabled") || !strcmp(state, "present");
+		add_cmd(p, va("%.40s\t%s\t%s", title[0] ? title : n, state[0] ? state : "-", action),
+		        va("pkg %s \"%s\"", installed ? "rem" : "add", n));
+	}
+	char prog[128];
+	if (PKG_Progress(prog, sizeof(prog)))
+		Str_Copy(p->footer, prog, sizeof(p->footer));
+	else
+		Str_Copy(p->footer, "Enter marks a package to add or remove", sizeof(p->footer));
+	p->refresh = 1;
+}
+
+static void pg_credits(page_t *p)
+{
+	static const char *const lines[] = {
+		"Bulwark engine", "", "A clean-room engine for Nuclide games,", "written from public specifications.", "",
+		"Running:", "", "Thanks to the authors of the formats and", "specifications it follows: id Software's",
+		"Quake file formats, the DarkPlaces and FTE", "QuakeC extension documentation, Vera Visions'",
+		"Nuclide, and the libraries it can use:", "SDL, Opus, Speex, SQLite and stb."};
+	for (size_t i = 0; i < BW_ARRAY_COUNT(lines); i++)
+		add_text(p, i == 6 ? va("  %s", Cvar_String("com_fullgamename")) : lines[i]);
+}
+
+static void pg_quit(page_t *p)
+{
+	add_text(p, "Really quit?");
+	add_text(p, "");
+	add_cmd(p, "Yes", "quit");
+	add_cmd(p, "No", "menupop");
+}
+
+static bool quit_key(page_t *p, int key)
+{
+	if (key == 'y' || key == 'Y') {
+		Cbuf_AddText("quit\n");
+		return true;
+	}
+	if (key == 'n' || key == 'N') {
+		pop();
+		return true;
+	}
+	return false;
+}
+
+/* --- teamplay (the tp_ and loc_ names in messages) ------------------------------------------ */
+
+static void edits(page_t *p, const char *const *names)
+{
+	for (; *names; names++)
+		if (Cvar_Find(*names))
+			add_edit(p, *names, *names);
+}
+
+static void pg_teamplay(page_t *p)
+{
+	add_cmd(p, "Ammo and health names", "menu_teamplay_ammo_health");
+	add_cmd(p, "Armour names", "menu_teamplay_armor");
+	add_cmd(p, "Item names", "menu_teamplay_items");
+	add_cmd(p, "Location names", "menu_teamplay_locations");
+	add_cmd(p, "What you need", "menu_teamplay_needs");
+	add_cmd(p, "Powerup names", "menu_teamplay_powerups");
+	add_cmd(p, "Status, location and other words", "menu_teamplay_status_location_misc");
+	add_cmd(p, "Team Fortress names", "menu_teamplay_team_fortress");
+	add_cmd(p, "Weapon names", "menu_teamplay_weapons");
+	add_header(p, "");
+	add_check(p, "Expand macros in chat", "cl_parseSay");
+	add_check(p, "Message triggers", "cl_triggers");
+	add_check(p, "Load location files", "tp_loadlocs");
+	add_edit(p, "Sound for team messages", "tp_soundtrigger");
+}
+
+static void pg_tp_ammo(page_t *p)
+{
+	static const char *const n[] = {"tp_name_shells", "tp_name_nails", "tp_name_rockets", "tp_name_cells",
+	                                "tp_name_health", "tp_name_mh", "tp_name_backpack", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_armor(page_t *p)
+{
+	static const char *const n[] = {"tp_name_armor", "tp_name_ga", "tp_name_ya", "tp_name_ra", "tp_name_armortype_ga",
+	                                "tp_name_armortype_ya", "tp_name_armortype_ra", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_items(page_t *p)
+{
+	static const char *const n[] = {"tp_name_backpack", "tp_name_flag", "tp_name_rune_1", "tp_name_rune_2",
+	                                "tp_name_rune_3", "tp_name_rune_4", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_locations(page_t *p)
+{
+	static const char *const n[] = {"loc_name_separator", "loc_name_ssg", "loc_name_ng", "loc_name_sng", "loc_name_gl",
+	                                "loc_name_rl", "loc_name_lg", "loc_name_ga", "loc_name_ya", "loc_name_ra",
+	                                "loc_name_mh", "loc_name_quad", "loc_name_pent", "loc_name_ring", "loc_name_suit", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_needs(page_t *p)
+{
+	static const char *const n[] = {"tp_need_health", "tp_need_ga", "tp_need_ya", "tp_need_ra", "tp_need_shells",
+	                                "tp_need_nails", "tp_need_rockets", "tp_need_cells", "tp_need_rl", "tp_need_weapon", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_powerups(page_t *p)
+{
+	static const char *const n[] = {"tp_name_quad", "tp_name_pent", "tp_name_ring", "tp_name_suit", "tp_name_quaded",
+	                                "tp_name_pented", "tp_name_eyes", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_misc(page_t *p)
+{
+	static const char *const n[] = {"tp_name_separator", "tp_name_none", "tp_name_nothing", "tp_name_at",
+	                                "tp_name_enemy", "tp_name_teammate", "tp_autostatus", "tp_forceTriggers",
+	                                "tp_disputablemacros", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_tf(page_t *p)
+{
+	static const char *const n[] = {"tp_name_sentry", "tp_name_disp", "tp_name_flag", NULL};
+	edits(p, n);
+}
+
+static void pg_tp_weapons(page_t *p)
+{
+	static const char *const n[] = {"tp_name_axe", "tp_name_sg", "tp_name_ssg", "tp_name_ng", "tp_name_sng",
+	                                "tp_name_gl", "tp_name_rl", "tp_name_lg", "tp_name_weapon", "tp_weapon_order", NULL};
+	edits(p, n);
+}
+
+static const struct {
+	const char *name, *title;
+	void (*populate)(page_t *);
+	double refresh;
+	bool (*key)(page_t *, int);
+} pages[] = {
+	{"menu_main", "Main menu", pg_main, 0, NULL},
+	{"menu_single", "Single player", pg_single, 0, NULL},
+	{"menu_load", "Load a game", pg_load, 0, NULL},
+	{"menu_loadgame", "Load a game", pg_load, 0, NULL},
+	{"menu_save", "Save the game", pg_save, 0, NULL},
+	{"menu_spcheats", "Cheats", pg_spcheats, 0, NULL},
+	{"menu_multi", "Multiplayer", pg_multi, 0, NULL},
+	{"menu_servers", "Servers", pg_servers, 0.5, servers_key},
+	{"menu_slist", "Servers", pg_servers, 0.5, servers_key},
+	{"menu_newmulti", "Start a server", pg_newmulti, 0, NULL},
+	{"menu_setup", "Player setup", pg_setup, 0, NULL},
+	{"menu_network", "Network", pg_network, 0, NULL},
+	{"menu_options", "Options", pg_options, 0, NULL},
+	{"menu_keys", "Keys", pg_keys, 0, NULL},
+	{"menu_video", "Video", pg_video, 0, NULL},
+	{"menu_render", "Rendering", pg_render, 0, NULL},
+	{"menu_textures", "Textures", pg_textures, 0, NULL},
+	{"menu_lighting", "Lighting", pg_lighting, 0, NULL},
+	{"menu_particles", "Particles and decals", pg_particles, 0, NULL},
+	{"menu_audio", "Audio and voice", pg_audio, 0, NULL},
+	{"menu_speakers", "Speakers", pg_speakers, 0, NULL},
+	{"menu_fps", "Performance presets", pg_fps, 0, NULL},
+	{"menu_media", "Media player", pg_media, 1, NULL},
+	{"menu_mediafiles", "Add music", pg_mediafiles, 0, NULL},
+	{"menu_demo", "Demos", pg_demo, 0, NULL},
+	{"menu_mods", "Mods", pg_mods, 0, NULL},
+	{"menu_download", "Packages and updates", pg_download, 1, NULL},
+	{"menu_credits", "Credits", pg_credits, 0, NULL},
+	{"menu_quit", "Quit", pg_quit, 0, quit_key},
+	{"menu_teamplay", "Teamplay", pg_teamplay, 0, NULL},
+	{"menu_teamplay_ammo_health", "Ammo and health", pg_tp_ammo, 0, NULL},
+	{"menu_teamplay_armor", "Armour", pg_tp_armor, 0, NULL},
+	{"menu_teamplay_items", "Items", pg_tp_items, 0, NULL},
+	{"menu_teamplay_locations", "Locations", pg_tp_locations, 0, NULL},
+	{"menu_teamplay_needs", "Needs", pg_tp_needs, 0, NULL},
+	{"menu_teamplay_powerups", "Powerups", pg_tp_powerups, 0, NULL},
+	{"menu_teamplay_status_location_misc", "Status, location and other words", pg_tp_misc, 0, NULL},
+	{"menu_teamplay_team_fortress", "Team Fortress", pg_tp_tf, 0, NULL},
+	{"menu_teamplay_weapons", "Weapons", pg_tp_weapons, 0, NULL},
+};
+
+static void open_page(const char *name)
+{
+	for (size_t i = 0; i < BW_ARRAY_COUNT(pages); i++)
+		if (!Str_ICmp(pages[i].name, name)) {
+			/* the same page again goes back to it rather than stacking */
+			for (int d = 0; d < depth; d++)
+				if (!stack[d]->script && !Str_ICmp(stack[d]->name, name)) {
+					while (depth > d + 1)
+						pop();
+					return;
+				}
+			if (!strcmp(name, "menu_servers") || !strcmp(name, "menu_slist"))
+				CL_HostcacheRefresh(true);
+			page_t *p = push(name, pages[i].title, pages[i].populate);
+			p->refresh = pages[i].refresh;
+			p->key = pages[i].key;
+			return;
+		}
+}
+
+static void Page_f(int argc, const char **argv) { open_page(argv[0]); }
+
+/* --- script menus ---------------------------------------------------------------------------- */
+
+static page_t *script_page(void)
+{
+	page_t *p = top();
+	if (p && p->script)
+		return p;
+	p = push("script", "", NULL);
+	p->script = true;
+	return p;
+}
+
+static item_t *script_item(int argc, const char **argv, int need, itemtype_t type, const char *usage)
+{
+	if (argc < need) {
+		Con_Printf("%s %s\n", argv[0], usage);
+		return NULL;
+	}
+	page_t *p = script_page();
+	item_t *it = add_item(p, type, argc > 3 ? argv[3] : "");
+	it->x = (float)atof(argv[1]);
+	it->y = (float)atof(argv[2]);
+	it->placed = true;
+	fix_cursor(p, 1);
+	return it;
+}
+
+/* conmenu [callback]: a new script menu */
+static void Conmenu_f(int argc, const char **argv)
+{
+	page_t *p = push("script", "", NULL);
+	p->script = true;
+	Str_Copy(p->callback, argc > 1 ? argv[1] : "", sizeof(p->callback));
+}
+
+static void Menutext_f(int argc, const char **argv)
+{
+	item_t *it = script_item(argc, argv, 4, IT_COMMAND, "x y caption cbcommand");
+	if (!it)
+		return;
+	it->command = argc > 4 ? Mem_Strdup(argv[4]) : NULL;
+	if (!it->command)
+		it->type = IT_TEXT;
+	it->big = !Str_ICmp(argv[0], "menutextbig");
+	fix_cursor(top(), 1);
+}
+
+static void Menubind_f(int argc, const char **argv)
+{
+	item_t *it = script_item(argc, argv, 5, IT_BIND, "x y caption bindcommand");
+	if (it)
+		it->command = Mem_Strdup(argv[4]);
+}
+
+static void Menucheck_f(int argc, const char **argv)
+{
+	item_t *it = script_item(argc, argv, 5, IT_CHECK, "x y caption cvarname bitmask");
+	if (!it)
+		return;
+	it->cvar = Mem_Strdup(argv[4]);
+	it->bitmask = argc > 5 ? atoi(argv[5]) : 0;
+}
+
+static void Menuslider_f(int argc, const char **argv)
+{
+	item_t *it = script_item(argc, argv, 7, IT_SLIDER, "x y caption cvarname min max");
+	if (!it)
+		return;
+	it->cvar = Mem_Strdup(argv[4]);
+	it->min = (float)atof(argv[5]);
+	it->max = (float)atof(argv[6]);
+	it->step = fabsf(it->max - it->min) / 20;
+	if (it->step <= 0)
+		it->step = 1;
+}
+
+static void Menucombo_f(int argc, const char **argv)
+{
+	bool strings = !Str_ICmp(argv[0], "menucombos");
+	item_t *it = script_item(argc, argv, 5, IT_COMBO,
+	                         strings ? "x y caption cvarname [caption0] [value0] [caption1] [value1] ..."
+	                                 : "x y caption cvarname [caption0] [caption1] ...");
+	if (!it)
+		return;
+	it->cvar = Mem_Strdup(argv[4]);
+	for (int i = 5, n = 0; i < argc; n++) {
+		if (strings) {
+			add_option(it, argv[i], i + 1 < argc ? argv[i + 1] : argv[i]);
+			i += 2;
+		} else {
+			add_option(it, argv[i], va("%d", n));
+			i++;
+		}
+	}
+}
+
+static void Menuedit_f(int argc, const char **argv)
+{
+	item_t *it = script_item(argc, argv, 5, IT_EDIT, "x y caption cvarname");
+	if (it)
+		it->cvar = Mem_Strdup(argv[4]);
+}
+
+static void Menueditpriv_f(int argc, const char **argv)
+{
+	item_t *it = script_item(argc, argv, 4, IT_EDIT, "x y caption def");
+	if (it)
+		it->value = Mem_Strdup(argc > 4 ? argv[4] : "");
+}
+
+static void Menupic_f(int argc, const char **argv)
+{
+	if (argc < 4) {
+		Con_Printf("menupic x y picname\n");
+		return;
+	}
+	page_t *p = script_page();
+	item_t *it = add_item(p, IT_PIC, argv[3]);
+	it->x = (float)atof(argv[1]);
+	it->y = (float)atof(argv[2]);
+	fix_cursor(p, 1);
+}
+
+static void Menubox_f(int argc, const char **argv)
+{
+	if (argc < 5) {
+		Con_Printf("menubox x y width height\n");
+		return;
+	}
+	page_t *p = script_page();
+	item_t *it = add_item(p, IT_BOX, "");
+	it->x = (float)atof(argv[1]);
+	it->y = (float)atof(argv[2]);
+	it->w = (float)atof(argv[3]);
+	it->h = (float)atof(argv[4]);
+	/* boxes go behind what is already there */
+	item_t box = *it;
+	memmove(p->items + 1, p->items, sizeof(item_t) * (size_t)(p->numitems - 1));
+	p->items[0] = box;
+	p->cursor++;
+	fix_cursor(p, 1);
+}
+
+static void Menucallback_f(int argc, const char **argv)
+{
+	page_t *p = top();
+	if (!p || !p->script || !p->callback[0])
+		return;
+	Cbuf_AddText(va("%s %s\n", p->callback, Cmd_Args()));
+}
+
+static void Menuclear_f(int argc, const char **argv)
+{
+	if (top() && top()->script)
+		pop();
+}
+
+static void Menupop_f(int argc, const char **argv) { pop(); }
+static void Closemenu_f(int argc, const char **argv) { close_all(); }
+
+void EM_Close(void) { close_all(); }
+void EM_OpenMain(void) { open_page("menu_main"); }
+
+void EM_Init(void)
+{
+	for (size_t i = 0; i < BW_ARRAY_COUNT(pages); i++)
+		Cmd_AddD(pages[i].name, Page_f, va("Open the engine's %s menu", pages[i].title));
+	Cmd_AddD("conmenu", Conmenu_f, "conmenu <callback>");
+	Cmd_AddD("menutext", Menutext_f, "x y caption cbcommand");
+	Cmd_AddD("menutextbig", Menutext_f, "x y caption cbcommand");
+	Cmd_AddD("menubind", Menubind_f, "x y caption bindcommand");
+	Cmd_AddD("menucheck", Menucheck_f, "x y caption cvarname bitmask");
+	Cmd_AddD("menuslider", Menuslider_f, "x y caption cvarname min max");
+	Cmd_AddD("menucomboi", Menucombo_f, "x y caption cvarname [caption0] [caption1] ...");
+	Cmd_AddD("menucombos", Menucombo_f, "x y caption cvarname [caption0] [value0] [caption1] [value1] ...");
+	Cmd_AddD("menuedit", Menuedit_f, "x y caption cvarname");
+	Cmd_AddD("menueditpriv", Menueditpriv_f, "x y caption def");
+	Cmd_AddD("menupic", Menupic_f, "x y picname");
+	Cmd_AddD("menubox", Menubox_f, "x y width height: a framed box, in characters");
+	Cmd_AddD("menucallback", Menucallback_f, "Explicitly invoke the active script menu's callback function with the given option set.");
+	Cmd_AddD("menuclear", Menuclear_f, "Pop the currently scripted menu.");
+	Cmd_AddD("menupop", Menupop_f, "Go back one menu");
+	Cmd_AddD("closemenu", Closemenu_f, "Close the engine's menus");
+}

@@ -1,0 +1,71 @@
+/* Bulwark engine - packet transport (UDP and in-process loopback).
+ * ISC licence, see LICENSE. */
+#ifndef BW_NET_H
+#define BW_NET_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define NET_MAX_PACKET 1400  /* payload size we never exceed, below typical MTU */
+#define NET_MAX_RECV 65536
+
+typedef enum { NA_NONE, NA_LOOPBACK, NA_IP4, NA_IP6 } netadrtype_t;
+
+typedef struct {
+	netadrtype_t type;
+	uint8_t ip[16];
+	uint16_t port; /* host order */
+	bool tcp;      /* packets go over a TCP stream ("tcp://" addresses) */
+	uint8_t sock;  /* which local port it came in on: 0 the main one, else an added one */
+} netadr_t;
+
+/* Which end of the loopback pair a socket is. */
+typedef enum { NS_CLIENT, NS_SERVER } netsrc_t;
+
+void NET_Init(void);
+void NET_Shutdown(void);
+
+/* Opens (or reopens) the server's UDP socket on 'port'. 0 picks any port.
+ * Returns false if binding failed; loopback still works. */
+bool NET_OpenServer(int port);
+bool NET_OpenClient(void);
+void NET_CloseServer(void);
+int NET_ServerPort(void);
+
+/* more UDP ports for one side (sv_addport, cl_addport); each listening
+ * port is listed through fn */
+bool NET_AddPort(netsrc_t src, int port);
+void NET_ListPorts(netsrc_t src, void (*fn)(const char *desc, void *ctx), void *ctx);
+/* the server's TCP port for "tcp://" clients, 0 to close it */
+bool NET_OpenServerTCP(int port);
+/* broadcasts are allowed on the client's socket (localservers) */
+void NET_EnableBroadcast(void);
+
+/* "tcp://host:port" gives a TCP address */
+bool NET_StringToAdr(const char *s, netadr_t *a, int defport);
+const char *NET_AdrToString(const netadr_t *a);
+bool NET_CompareAdr(const netadr_t *a, const netadr_t *b);
+bool NET_CompareBaseAdr(const netadr_t *a, const netadr_t *b); /* ignores the port */
+
+void NET_SendPacket(netsrc_t src, const void *data, size_t len, const netadr_t *to);
+/* Returns the length of the next queued packet, or 0 when there is none. */
+size_t NET_GetPacket(netsrc_t src, void *buf, size_t bufsize, netadr_t *from);
+
+/* Simulated network conditions, applied to outgoing packets (like Source's
+ * net_fakelag / net_fakeloss). */
+void NET_SetFakeConditions(float lag_ms, float loss_percent);
+void NET_RunDelayed(void);
+
+/* Sends "\xff\xff\xff\xff" followed by text. */
+void NET_OutOfBandPrint(netsrc_t src, const netadr_t *to, const char *fmt, ...);
+
+/* TCP streams, non-blocking; sockets are plain descriptors, -1 for none */
+int NET_TCPListen(int port);
+int NET_TCPAccept(int listener, netadr_t *from);
+int NET_TCPConnect(const netadr_t *to);
+int NET_TCPSend(int s, const void *data, size_t len); /* bytes taken, 0 if it would block, -1 if gone */
+int NET_TCPRecv(int s, void *buf, size_t size);       /* bytes read, 0 if none waiting, -1 if closed */
+void NET_TCPClose(int s);
+
+#endif
