@@ -190,15 +190,11 @@ add_library(bwui STATIC
 	src/ui/ui_panorama.cpp
 	src/ui/ui_qc.c)
 target_link_libraries(bwui PUBLIC bwserver PRIVATE PanoramaEngine)
-# the bundled fallbacks for the default font (DejaVu Sans Condensed and its bold, see data/fonts)
+# the bundled fallback for the default font (DejaVu Sans Condensed, see data/fonts)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont.c
 	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed.ttf
 		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont.c -DNAME=bw_deffont -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
 	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
-	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed-Bold.ttf
-		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c -DNAME=bw_deffont_bold -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed-Bold.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
 
 add_library(bwclient STATIC
 	src/client/cl_master.c
@@ -244,8 +240,7 @@ add_library(bwclient STATIC
 	src/sound/snd_main.c
 	src/sound/snd_dsp.c
 	src/sound/snd_mem.c
-	${CMAKE_BINARY_DIR}/generated/bw_deffont.c
-	${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c)
+	${CMAKE_BINARY_DIR}/generated/bw_deffont.c)
 target_link_libraries(bwclient PUBLIC bwserver bwui)
 target_include_directories(bwclient PRIVATE third_party)
 
