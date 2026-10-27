@@ -1885,6 +1885,25 @@ static void bi_pointparticles(qcvm_t *vm)
 	}
 }
 
+/* te_customflash(org, radius, lifetime, colour): a fading light */
+static void bi_te_customflash(qcvm_t *vm)
+{
+	const float *org = QC_PVEC(vm, 0), *col = QC_PVEC(vm, 3);
+	LOCALMSG(m, 64);
+	MSG_WriteByte(&m, svc_flash);
+	for (int i = 0; i < 3; i++)
+		MSG_WriteCoord(&m, org[i]);
+	MSG_WriteFloat(&m, QC_PFLOAT(vm, 1));
+	MSG_WriteFloat(&m, QC_PFLOAT(vm, 2));
+	for (int i = 0; i < 3; i++)
+		MSG_WriteFloat(&m, col[i]);
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state == CS_SPAWNED && !c->bot && client_sees(c, org))
+			sb_write(&c->datagram, &m);
+	}
+}
+
 static void bi_trailparticles(qcvm_t *vm)
 {
 	/* trailparticles(effect, entity, start, end) */
@@ -1963,12 +1982,13 @@ const qc_builtin_t sv_client_builtins[] = {
 	{"WriteDouble", bi_WriteDouble}, {"WriteString", bi_WriteString},
 	{"WriteUnterminatedString", bi_WriteUnterminatedString}, {"multicast", bi_multicast},
 	{"pointparticles", bi_pointparticles}, {"trailparticles", bi_trailparticles},
+	{"te_customflash", bi_te_customflash},
 	{"sprint", bi_sprint}, {"bprint", bi_bprint}, {"centerprint", bi_centerprint}, {"stuffcmd", bi_stuffcmd},
 	{"stuffcmdflags", bi_stuffcmdflags}, {"clientcommand", bi_clientcommand}, {"infokey", bi_infokey},
 	{"infokeyf", bi_infokeyf}, {"forceinfokey", bi_forceinfokey}, {"setspawnparms", bi_setspawnparms},
 	{"clienttype", bi_clienttype}, {"spawnclient", bi_spawnclient}, {"dropclient", bi_dropclient},
 	{"checkclient", bi_checkclient}, {"setsendneeded", bi_setsendneeded}, {"sound", bi_sound},
-	{"pointsound", bi_pointsound}, {"setpause", bi_setpause},
+	{"pointsound", bi_pointsound}, {"pointsound_proper", bi_pointsound}, {"setpause", bi_setpause},
 	{"runstandardplayerphysics", bi_runstandardplayerphysics},
 	{NULL, NULL}};
 

@@ -1111,6 +1111,23 @@ void R_UpdateParticles(void)
 	R_UpdateDecals();
 }
 
+/* te_customflash: a light that shrinks to nothing over its lifetime */
+void R_SpawnFlash(const float *org, float radius, float lifetime, const float *rgb)
+{
+	plight_t *l;
+	if (radius <= 0 || numplights >= MAX_PLIGHTS)
+		return;
+	if (lifetime <= 0)
+		lifetime = 0.1f;
+	l = &plights[numplights++];
+	VectorCopy(org, l->org);
+	VectorCopy(rgb, l->rgb);
+	VectorClear(l->rgbfade);
+	l->radius = radius;
+	l->fade = radius / lifetime;
+	l->die = (float)r_time + lifetime;
+}
+
 void R_AddParticleLights(void)
 {
 	for (int i = 0; i < numplights; i++)

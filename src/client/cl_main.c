@@ -719,6 +719,17 @@ static void parse_server_message(msg_t *m, bool reliable)
 			R_PointParticles(fx, org, dir, count);
 			break;
 		}
+		case svc_flash: {
+			float org[3], rgb[3], radius, life;
+			for (int i = 0; i < 3; i++)
+				org[i] = MSG_ReadCoord(m);
+			radius = MSG_ReadFloat(m);
+			life = MSG_ReadFloat(m);
+			for (int i = 0; i < 3; i++)
+				rgb[i] = MSG_ReadFloat(m);
+			R_SpawnFlash(org, radius, life, rgb);
+			break;
+		}
 		case svc_trailparticles: {
 			int fx = (int)MSG_ReadVarUInt(m);
 			float start[3], end[3];

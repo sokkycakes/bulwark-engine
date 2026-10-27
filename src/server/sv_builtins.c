@@ -466,9 +466,16 @@ const char *SV_ModelName(qcvm_t *vm, int index)
 
 /* no rigid-body physics yet; Nuclide falls back to its own movement */
 static void bi_physics_supported(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
+static void bi_nop(qcvm_t *vm) { (void)vm; }
 
 const qc_builtin_t sv_builtins[] = {
 	{"physics_supported", bi_physics_supported},
+	/* MOVETYPE_PHYSICS is not simulated, so these have nothing to act on */
+	{"physics_enable", bi_nop}, {"physics_addforce", bi_nop}, {"physics_addtorque", bi_nop},
+	/* the server game's debug polygons (bone and path overlays) draw nowhere */
+	{"R_BeginPolygon", bi_nop}, {"R_PolygonVertex", bi_nop}, {"R_EndPolygon", bi_nop},
+	{"R_EndPolygonRibbon", bi_nop},
+	{"getsurfacenearpoint", W_bi_getsurfacenearpoint}, {"getsurfacetexture", W_bi_getsurfacetexture},
 	{"spawn", bi_spawn}, {"remove", bi_remove}, {"removeinstant", bi_remove},
 	{"setorigin", W_bi_setorigin}, {"setsize", W_bi_setsize}, {"setmodel", bi_setmodel},
 	{"setmodelindex", bi_setmodelindex}, {"precache_model", bi_precache_model},

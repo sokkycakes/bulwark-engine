@@ -33,6 +33,7 @@ enum {
 	svc_stats,        /* varuint count, then per stat: byte index, byte type (EV_FLOAT 2, EV_STRING 1, EV_INTEGER 8), value */
 	svc_voice,        /* byte sender slot, then a clc_voice body */
 	svc_voxel,        /* byte subcommand (VXN_*), see docs/spec/voxel.md */
+	svc_flash,        /* coord x3 origin, float radius, float lifetime, float x3 colour (te_customflash) */
 	svc_count
 };
 

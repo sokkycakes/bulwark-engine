@@ -885,6 +885,37 @@ static void bi_getsoundtime(qcvm_t *vm)
 	QC_ReturnFloat(vm, t);
 }
 
+/* getchannellevel(e, channel): how loud the channel's sample is where it is
+ * playing now, 0 to 1 (an RMS over the next 1/30 s), for mouths that move
+ * with speech. A client game entity's own channel is tried first, then the
+ * server entity it stands for (its entnum field). */
+static void bi_getchannellevel(qcvm_t *vm)
+{
+	int e = QC_PENT(vm, 0), chan = (int)QC_PFLOAT(vm, 1);
+	int entnum = QC_FieldOfs(vm, "entnum");
+	channel_t *ch;
+	float level = 0;
+	SNDDMA_Lock();
+	ch = find_channel(e, chan, SNDF_CSQCENT);
+	if (!ch && entnum >= 0 && e > 0)
+		ch = find_channel((int)QC_EFloat(vm, e, entnum), chan, 0);
+	if (ch && ch->sfx->loaded && ch->sfx->data && ch->pos >= 0 && ch->sfx->rate > 0) {
+		const sfx_t *s = ch->sfx;
+		int start = (int)ch->pos, n = BW_MAX(1, s->rate / 30);
+		double sum = 0;
+		int count = 0;
+		for (int f = start; f < start + n && f < s->frames; f++)
+			for (int c = 0; c < s->channels; c++, count++) {
+				double v = s->data[f * s->channels + c] / 32768.0;
+				sum += v * v;
+			}
+		if (count)
+			level = (float)sqrt(sum / count);
+	}
+	SNDDMA_Unlock();
+	QC_ReturnFloat(vm, BW_MIN(level * 2, 1));
+}
+
 static void bi_soundlength(qcvm_t *vm)
 {
 	sfx_t *s = S_FindSfx(QC_PSTR(vm, 0), true);
@@ -898,4 +929,5 @@ const qc_builtin_t s_builtins[] = {
 	{"soundupdate", bi_soundupdate}, {"stopsound", bi_stopsound}, {"pointsound", bi_pointsound},
 	{"pointsound_proper", bi_pointsound}, {"localsound", bi_localsound}, {"ambientsound", bi_ambientsound},
 	{"SetListener", bi_setlistener}, {"getsoundtime", bi_getsoundtime}, {"soundlength", bi_soundlength},
+	{"getchannellevel", bi_getchannellevel},
 	{"setup_reverb", S_BI_SetupReverb}, {NULL, NULL}};

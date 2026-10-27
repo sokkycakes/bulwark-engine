@@ -242,6 +242,7 @@ void EM_OpenMain(void);
 
 /* cl_master.c: the server list, as the browsers see it */
 extern const qc_builtin_t cl_hostcache_builtins[];
+extern const qc_builtin_t cl_altcon_builtins[]; /* cl_altcon.c: named consoles */
 void CL_HostcacheRefresh(bool purge);
 int CL_HostcacheCount(void);
 const char *CL_HostcacheField(int n, const char *key, char *out, size_t size);

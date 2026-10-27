@@ -322,6 +322,24 @@ static void Dumpplatform_f(int argc, const char **argv)
 	Con_Printf("wrote %s (%d builtins)\n", rel, n);
 }
 
+/* the builtins a loaded progs declares that this engine does not have */
+static void Missing_f(int argc, const char **argv)
+{
+	qcvm_t *vm = cmd_vm(argc > 1 ? argv[1] : "ssqc", NULL);
+	int n = 0;
+	if (!vm)
+		return;
+	for (int p = 0; p < vm->numprogs; p++)
+		for (int i = 1; i < vm->progs[p].numfunctions; i++) {
+			qcfunc_t *f = &vm->progs[p].functions[i];
+			if (f->d.first_statement > 0 || QC_BuiltinImplemented(vm, (p << QC_PROGS_SHIFT) | i))
+				continue;
+			Con_Printf("%s\n", f->name);
+			n++;
+		}
+	Con_Printf("%d builtins missing in %s\n", n, vm->name);
+}
+
 /* --- breakpoints, watchpoints and poke --------------------------------- */
 
 static void Breakpoint_f(int argc, const char **argv)
@@ -440,5 +458,6 @@ void QC_InitDebugCommands(void)
 	Cmd_AddD("breakpoint", Breakpoint_f, "breakpoint [function]: breakpoint_ssqc");
 	Cmd_AddD("watchpoint", Watchpoint_f, "watchpoint [global or entnum.field]: watchpoint_ssqc");
 	Cmd_AddD("sv_enableprofile", Profile_f, "profile_ssqc");
+	Cmd_AddD("pr_missing", Missing_f, "pr_missing [ssqc|csqc|menuqc]: list the builtins the progs declares that the engine lacks");
 	Cmd_AddD("pr_dumpplatform", Dumpplatform_f, "pr_dumpplatform [ssqc|csqc|menuqc]: write the builtins and extensions to a file");
 }

@@ -249,7 +249,7 @@ static const char *CL_ModelName(qcvm_t *vm, int index)
 
 bool CSQC_Load(void)
 {
-	static const qc_builtin_t *tables[8];
+	static const qc_builtin_t *tables[12];
 	size_t len;
 	char *data;
 	qcvm_t *vm;
@@ -272,7 +272,9 @@ bool CSQC_Load(void)
 	tables[4] = qc_builtins_extra;
 	tables[5] = ui_builtins;
 	tables[6] = cl_hostcache_builtins;
-	tables[7] = NULL;
+	tables[7] = qc_uri_builtins;
+	tables[8] = cl_altcon_builtins;
+	tables[9] = NULL;
 	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)
@@ -1027,6 +1029,82 @@ static void cl_findkeysforcommandex(qcvm_t *vm)
 static void cl_setsensitivityscaler(qcvm_t *vm) { (void)vm; }
 static void cl_nop(qcvm_t *vm) { (void)vm; }
 
+/* infokey(e, key): the serverinfo for the world, a player's userinfo for
+ * a player (by the server entity a client game entity stands for) */
+static void cl_infokey(qcvm_t *vm)
+{
+	char buf[1024];
+	int e = QC_PENT(vm, 0), entnum = QC_FieldOfs(vm, "entnum");
+	const char *key = QC_PSTR(vm, 1), *v;
+	if (e <= 0) {
+		v = CL_ServerKey(key, buf, sizeof(buf));
+		QC_ReturnString(vm, v ? v : "");
+		return;
+	}
+	if (entnum >= 0 && QC_EFloat(vm, e, entnum) > 0)
+		e = (int)QC_EFloat(vm, e, entnum);
+	QC_ReturnString(vm, player_key(e - 1, key, buf, sizeof(buf)));
+}
+
+/* sounds the client game precaches itself get negative indices so they
+ * never collide with the server's list */
+static char *local_sounds[256];
+static int num_local_sounds;
+
+static void cl_getsoundindex(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 0);
+	bool queryonly = vm->argc > 1 && QC_PFLOAT(vm, 1) != 0;
+	if (!*name) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
+	for (int i = 1; i < cl.numsounds; i++)
+		if (cl.sounds[i] && !Str_ICmp(cl.sounds[i], name)) {
+			QC_ReturnFloat(vm, (float)i);
+			return;
+		}
+	for (int i = 0; i < num_local_sounds; i++)
+		if (!Str_ICmp(local_sounds[i], name)) {
+			QC_ReturnFloat(vm, (float)-(i + 1));
+			return;
+		}
+	if (queryonly || num_local_sounds >= (int)BW_ARRAY_COUNT(local_sounds)) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
+	S_PrecacheSound(name);
+	local_sounds[num_local_sounds++] = Mem_Strdup(name);
+	QC_ReturnFloat(vm, (float)-num_local_sounds);
+}
+
+static void cl_soundnameforindex(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	if (i > 0 && i < cl.numsounds && cl.sounds[i])
+		QC_ReturnString(vm, cl.sounds[i]);
+	else if (i < 0 && -i <= num_local_sounds)
+		QC_ReturnString(vm, local_sounds[-i - 1]);
+	else
+		QC_ReturnString(vm, "");
+}
+
+static void cl_makestatic(qcvm_t *vm) { R_MakeStatic(vm, QC_PENT(vm, 0)); }
+
+/* getlightstylergb(style): the style's brightness now, as a colour */
+static void cl_getlightstylergb(qcvm_t *vm)
+{
+	int s = (int)QC_PFLOAT(vm, 0);
+	float v = 1, rgb[3];
+	const char *str = s >= 0 && s < 256 ? cl.lightstyles[s] : NULL;
+	if (str && *str) {
+		size_t n = strlen(str);
+		v = (float)(str[(size_t)(cl.time * 10) % n] - 'a') / ('m' - 'a');
+	}
+	rgb[0] = rgb[1] = rgb[2] = v;
+	QC_ReturnVector(vm, rgb);
+}
+
 static void cl_getlightstyle(qcvm_t *vm)
 {
 	int s = (int)QC_PFLOAT(vm, 0);
@@ -1091,6 +1169,10 @@ const qc_builtin_t cl_builtins[] = {
 	{"stringtokeynum", cl_stringtokeynum}, {"stringtokeynum_csqc", cl_stringtokeynum},
 	{"findkeysforcommand", cl_findkeysforcommand}, {"findkeysforcommandex", cl_findkeysforcommandex},
 	{"setsensitivityscaler", cl_setsensitivityscaler}, {"getlightstyle", cl_getlightstyle},
+	{"getlightstylergb", cl_getlightstylergb}, {"infokey", cl_infokey}, {"getsoundindex", cl_getsoundindex},
+	{"soundnameforindex", cl_soundnameforindex}, {"makestatic", cl_makestatic},
+	/* MOVETYPE_PHYSICS is not simulated */
+	{"physics_enable", cl_nop}, {"physics_addforce", cl_nop}, {"physics_addtorque", cl_nop},
 	{"lightstyle", cl_lightstyle}, {"anglesub", cl_anglesub},
 	{"getstatf", cl_getstatf}, {"getstati", cl_getstati}, {"getstats", cl_getstats}, {"getplayerstat", cl_getplayerstat},
 	{"setwatchpoint", cl_nop}, {"gp_rumble", cl_nop}, {"gp_rumbletriggers", cl_nop}, {"gp_setledcolor", cl_nop},

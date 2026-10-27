@@ -53,6 +53,15 @@ typedef struct {
 	int firstface, numfaces;
 } cmodel_t;
 
+/* Q1 faces, kept for surface queries (getsurfacenearpoint) on the server */
+typedef struct {
+	int plane;
+	bool back;            /* the face looks along the plane's negative normal */
+	int firstvert, numverts; /* into facevertices */
+	int shader;           /* the miptex, into shaders */
+	float mins[3], maxs[3];
+} cface_t;
+
 /* children: >= 0 a node, < 0 the leaf -(child + 1) */
 typedef struct {
 	int plane;
@@ -105,6 +114,9 @@ typedef struct {
 	/* Q1 hulls: hull 0 is the node tree turned into clip nodes */
 	cclipnode_t *clipnodes, *hull0;
 	int numclipnodes;
+	cface_t *faces;
+	int numfaces;
+	float *facevertices; /* xyz triples */
 	bool bsp2;
 	/* GoldSrc BSP30: four hulls, sized for Half-Life players */
 	bool hl;
@@ -113,6 +125,10 @@ typedef struct {
 } bspmap_t;
 
 bspmap_t *BSP_Load(const char *path);
+/* the surface of a model nearest a point (model-relative), -1 for none:
+ * a Q1 face of the model, or a brush side for Q3-family maps */
+int BSP_SurfaceNearPoint(const bspmap_t *map, int model, const float *p);
+const char *BSP_SurfaceTexture(const bspmap_t *map, int model, int surface);
 void BSP_Free(bspmap_t *map);
 
 typedef struct {

@@ -325,6 +325,11 @@ void W_bi_walkmove(qcvm_t *vm);
 void W_bi_changeyaw(qcvm_t *vm);
 void W_bi_touchtriggers(qcvm_t *vm);
 void W_bi_checkpvs(qcvm_t *vm);
+/* sv_uri.c: uri_get for every module, finished requests are delivered by QC_URIFrame */
+extern const qc_builtin_t qc_uri_builtins[];
+void QC_URIFrame(void);
+void W_bi_getsurfacenearpoint(qcvm_t *vm);
+void W_bi_getsurfacetexture(qcvm_t *vm);
 
 /* sv_stats.c */
 extern const qc_builtin_t sv_stat_builtins[];

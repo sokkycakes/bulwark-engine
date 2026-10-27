@@ -241,6 +241,9 @@ struct qcvm_s {
 qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kind,
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize);
 void QC_Free(qcvm_t *vm);
+/* every loaded VM (server, client game, menu) */
+int QC_VMCount(void);
+qcvm_t *QC_VMAt(int i);
 
 /* multiprogs: adds a progs to the VM and runs its init(); returns its number or -1 */
 int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size);
@@ -312,6 +315,10 @@ uint32_t QC_HeapRealloc(qcvm_t *vm, uint32_t addr, size_t bytes);
 
 /* random numbers in [0,1) */
 float QC_Random(qcvm_t *vm);
+
+/* sprintf's formatting: the format string in parameter fmtparm, its
+ * arguments after it; the caller frees out with SB_Free */
+void QC_Format(qcvm_t *vm, int fmtparm, strbuf_t *out);
 
 /* parameter and return helpers for builtins */
 qcval_t *QC_Parm(qcvm_t *vm, int n);

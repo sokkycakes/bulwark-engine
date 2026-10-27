@@ -62,8 +62,6 @@ void QC_SyncAutocvars(qcvm_t *vm);
 void QC_ExtraFree(qcvm_t *vm);
 void QC_HeapInit(qcvm_t *vm);
 bool QC_HeapBlockUsed(qcvm_t *vm, size_t ofs, size_t *size);
-int QC_VMCount(void);
-qcvm_t *QC_VMAt(int i);
 const char *QC_ProgsString(qcvm_t *vm, int32_t ofs);
 void QC_MarkHashTables(qcvm_t *vm, void (*mark)(uint32_t value));
 bool QC_AnyExecuting(void);

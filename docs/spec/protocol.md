@@ -80,6 +80,8 @@ update (the same idea as Source's).
 | 20 | `svc_playerblob` | byte slot, string key, varuint length, bytes |
 | 21 | `svc_stats` | varuint count, then per stat byte index, byte type (2 float, 1 string, 8 integer) and the value |
 | 22 | `svc_voice` | byte sender slot, then a `clc_voice` body |
+| 23 | `svc_voxel` | byte subcommand, see voxel.md |
+| 24 | `svc_flash` | coord ×3 origin, float radius, float lifetime, float ×3 colour: a light that shrinks to nothing over its lifetime (`te_customflash`) |
 
 ### serverdata
 

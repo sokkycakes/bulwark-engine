@@ -33,8 +33,9 @@ enum {
 	Q3_MODELS = 7, Q3_BRUSHES = 8, Q3_BRUSHSIDES = 9, Q3_VISIBILITY = 16, Q3_NUMLUMPS = 17
 };
 enum {
-	Q1_ENTITIES = 0, Q1_PLANES = 1, Q1_VISIBILITY = 4, Q1_NODES = 5, Q1_CLIPNODES = 9, Q1_LEAFS = 10,
-	Q1_MARKSURFACES = 11, Q1_MODELS = 14, Q1_NUMLUMPS = 15
+	Q1_ENTITIES = 0, Q1_PLANES = 1, Q1_TEXTURES = 2, Q1_VERTEXES = 3, Q1_VISIBILITY = 4, Q1_NODES = 5,
+	Q1_TEXINFO = 6, Q1_FACES = 7, Q1_CLIPNODES = 9, Q1_LEAFS = 10, Q1_MARKSURFACES = 11, Q1_EDGES = 12,
+	Q1_SURFEDGES = 13, Q1_MODELS = 14, Q1_NUMLUMPS = 15
 };
 
 /* Q1 leaf contents */
@@ -221,6 +222,88 @@ static bool load_q3(bspmap_t *m, const uint8_t *d, size_t size)
 static int16_t rds16(const uint8_t *p) { return (int16_t)(p[0] | (p[1] << 8)); }
 static uint16_t rdu16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 
+/* the faces of a Q1 map with their polygons and texture names, for surface
+ * queries; collision does not need them, so a map without them still loads */
+static void load_q1_faces(bspmap_t *m, const uint8_t *d, const lump_t *l, bool b2, size_t size)
+{
+	int facesize = b2 ? 28 : 20, edgesize = b2 ? 8 : 4;
+	int numverts, numedges, numsurfedges, numtexinfo, nummip, total = 0;
+	if (!lump_ok(size, l[Q1_FACES], facesize) || !lump_ok(size, l[Q1_VERTEXES], 12) ||
+	    !lump_ok(size, l[Q1_EDGES], edgesize) || !lump_ok(size, l[Q1_SURFEDGES], 4) ||
+	    !lump_ok(size, l[Q1_TEXINFO], 40) || !lump_ok(size, l[Q1_TEXTURES], 0))
+		return;
+	numverts = l[Q1_VERTEXES].len / 12;
+	numedges = l[Q1_EDGES].len / edgesize;
+	numsurfedges = l[Q1_SURFEDGES].len / 4;
+	numtexinfo = l[Q1_TEXINFO].len / 40;
+	nummip = l[Q1_TEXTURES].len >= 4 ? rd32(d + l[Q1_TEXTURES].ofs) : 0;
+	if (nummip < 0 || (size_t)nummip * 4 + 4 > (size_t)l[Q1_TEXTURES].len)
+		nummip = 0;
+	m->numshaders = nummip;
+	m->shaders = Mem_Alloc(sizeof(cshader_t) * (nummip + 1));
+	for (int i = 0; i < nummip; i++) {
+		int ofs = rd32(d + l[Q1_TEXTURES].ofs + 4 + i * 4);
+		if (ofs < 0 || ofs + 16 > l[Q1_TEXTURES].len)
+			continue;
+		memcpy(m->shaders[i].name, d + l[Q1_TEXTURES].ofs + ofs, 16);
+		m->shaders[i].name[16] = 0;
+	}
+	m->numfaces = l[Q1_FACES].len / facesize;
+	m->faces = Mem_Alloc(sizeof(cface_t) * (m->numfaces + 1));
+	for (int i = 0; i < m->numfaces; i++) {
+		const uint8_t *p = d + l[Q1_FACES].ofs + i * facesize;
+		int n = b2 ? rd32(p + 12) : rdu16(p + 8);
+		if (n > 0 && n < 4096)
+			total += n;
+	}
+	m->facevertices = Mem_Alloc(sizeof(float) * 3 * (size_t)(total + 1));
+	total = 0;
+	for (int i = 0; i < m->numfaces; i++) {
+		const uint8_t *p = d + l[Q1_FACES].ofs + i * facesize;
+		cface_t *f = &m->faces[i];
+		int plane = b2 ? rd32(p) : rdu16(p), side = b2 ? rd32(p + 4) : rdu16(p + 2);
+		int first = rd32(b2 ? p + 8 : p + 4), n = b2 ? rd32(p + 12) : rdu16(p + 8);
+		int ti = b2 ? rd32(p + 16) : rdu16(p + 10);
+		f->plane = plane >= 0 && plane < m->numplanes ? plane : 0;
+		f->back = side != 0;
+		f->shader = -1;
+		if (ti >= 0 && ti < numtexinfo) {
+			int mip = rd32(d + l[Q1_TEXINFO].ofs + ti * 40 + 32);
+			if (mip >= 0 && mip < nummip)
+				f->shader = mip;
+		}
+		f->firstvert = total;
+		for (int k = 0; k < 3; k++) {
+			f->mins[k] = 1e30f;
+			f->maxs[k] = -1e30f;
+		}
+		if (n <= 0 || n >= 4096 || first < 0 || first + n > numsurfedges)
+			continue;
+		for (int e = 0; e < n; e++) {
+			int se = rd32(d + l[Q1_SURFEDGES].ofs + (first + e) * 4);
+			int edge = se < 0 ? -se : se, v;
+			const uint8_t *ep;
+			float *out = m->facevertices + 3 * (size_t)total;
+			if (edge >= numedges)
+				break;
+			ep = d + l[Q1_EDGES].ofs + edge * edgesize;
+			if (b2)
+				v = rd32(ep + (se < 0 ? 4 : 0));
+			else
+				v = rdu16(ep + (se < 0 ? 2 : 0));
+			if (v < 0 || v >= numverts)
+				break;
+			for (int k = 0; k < 3; k++) {
+				out[k] = rdf(d + l[Q1_VERTEXES].ofs + v * 12 + k * 4);
+				f->mins[k] = BW_MIN(f->mins[k], out[k]);
+				f->maxs[k] = BW_MAX(f->maxs[k], out[k]);
+			}
+			total++;
+			f->numverts++;
+		}
+	}
+}
+
 /* Q1 BSP29 and BSP2: record sizes differ, BSP2 widening shorts to ints and
  * node and leaf bounds to floats. Layouts in docs/spec/bsp.md. */
 static bool load_q1(bspmap_t *m, const uint8_t *d, size_t size)
@@ -372,6 +455,7 @@ static bool load_q1(bspmap_t *m, const uint8_t *d, size_t size)
 			c->children[k] = ch;
 		}
 	}
+	load_q1_faces(m, d, l, b2, size);
 	m->type = BSP_Q1;
 	return true;
 }
@@ -652,7 +736,122 @@ void BSP_Free(bspmap_t *m)
 	Mem_Free(m->vis);
 	Mem_Free(m->clipnodes);
 	Mem_Free(m->hull0);
+	Mem_Free(m->faces);
+	Mem_Free(m->facevertices);
 	Mem_Free(m);
+}
+
+/* --- surface queries ------------------------------------------------- */
+
+/* squared distance from p to a convex polygon */
+static float polygon_distance(const float *verts, int n, const float *normal, const float *p)
+{
+	float d = DotProduct(p, normal) - DotProduct(verts, normal), best = 1e30f;
+	int pos = 0, neg = 0;
+	/* inside when p is on the same side of every edge, whichever way the
+	 * polygon winds */
+	for (int i = 0; i < n; i++) {
+		const float *a = verts + i * 3, *b = verts + ((i + 1) % n) * 3;
+		float e[3], c[3], ap[3], s;
+		VectorSubtract(b, a, e);
+		VectorSubtract(p, a, ap);
+		CrossProduct(e, normal, c);
+		s = DotProduct(ap, c);
+		pos += s > 0;
+		neg += s < 0;
+	}
+	if (!pos || !neg)
+		return d * d;
+	for (int i = 0; i < n; i++) {
+		const float *a = verts + i * 3, *b = verts + ((i + 1) % n) * 3;
+		float e[3], ap[3], q[3], t, len = 0, dd;
+		VectorSubtract(b, a, e);
+		VectorSubtract(p, a, ap);
+		len = DotProduct(e, e);
+		t = len > 0 ? DotProduct(ap, e) / len : 0;
+		t = t < 0 ? 0 : t > 1 ? 1 : t;
+		for (int k = 0; k < 3; k++)
+			q[k] = a[k] + e[k] * t - p[k];
+		dd = DotProduct(q, q);
+		if (dd < best)
+			best = dd;
+	}
+	return best;
+}
+
+int BSP_SurfaceNearPoint(const bspmap_t *map, int model, const float *p)
+{
+	const cmodel_t *cm;
+	int best = -1;
+	float bestd = 1e30f;
+	if (!map || model < 0 || model >= map->nummodels)
+		return -1;
+	cm = &map->models[model];
+	if (map->type == BSP_Q1) {
+		const float pad = 64;
+		if (!map->faces)
+			return -1;
+		for (int i = 0; i < cm->numfaces; i++) {
+			int fi = cm->firstface + i;
+			const cface_t *f;
+			float n[3], d;
+			if (fi < 0 || fi >= map->numfaces)
+				break;
+			f = &map->faces[fi];
+			if (f->numverts < 3 || p[0] < f->mins[0] - pad || p[0] > f->maxs[0] + pad || p[1] < f->mins[1] - pad ||
+			    p[1] > f->maxs[1] + pad || p[2] < f->mins[2] - pad || p[2] > f->maxs[2] + pad)
+				continue;
+			VectorCopy(map->planes[f->plane].normal, n);
+			if (f->back)
+				VectorScale(n, -1, n);
+			d = polygon_distance(map->facevertices + 3 * (size_t)f->firstvert, f->numverts, n, p);
+			if (d < bestd) {
+				bestd = d;
+				best = i;
+			}
+		}
+		return best;
+	}
+	/* brush maps: the side of a nearby brush that the point is closest to */
+	for (int i = 0; i < cm->numbrushes; i++) {
+		const cbrush_t *b = &map->brushes[cm->firstbrush + i];
+		const float pad = 16;
+		int side = -1;
+		float outmost = -1e30f;
+		if (p[0] < b->mins[0] - pad || p[0] > b->maxs[0] + pad || p[1] < b->mins[1] - pad ||
+		    p[1] > b->maxs[1] + pad || p[2] < b->mins[2] - pad || p[2] > b->maxs[2] + pad)
+			continue;
+		for (int s = 0; s < b->numsides; s++) {
+			const cplane_t *pl = &map->planes[map->brushsides[b->firstside + s].plane];
+			float d = DotProduct(p, pl->normal) - pl->dist;
+			if (d > outmost) {
+				outmost = d;
+				side = b->firstside + s;
+			}
+		}
+		if (side >= 0 && outmost <= pad && fabsf(outmost) < bestd) {
+			bestd = fabsf(outmost);
+			best = side;
+		}
+	}
+	return best;
+}
+
+const char *BSP_SurfaceTexture(const bspmap_t *map, int model, int surface)
+{
+	int shader = -1;
+	if (!map || surface < 0)
+		return "";
+	if (map->type == BSP_Q1) {
+		if (model < 0 || model >= map->nummodels)
+			return "";
+		surface += map->models[model].firstface;
+		if (surface < map->numfaces)
+			shader = map->faces[surface].shader;
+	} else if (surface < map->numbrushsides) {
+		shader = map->brushsides[surface].shader;
+	}
+	return shader >= 0 && shader < map->numshaders ? map->shaders[shader].name : "";
 }
 
 /* --- collision ------------------------------------------------------- */

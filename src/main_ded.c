@@ -104,6 +104,7 @@ int main(int argc, char **argv)
 		PKG_Frame();
 		Worker_Frame();
 		Plug_Frame();
+		QC_URIFrame();
 		SV_Frame(dt);
 	}
 	if (maxframes >= 0)

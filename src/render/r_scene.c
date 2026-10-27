@@ -123,6 +123,55 @@ void R_EndPolygon(void)
 	poly_start = numpolyverts;
 }
 
+/* R_EndPolygonRibbon(radius, texcoordbias): the vertices given are a line;
+ * each segment becomes a quad of that half-width facing the view, the
+ * second edge's texture coordinates offset by texcoordbias */
+void R_EndPolygonRibbon(float radius, const float *tcbias)
+{
+	enum { MAX_RIBBON = 256 };
+	rvert_t line[MAX_RIBBON];
+	int count = BW_MIN(numpolyverts - poly_start, MAX_RIBBON);
+	float side[MAX_RIBBON][3];
+	if (count < 2) {
+		numpolyverts = poly_start;
+		return;
+	}
+	memcpy(line, polyverts + poly_start, sizeof(rvert_t) * (size_t)count);
+	numpolyverts = poly_start;
+	/* per vertex: the sideways direction, across the line and the view */
+	for (int i = 0; i < count; i++) {
+		const float *a = line[i > 0 ? i - 1 : 0].xyz, *b = line[i + 1 < count ? i + 1 : count - 1].xyz;
+		float dir[3], toview[3], len;
+		VectorSubtract(b, a, dir);
+		VectorSubtract(r_scene.origin, line[i].xyz, toview);
+		CrossProduct(dir, toview, side[i]);
+		len = sqrtf(DotProduct(side[i], side[i]));
+		VectorScale(side[i], len > 0 ? radius / len : 0, side[i]);
+	}
+	for (int i = 0; i + 1 < count && numpolyverts + 4 <= MAX_POLY_VERTS && numpolys < MAX_POLYS; i++) {
+		const int order[4][2] = {{0, 1}, {1, 1}, {1, -1}, {0, -1}};
+		rpoly_t *p;
+		poly_start = numpolyverts;
+		for (int k = 0; k < 4; k++) {
+			const rvert_t *src = &line[i + order[k][0]];
+			rvert_t *v = &polyverts[numpolyverts++];
+			*v = *src;
+			for (int c = 0; c < 3; c++)
+				v->xyz[c] += side[i + order[k][0]][c] * (float)order[k][1];
+			if (order[k][1] < 0) {
+				v->st[0] += tcbias[0];
+				v->st[1] += tcbias[1];
+			}
+		}
+		p = &polys[numpolys++];
+		p->mat = poly_mat;
+		p->flags = poly_flags;
+		p->firstvert = poly_start;
+		p->numverts = 4;
+	}
+	poly_start = numpolyverts;
+}
+
 void R_DrawPolygons(bool twod)
 {
 	static uint16_t idx[MAX_POLY_VERTS * 3];
@@ -275,6 +324,32 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	}
 }
 
+/* client game entities given to makestatic: they stay where they were put
+ * and join every scene that adds engine entities, until the map changes */
+#define MAX_STATIC_ENTS 1024
+static struct {
+	qcvm_t *vm;
+	int ent;
+} static_ents[MAX_STATIC_ENTS];
+static int num_static_ents;
+
+void R_MakeStatic(qcvm_t *vm, int e)
+{
+	lookup_fields(vm);
+	if (e <= 0 || num_static_ents >= MAX_STATIC_ENTS)
+		return;
+	for (int i = 0; i < num_static_ents; i++)
+		if (static_ents[i].vm == vm && static_ents[i].ent == e)
+			return;
+	static_ents[num_static_ents].vm = vm;
+	static_ents[num_static_ents++].ent = e;
+	/* addentities would add it again */
+	if (EF.drawmask >= 0)
+		QC_EdictFields(vm, e)[EF.drawmask].f = 0;
+}
+
+void R_ClearStatics(void) { num_static_ents = 0; }
+
 void R_AddEntities(qcvm_t *vm, int mask)
 {
 	/* predraws run with self set to their entity; the QC that called
@@ -300,6 +375,10 @@ void R_AddEntities(qcvm_t *vm, int mask)
 		}
 		R_AddEntityFromQC(vm, e);
 	}
+	if (mask & 1) /* MASK_ENGINE */
+		for (int i = 0; i < num_static_ents; i++)
+			if (static_ents[i].vm == vm && static_ents[i].ent < vm->num_edicts && !vm->edicts[static_ents[i].ent].free)
+				R_AddEntityFromQC(vm, static_ents[i].ent);
 	QC_SetGInt(vm, vm->gofs.self, oldself);
 }
 

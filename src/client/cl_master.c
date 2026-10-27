@@ -821,7 +821,19 @@ void CL_HostcacheSort(const char *key, bool descending)
 	resort();
 }
 
+/* netaddress_resolve(name, defport): a blocking lookup, "" when it fails */
+static void bi_netaddress_resolve(qcvm_t *vm)
+{
+	netadr_t a;
+	int port = vm->argc > 1 ? (int)QC_PFLOAT(vm, 1) : 0;
+	if (NET_StringToAdr(QC_PSTR(vm, 0), &a, port > 0 ? port : PORT_SERVER))
+		QC_ReturnString(vm, NET_AdrToString(&a));
+	else
+		QC_ReturnString(vm, "");
+}
+
 const qc_builtin_t cl_hostcache_builtins[] = {
+	{"netaddress_resolve", bi_netaddress_resolve},
 	{"gethostcachevalue", bi_gethostcachevalue}, {"gethostcachestring", bi_gethostcachestring},
 	{"gethostcachenumber", bi_gethostcachenumber}, {"gethostcacheindexforkey", bi_gethostcacheindexforkey},
 	{"addwantedhostcachekey", bi_addwantedhostcachekey}, {"resethostcachemasks", bi_resethostcachemasks},

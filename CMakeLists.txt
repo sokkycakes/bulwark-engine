@@ -87,6 +87,7 @@ add_library(bwserver STATIC
 	src/server/sv_main.c
 	src/server/sv_compile.c
 	src/server/sv_world.c
+	src/server/sv_uri.c
 	src/server/sv_builtins.c
 	src/server/sv_client.c
 	src/server/sv_pmove.c
@@ -211,6 +212,7 @@ add_library(bwclient STATIC
 	src/client/cl_menu.c
 	src/client/console.c
 	src/client/cl_cmds.c
+	src/client/cl_altcon.c
 	src/client/cl_chat.c
 	src/client/cl_tp.c
 	src/client/cl_demo.c

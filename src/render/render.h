@@ -33,6 +33,9 @@ void R_NewMap(void);             /* cl.world is loaded */
 
 /* particle effects by their index in cl.particles */
 void R_PointParticles(int index, const float *org, const float *dir, float count);
+/* a client game entity drawn every frame from now on (makestatic) */
+void R_MakeStatic(struct qcvm_s *vm, int e);
+void R_SpawnFlash(const float *org, float radius, float lifetime, const float *rgb);
 void R_TrailParticles(int index, const float *start, const float *end);
 
 /* a click on a showpic picture with a command; true if it ran one */

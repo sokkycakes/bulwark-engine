@@ -72,6 +72,7 @@ void R_ClearMap(void)
 	R_FreeVoxels();
 	R_FreeModels();
 	R_ClearRTLights();
+	R_ClearStatics();
 	for (int i = 0; i < cl.nummodels; i++)
 		cl.models[i].render = NULL;
 }
@@ -828,6 +829,7 @@ static void r_polygonvertex(qcvm_t *vm)
 }
 
 static void r_endpolygon(qcvm_t *vm) { R_EndPolygon(); }
+static void r_endpolygonribbon(qcvm_t *vm) { R_EndPolygonRibbon(QC_PFLOAT(vm, 0), QC_PVEC(vm, 1)); }
 
 static void r_project(qcvm_t *vm)
 {
@@ -1127,6 +1129,7 @@ const qc_builtin_t r_builtins[] = {
 	{"addentity_lighting", r_addentity}, {"removeentity", r_removeentity}, {"setproperty", r_setproperty},
 	{"getproperty", r_getproperty}, {"renderscene", r_renderscene}, {"dynamiclight_add", r_dynamiclight_add},
 	{"R_BeginPolygon", r_beginpolygon}, {"R_PolygonVertex", r_polygonvertex}, {"R_EndPolygon", r_endpolygon},
+	{"R_EndPolygonRibbon", r_endpolygonribbon},
 	{"project", r_project}, {"unproject", r_unproject}, {"shaderforname", r_shaderforname},
 	{"getlight", r_getlight}, {"modelframecount", r_modelframecount}, {"frameforname", r_frameforname},
 	{"frametoname", r_frametoname}, {"frameduration", r_frameduration},

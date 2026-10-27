@@ -415,3 +415,45 @@ bool SV_DropToFloor(int e)
 	QC_SetEInt(cur()->vm, e, F.groundentity, tr.ent);
 	return true;
 }
+
+/* getsurfacenearpoint(ent, point) and getsurfacetexture(ent, surface) on the
+ * collision model, so the server game can tell what it hit or stands on
+ * (footsteps, impact effects) without a renderer. Entity 0 is the world. */
+static bool surface_model(int e, brushref_t *m, float *origin)
+{
+	VectorClear(origin);
+	if (e <= 0) {
+		m->bsp = cur()->world;
+		m->submodel = 0;
+		return m->bsp != NULL;
+	}
+	if (!ent_brush_model(e, m))
+		return false;
+	VectorCopy(evec(e, F.origin), origin);
+	return true;
+}
+
+void W_bi_getsurfacenearpoint(qcvm_t *vm)
+{
+	brushref_t m;
+	float o[3], p[3];
+	const float *in = QC_PVEC(vm, 1);
+	if (!surface_model(QC_PENT(vm, 0), &m, o)) {
+		QC_ReturnFloat(vm, -1);
+		return;
+	}
+	for (int k = 0; k < 3; k++)
+		p[k] = in[k] - o[k];
+	QC_ReturnFloat(vm, (float)BSP_SurfaceNearPoint(m.bsp, m.submodel, p));
+}
+
+void W_bi_getsurfacetexture(qcvm_t *vm)
+{
+	brushref_t m;
+	float o[3];
+	if (!surface_model(QC_PENT(vm, 0), &m, o)) {
+		QC_ReturnString(vm, "");
+		return;
+	}
+	QC_ReturnString(vm, BSP_SurfaceTexture(m.bsp, m.submodel, (int)QC_PFLOAT(vm, 1)));
+}

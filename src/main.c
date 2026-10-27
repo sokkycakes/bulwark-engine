@@ -205,6 +205,7 @@ int main(int argc, char **argv)
 		PKG_Frame();
 		Worker_Frame();
 		Plug_Frame();
+		QC_URIFrame();
 		SV_Frame(gdt);
 		CL_Frame(gdt);
 		R_BeginFrame();

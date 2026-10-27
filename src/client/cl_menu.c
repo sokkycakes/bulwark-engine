@@ -107,7 +107,7 @@ void MQC_Shutdown(void)
 
 bool MQC_Load(void)
 {
-	static const qc_builtin_t *tables[8];
+	static const qc_builtin_t *tables[12];
 	size_t len;
 	char *data;
 	MQC_Shutdown();
@@ -121,7 +121,9 @@ bool MQC_Load(void)
 	tables[4] = qc_builtins_extra;
 	tables[5] = cl_builtins; /* clientstate, key bindings and the like */
 	tables[6] = cl_hostcache_builtins;
-	tables[7] = NULL;
+	tables[7] = qc_uri_builtins;
+	tables[8] = cl_altcon_builtins;
+	tables[9] = NULL;
 	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, 4096, 16 * 1024 * 1024);
 	Mem_Free(data);
 	if (!M.vm)

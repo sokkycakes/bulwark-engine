@@ -743,10 +743,10 @@ static void bi_uri_unescape(qcvm_t *vm)
 /* sprintf: %d and %x take floats unless prefixed with l, %i takes ints unless
  * prefixed with h; %s strings, %S quoted strings, %v vectors, %c char codes,
  * %p pointers. Each argument consumes one parameter slot. */
-static void bi_sprintf(qcvm_t *vm)
+void QC_Format(qcvm_t *vm, int fmtparm, strbuf_t *out)
 {
-	const char *f = QC_PSTR(vm, 0);
-	int arg = 1;
+	const char *f = QC_PSTR(vm, fmtparm);
+	int arg = fmtparm + 1;
 	strbuf_t sb = {0};
 	while (*f) {
 		char spec[32], buf[512];
@@ -890,6 +890,13 @@ static void bi_sprintf(qcvm_t *vm)
 			}
 		}
 	}
+	*out = sb;
+}
+
+static void bi_sprintf(qcvm_t *vm)
+{
+	strbuf_t sb;
+	QC_Format(vm, 0, &sb);
 	QC_ReturnString(vm, sb.data ? sb.data : "");
 	SB_Free(&sb);
 }
