@@ -1,6 +1,6 @@
 # Console commands
 
-Bulwark has 686 console commands and about 380 cvars (`cmdlist` and
+Bulwark has 707 console commands and about 380 cvars (`cmdlist` and
 `cvarlist` show them; `help <name>` and `find <text>` explain one). Every
 one of FTEQW's 593 console commands exists in Bulwark (checked against
 FTE's own `cmdlist`), along with Source's entity commands. The game
@@ -523,6 +523,20 @@ held and the matching `-` command when it's let go.
 | `loadgame` | loadgame <name>: load a saved game |
 | `loadloc` | loadloc <file>: load locs/<file>.loc, the map's place names |
 | `loadsky` | loadsky [name]: the map's skybox (DarkPlaces' name for sky) |
+| `lobby_cancel` | Stop the lobby's countdown (host) |
+| `lobby_chat_hex` | lobby_chat_hex <hex>: say something in the lobby (UTF-8 as hex) |
+| `lobby_chat_snapshot` | Print the lobby's chat |
+| `lobby_close` | Leave the lobby, or close it when hosting |
+| `lobby_create` | lobby_create <lan|online|offline>: host a lobby (see lobby.md) |
+| `lobby_create_lan` | Host a lobby on this network |
+| `lobby_create_offline` | Host a lobby nobody else can join (tests) |
+| `lobby_create_online` | Host a lobby with a room code |
+| `lobby_join` | lobby_join <address|room code>: join a lobby |
+| `lobby_limits` | lobby_limits <minutes> <frags>: the game's limits (host) |
+| `lobby_ready` | lobby_ready [1|0]: say you are ready, or not |
+| `lobby_set` | lobby_set <ruleset|map> <value>: change the lobby's game (host) |
+| `lobby_snapshot` | Print the lobby's state and write lobby_snapshot.json |
+| `lobby_start` | Start the lobby's game now (host) |
 | `localinfo` | localinfo [key [value]]: server-side settings |
 | `localservers` | List the servers on the local network |
 | `logfile` | logfile [name]: start or stop copying the console to a file |
@@ -551,6 +565,7 @@ held and the matching `-` command when it's let go.
 | `menu_lighting` | Open the engine's Lighting menu |
 | `menu_load` | Open the engine's Load a game menu |
 | `menu_loadgame` | Open the engine's Load a game menu |
+| `menu_lobby_create` | Create a LAN lobby and show it |
 | `menu_main` | Open the engine's Main menu menu |
 | `menu_media` | Open the engine's Media player menu |
 | `menu_mediafiles` | Open the engine's Add music menu |
@@ -582,6 +597,9 @@ held and the matching `-` command when it's let go.
 | `menu_teamplay_weapons` | Open the engine's Weapons menu |
 | `menu_textures` | Open the engine's Textures menu |
 | `menu_video` | Open the engine's Video menu |
+| `menu_webcore` | menu_webcore [title|lobby|pause|arena <team|class|hero>|<url>]: open an HTML menu page (see webcore.md) |
+| `menu_webcore_lobby` | Open the lobby page |
+| `menu_webcore_title` | Open the title page |
 | `menubind` | x y caption bindcommand |
 | `menubox` | x y width height: a framed box, in characters |
 | `menucallback` | Explicitly invoke the active script menu's callback function with the given option set. |
@@ -673,6 +691,7 @@ held and the matching `-` command when it's let go.
 | `poke_menuqc` | poke_menuqc <global or entnum.field> [value]: show or set a value in the menu |
 | `poke_ssqc` | poke_ssqc <global or entnum.field> [value]: show or set a value in the server game |
 | `pr_dumpplatform` | pr_dumpplatform [ssqc\|csqc\|menuqc]: write the builtins and extensions to a file |
+| `pr_missing` | pr_missing [ssqc|csqc|menuqc]: list the builtins the progs declares that the engine lacks |
 | `pr_trace` | pr_trace [text]: print each QC function entered whose name contains the text |
 | `precaches` | List the precached models, sounds and effects |
 | `profile_csqc` | profile_csqc [n]: profile the client game; again to show the top n functions |
@@ -867,6 +886,7 @@ held and the matching `-` command when it's let go.
 | `track2` | track2 <player\|off>: whose view seat 2 shows |
 | `track3` | track3 <player\|off>: whose view seat 3 shows |
 | `track4` | track4 <player\|off>: whose view seat 4 shows |
+| `ui_font` | ui_font <family> <file> [weight]: a font for UI views' CSS font-family |
 | `ui_restart` | Reload the menu module (menu.dat; there is no Quake 3 ui.qvm) |
 | `unalias` | unalias <name>: remove an alias |
 | `unban` | unban <ip or number>: lift a ban |
@@ -899,6 +919,7 @@ held and the matching `-` command when it's let go.
 | `watchpoint_ssqc` | watchpoint_ssqc [global or entnum.field]: report each change in the server game |
 | `waterfog` | waterfog <density> <red> <green> <blue> <alpha> <depthbias>: fog under water |
 | `+weaponwheel` / `-weaponwheel` | Hold to pick a weapon with the mouse |
+| `webcore_closemenu` | Close the HTML menu page |
 | `wf` | wf <file> <text>: write text to a file in the game directory |
 | `which` | which <file>: the package or directory a file comes from |
 | `worker_status` | How many worker threads there are and how much work waits |

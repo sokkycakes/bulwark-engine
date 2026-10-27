@@ -19,3 +19,19 @@ checked against Valve's code.
 Lua is the interpreter's own sources only: the standalone `lua.c`, the
 amalgamation `onelua.c` and the test harness `ltests.*` were left out, and
 nothing was changed.
+
+### Changes to PanoramaEngine
+
+PanoramaEngine had no `font-family`: every font was one family told apart by
+weight. Bulwark's copy carries a family in the weight value (family × 1024
+plus the CSS weight) so the text pipeline, which passes weights everywhere,
+needs no new parameters:
+
+- `include/ui/panorama/panorama_style.hpp`, `src/panorama_style.cpp`: the
+  family registry (`panorama_register_font_family`,
+  `panorama_find_font_family`, `panorama_clear_font_families`), the
+  `font-family` property (the first registered name in the list), and
+  `font-weight`, bold runs and the user-agent bold keeping the family.
+- `src/panorama_font_atlas.cpp`: faces are chosen within the asked family
+  (then the default one) by nearest weight, and glyph cache keys hold the
+  wider value.

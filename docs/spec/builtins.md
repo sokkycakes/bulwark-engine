@@ -71,6 +71,49 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
   failed search hands back a one-element list rather than NULL: Nuclide's
   bots index the list without checking it.
 
+## Added for Stiletto
+
+- `getsurfacenearpoint` and `getsurfacetexture` work in the server game on
+  the collision model: Q1 maps keep their faces (polygons and texture names)
+  for this, Q3-family maps use brush sides. The client game's versions use
+  the renderer's surfaces as before.
+- `te_customflash(org, radius, lifetime, colour)` sends `svc_flash`: a light
+  that shrinks to nothing over its lifetime.
+- `uri_get(url, id)` fetches in the background (GET only; a POST body fails
+  with 0) and calls `URI_Get_Callback(id, status, body, length)` in the VM
+  that asked. All three VMs.
+- Named consoles (`con_getset`, `con_printf`, `con_draw`, `con_input`) for
+  Nuclide's VGUI text views, in the client game and the menu:
+  `src/client/cl_altcon.c`.
+- `infokey`, `getsoundindex` (sounds the client game precaches itself get
+  negative numbers), `soundnameforindex`, `makestatic` (the entity is drawn
+  with every scene's engine entities until the map changes),
+  `getlightstylergb`, `getchannellevel` (RMS of the next 1/30 s of the
+  channel's sample), `R_EndPolygonRibbon` (each segment a quad facing the
+  view) in the client game.
+- `setcustomskin`, `loadcustomskin`, `applycustomskin`,
+  `releasecustomskin`: `.skin` text; `geomset <group> <value>` picks a
+  Half-Life model's sub-model per body part, `replace` (or the legacy
+  `surface,shader`) swaps a surface's material. `src/render/r_skin.c`.
+- `remapshader` swaps a material's look until the map changes;
+  `r_readimage` returns an image's RGBA pixels in the game's heap (the
+  `__out` sizes come back through the parameter slots).
+- `dynamiclight_spawnstatic`, `dynamiclight_set`, `dynamiclight_get`: lights
+  the client game owns, with fteextensions' `LFIELD_*` numbers; origin,
+  colour, radius, style (or style string), diffuse scale and die time
+  affect the scene, the rest are kept.
+- `gecko_*` and `hud_drawnative`: see [webcore.md](webcore.md).
+- `netaddress_resolve` in the menu and client game.
+- No-ops, since nothing is simulated or drawn for them: `physics_enable`,
+  `physics_addforce`, `physics_addtorque`, and the server game's debug
+  polygons (`R_BeginPolygon` and friends).
+- `pr_missing [ssqc|csqc|menuqc]` lists what a loaded progs declares that
+  Bulwark lacks.
+
+Still missing: FTE_RAW_MAP's `brush_*` (editing the map's brushes at run
+time; Nuclide's ncBreakableBrush, which no Stiletto content uses) and
+ragdolls (`skel_ragupdate`, used only with `bodyque_forceRagdolls`).
+
 ## Autocvars
 
 A global named `autocvar_<name>` of type float, int, bool, vector or string

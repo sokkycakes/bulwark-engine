@@ -46,6 +46,12 @@ new games.
 - **FTEW worlds**: the compiled world format from the Godot-based Stiletto
   exporter, loaded wherever a BSP is (collision, drawing, entities), and
   nameable from a scene's `MapInstance`. See [docs/spec/ftew.md](docs/spec/ftew.md).
+- **WebCore games** (Stiletto): the HTML menus and HUD of FTE's webcore
+  plugin run as Panorama ports shipped in `data/panorama/`, with the
+  `fte_query` bridge, `gecko_*` views, the title backdrop map and menu
+  music, and a pre-game lobby (create, join by address or room code on the
+  LAN, ready, chat, countdown, start). See
+  [docs/spec/webcore.md](docs/spec/webcore.md) and [docs/spec/lobby.md](docs/spec/lobby.md).
 - Not yet: ragdolls.
 
 ## Building
@@ -69,6 +75,22 @@ or sound), plus the server's options below. Every console command is listed in
 `r_speeds 1` (2 also lists the scene's entities), `pr_trace <name>` (prints
 calls to QC functions whose names contain it), `music <file>`, `play
 <sample>`.
+
+## Running Stiletto
+
+Stiletto is a Nuclide game made for FTE with its webcore HTML plugin. Run
+it like any Nuclide game; its autoexec loads the plugin, which Bulwark
+answers itself, and the title page opens over its background map:
+
+```sh
+./build/bulwark -basedir /path/to/nuclide -game base
+```
+
+Bulwark finds the Panorama ports of the game's pages in its own `data/`
+directory (next to the executable, or the source tree's when run from a
+build directory; `-enginedata <dir>` points elsewhere). Build Stiletto's
+progs from its source first (`make game GAME=base` in the Nuclide tree, with
+FTEQCC): its repository ignores `*.dat`, and the few checked in are old.
 
 ## Running Nuclide's server
 
@@ -108,3 +130,4 @@ and export straight to `.scene` and `.prefab` with a Run map button.
 - [docs/spec/particles.md](docs/spec/particles.md)
 - [docs/spec/sound.md](docs/spec/sound.md)
 - [docs/spec/bots.md](docs/spec/bots.md) and [qc/bots/README.md](qc/bots/README.md)
+- [docs/spec/ui.md](docs/spec/ui.md), [docs/spec/webcore.md](docs/spec/webcore.md), [docs/spec/lobby.md](docs/spec/lobby.md)

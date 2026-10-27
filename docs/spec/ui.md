@@ -19,7 +19,27 @@ Everything is read through the file system under `panorama/` in a game dir:
 | `panorama/styles/*.css` | Panorama CSS, included from a layout |
 | `panorama/scripts/*.js` | scripts, included from a layout |
 | `panorama/images/...` | PNG/TGA images; `{images}/x.png` in CSS or XML means `panorama/images/x.png` |
-| `panorama/fonts/*.ttf\|otf` | every font here is loaded at start; weight is guessed from the file name (`Bold`, `Light`, ...) |
+| `panorama/fonts/*.ttf\|otf` | every font here is loaded at start; weight is guessed from the file name (`Bold`, `Light`, ...); each is also a `font-family` of its file name without the extension |
+| `{game}/<path>` | in an image `src`, a CSS `url()` or a script include: any game file, used in place (a game's own art and scripts) |
+
+Bulwark's own data directory (`data/` in the source tree, or beside the
+executable; `-enginedata <dir>` picks another) is searched after the game
+directories, so the engine can ship layouts a game doesn't have, such as the
+WebCore page ports in `data/panorama/layout/web/` ([webcore.md](webcore.md)).
+
+## Images and fonts
+
+Images are PNG, TGA, JPEG, BMP and SVG files, and `data:` URLs of any of them
+(base64, or percent-encoded SVG text). SVG is drawn by nanosvg at twice its
+size, small pictures at 512 pixels across. Pictures are clamped at their
+edges.
+
+CSS `font-family` picks the first listed family that was registered: each
+file in `panorama/fonts/`, plus any added with
+`ui_font <family> <game file> [weight]`. Weights pick among a family's faces
+by nearest match. Views open before a font is registered are restyled.
+PanoramaEngine's own font atlas knew no families; Bulwark carries the family
+in the font weight key (family × 1024 + weight), see `third_party/README.md`.
 
 ## Scale
 
@@ -54,9 +74,30 @@ Each view gets a `Bulwark` object:
 - `Bulwark.Cmd(command)` runs a console command.
 - `Bulwark.On(event, fn)` registers a handler for `ui_post` events. `fn` gets
   the decoded JSON value.
+- `Bulwark.Query(request)` and the global `fte_query(request)` ask the engine
+  something and return its reply string at once (the WebCore bridge, see
+  [webcore.md](webcore.md); other games may answer it with their own
+  handler). Requests over 4096 bytes get `""`.
+- `Bulwark.Width()`, `Bulwark.Height()`: the view's size in layout pixels.
+  `Bulwark.MouseX()`, `Bulwark.MouseY()`: the pointer, in the same units.
+- `location.search` and `location.href` exist when the view was opened for a
+  page address (`menu_webcore`, `gecko_create`); `window` is the global
+  object.
 - The engine posts `"key"` events to every view that takes input, with
-  `{key: "<key name>", down: true|false}`, before the key is handled by
-  Panorama's own focus navigation.
+  `{key: "<key name>", down: true|false, shift, ctrl, alt}`, before the key
+  is handled by Panorama's own focus navigation.
+
+A script may close its own view (asking for it through a command or the
+bridge): the view stops drawing and taking input at once and is freed at
+the start of the next frame.
+
+## Embedded views
+
+A view opened with flag 2 (`UI_EMBED`) is not drawn with the others; the
+engine draws it where something asks, laid out at the size it is drawn. The
+WebCore layer uses this for `gecko_create` views, which the client game draws
+with `drawpic(pos, name, size, rgb, alpha)`; `drawgetimagesize(name)` gives
+their size.
 
 ## Input
 
@@ -78,5 +119,7 @@ no game is running.
 
 ## Not done yet
 
-Backdrop blur, releasing textures in the renderer, a geometry cache, UTF-8
+Hit-testing ignores transforms, so a scaled panel is clicked where it would
+be unscaled. Script `Panel.style` setters cover only background, size,
+opacity and transform. Backdrop blur, releasing textures in the renderer, a geometry cache, UTF-8
 text entry beyond Latin-1, and single draws larger than 65535 vertices.

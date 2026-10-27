@@ -1,5 +1,34 @@
 # WebCore menu/HUD bridge and pre-game lobby: behavioural specification for Bulwark
 
+## In Bulwark
+
+Bulwark has no HTML engine. It runs these pages as Panorama views
+([ui.md](ui.md)): `fte://data/web/<dir>/index.html` names the layout
+`panorama/layout/web/<dir>.xml` (other files `layout/web/<dir>/<name>.xml`),
+and `data/panorama/` in Bulwark's source tree holds Panorama ports of
+Stiletto's pages: `title-menu-v2`, `title-menu`, `h3-main-menu`,
+`pause-menu`, `lobby-menu`, `ql-menu`, `hud`, and the `webcore-test`,
+`test` and `basemod-cef-test` smoke pages. They use the game's own art,
+fonts and scripted data in place (`{game}/...`) and send the same
+`fte_query` requests as the HTML pages. `src/client/cl_webcore.c` is the
+menu surface, the `gecko_*` builtins and the bridge below; the lobby is
+`src/client/cl_lobby.c`, with Bulwark's own wire format in
+[lobby.md](lobby.md). `plug_load webcore` (or `cef`) is answered by the
+engine and turns the HTML menus on.
+
+Where Bulwark's choices fill this document's open questions: host Start
+works without everyone ready (9.7); `arena_action:join` is `cmd play`
+(8.4); `g_gametype` is the ruleset in lower case (9.12);
+`lobby_readytime` defaults to 5; the title map keeps running under the
+lobby page and is dropped when the game starts; the menu music stops at
+the first missing `menuN` and goes round again; the pause page is
+`webcore_pause_url`; `cbuf:` commands with spaces are refused. Online room
+codes are found on the local network only: there is no internet
+rendezvous service.
+
+The rest of this document is the specification as written before the work,
+from Stiletto's files; it is kept as the reference the code follows.
+
 Status: clean-room behavioural contract, written 2026-10-27.
 Target: the Bulwark engine (ISC) running the game "Stiletto" (Nuclide `+game base`).
 
