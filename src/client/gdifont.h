@@ -109,7 +109,10 @@ typedef struct {
 	int sample_nudge;   /* move the outline 1/64 sub-pixel before sampling:
 	                       0 none, 1 (+x,+y), 2 (+x,-y), 3 (-x,+y), 4 (-x,-y) */
 	int mono_method;    /* 1-bit: 0 FreeType's rasterizer with the font's
-	                       dropout control, 1 one centre sample, no dropout */
+	                       dropout control, 1 one centre sample, no dropout;
+	                       forced dropout mode: 2 smart with stubs, 3 smart
+	                       without stubs, 4 simple with stubs, 5 simple
+	                       without stubs */
 } gdifont_tuning_t;
 
 extern const gdifont_tuning_t gdifont_default_tuning;

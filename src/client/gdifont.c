@@ -373,7 +373,7 @@ const gdifont_tuning_t gdifont_default_tuning = {
 	0,  /* gray_hint: grayscale mode */
 	0,  /* sample_phase: sub-pixel centres */
 	0,  /* nogridfit: off */
-	0,  /* aa_measure */
+	5,  /* aa_measure: 4x4 sampled box (run 40466309200) */
 	0,  /* sample_nudge */
 	0   /* mono_method */
 };
@@ -459,7 +459,7 @@ static int render_ft(gdifont_t *f, unsigned cp, int mono_hint, int nohint, int m
  * the outline, with no dropout control. The points sit at (i + 0.5) / n of
  * the pixel (phase 0) or at i / n from its top left corner (phase 1).
  */
-static int render_sampled(gdifont_t *f, unsigned cp, int n, int thr, int mono_hint, int nohint, bmp_t *b)
+static int render_sampled(gdifont_t *f, unsigned cp, int n, int thr, int mono_hint, int nohint, int dropout, bmp_t *b)
 {
 	FT_GlyphSlot s;
 	FT_Outline o;
@@ -501,8 +501,8 @@ static int render_sampled(gdifont_t *f, unsigned cp, int n, int thr, int mono_hi
 		int k = f->tune.sample_nudge - 1;
 		FT_Outline_Translate(&o, k & 2 ? -1 : 1, k & 1 ? -1 : 1);
 	}
-	o.flags &= ~(FT_OUTLINE_SMART_DROPOUTS | FT_OUTLINE_INCLUDE_STUBS);
-	o.flags |= FT_OUTLINE_IGNORE_DROPOUTS;
+	o.flags &= ~(FT_OUTLINE_SMART_DROPOUTS | FT_OUTLINE_INCLUDE_STUBS | FT_OUTLINE_IGNORE_DROPOUTS);
+	o.flags |= dropout < 0 ? FT_OUTLINE_IGNORE_DROPOUTS : dropout;
 
 	memset(&bm, 0, sizeof(bm));
 	bm.width = (unsigned)(W * n);
@@ -565,8 +565,11 @@ static int measure_mono_hint(const gdifont_t *f)
 /* The 1-bit glyph behind GGO_BITMAP, ABC and 1-bit text */
 static int mono_glyph(gdifont_t *f, unsigned cp, bmp_t *b)
 {
-	if (f->tune.mono_method == 1) {
-		int i, ok = render_sampled(f, cp, 1, 1, measure_mono_hint(f), unhinted(f, 0), b);
+	static const int drop[6] = { 0, -1, FT_OUTLINE_SMART_DROPOUTS | FT_OUTLINE_INCLUDE_STUBS,
+		FT_OUTLINE_SMART_DROPOUTS, FT_OUTLINE_INCLUDE_STUBS, 0 };
+	int m = f->tune.mono_method;
+	if (m >= 1 && m <= 5) {
+		int i, ok = render_sampled(f, cp, 1, 1, measure_mono_hint(f), unhinted(f, 0), drop[m], b);
 		for (i = 0; ok && i < b->w * b->h; i++)
 			b->px[i] = b->px[i] ? 255 : 0;
 		return ok;
@@ -579,7 +582,7 @@ static int mono_glyph(gdifont_t *f, unsigned cp, bmp_t *b)
 static int grey_glyph(gdifont_t *f, unsigned cp, int n, bmp_t *b)
 {
 	if (f->tune.gray_method == 1)
-		return render_sampled(f, cp, n, 1, f->tune.gray_hint, unhinted(f, 1), b);
+		return render_sampled(f, cp, n, 1, f->tune.gray_hint, unhinted(f, 1), -1, b);
 	return render_ft(f, cp, f->tune.gray_hint, unhinted(f, 1), 0, b);
 }
 
@@ -602,7 +605,7 @@ int gdifont_abc(gdifont_t *f, unsigned cp, gdifont_abc_t *out)
 		if (m <= 4)
 			ok = render_ft(f, cp, f->tune.gray_hint, unhinted(f, 1), 0, &b);
 		else
-			ok = render_sampled(f, cp, m == 7 ? 8 : 4, m == 6 ? 2 : 1, f->tune.gray_hint, unhinted(f, 1), &b);
+			ok = render_sampled(f, cp, m == 7 ? 8 : 4, m == 6 ? 2 : 1, f->tune.gray_hint, unhinted(f, 1), -1, &b);
 	} else
 		ok = mono_glyph(f, cp, &b);
 	if (!ok)

@@ -178,9 +178,25 @@ def main():
     P("  GGO_GRAY8 glyphs with the same box and origin: " + str(dict(ggeo)))
     for f in sorted(pairs):
         tot = sum(pairs[f].values()); eq = sum(n for (a, b), n in pairs[f].items() if a == b)
-        top = [x for x in pairs[f].most_common(60) if x[0][0] != x[0][1]][:12]
+        top = sorted(((n, ab) for ab, n in pairs[f].items() if ab[0] != ab[1]), reverse=True)[:12]
+        top = [(ab, n) for n, ab in top]
         P(f"  {f}: pixels equal {eq}/{tot}; candidate->windows (top unequal): " +
           ", ".join(f"{a}->{b}x{n}" for (a, b), n in top))
+
+    P("  GGO_GRAY8 equal, split by whether GGO_BITMAP is equal (shared hinting vs rasterization):")
+    split = defaultdict(lambda: [0, 0, 0, 0])
+    for k, w in wgl.items():
+        c = cgl.get(k)
+        if not c or k[3] != 1:
+            continue
+        me = (w["mono"].get("data"), w["mono"]["ox"], w["mono"]["oy"]) == (c["mono"].get("data"), c["mono"]["ox"], c["mono"]["oy"])
+        ge = (w["gray8"].get("data"), w["gray8"]["ox"], w["gray8"]["oy"]) == (c["gray8"].get("data"), c["gray8"]["ox"], c["gray8"]["oy"])
+        s = split[k[0]]
+        s[0 if me else 2] += 1
+        s[1 if me else 3] += ge
+    for f in sorted(split):
+        s = split[f]
+        P(f"   {f}: 1-bit equal -> gray8 equal {s[1]}/{s[0]}; 1-bit differs -> gray8 equal {s[3]}/{s[2]}")
 
     P("== 7. 1-bit (GGO_BITMAP) equal per size, all faces ==")
     sz = defaultdict(lambda: [0, 0])
