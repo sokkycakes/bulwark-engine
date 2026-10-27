@@ -161,6 +161,9 @@ typedef struct NSVGshape
 	float bounds[4];			// Tight bounding box of the shape [minx,miny,maxx,maxy].
 	char fillGradient[64];		// Optional 'id' of fill gradient
 	char strokeGradient[64];	// Optional 'id' of stroke gradient
+	char mask[64];				// Bulwark: 'id' of the <mask> applied to the shape (or its group)
+	char maskDef[64];			// Bulwark: 'id' of the <mask> this shape is part of, if any
+	char maskAlpha;				// Bulwark: in a mask-type:alpha mask (else luminance)
 	float xform[6];				// Root transformation for fill/stroke gradient
 	NSVGpath* paths;			// Linked list of paths in the image.
 	struct NSVGshape* next;		// Pointer to next shape, or NULL if last element.
@@ -446,6 +449,8 @@ typedef struct NSVGattrib
 	char hasStroke;
 	char visible;
     unsigned char paintOrder;
+	char mask[64];			// Bulwark: mask="url(#id)"
+	char maskAlpha;			// Bulwark: mask-type:alpha
 } NSVGattrib;
 
 typedef struct NSVGstyleDeclaration
@@ -473,6 +478,8 @@ typedef struct NSVGparser
 	char pathFlag;
 	char defsFlag;
 	char styleFlag;
+	char maskDef[64];		// Bulwark: inside <mask id=...>
+	char maskDefAlpha;
 } NSVGparser;
 
 static void nsvg__xformIdentity(float* t)
@@ -994,6 +1001,9 @@ static void nsvg__addShape(NSVGparser* p)
 	memcpy(shape->fillGradient, attr->fillGradient, sizeof shape->fillGradient);
 	memcpy(shape->strokeGradient, attr->strokeGradient, sizeof shape->strokeGradient);
 	memcpy(shape->xform, attr->xform, sizeof shape->xform);
+	memcpy(shape->mask, attr->mask, sizeof shape->mask);
+	memcpy(shape->maskDef, p->maskDef, sizeof shape->maskDef);
+	shape->maskAlpha = p->maskDefAlpha;
 	scale = nsvg__getAverageScale(attr->xform);
 	shape->strokeWidth = attr->strokeWidth * scale;
 	shape->strokeDashOffset = attr->strokeDashOffset * scale;
@@ -1864,6 +1874,11 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 
 	if (strcmp(name, "style") == 0) {
 		nsvg__parseStyle(p, value);
+	} else if (strcmp(name, "mask") == 0) {
+		if (strncmp(value, "url(", 4) == 0)
+			nsvg__parseUrl(attr->mask, value);
+	} else if (strcmp(name, "mask-type") == 0) {
+		attr->maskAlpha = strcmp(value, "alpha") == 0;
 	} else if (strcmp(name, "display") == 0) {
 		if (strcmp(value, "none") == 0)
 			attr->visible = 0;
@@ -2854,6 +2869,19 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 	if (strcmp(el, "g") == 0) {
 		nsvg__pushAttr(p);
 		nsvg__parseAttribs(p, attr);
+	} else if (strcmp(el, "mask") == 0) {
+		// Bulwark: a mask's content is parsed as shapes marked with its id,
+		// which the caller rasterises on their own and applies (r_svg.c)
+		NSVGattrib* a;
+		nsvg__pushAttr(p);
+		a = nsvg__getAttr(p);
+		a->mask[0] = '\0';
+		a->maskAlpha = 0;
+		a->opacity = 1.0f;
+		nsvg__parseAttribs(p, attr);
+		memcpy(p->maskDef, a->id, sizeof p->maskDef);
+		p->maskDefAlpha = a->maskAlpha;
+		a->mask[0] = '\0';
 	} else if (strcmp(el, "path") == 0) {
 		if (p->pathFlag)	// Do not allow nested paths.
 			return;
@@ -2905,6 +2933,10 @@ static void nsvg__endElement(void* ud, const char* el)
 
 	if (strcmp(el, "g") == 0) {
 		nsvg__popAttr(p);
+	} else if (strcmp(el, "mask") == 0) {
+		nsvg__popAttr(p);
+		p->maskDef[0] = '\0';
+		p->maskDefAlpha = 0;
 	} else if (strcmp(el, "path") == 0) {
 		p->pathFlag = 0;
 	} else if (strcmp(el, "defs") == 0) {

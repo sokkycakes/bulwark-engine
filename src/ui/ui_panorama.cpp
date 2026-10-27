@@ -75,6 +75,7 @@ class Backend final : public PanoramaRenderBackend {
 public:
 	struct Texture {
 		int handle, w, h;
+		bool premultiplied;
 	};
 
 	PanoramaTextureId generate_texture(std::span<const unsigned char> rgba, int w, int h) override
@@ -82,7 +83,9 @@ public:
 		PanoramaTextureId id = next++;
 		char name[64];
 		snprintf(name, sizeof(name), "_ui/generated%lu", (unsigned long)id);
-		textures[id] = {R_UploadImage(name, rgba.data(), w, h), w, h};
+		/* the library generates only the glyph atlas, whose texels are
+		 * premultiplied (coverage in every channel) */
+		textures[id] = {R_UploadImage(name, rgba.data(), w, h), w, h, true};
 		return id;
 	}
 	PanoramaTextureId load_texture(std::string_view source, int &w, int &h) override
@@ -94,7 +97,7 @@ public:
 			return 0;
 		R_ImageSize(handle, &w, &h);
 		PanoramaTextureId id = next++;
-		textures[id] = {handle, w, h};
+		textures[id] = {handle, w, h, false};
 		return id;
 	}
 	void release_texture(PanoramaTextureId id) override { textures.erase(id); }
@@ -140,6 +143,11 @@ public:
 	{
 		auto it = textures.find(id);
 		return it == textures.end() ? 0 : it->second.handle;
+	}
+	bool premultiplied(PanoramaTextureId id) const
+	{
+		auto it = textures.find(id);
+		return it != textures.end() && it->second.premultiplied;
 	}
 
 private:
@@ -562,12 +570,16 @@ void build_batches(View &v)
 		View::Batch b;
 		b.image = cmd.texture ? backend.handle(cmd.texture) : 0;
 		b.blend = blend_for(cmd.blend_mode);
+		/* glyphs blended as straight alpha would weigh their coverage twice
+		 * and come out thin; browsers draw them at full weight */
+		if (b.blend == R2D_ALPHA && cmd.texture && backend.premultiplied(cmd.texture))
+			b.blend = R2D_PREMULTIPLIED;
 		b.clip = cmd.scissor;
 		b.cx = cmd.scissor_x * to_virtual;
 		b.cy = cmd.scissor_y * to_virtual;
 		b.cw = cmd.scissor_width * to_virtual;
 		b.ch = cmd.scissor_height * to_virtual;
-		bool premul = b.blend == R2D_MULTIPLY;
+		bool premul = b.blend == R2D_MULTIPLY || b.blend == R2D_PREMULTIPLIED;
 		bool identity = cmd.constants.is_identity();
 		b.verts.reserve(cmd.vertices.size());
 		for (const PanoramaPaintVertex &pv : cmd.vertices) {
@@ -888,12 +900,13 @@ void UI_DrawAt(int num, float x, float y, float w, float h, const float *rgb, fl
 	float tint[4] = {rgb ? rgb[0] : 1, rgb ? rgb[1] : 1, rgb ? rgb[2] : 1, alpha};
 	std::vector<r2dvert_t> moved;
 	for (const View::Batch &b : v->batches) {
+		bool premul = b.blend == R2D_MULTIPLY || b.blend == R2D_PREMULTIPLIED;
 		moved.assign(b.verts.begin(), b.verts.end());
 		for (r2dvert_t &vt : moved) {
 			vt.x += x;
 			vt.y += y;
 			for (int c = 0; c < 4; c++)
-				vt.rgba[c] = (uint8_t)BW_CLAMP(vt.rgba[c] * tint[c], 0, 255);
+				vt.rgba[c] = (uint8_t)BW_CLAMP(vt.rgba[c] * tint[c] * (c < 3 && premul ? alpha : 1), 0, 255);
 		}
 		if (b.clip) {
 			float cx = BW_MAX(b.cx + x, x), cy = BW_MAX(b.cy + y, y);
