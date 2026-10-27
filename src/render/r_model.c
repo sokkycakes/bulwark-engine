@@ -3,6 +3,7 @@
  * docs/spec/models.md. ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 #include "../common/skel.h"
 
 #include <math.h>
@@ -552,8 +553,16 @@ rmodel_t *R_LoadModel(const char *name)
 		m->loaded = load_alias(m, d, size);
 	else if (size >= 16 && !memcmp(d, "INTERQUAKEMODEL", 16))
 		m->loaded = load_iqm(m, d, size);
-	else
-		Con_DPrintf("model %s: format not supported yet\n", name);
+	else {
+		/* a plugin may turn it into an IQM (Source .mdl) */
+		size_t qlen;
+		uint8_t *q = Plug_ConvertModel(name, d, size, &qlen);
+		if (q && qlen >= 16 && !memcmp(q, "INTERQUAKEMODEL", 16))
+			m->loaded = load_iqm(m, q, qlen);
+		else
+			Con_DPrintf("model %s: format not supported yet\n", name);
+		Mem_Free(q);
+	}
 	m->failed = !m->loaded;
 	{
 		float r = 0;

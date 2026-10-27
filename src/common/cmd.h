@@ -34,6 +34,14 @@ void Terrain_Init(void);
 bool Terrain_PrepareMap(const char *name);
 void Plug_Frame(void);
 void Plug_Shutdown(void);
+void Plug_AutoLoad(void); /* the plugins next to the engine */
+/* file formats plugins add (see bwplug.h) */
+#include "bwplug.h"
+const char *Plug_ImageExt(int n);
+uint8_t *Plug_DecodeImage(const char *path, const void *data, size_t len, int *w, int *h);
+bool Plug_LoadMaterial(const char *base, bwplug_material_t *out);
+bool Plug_MaterialExists(const char *base);
+void *Plug_ConvertModel(const char *path, const void *data, size_t len, size_t *outlen);
 void Cmd_InitCompat(void); /* cmd_compat.c */ /* help text for commands registered without any (cmd_extra.c) */
 /* walks the registered commands and aliases */
 typedef void (*cmd_walk_fn)(const char *name, const char *text, void *ctx);
