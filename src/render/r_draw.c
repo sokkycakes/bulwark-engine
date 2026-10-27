@@ -229,6 +229,7 @@ typedef struct {
 	uint8_t *ttf; /* NULL: the built-in bitmap font */
 	rgfont_t *gdi; /* a TrueType face drawn the GDI way (r_gdifont.c), or NULL */
 	float scale;   /* text size multiplier from the chosen entry's ?size=, else 1 */
+	int fsgen;     /* FS_Generation() when loaded: which files could be found */
 	stbtt_fontinfo info;
 	int requested[MAX_FONT_SIZES];
 	int numrequested;
@@ -332,11 +333,21 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 {
 	font_t *f;
 	if (slot < 0) {
-		for (slot = 1; slot < MAX_FONTS; slot++)
+		int found = 0;
+		for (slot = 1; slot < MAX_FONTS && !found; slot++)
 			if (fonts[slot].used && !Str_ICmp(fonts[slot].name, path) && path[0])
-				return slot;
-		for (slot = 1; slot < MAX_FONTS && fonts[slot].used; slot++)
-			;
+				found = slot;
+		/* A font loaded before the search path changed (a game switch, a
+		   mod mounted) is looked up again in the same slot: which entry of
+		   a fallback list loads, and whether a face name resolves, depends
+		   on the files mounted. */
+		if (found && fonts[found].fsgen == FS_Generation())
+			return found;
+		if (found)
+			slot = found;
+		else
+			for (slot = 1; slot < MAX_FONTS && fonts[slot].used; slot++)
+				;
 	}
 	if (slot <= 0 || slot >= MAX_FONTS)
 		return 0;
@@ -346,6 +357,7 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	memset(f, 0, sizeof(*f));
 	f->used = true;
 	f->scale = 1;
+	f->fsgen = FS_Generation();
 	Str_Copy(f->name, path, sizeof(f->name));
 	/* The path may list fallbacks, "Verdana,fonts/IBMPlexMono-Text.otf?size=12":
 	   the first entry that loads is used. ?size=N on an entry draws text that
@@ -383,6 +395,14 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	}
 	(void)name;
 	return slot;
+}
+
+/* what draws a loaded font, for listfonts */
+const char *R_FontRenderer(int slot)
+{
+	if (slot < 0 || slot >= MAX_FONTS || !fonts[slot].used)
+		return NULL;
+	return fonts[slot].gdi ? "gdifont" : fonts[slot].ttf ? "stb_truetype" : "built-in";
 }
 
 /* the size multiplier of the font text is drawn with (see R_LoadFont) */

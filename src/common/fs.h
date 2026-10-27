@@ -16,6 +16,9 @@ const char *FS_BaseDir(void);
 void FS_SetEngineDir(const char *path);
 const char *FS_EngineDir(void);
 void FS_Restart(void); /* rescan packages */
+/* changes whenever the search path does (game directories, packages), so
+   results derived from it can tell they are stale */
+int FS_Generation(void);
 int FS_NumGameDirs(void);
 const char *FS_GameDirAt(int i); /* 0 is the base game, searched last */
 void FS_SetGameDirs(const char *const *dirs, int count);

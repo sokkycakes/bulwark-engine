@@ -65,8 +65,10 @@ Entries can also carry the other suffixes, as in
 
 ### Name resolution
 
-The face index is built once, on the first bare-name lookup. Every font
-file found is opened with FreeType, and only face 0 of a `.ttc` is used.
+The face index is built on the first bare-name lookup. The system
+folders are scanned once; the game's `fonts/` part is scanned again on
+the next lookup after the search path changes (see "Search-path changes"
+below). Every font file found is opened with FreeType, and only face 0 of a `.ttc` is used.
 It records the family name, `usWeightClass`, italic (fsSelection bit 0)
 and whether the face has TrueType outlines. Only TrueType-outline faces
 are kept.
@@ -99,6 +101,31 @@ are kept.
 - **Spaces in family names:** Nuclide's `.font` parser splits on spaces, so
   a family name with spaces must be quoted there, for example
   `path "DejaVu Sans"`.
+- **`r_gdifont_systemfonts`** (default 1): 0 leaves the system folders out
+  of the index, so only the game's `fonts/` can satisfy a bare name. It is
+  used by the tests and to check what a game ships.
+- **`fontfaces [family]`** lists the index (family, weight, italic, game or
+  system, path). With a family it also prints which file that name
+  resolves to. `listfonts` shows which renderer each loaded font ended up
+  on (gdifont, stb_truetype or built-in).
+
+### Search-path changes
+
+The file system keeps a generation number (`FS_Generation()`) that goes
+up whenever the search path changes: start-up, `gamedir`, a restart, or a
+game directory added. Two things follow it:
+
+- The face index rescans the game's `fonts/` when the generation differs
+  from the one it was scanned at.
+- `R_LoadFont` reuses a loaded font with the same path only if it was
+  loaded at the current generation. Otherwise it loads it again into the
+  same slot, so the font number the game holds stays valid.
+
+Before this, a font loaded before a game directory was mounted kept what
+it resolved to then. Nuclide loads chat.font early, so with Verdana only
+in a mod's `fonts/` (build 27q, `zz_tmp/fonts/verdana.ttf`), chat stayed
+on IBM Plex after switching to the mod. `tests/fonts/run_font_tests.sh`
+(ctest `fontreload`) covers both the slot and the index.
 
 ### Drawing
 
