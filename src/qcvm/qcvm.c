@@ -757,6 +757,8 @@ void QC_FreeEdict(qcvm_t *vm, int e, float now)
 	ed = &vm->edicts[e];
 	if (ed->free)
 		return;
+	if (vm->free_hook)
+		vm->free_hook(vm, e);
 	ed->free = true;
 	ed->freetime = now;
 	/* clear the few fields that mark an entity as live, as documented for remove() */

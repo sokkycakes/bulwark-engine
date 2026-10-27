@@ -12,6 +12,8 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `src/qcvm/qc_extra.c`: hash tables, files, file searches, JSON.
 - `src/server/sv_builtins.c`: server-only (models, traces, physics helpers,
   precaches, info keys, registered commands).
+- `src/script/script.c`: the `script_*` builtins, Bulwark's own, that reach
+  Lua, JavaScript and QuakeC entity scripts. See `scripting.md`.
 
 ## Notes on specific builtins
 

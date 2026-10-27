@@ -37,20 +37,52 @@ target_link_libraries(bwqcvm PUBLIC bwcommon)
 add_executable(qcrun tools/qcrun.c)
 target_link_libraries(qcrun bwqcvm)
 
+# scripting: Lua 5.4 (MIT, vendored in third_party) and QuickJS (MIT, from
+# PanoramaEngine's Thirdparty, added below) behind src/script
+option(BULWARK_SCRIPT_LUA "Lua scripting" ON)
+option(BULWARK_SCRIPT_JS "JavaScript scripting" ON)
+if(BULWARK_SCRIPT_LUA)
+	file(GLOB LUA_SOURCES third_party/lua-5.4.7/*.c)
+	add_library(bwlua STATIC ${LUA_SOURCES})
+	target_include_directories(bwlua PUBLIC third_party/lua-5.4.7)
+	if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+		target_compile_options(bwlua PRIVATE -w)
+	endif()
+	target_link_libraries(bwlua PUBLIC m)
+endif()
+
 add_library(bwserver STATIC
 	src/server/sv_main.c
 	src/server/sv_world.c
 	src/server/sv_builtins.c
 	src/server/sv_client.c
 	src/server/sv_pmove.c
-	src/server/bspfile.c)
+	src/server/bspfile.c
+	src/script/script.c
+	src/script/script_api.c
+	src/script/script_lua.c
+	src/script/script_js.c
+	src/script/script_qc.c)
 target_link_libraries(bwserver PUBLIC bwqcvm bwnet)
+if(BULWARK_SCRIPT_LUA)
+	target_compile_definitions(bwserver PRIVATE BW_SCRIPT_LUA)
+	target_link_libraries(bwserver PRIVATE bwlua)
+endif()
+if(BULWARK_SCRIPT_JS)
+	target_compile_definitions(bwserver PRIVATE BW_SCRIPT_JS)
+	target_link_libraries(bwserver PRIVATE qjs)
+endif()
 
 add_executable(bulwark-ded src/main_ded.c)
 target_link_libraries(bulwark-ded bwserver)
 
 enable_testing()
 add_test(NAME qcvm COMMAND ${CMAKE_SOURCE_DIR}/tests/run_qc_tests.sh $<TARGET_FILE:qcrun>)
+set(BULWARK_NUCLIDE_BASE "" CACHE PATH "Nuclide's base/ directory, for the script tests")
+if(BULWARK_NUCLIDE_BASE)
+	add_test(NAME script COMMAND ${CMAKE_SOURCE_DIR}/tests/run_script_tests.sh $<TARGET_FILE:bulwark-ded>
+	         ${BULWARK_NUCLIDE_BASE})
+endif()
 
 # game client with a listen server
 find_package(SDL2 QUIET)

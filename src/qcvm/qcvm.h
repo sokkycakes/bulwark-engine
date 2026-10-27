@@ -208,6 +208,9 @@ struct qcvm_s {
 	int numprogs;
 	int curprogs;
 	const qc_builtin_t *const *tables;
+
+	/* called as an entity slot is freed, before its fields are cleared */
+	void (*free_hook)(qcvm_t *vm, int e);
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs
