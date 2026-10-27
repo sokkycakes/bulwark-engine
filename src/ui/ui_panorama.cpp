@@ -159,6 +159,9 @@ var Bulwark = (function () {
 		/* the view's size in layout pixels (the height is ui_designheight for a full-screen view) */
 		Width: function () { return __bwSize()[0]; },
 		Height: function () { return __bwSize()[1]; },
+		/* the mouse pointer in the view, in layout pixels */
+		MouseX: function () { return __bwSize()[2]; },
+		MouseY: function () { return __bwSize()[3]; },
 		On: function (event, fn) { (handlers[event] = handlers[event] || []).push(fn); },
 		__recv: function (event, value) {
 			var list = handlers[event];
@@ -181,7 +184,9 @@ function __bwRoot() {
 function __bwSize() {
 	var r = __bwRoot();
 	$.__host("__size", "");
-	return r ? [parseFloat(r.GetAttributeString("bwwidth", "0")), parseFloat(r.GetAttributeString("bwheight", "0"))] : [0, 0];
+	return r ? [parseFloat(r.GetAttributeString("bwwidth", "0")), parseFloat(r.GetAttributeString("bwheight", "0")),
+	            parseFloat(r.GetAttributeString("bwmousex", "0")), parseFloat(r.GetAttributeString("bwmousey", "0"))]
+	         : [0, 0, 0, 0];
 }
 var fte_query = (function () {
 	var root = null;
@@ -501,11 +506,14 @@ void reap_views()
 void host_action(View *v, const std::string &action, const std::string &arg)
 {
 	if (action == "__size") {
-		float w, h;
+		float w, h, s = R_Get2DScale() / ui_scale();
 		view_viewport(*v, w, h);
 		if (PanoramaNode *root = v->pv.root()) {
 			root->attributes["bwwidth"] = std::to_string(w);
 			root->attributes["bwheight"] = std::to_string(h);
+			/* the pointer, in the same layout pixels */
+			root->attributes["bwmousex"] = std::to_string(mouse_x * s);
+			root->attributes["bwmousey"] = std::to_string(mouse_y * s);
 		}
 		return;
 	}
