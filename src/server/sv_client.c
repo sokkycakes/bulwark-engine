@@ -1055,6 +1055,10 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 	SV_AdminFilterMove(c, &cmd);
 
 	set_input_globals(&cmd);
+	/* a move's impulse also lands in the player's .impulse, as Quake's
+	 * engines do; the game clears it once handled (Nuclide reads it there) */
+	if (cmd.impulse && F.impulse >= 0)
+		QC_EdictFields(vm, c->edict)[F.impulse].f = cmd.impulse;
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGFloat(vm, G.frametime, cmd.msec);
 	QC_SetGInt(vm, G.self, c->edict);
