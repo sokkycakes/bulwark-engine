@@ -97,12 +97,19 @@ typedef struct {
 	int sample_phase;   /* point sampling at 0: (i + 0.5) / n, 1: i / n */
 	int nogridfit;      /* where gasp lacks GRIDFIT, load unhinted:
 	                       bit 0 for 1-bit output and ABC, bit 1 for grey */
-	int aa_measure;     /* ABC, GGO_BITMAP and 1-bit text at ANTIALIASED:
-	                       0 mono-mode hinting as at quality 0,
-	                       1 grayscale-mode hinting, 2 the same only where gasp
-	                       turns grey on, 3 grayscale-mode hinting and the grey
-	                       render's box for ABC, 4 the same only where gasp
-	                       turns grey on */
+	int aa_measure;     /* measuring at ANTIALIASED quality:
+	                       0 as at quality 0;
+	                       1 grayscale-mode hinting for ABC and GGO_BITMAP,
+	                       2 the same only where gasp turns grey on;
+	                       ABC from a greyscale box, only where gasp turns grey
+	                       on (4, 5, 6, 7) or everywhere (3): 3 and 4 FreeType
+	                       area coverage, 5 the 4x4 sampled glyph, 6 the 4x4
+	                       sampled glyph's visible pixels (count >= 2),
+	                       7 the 8x8 sampled glyph */
+	int sample_nudge;   /* move the outline 1/64 sub-pixel before sampling:
+	                       0 none, 1 (+x,+y), 2 (+x,-y), 3 (-x,+y), 4 (-x,-y) */
+	int mono_method;    /* 1-bit: 0 FreeType's rasterizer with the font's
+	                       dropout control, 1 one centre sample, no dropout */
 } gdifont_tuning_t;
 
 extern const gdifont_tuning_t gdifont_default_tuning;
