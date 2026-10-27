@@ -73,9 +73,8 @@ jobs:
             ./build/gdidump --tune "$tune" out/windows/fonts "out/var-$label"
             echo "$label=out/var-$label" >> out/variants.txt
           done <<'VARIANTS'
-          v40-all v40_below=1000
-          v40-below9 v40_below=9
-          v40-below11 v40_below=11
+          phase-x-only sample_phase=2
+          phase-y-only sample_phase=3
           VARIANTS
       - name: Compare with Windows
         run: |

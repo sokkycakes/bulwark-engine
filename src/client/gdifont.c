@@ -501,7 +501,7 @@ static int render_sampled(gdifont_t *f, unsigned cp, int n, int thr, int mono_hi
 	/* the rasterizer samples sub-pixel centres; shifting the outline by
 	   half a sub-pixel moves the samples to i / n from the top left */
 	if (f->tune.sample_phase)
-		FT_Outline_Translate(&o, 32, -32);
+		FT_Outline_Translate(&o, f->tune.sample_phase != 3 ? 32 : 0, f->tune.sample_phase != 2 ? -32 : 0);
 	if (f->tune.sample_nudge >= 1 && f->tune.sample_nudge <= 4) {
 		int k = f->tune.sample_nudge - 1;
 		FT_Outline_Translate(&o, k & 2 ? -1 : 1, k & 1 ? -1 : 1);
