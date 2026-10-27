@@ -129,6 +129,17 @@ const char *gdifont_family(const gdifont_t *f);
 int gdifont_quality(const gdifont_t *f);
 int gdifont_flags(const gdifont_t *f);
 
+/*
+ * Describe face `index` of a font file without creating a font: the family
+ * name GDI matches on (name ID 1, Windows platform, US English preferred),
+ * OS/2 usWeightClass, whether it is italic, and whether it has TrueType
+ * outlines (a glyf table; CFF-flavoured OpenType has none). Pass path, or
+ * data and size. Returns the number of faces in the file, 0 if it is not a
+ * font FreeType can open.
+ */
+int gdifont_describe(const char *path, const void *data, size_t size, int index,
+	char *family, size_t familysize, int *weight, int *italic, int *truetype);
+
 /* Size of an sfnt table in bytes, or -1 when the font has none */
 long gdifont_table_size(const gdifont_t *f, const char tag[4]);
 
