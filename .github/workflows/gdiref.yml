@@ -73,15 +73,12 @@ jobs:
             ./build/gdidump --tune "$tune" out/windows/fonts "out/var-$label"
             echo "$label=out/var-$label" >> out/variants.txt
           done <<'VARIANTS'
-          nudge-pp sample_nudge=1
-          nudge-pm sample_nudge=2
-          nudge-mp sample_nudge=3
-          nudge-mm sample_nudge=4
-          abc-areabox-gasp aa_measure=4
-          abc-s4box-gasp aa_measure=5
-          abc-s4visible-gasp aa_measure=6
-          abc-s8box-gasp aa_measure=7
-          mono-pointsample mono_method=1
+          abc-q0rule aa_measure=0
+          mono-drop-smart-stubs mono_method=2
+          mono-drop-smart mono_method=3
+          mono-drop-simple-stubs mono_method=4
+          mono-drop-simple mono_method=5
+          grey-monomode gray_hint=1
           VARIANTS
       - name: Compare with Windows
         run: |
