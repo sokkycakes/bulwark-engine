@@ -143,6 +143,10 @@ static const char *vs_world =
 	"  v_tc = a_tc * u_tcmod.zw + u_tcmod.xy; v_lmtc = a_lmtc;\n"
 	"  v_pos = (u_model * vec4(a_pos, 1.0)).xyz; v_normal = mat3(u_model) * a_normal; v_color = a_color;\n"
 	"}\n";
+/* Dynamic lights fall off as 1 - (d/r)^2 and peak at about a third of the
+ * colour, times N.L: the shape FTE gives dlights with its default
+ * r_shadow_realtime_dlight 1, measured from screenshots of it running. */
+#define DLIGHT_SCALE "0.31"
 static const char *fs_world =
 	"in vec2 v_tc; in vec2 v_lmtc; in vec3 v_pos; in vec3 v_normal; in vec4 v_color;\n"
 	"uniform sampler2D u_tex; uniform sampler2D u_lightmap; uniform sampler2D u_fullbright;\n"
@@ -158,7 +162,7 @@ static const char *fs_world =
 	"  vec3 n = normalize(v_normal);\n"
 	"  for (int i = 0; i < u_numdlights; i++) {\n"
 	"    vec3 l = u_dlights[i].xyz - v_pos; float dist = length(l);\n"
-	"    float a = max(0.0, 1.0 - dist / u_dlights[i].w);\n"
+	"    float x = dist / u_dlights[i].w; float a = max(0.0, 1.0 - x * x) * " DLIGHT_SCALE ";\n"
 	"    light += u_dlightcolors[i] * a * max(dot(n, l / max(dist, 0.001)), 0.0);\n"
 	"  }\n"
 	"  vec3 c = d.rgb * light;\n"
@@ -193,7 +197,7 @@ static const char *fs_model =
 	"  vec3 light = u_light_ambient + u_light_diffuse * max(dot(n, u_light_dir), 0.0);\n"
 	"  for (int i = 0; i < u_numdlights; i++) {\n"
 	"    vec3 l = u_dlights[i].xyz - v_pos; float dist = length(l);\n"
-	"    float a = max(0.0, 1.0 - dist / u_dlights[i].w);\n"
+	"    float x = dist / u_dlights[i].w; float a = max(0.0, 1.0 - x * x) * " DLIGHT_SCALE ";\n"
 	"    light += u_dlightcolors[i] * a * max(dot(n, l / max(dist, 0.001)), 0.0);\n"
 	"  }\n"
 	"  vec3 c = d.rgb * light;\n"

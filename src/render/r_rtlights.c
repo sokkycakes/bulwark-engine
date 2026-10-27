@@ -759,6 +759,9 @@ void R_InitRTLights(void)
 	r_editlights_import_diffuse = Cvar_Get("r_editlights_import_diffuse", "1", 0, "The diffuse level of lights imported from the map");
 	r_editlights_import_specular = Cvar_Get("r_editlights_import_specular", "1", 0, "The specular level of lights imported from the map");
 	r_shadow_realtime_world = Cvar_Get("r_shadow_realtime_world", "0", CVAR_ARCHIVE, "Light the scene with the map's static realtime lights");
+	/* Bulwark always lights per pixel; this is here for the games that read
+	 * it, such as FreeHL's flashlight, which picks its light by it */
+	Cvar_Get("r_shadow_realtime_dlight", "1", CVAR_ARCHIVE, "Light the scene with dynamic lights per pixel (games read this; Bulwark always does)");
 	r_shadow_realtime_world_import = Cvar_Get("r_shadow_realtime_world_importlightentitiesfrommap", "0", 0,
 	                                          "1: take the static lights from the map's light entities, not its .rtlights");
 	r_coronas = Cvar_Get("r_coronas", "0", CVAR_ARCHIVE, "Draw the glows of the lights that have a corona");
