@@ -26,6 +26,12 @@
 #pragma GCC diagnostic pop
 #endif
 #include "../thirdparty/font8x8_basic.h"
+#ifdef BW_FREETYPE
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_TRUETYPE_TABLES_H
+static FT_Library ftlib;
+#endif
 
 int r_vwidth = 640, r_vheight = 480;
 int r_pwidth = 640, r_pheight = 480;
@@ -242,6 +248,7 @@ static int glyph_index(int c)
 
 typedef struct {
 	int pixelsize;
+	bool aa; /* antialiased; otherwise one bit per pixel, like VGUI fonts without "antialias" */
 	int atlasdim;
 	image_t *atlas;
 	stbtt_packedchar chars[FONT_GLYPHS];
@@ -253,17 +260,24 @@ typedef struct {
 	char name[128];
 	char file[256]; /* where the TrueType data came from */
 	uint8_t *ttf; /* NULL: the built-in bitmap font, or the default face */
+	size_t ttfsize;
 	bool embedded; /* ttf is the bundled font, not to be freed */
 	bool shadow, outline; /* asked for in loadfont's sizes ("outline=1") */
 	bool bold; /* without a file of its own, uses the default face's bold */
+	int antialias; /* -1 unset (game files smooth, installed fonts crisp), 0 or 1 from loadfont */
+	bool system; /* an installed font, found by its family name */
 	stbtt_fontinfo info;
+#ifdef BW_FREETYPE
+	FT_Face ft;
+#endif
 	fontsize_t sizes[MAX_FONT_SIZES];
 	int numsizes;
 } font_t;
 
 extern const unsigned char bw_deffont[], bw_deffont_bold[], bw_widefont[];
+extern const size_t bw_deffont_size, bw_deffont_bold_size, bw_widefont_size;
 
-static cvar_t *r_font, *r_quakefont, *r_font_shadow, *r_font_outline;
+static cvar_t *r_font, *r_quakefont, *r_font_shadow, *r_font_outline, *r_font_antialias;
 static font_t fonts[MAX_FONTS];
 static font_t deffonts[2]; /* the default face and its bold */
 static image_t *bitmapfont;
@@ -294,7 +308,121 @@ static void make_bitmap_font(void)
 	Mem_Free(px);
 }
 
-static fontsize_t *font_size(font_t *f, float height)
+/* stb_truetype rasterising: no hinting, used when FreeType isn't built in */
+static void bake_stb(font_t *f, fontsize_t *fs, uint8_t **alpha, int *dimp)
+{
+	int dim, asc, desc, gap;
+	for (dim = 256; dim <= 4096; dim *= 2) {
+		stbtt_pack_context pc;
+		stbtt_pack_range ranges[BW_ARRAY_COUNT(font_ranges)];
+		int base = 0, ok;
+		Mem_Free(*alpha);
+		*alpha = Mem_Alloc((size_t)dim * dim);
+		memset(fs->chars, 0, sizeof(fs->chars));
+		for (size_t i = 0; i < BW_ARRAY_COUNT(font_ranges); i++) {
+			memset(&ranges[i], 0, sizeof(ranges[i]));
+			ranges[i].font_size = (float)fs->pixelsize;
+			ranges[i].first_unicode_codepoint_in_range = font_ranges[i][0];
+			ranges[i].num_chars = font_ranges[i][1];
+			ranges[i].chardata_for_range = fs->chars + base;
+			base += font_ranges[i][1];
+		}
+		if (!stbtt_PackBegin(&pc, *alpha, dim, dim, 0, 1, NULL))
+			continue;
+		ok = stbtt_PackFontRanges(&pc, f->ttf, 0, ranges, (int)BW_ARRAY_COUNT(ranges));
+		stbtt_PackEnd(&pc);
+		if (ok)
+			break;
+	}
+	if (dim > 4096) {
+		dim = 4096;
+		Con_DPrintf("font %s: size %d did not fit\n", f->name, fs->pixelsize);
+	}
+	if (!fs->aa)
+		for (int i = 0; i < dim * dim; i++)
+			(*alpha)[i] = (*alpha)[i] >= 128 ? 255 : 0;
+	stbtt_GetFontVMetrics(&f->info, &asc, &desc, &gap);
+	fs->ascent = asc * stbtt_ScaleForPixelHeight(&f->info, (float)fs->pixelsize);
+	*dimp = dim;
+}
+
+#ifdef BW_FREETYPE
+/* FreeType rasterising with the font's hinting, which is what keeps small
+ * Tahoma and Verdana crisp. The size is the cell height, ascent plus
+ * descent, as Windows reads a font height (usWinAscent + usWinDescent). */
+static bool bake_freetype(font_t *f, fontsize_t *fs, uint8_t **alpha, int *dimp)
+{
+	TT_OS2 *os2;
+	FT_Size_RequestRec req;
+	int dim, cell, ascent;
+	if (!ftlib && FT_Init_FreeType(&ftlib))
+		return false;
+	if (!f->ft && FT_New_Memory_Face(ftlib, f->ttf, (FT_Long)f->ttfsize, 0, &f->ft)) {
+		f->ft = NULL;
+		return false;
+	}
+	os2 = (TT_OS2 *)FT_Get_Sfnt_Table(f->ft, FT_SFNT_OS2);
+	if (os2 && os2->usWinAscent + os2->usWinDescent > 0)
+		cell = os2->usWinAscent + os2->usWinDescent, ascent = os2->usWinAscent;
+	else
+		cell = f->ft->ascender - f->ft->descender, ascent = f->ft->ascender;
+	if (cell <= 0)
+		return false;
+	memset(&req, 0, sizeof(req));
+	req.type = FT_SIZE_REQUEST_TYPE_NOMINAL;
+	req.height = (FT_Long)((double)fs->pixelsize * f->ft->units_per_EM / cell * 64 + 0.5);
+	if (FT_Request_Size(f->ft, &req))
+		return false;
+	fs->ascent = (float)(int)((double)ascent * fs->pixelsize / cell + 0.5);
+	for (dim = 256; dim <= 4096; dim *= 2) {
+		int x = 1, y = 1, rowh = 0, base = 0;
+		bool full = false;
+		Mem_Free(*alpha);
+		*alpha = Mem_Alloc((size_t)dim * dim);
+		memset(fs->chars, 0, sizeof(fs->chars));
+		for (size_t r = 0; r < BW_ARRAY_COUNT(font_ranges) && !full; r++) {
+			for (int i = 0; i < font_ranges[r][1] && !full; i++) {
+				stbtt_packedchar *pc = &fs->chars[base + i];
+				FT_GlyphSlot g;
+				FT_Bitmap *bm;
+				FT_UInt idx = FT_Get_Char_Index(f->ft, (FT_ULong)(font_ranges[r][0] + i));
+				if (!idx && font_ranges[r][0] + i > 255)
+					continue; /* not in the font */
+				if (FT_Load_Glyph(f->ft, idx, FT_LOAD_RENDER | (fs->aa ? FT_LOAD_TARGET_NORMAL : FT_LOAD_TARGET_MONO)))
+					continue;
+				g = f->ft->glyph;
+				bm = &g->bitmap;
+				if (x + (int)bm->width + 1 > dim)
+					x = 1, y += rowh + 1, rowh = 0;
+				if (y + (int)bm->rows + 1 > dim) {
+					full = true;
+					break;
+				}
+				for (unsigned row = 0; row < bm->rows; row++) {
+					const uint8_t *src = bm->buffer + (int)row * bm->pitch;
+					uint8_t *dst = *alpha + (size_t)(y + row) * dim + x;
+					for (unsigned col = 0; col < bm->width; col++)
+						dst[col] = bm->pixel_mode == FT_PIXEL_MODE_MONO ? ((src[col >> 3] >> (7 - (col & 7))) & 1) * 255
+						                                                : src[col];
+				}
+				pc->x0 = (unsigned short)x, pc->y0 = (unsigned short)y;
+				pc->x1 = (unsigned short)(x + bm->width), pc->y1 = (unsigned short)(y + bm->rows);
+				pc->xoff = (float)g->bitmap_left, pc->yoff = (float)-g->bitmap_top;
+				pc->xadvance = (float)((g->advance.x + 32) >> 6);
+				x += bm->width + 1;
+				rowh = BW_MAX(rowh, (int)bm->rows);
+			}
+			base += font_ranges[r][1];
+		}
+		if (!full)
+			break;
+	}
+	*dimp = BW_MIN(dim, 4096);
+	return true;
+}
+#endif
+
+static fontsize_t *font_size(font_t *f, float height, bool aa)
 {
 	int want = (int)(height * r_2dscale + 0.5f), best = -1, bestdiff = 1 << 30;
 	if (!f->ttf)
@@ -305,7 +433,7 @@ static fontsize_t *font_size(font_t *f, float height)
 		want = 128;
 	for (int i = 0; i < f->numsizes; i++) {
 		int d = abs(f->sizes[i].pixelsize - want);
-		if (d < bestdiff)
+		if (f->sizes[i].aa == aa && d < bestdiff)
 			bestdiff = d, best = i;
 	}
 	/* bake each size exactly, so glyphs land one texel per screen pixel */
@@ -313,47 +441,24 @@ static fontsize_t *font_size(font_t *f, float height)
 		fontsize_t *fs = &f->sizes[f->numsizes];
 		uint8_t *alpha = NULL, *rgba;
 		char name[300];
-		int asc, desc, gap, dim;
-		float scale;
+		int dim = 0;
+		bool done = false;
 		fs->pixelsize = want;
-		/* the smallest square atlas the glyphs fit in */
-		for (dim = 256; dim <= 4096; dim *= 2) {
-			stbtt_pack_context pc;
-			stbtt_pack_range ranges[BW_ARRAY_COUNT(font_ranges)];
-			int base = 0, ok;
-			Mem_Free(alpha);
-			alpha = Mem_Alloc((size_t)dim * dim);
-			memset(fs->chars, 0, sizeof(fs->chars));
-			for (size_t i = 0; i < BW_ARRAY_COUNT(font_ranges); i++) {
-				memset(&ranges[i], 0, sizeof(ranges[i]));
-				ranges[i].font_size = (float)want;
-				ranges[i].first_unicode_codepoint_in_range = font_ranges[i][0];
-				ranges[i].num_chars = font_ranges[i][1];
-				ranges[i].chardata_for_range = fs->chars + base;
-				base += font_ranges[i][1];
-			}
-			if (!stbtt_PackBegin(&pc, alpha, dim, dim, 0, 1, NULL))
-				continue;
-			ok = stbtt_PackFontRanges(&pc, f->ttf, 0, ranges, (int)BW_ARRAY_COUNT(ranges));
-			stbtt_PackEnd(&pc);
-			if (ok)
-				break;
-		}
-		if (dim > 4096) {
-			dim = 4096;
-			Con_DPrintf("font %s: size %d did not fit\n", f->name, want);
-		}
+		fs->aa = aa;
+#ifdef BW_FREETYPE
+		done = bake_freetype(f, fs, &alpha, &dim);
+#endif
+		if (!done)
+			bake_stb(f, fs, &alpha, &dim);
 		fs->atlasdim = dim;
 		rgba = Mem_Alloc((size_t)dim * dim * 4);
 		for (int i = 0; i < dim * dim; i++) {
 			rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
 			rgba[i * 4 + 3] = alpha[i];
 		}
-		snprintf(name, sizeof(name), "$font:%s:%d", f->file[0] ? f->file : f->name, want);
-		fs->atlas = R_ImageFromPixels(name, rgba, dim, dim, IMG_NOMIP | IMG_CLAMP);
-		stbtt_GetFontVMetrics(&f->info, &asc, &desc, &gap);
-		scale = stbtt_ScaleForPixelHeight(&f->info, (float)want);
-		fs->ascent = asc * scale;
+		snprintf(name, sizeof(name), "$font:%s:%d%s", f->file[0] ? f->file : f->name, want, aa ? "" : ":mono");
+		/* crisp glyphs are drawn texel for pixel; nearest keeps their edges hard */
+		fs->atlas = R_ImageFromPixels(name, rgba, dim, dim, IMG_NOMIP | IMG_CLAMP | (aa ? 0 : IMG_NEAREST));
 		Mem_Free(alpha);
 		Mem_Free(rgba);
 		return &f->sizes[f->numsizes++];
@@ -361,18 +466,19 @@ static fontsize_t *font_size(font_t *f, float height)
 	return best >= 0 ? &f->sizes[best] : NULL;
 }
 
-static bool take_ttf(font_t *f, uint8_t *data, const char *from)
+static bool take_ttf(font_t *f, uint8_t *data, size_t size, const char *from)
 {
 	if (!stbtt_InitFont(&f->info, data, stbtt_GetFontOffsetForIndex(data, 0))) {
 		Mem_Free(data);
 		return false;
 	}
 	f->ttf = data;
+	f->ttfsize = size;
 	Str_Copy(f->file, from, sizeof(f->file));
 	return true;
 }
 
-static uint8_t *read_os_file(const char *path)
+static uint8_t *read_os_file(const char *path, size_t *size)
 {
 	FILE *fp = fopen(path, "rb");
 	uint8_t *data;
@@ -387,6 +493,7 @@ static uint8_t *read_os_file(const char *path)
 		return NULL;
 	}
 	data = Mem_Alloc((size_t)len);
+	*size = (size_t)len;
 	if (fread(data, 1, (size_t)len, fp) != (size_t)len) {
 		Mem_Free(data);
 		data = NULL;
@@ -473,13 +580,14 @@ static bool load_system_font(font_t *f, const char *name)
 {
 	char names[16][64], path[1024];
 	int n = font_filenames(name, names, 16);
+	size_t size;
 	uint8_t *data;
 #ifdef _WIN32
 	const char *windir = getenv("WINDIR");
 	for (int i = 0; i < n; i++) {
 		snprintf(path, sizeof(path), "%s/Fonts/%s", windir ? windir : "C:/Windows", names[i]);
-		if ((data = read_os_file(path)) && take_ttf(f, data, path))
-			return true;
+		if ((data = read_os_file(path, &size)) && take_ttf(f, data, size, path))
+			return f->system = true;
 	}
 #else
 	const char *home = getenv("HOME");
@@ -500,9 +608,9 @@ static bool load_system_font(font_t *f, const char *name)
 		} else {
 			Str_Copy(dir, dirs[i], sizeof(dir));
 		}
-		if (find_in_dir(dir, names, n, 4, path, sizeof(path)) && (data = read_os_file(path)) &&
-		    take_ttf(f, data, path))
-			return true;
+		if (find_in_dir(dir, names, n, 4, path, sizeof(path)) && (data = read_os_file(path, &size)) &&
+		    take_ttf(f, data, size, path))
+			return f->system = true;
 	}
 #endif
 	return false;
@@ -518,20 +626,25 @@ static bool load_ttf(font_t *f, const char *path)
 		uint8_t *data;
 		size_t len;
 		snprintf(name, sizeof(name), forms[i], path);
-		if ((data = (uint8_t *)FS_LoadFile(name, &len)) && take_ttf(f, data, name))
+		if ((data = (uint8_t *)FS_LoadFile(name, &len)) && take_ttf(f, data, len, name))
 			return true;
 	}
 	/* a bare name may be an installed font; a path may be a file outside
 	 * the game (r_font /usr/share/fonts/...) */
 	if (path[0] == '/' || (path[0] && path[1] == ':')) {
-		uint8_t *data = read_os_file(path);
-		return data && take_ttf(f, data, path);
+		size_t size;
+		uint8_t *data = read_os_file(path, &size);
+		return data && take_ttf(f, data, size, path);
 	}
 	return !strchr(path, '/') && load_system_font(f, path);
 }
 
 static void free_font(font_t *f)
 {
+#ifdef BW_FREETYPE
+	if (f->ft)
+		FT_Done_Face(f->ft);
+#endif
 	if (!f->embedded)
 		Mem_Free(f->ttf);
 	memset(f, 0, sizeof(*f));
@@ -542,8 +655,10 @@ static font_t *default_face(bool bold)
 {
 	static const struct {
 		const unsigned char *data;
+		const size_t *size;
 		const char *name;
-	} bundled[2] = {{bw_deffont, "DejaVu Sans Condensed"}, {bw_deffont_bold, "DejaVu Sans Condensed Bold"}};
+	} bundled[2] = {{bw_deffont, &bw_deffont_size, "DejaVu Sans Condensed"},
+	                {bw_deffont_bold, &bw_deffont_bold_size, "DejaVu Sans Condensed Bold"}};
 	font_t *f = &deffonts[bold];
 	char want[140];
 	if (f->used && !strcmp(f->name, r_font->string))
@@ -560,6 +675,7 @@ static font_t *default_face(bool bold)
 			Con_DPrintf("default font %s isn't installed, using %s\n", want, bundled[bold].name);
 		stbtt_InitFont(&f->info, bundled[bold].data, stbtt_GetFontOffsetForIndex(bundled[bold].data, 0));
 		f->ttf = (uint8_t *)bundled[bold].data;
+		f->ttfsize = *bundled[bold].size;
 		f->embedded = true;
 		snprintf(f->file, sizeof(f->file), "(bundled) %s", bundled[bold].name);
 	}
@@ -581,9 +697,10 @@ const char *R_DefaultFontFile(void)
 }
 
 /* the effect flags in loadfont's sizes string ("12 16 outline=1") */
-static void font_flags(const char *sizes, bool *shadow, bool *outline)
+static void font_flags(const char *sizes, bool *shadow, bool *outline, int *antialias)
 {
 	*shadow = *outline = false;
+	*antialias = -1;
 	for (const char *s = sizes ? sizes : ""; *s;) {
 		size_t len = strcspn(s, " \t,");
 		if (len > 8 && !strncmp(s, "outline=", 8))
@@ -592,6 +709,8 @@ static void font_flags(const char *sizes, bool *shadow, bool *outline)
 			*shadow = atoi(s + 7) != 0;
 		else if (len > 11 && !strncmp(s, "dropshadow=", 11))
 			*shadow = atoi(s + 11) != 0;
+		else if (len > 10 && !strncmp(s, "antialias=", 10))
+			*antialias = atoi(s + 10) != 0;
 		s += len;
 		s += strspn(s, " \t,");
 	}
@@ -601,13 +720,14 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 {
 	font_t *f;
 	bool shadow, outline;
-	font_flags(sizes, &shadow, &outline);
+	int antialias;
+	font_flags(sizes, &shadow, &outline, &antialias);
 	if (slot < 0) {
 		/* the same file with the same effects shares a slot; sizes are
 		 * baked on demand */
 		for (slot = 1; slot < MAX_FONTS; slot++)
 			if (fonts[slot].used && !Str_ICmp(fonts[slot].name, path) && path[0] && fonts[slot].shadow == shadow &&
-			    fonts[slot].outline == outline)
+			    fonts[slot].outline == outline && fonts[slot].antialias == antialias)
 				return slot;
 		for (slot = 1; slot < MAX_FONTS && fonts[slot].used; slot++)
 			;
@@ -619,6 +739,7 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	f->used = true;
 	f->shadow = shadow;
 	f->outline = outline;
+	f->antialias = antialias;
 	Str_Copy(f->name, path, sizeof(f->name));
 	if (!load_ttf(f, path)) {
 		/* a missing "Verdana Bold" or "fonts/x-bold.ttf" falls back to the
@@ -632,7 +753,9 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 		if (verdana && !f->bold) {
 			stbtt_InitFont(&f->info, bw_widefont, stbtt_GetFontOffsetForIndex(bw_widefont, 0));
 			f->ttf = (uint8_t *)bw_widefont;
+			f->ttfsize = bw_widefont_size;
 			f->embedded = true;
+			f->system = true; /* stands in for an installed font, so drawn like one */
 			Str_Copy(f->file, "(bundled) DejaVu Sans", sizeof(f->file));
 		}
 		Con_DPrintf("font %s: no TrueType file, using %s\n", path, f->ttf ? f->file : "the default font");
@@ -749,7 +872,10 @@ static float draw_text(float x, float y, const char *text, float sx, float sy, c
                        int flags, bool usemarkup, bool measure)
 {
 	font_t *slot = &fonts[r_drawfont], *f = face_for(r_drawfont);
-	fontsize_t *fs = sy > 0 ? font_size(f, sy) : NULL;
+	/* Fonts from game files are smoothed; the default face and installed
+	 * fonts are drawn crisp, as VGUI draws scheme fonts without "antialias" */
+	bool aa = slot->antialias >= 0 ? slot->antialias != 0 : f != slot || f->system ? r_font_antialias->value != 0 : true;
+	fontsize_t *fs = sy > 0 ? font_size(f, sy, aa) : NULL;
 	float color[4], black[4] = {0, 0, 0, alpha};
 	float startx = x, starty = y, maxx = x, px = 1 / r_2dscale, k = 1, kx = 1, ascent = 0;
 	bool shadow = slot->shadow, outline = slot->outline, snap = false;
@@ -974,9 +1100,13 @@ void R_InitDraw(void)
 	                       "1 draws text without a font of its own in the Quake-style 8x8 bitmap font");
 	r_font_shadow = Cvar_Get("r_font_shadow", "1", CVAR_ARCHIVE,
 	                         "Drop shadow under text in the default font (not the console)");
+	r_font_antialias = Cvar_Get("r_font_antialias", "0", CVAR_ARCHIVE,
+	                            "Smooth the default font and installed fonts (Source draws its fonts crisp unless a "
+	                            "scheme asks for antialias)");
 	r_font_outline = Cvar_Get("r_font_outline", "0", CVAR_ARCHIVE,
 	                          "Black outline round text in the default font (not the console)");
 	fonts[0].used = true;
+	fonts[0].antialias = -1;
 	Str_Copy(fonts[0].name, "$builtin", sizeof(fonts[0].name));
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(indices) / 6; i++) {
 		indices[i * 6 + 0] = (uint16_t)(i * 4 + 0);
