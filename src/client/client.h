@@ -193,6 +193,7 @@ bool CL_GetInputState(uint32_t seq, usercmd_t *out);
 const char *Key_NameForNum(int key);
 int Key_NumForName(const char *name);
 const char *Key_GetBinding(int key);
+void Key_ForEachName(void (*fn)(const char *name, void *ctx), void *ctx);
 void Key_SetBinding(int key, const char *binding);
 void Key_WriteBindings(strbuf_t *sb);
 bool Key_IsDown(int key);

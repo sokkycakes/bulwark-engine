@@ -35,6 +35,26 @@ quote, backslash, tab or line break: `\"line one\nline two"`, with `\n`,
 form back. Nuclide's saved games depend on this (entities' spawn text has
 line breaks in it). FTE writes the same form.
 
+## Typing in the console
+
+Tab completes the word at the cursor. At the start of a command (the
+line's start, or after a `;`) that's a command, cvar or alias name. After
+a command that takes a known kind of argument it's that kind: maps for
+`map`, `changelevel` and `devmap`; config files for `exec` and
+`cfg_load`; demos for `playdemo` and `timedemo`; cvars for `set`, `seta`,
+`toggle`, `inc`, `reset`, `vstr` and the like; key names for `bind`,
+`unbind` and `bindlevel`, then a command for the binding; aliases for
+`unalias`; saves for `load` and `save`; sounds for `play`; models for
+`modelviewer`; skies for `sky` and `loadsky`.
+
+One match is put in with a space after it. Several are completed as far as
+they agree; pressing Tab again then steps through them, and Shift+Tab
+steps back. While typing, the matches are listed under the input line with
+each cvar's value and description, each command's description and each
+key's binding (`con_suggestions 0` turns the list off and prints the
+matches when Tab can't go further, as before). After a command or cvar
+with nothing to list, the line shows what it is.
+
 ## Files the commands write
 
 | What | Where | Notes |

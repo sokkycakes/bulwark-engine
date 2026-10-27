@@ -509,6 +509,50 @@ float R_StringWidth(const char *text, float sx, float sy, bool usemarkup)
 
 /* --- console ------------------------------------------------------------- */
 
+/* what Tab would complete, in a box hanging under the console */
+static void draw_suggestions(int w, int h, float top, float size)
+{
+	static const float white[3] = {1, 1, 1}, grey[3] = {0.6f, 0.6f, 0.6f}, pick[3] = {1, 0.85f, 0.3f},
+	                   back[3] = {0.05f, 0.05f, 0.08f};
+	int n = Con_Suggestions(), shown, first = 0, rows;
+	float namew = 0, y;
+	char info[160];
+	bool sel;
+	cvar_t *on = Cvar_Find("con_suggestions");
+	if (!n || (on && !on->value))
+		return;
+	if (n < 0) {
+		/* only a hint: the command being typed and what it does */
+		R_DrawFill(0, top, (float)w, size + 4, back, 0.9f, 0);
+		R_DrawString(4, top + 2, Con_Suggestion(0, info, sizeof(info), NULL), size, size, grey, 1, 0, false);
+		return;
+	}
+	rows = BW_MAX(1, BW_MIN(12, (int)((h - top) / size) - 2));
+	shown = BW_MIN(n, rows);
+	/* keep the one Tab picked in view */
+	for (int i = 0; i < n; i++) {
+		Con_Suggestion(i, info, sizeof(info), &sel);
+		if (sel && i >= shown)
+			first = i - shown + 1;
+	}
+	for (int i = first; i < first + shown; i++)
+		namew = BW_MAX(namew, R_StringWidth(Con_Suggestion(i, info, sizeof(info), NULL), size, size, false));
+	namew = BW_MIN(namew, w * 0.45f);
+	R_DrawFill(0, top, (float)w, size * (shown + (n > shown)) + 4, back, 0.9f, 0);
+	y = top + 2;
+	for (int i = first; i < first + shown; i++, y += size) {
+		const char *name = Con_Suggestion(i, info, sizeof(info), &sel);
+		R_DrawString(4, y, name, size, size, sel ? pick : white, 1, 0, false);
+		if (info[0])
+			R_DrawString(4 + namew + size * 2, y, info, size, size, grey, 1, 0, false);
+	}
+	if (n > shown) {
+		char more[64];
+		snprintf(more, sizeof(more), "... %d more", n - shown);
+		R_DrawString(4, y, more, size, size, grey, 1, 0, false);
+	}
+}
+
 void R_DrawConsole(int w, int h)
 {
 	static const float white[3] = {1, 1, 1}, dim[3] = {0, 0, 0};
@@ -554,6 +598,7 @@ void R_DrawConsole(int w, int h)
 			continue; /* the line being written is empty */
 		R_DrawString(4, y, l, size, size, white, 1, 0, true);
 	}
+	draw_suggestions(w, h, height, size);
 	r_drawfont = saved;
 }
 

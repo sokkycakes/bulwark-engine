@@ -88,6 +88,12 @@ const char *Key_NameForNum(int key)
 	return buf;
 }
 
+void Key_ForEachName(void (*fn)(const char *name, void *ctx), void *ctx)
+{
+	for (const keyname_t *k = keynames; k->name; k++)
+		fn(k->name, ctx);
+}
+
 const char *Key_GetBinding(int key) { return key >= 0 && key < K_MAX && bindings[key] ? bindings[key] : ""; }
 
 void Key_SetBinding(int key, const char *b)
