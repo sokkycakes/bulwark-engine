@@ -241,17 +241,17 @@ typedef struct {
 	uint8_t *ttf; /* NULL: the built-in bitmap font, or the default face */
 	bool embedded; /* ttf is the bundled font, not to be freed */
 	bool shadow, outline; /* asked for in loadfont's sizes ("outline=1") */
+	bool bold; /* without a file of its own, uses the default face's bold */
 	stbtt_fontinfo info;
 	fontsize_t sizes[MAX_FONT_SIZES];
 	int numsizes;
 } font_t;
 
-extern const unsigned char bw_deffont[];
-extern const size_t bw_deffont_size;
+extern const unsigned char bw_deffont[], bw_deffont_bold[];
 
 static cvar_t *r_font, *r_quakefont, *r_font_shadow, *r_font_outline;
 static font_t fonts[MAX_FONTS];
-static font_t deffont; /* the default face */
+static font_t deffonts[2]; /* the default face and its bold */
 static image_t *bitmapfont;
 static int r_drawfont; /* the font text uses, from the client game's drawfont global */
 static bool plaintext; /* no default shadow or outline (the console) */
@@ -508,25 +508,33 @@ static void free_font(font_t *f)
 	memset(f, 0, sizeof(*f));
 }
 
-/* loads the default face when r_font changes */
-static font_t *default_face(void)
+/* loads the default face, or its bold, when r_font changes */
+static font_t *default_face(bool bold)
 {
-	if (deffont.used && !strcmp(deffont.name, r_font->string))
-		return &deffont;
-	free_font(&deffont);
-	deffont.used = true;
-	Str_Copy(deffont.name, r_font->string, sizeof(deffont.name));
-	if (load_ttf(&deffont, r_font->string)) {
-		Con_DPrintf("default font %s from %s\n", deffont.name, deffont.file);
+	static const struct {
+		const unsigned char *data;
+		const char *name;
+	} bundled[2] = {{bw_deffont, "DejaVu Sans Condensed"}, {bw_deffont_bold, "DejaVu Sans Condensed Bold"}};
+	font_t *f = &deffonts[bold];
+	char want[140];
+	if (f->used && !strcmp(f->name, r_font->string))
+		return f;
+	free_font(f);
+	f->used = true;
+	Str_Copy(f->name, r_font->string, sizeof(f->name));
+	/* "Tahoma" becomes "Tahoma Bold", which finds tahomabd.ttf */
+	snprintf(want, sizeof(want), bold ? "%s Bold" : "%s", r_font->string);
+	if (r_font->string[0] && load_ttf(f, want)) {
+		Con_DPrintf("default font %s from %s\n", want, f->file);
 	} else {
 		if (r_font->string[0])
-			Con_DPrintf("default font %s isn't installed, using DejaVu Sans Condensed\n", r_font->string);
-		stbtt_InitFont(&deffont.info, bw_deffont, stbtt_GetFontOffsetForIndex(bw_deffont, 0));
-		deffont.ttf = (uint8_t *)bw_deffont;
-		deffont.embedded = true;
-		Str_Copy(deffont.file, "(bundled) DejaVu Sans Condensed", sizeof(deffont.file));
+			Con_DPrintf("default font %s isn't installed, using %s\n", want, bundled[bold].name);
+		stbtt_InitFont(&f->info, bundled[bold].data, stbtt_GetFontOffsetForIndex(bundled[bold].data, 0));
+		f->ttf = (uint8_t *)bundled[bold].data;
+		f->embedded = true;
+		snprintf(f->file, sizeof(f->file), "(bundled) %s", bundled[bold].name);
 	}
-	return &deffont;
+	return f;
 }
 
 /* the font that draws slot's text */
@@ -535,20 +543,42 @@ static font_t *face_for(int slot)
 	font_t *f = &fonts[slot];
 	if (f->ttf || !r_quakefont || r_quakefont->value)
 		return f;
-	return default_face();
+	return default_face(f->bold);
 }
 
 const char *R_DefaultFontFile(void)
 {
-	return r_quakefont && r_quakefont->value ? NULL : default_face()->file;
+	return r_quakefont && r_quakefont->value ? NULL : default_face(false)->file;
+}
+
+/* the effect flags in loadfont's sizes string ("12 16 outline=1") */
+static void font_flags(const char *sizes, bool *shadow, bool *outline)
+{
+	*shadow = *outline = false;
+	for (const char *s = sizes ? sizes : ""; *s;) {
+		size_t len = strcspn(s, " \t,");
+		if (len > 8 && !strncmp(s, "outline=", 8))
+			*outline = atoi(s + 8) != 0;
+		else if (len > 7 && !strncmp(s, "shadow=", 7))
+			*shadow = atoi(s + 7) != 0;
+		else if (len > 11 && !strncmp(s, "dropshadow=", 11))
+			*shadow = atoi(s + 11) != 0;
+		s += len;
+		s += strspn(s, " \t,");
+	}
 }
 
 int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 {
 	font_t *f;
+	bool shadow, outline;
+	font_flags(sizes, &shadow, &outline);
 	if (slot < 0) {
+		/* the same file with the same effects shares a slot; sizes are
+		 * baked on demand */
 		for (slot = 1; slot < MAX_FONTS; slot++)
-			if (fonts[slot].used && !Str_ICmp(fonts[slot].name, path) && path[0])
+			if (fonts[slot].used && !Str_ICmp(fonts[slot].name, path) && path[0] && fonts[slot].shadow == shadow &&
+			    fonts[slot].outline == outline)
 				return slot;
 		for (slot = 1; slot < MAX_FONTS && fonts[slot].used; slot++)
 			;
@@ -558,20 +588,15 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	f = &fonts[slot];
 	free_font(f);
 	f->used = true;
+	f->shadow = shadow;
+	f->outline = outline;
 	Str_Copy(f->name, path, sizeof(f->name));
-	if (!load_ttf(f, path))
+	if (!load_ttf(f, path)) {
+		/* a missing "Verdana Bold" or "fonts/x-bold.ttf" falls back to the
+		 * default face's bold */
+		for (const char *p = path; *p && !f->bold; p++)
+			f->bold = !Str_NICmp(p, "bold", 4);
 		Con_DPrintf("font %s: no TrueType file, using the default font\n", path);
-	/* sizes are baked on demand; the string's flags are kept */
-	for (const char *s = sizes ? sizes : ""; *s;) {
-		size_t len = strcspn(s, " \t,");
-		if (len > 8 && !strncmp(s, "outline=", 8))
-			f->outline = atoi(s + 8) != 0;
-		else if (len > 7 && !strncmp(s, "shadow=", 7))
-			f->shadow = atoi(s + 7) != 0;
-		else if (len > 11 && !strncmp(s, "dropshadow=", 11))
-			f->shadow = atoi(s + 11) != 0;
-		s += len;
-		s += strspn(s, " \t,");
 	}
 	(void)name;
 	return slot;
@@ -927,7 +952,8 @@ void R_ShutdownDraw(void)
 {
 	for (int i = 0; i < MAX_FONTS; i++)
 		free_font(&fonts[i]);
-	free_font(&deffont);
+	free_font(&deffonts[0]);
+	free_font(&deffonts[1]);
 	bitmapfont = NULL;
 	memset(imagehandles, 0, sizeof(imagehandles));
 	numimagehandles = 1;
