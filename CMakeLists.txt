@@ -234,6 +234,7 @@ add_library(bwclient STATIC
 	src/render/r_tools.c
 	src/render/r_rtlights.c
 	src/render/r_skin.c
+	src/render/r_svg.c
 	src/render/r_viewer.c
 	src/render/r_hud.c
 	src/render/r_draw.c
@@ -259,6 +260,7 @@ else()
 		target_compile_definitions(bwclient PRIVATE BW_FREETYPE)
 	endif()
 endif()
+target_include_directories(bwclient PRIVATE third_party)
 
 if(SDL2_FOUND)
 	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c)

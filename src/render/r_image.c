@@ -211,6 +211,8 @@ static uint8_t *decode_file(const char *path, int *w, int *h)
 		return NULL;
 	if (strstr(path, ".lmp"))
 		out = decode_lmp(data, len, w, h);
+	else if (R_LooksLikeSVG(data, len))
+		out = R_DecodeSVG(data, len, w, h);
 	else if ((out = Plug_DecodeImage(path, data, len, w, h)) != NULL) {
 		Mem_Free(data);
 		return out;
@@ -226,6 +228,8 @@ static uint8_t *decode_file(const char *path, int *w, int *h)
 uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h)
 {
 	int comp;
+	if (len > 0 && R_LooksLikeSVG(data, len))
+		return R_DecodeSVG(data, len, w, h);
 	return len > 0 && len < (size_t)1 << 30 ? stbi_load_from_memory(data, (int)len, w, h, &comp, 4) : NULL;
 }
 
@@ -236,6 +240,7 @@ static uint8_t *load_pixels(const char *name, int *w, int *h);
 uint8_t *R_LoadPixels(const char *name, int *w, int *h)
 {
 	char tex[192];
+	/* .svg isn't one of the extensions tried: SVG files are named in full */
 	uint8_t *p = load_pixels(name, w, h);
 	if (p || !name || !*name || !Str_NICmp(name, "textures/", 9) || name[0] == '*' || strstr(name, ".spr"))
 		return p;

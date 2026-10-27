@@ -39,6 +39,9 @@ extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal, *r_
 /* decodes an image file into RGBA (Mem_Free the result) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h);
 uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h);
+/* r_svg.c */
+bool R_LooksLikeSVG(const uint8_t *data, size_t len);
+uint8_t *R_DecodeSVG(const uint8_t *data, size_t len, int *w, int *h);
 
 /* --- materials ----------------------------------------------------------- */
 

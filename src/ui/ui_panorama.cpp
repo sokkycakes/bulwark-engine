@@ -385,16 +385,27 @@ std::string image_path(std::string src)
 	return ui_path(src);
 }
 
-/* data:image/...;base64,... decoded into an image named after its hash */
+/* data:image/...;base64,... (or a percent-encoded data:image/svg+xml,...)
+ * decoded into an image named after its hash */
 std::string data_url_image(const std::string &url)
 {
 	size_t comma = url.find(',');
-	if (comma == std::string::npos || url.compare(comma - 7, 7, ";base64") != 0)
+	if (comma == std::string::npos || comma < 7)
 		return std::string();
 	std::vector<unsigned char> bytes;
 	unsigned bits = 0;
 	int nbits = 0;
-	for (size_t i = comma + 1; i < url.size(); i++) {
+	bool base64 = url.compare(comma - 7, 7, ";base64") == 0;
+	for (size_t i = comma + 1; !base64 && i < url.size(); i++) {
+		auto hex = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
+		if (url[i] == '%' && i + 2 < url.size() && hex(url[i + 1]) >= 0 && hex(url[i + 2]) >= 0) {
+			bytes.push_back((unsigned char)(hex(url[i + 1]) * 16 + hex(url[i + 2])));
+			i += 2;
+		} else {
+			bytes.push_back((unsigned char)url[i]);
+		}
+	}
+	for (size_t i = comma + 1; base64 && i < url.size(); i++) {
 		char c = url[i];
 		int v = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52
 		        : c == '+' ? 62 : c == '/' ? 63 : -1;
