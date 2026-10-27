@@ -1,0 +1,26 @@
+/* menu-demo.html's wrapper: transparent page, a 15px heading (600 weight,
+   0.14em tracking, Segoe UI Condensed; Trade Gothic Next Bold Condensed
+   stands in) and the canvas stacked 57px down. */
+.demo-page {
+	width: 100%;
+	height: 100%;
+	overflow: noclip;
+}
+.demo-title {
+	y: 24px;
+	horizontal-align: center;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 15px;
+	letter-spacing: 2.1px;
+	text-transform: uppercase;
+	white-space: nowrap;
+	color: #8a93a3;
+}
+.demo-canvas {
+	y: 57px;
+}
+/* .stage: black under the canvas, a faint 1px ring and a deep shadow */
+.demo-canvas #Stage {
+	background-color: #000000;
+	box-shadow: 0px 0px 0px 1px #ffffff0f, 0px 28px 80px #0000008c;
+}

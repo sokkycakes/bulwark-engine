@@ -1,0 +1,13 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/font-smoke.html: the font and CSS smoke page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<Panel class="page font-smoke" hittest="false">
+		<Label class="h1" text="Font CSS smoke" />
+		<Label class="probe" text="ABCDEFG 12345" />
+		<Label class="serif" text="Serif sample — glyphs" />
+	</Panel>
+</root>

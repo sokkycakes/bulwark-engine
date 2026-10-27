@@ -1,0 +1,98 @@
+/* Panorama port of basemod-cef-test/menu.css. The page sizes everything in
+   vw/vh of a 640x480 .res canvas; 1vh is 10.8 layout px here. "Trade Gothic
+   Bold" is the game's fonts/TradeGothic-Bold.ttf (one weight, so the
+   selected row's weight 800 looks the same); Arial Narrow is Inter. */
+
+#MenuRoot {
+	width: 100%;
+	height: 100%;
+	font-family: "Trade Gothic Bold";
+}
+
+#MainMenu {
+	x: 15.625%;
+	y: 20.833%;
+	flow-children: down;
+}
+.btn-group {
+	flow-children: down;
+}
+.btn-group-meta {
+	margin-top: 16.2px;
+}
+
+/* unselected: DefaultMedium, tall 16 of 480; selected: MainBold, tall 20 */
+.menu-item {
+	margin-bottom: 6.75px;
+}
+.menu-item Label {
+	font-family: "Trade Gothic Bold";
+	font-size: 36px;
+	line-height: 36px;
+	letter-spacing: 1.44px;
+	text-transform: uppercase;
+	white-space: nowrap;
+	color: #c8c8c8;
+	transition-property: color;
+	transition-duration: 0.06s;
+	transition-timing-function: linear;
+}
+.menu-item:hover Label {
+	color: #d8d8d8;
+}
+.menu-item.selected Label {
+	font-size: 45px;
+	line-height: 45px;
+	letter-spacing: 1.8px;
+	color: #e7e7e7;
+}
+
+/* footerpanel.res: 70 of 480 tall, 30 above the bottom */
+#DescBar {
+	width: 100%;
+	height: 157.5px;
+	vertical-align: bottom;
+	margin-bottom: 67.5px;
+	background-color: #0000008c;
+	border-top: 1px solid #ffffff14;
+}
+#DescText {
+	y: 16.2px;
+	width: 100%;
+	font-family: "Inter";
+	font-size: 21.6px;
+	letter-spacing: 0.65px;
+	text-align: center;
+	color: #d8dde2;
+}
+#Hint {
+	x: 15.625%;
+	vertical-align: bottom;
+	margin-bottom: 30.24px;
+	flow-children: right;
+}
+.key {
+	width: 25.92px;
+	height: 25.92px;
+	margin-right: 8px;
+	border-radius: 50%;
+	background-color: #2f8f3a;
+}
+.key Label {
+	width: 100%;
+	height: 100%;
+	font-family: "Inter";
+	font-size: 15.12px;
+	font-weight: bold;
+	text-align: center;
+	vertical-align: center;
+	color: #ffffff;
+}
+.hint-label {
+	height: 25.92px;
+	vertical-align: center;
+	font-family: "Inter";
+	font-size: 20.52px;
+	line-height: 25.92px;
+	color: #d8dde2;
+}

@@ -1,0 +1,13 @@
+<!--
+	Panorama port of Stiletto's data/web/test/simple.html, a resource-handler smoke page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<Panel class="page simple" hittest="false">
+		<Label class="h1" text="Hello from game:// handler!" />
+		<Label class="p" text="This is a simple test HTML file served via the game:// scheme." />
+		<Label class="p p2" text="If you see this, the resource handler is working correctly." />
+	</Panel>
+</root>

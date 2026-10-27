@@ -1,0 +1,155 @@
+/* Panorama ports of the small WebCore smoke pages in Stiletto's
+   data/web/webcore-test/ and data/web/test/. Page px are layout px (the
+   1080-line design height). Fonts the game doesn't ship stand in:
+   Arial / Segoe UI / sans-serif are Inter, Consolas is IBM Plex Mono and
+   Georgia italic is Inter italic. */
+
+.page {
+	width: 100%;
+	height: 100%;
+}
+
+Label {
+	font-family: "Inter";
+	white-space: normal;
+}
+
+/* test/simple.html: an 8px body margin, then h1 and two paragraphs */
+.simple {
+	background-color: #90ee90;
+	flow-children: down;
+	padding: 8px;
+}
+.simple .h1 {
+	margin-top: 21.44px;
+	font-size: 32px;
+	font-weight: bold;
+	color: #006400;
+}
+.simple .p {
+	margin-top: 21.44px;
+	font-size: 16px;
+	color: #000000;
+}
+.simple .p2 {
+	margin-top: 16px;
+}
+
+/* css-smoke.html: style.css styles html as the dark page, but the page's
+   own inline rule keeps the body (and so the whole view) pink */
+.css-smoke {
+	background-color: #ff00aa;
+}
+.css-smoke .main {
+	width: 720px;
+	horizontal-align: center;
+	vertical-align: center;
+	flow-children: down;
+}
+.css-smoke Label {
+	font-size: 18px;
+	line-height: 25.2px;
+	color: #f4f7ff;
+}
+.css-smoke .h1 {
+	margin-top: 24.12px;
+	font-size: 36px;
+	line-height: 50.4px;
+	font-weight: bold;
+}
+.css-smoke .status {
+	margin-top: 24.12px;
+}
+.css-smoke .alpha-card {
+	margin-top: 18px;
+	width: 100%;
+	padding: 32px;
+	border-radius: 24px;
+	background-color: gradient( linear, 0% 0%, 100% 100%, from( #54baffbf ), to( #b854ff59 ) );
+	box-shadow: 0px 16px 50px #00000066;
+}
+
+/* font-smoke.html: font-smoke.css loaded, so green and yellow */
+.font-smoke {
+	background-color: #0b3d0b;
+	flow-children: down;
+}
+.font-smoke .h1 {
+	margin: 16px;
+	font-size: 40px;
+	line-height: 44px;
+	font-weight: bold;
+	color: #f6ff00;
+}
+.font-smoke .probe {
+	margin: 0px 16px;
+	padding: 12px 16px;
+	width: 1888px;
+	background-color: #102030;
+	font-family: "IBM Plex Mono";
+	font-size: 32px;
+	line-height: 32px;
+	color: #ffffff;
+}
+.font-smoke .serif {
+	margin-top: 30px;
+	font-size: 30px;
+	line-height: 36px;
+	font-style: italic;
+	color: #7fd3ff;
+}
+
+/* hud-smoke.html: a chip over the world, refreshed from getstats */
+.chip {
+	x: 16px;
+	y: 16px;
+	padding: 10px 14px;
+	background-color: #141c24e0;
+	border: 1px solid #ffdc50e6;
+	border-radius: 4px;
+	box-shadow: 0px 2px 8px #00000059;
+}
+.chip Label {
+	font-size: 18px;
+	font-weight: bold;
+	letter-spacing: 0.36px;
+	white-space: nowrap;
+	color: #f2f5f8;
+}
+
+/* inline.html */
+.inline {
+	background-color: #cc0000;
+	flow-children: down;
+	padding: 40px;
+}
+.inline Label {
+	color: #ffffff;
+}
+.inline .h1 {
+	margin-top: 42.88px;
+	font-size: 64px;
+	font-weight: bold;
+}
+.inline .p {
+	margin-top: 42.88px;
+	font-size: 32px;
+}
+
+/* red.html */
+.red {
+	background-color: #ff0000;
+}
+
+/* render-smoke.html: a 64px body; its background fills the view */
+.render-smoke {
+	background-color: #102030;
+}
+.tile {
+	width: 24px;
+	height: 24px;
+}
+#TileRed { x: 8px; y: 8px; background-color: #ff0000; }
+#TileGreen { x: 32px; y: 8px; background-color: #00ff00; }
+#TileBlue { x: 8px; y: 32px; background-color: #0000ff; }
+#TileBlend { x: 32px; y: 32px; background-color: #ffffff80; }

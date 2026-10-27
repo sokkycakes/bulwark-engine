@@ -1,0 +1,34 @@
+<!--
+	Panorama port of Stiletto's data/web/basemod-cef-test/menu.html: an
+	L4D-style main menu test (values from l4d360uischeme.res and
+	mainmenu_demo.res), transparent over the game. Its actions call
+	window.engine.*, which neither FTE nor Bulwark provides, so they only log.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/basemod-cef-test/menu.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/basemod-cef-test/menu.js" />
+	</scripts>
+	<Panel id="MenuRoot" hittest="false">
+		<Panel id="MainMenu" hittest="false">
+			<Panel class="btn-group" hittest="false">
+				<Button id="Item0" class="menu-item" hittest="true"><Label text="Map Browser" hittest="false" /></Button>
+				<Button id="Item1" class="menu-item" hittest="true"><Label text="Start Server" hittest="false" /></Button>
+			</Panel>
+			<Panel class="btn-group btn-group-meta" hittest="false">
+				<Button id="Item2" class="menu-item" hittest="true"><Label text="Settings" hittest="false" /></Button>
+				<Button id="Item3" class="menu-item" hittest="true"><Label text="Legacy Menu" hittest="false" /></Button>
+				<Button id="Item4" class="menu-item" hittest="true"><Label text="Quit" hittest="false" /></Button>
+			</Panel>
+		</Panel>
+		<Panel id="DescBar" hittest="false">
+			<Label id="DescText" text="" hittest="false" />
+			<Panel id="Hint" hittest="false">
+				<Panel class="key" hittest="false"><Label text="●" hittest="false" /></Panel>
+				<Label class="hint-label" text="Select" hittest="false" />
+			</Panel>
+		</Panel>
+	</Panel>
+</root>
