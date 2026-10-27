@@ -38,11 +38,6 @@ name (`Verdana Bold`, `fonts/x-bold.ttf`) uses the default face's bold:
 `r_font` plus " Bold" (`tahomabd.ttf` for Tahoma), else the bundled
 DejaVu Sans Condensed Bold.
 
-A missing Verdana (Source's chat font, wider than Tahoma) uses the bundled
-**DejaVu Sans**, the uncondensed face, which is close to Verdana's width.
-Checked against a CS:S chat screenshot: the text is Verdana regular in
-white with a hard black shadow one pixel down and right.
-
 `r_quakefont 1` brings back the 8x8 bitmap font (font8x8, public domain)
 for that text, exactly as before. Fonts a game loads itself are not
 affected.
@@ -65,8 +60,6 @@ affected.
     `outline=1` (documented in fteextensions.qc), `shadow=1` or
     `dropshadow=1`. The same file loaded with different effects gets a
     slot of its own.
-- Each size bakes Latin-1, Greek, Cyrillic, punctuation and currency
-  signs (stb_truetype packing, up to a 4096 atlas).
 - `con_textsize 0` picks 8 for the Quake font and 12 for a TrueType face.
   `8` counts as `0` because every config saved before this change holds
   it.

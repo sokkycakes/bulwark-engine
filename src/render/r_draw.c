@@ -223,28 +223,14 @@ void R_End2D(void)
 
 #define MAX_FONTS 32
 #define MAX_FONT_SIZES 16
-
-/* the characters baked for each size: Latin-1, Greek, Cyrillic (Source
- * games' chat carries Russian names), punctuation and currency */
-static const int font_ranges[][2] = {{32, 224}, {0x370, 0x90}, {0x400, 0x100}, {0x2000, 0x70}, {0x20a0, 0x30}};
-#define FONT_GLYPHS (224 + 0x90 + 0x100 + 0x70 + 0x30)
-
-static int glyph_index(int c)
-{
-	int base = 0;
-	for (size_t i = 0; i < BW_ARRAY_COUNT(font_ranges); i++) {
-		if (c >= font_ranges[i][0] && c < font_ranges[i][0] + font_ranges[i][1])
-			return base + c - font_ranges[i][0];
-		base += font_ranges[i][1];
-	}
-	return -1;
-}
+#define FONT_FIRST 32
+#define FONT_COUNT 224 /* 32..255 */
 
 typedef struct {
 	int pixelsize;
 	int atlasdim;
 	image_t *atlas;
-	stbtt_packedchar chars[FONT_GLYPHS];
+	stbtt_bakedchar chars[FONT_COUNT];
 	float ascent;
 } fontsize_t;
 
@@ -261,7 +247,7 @@ typedef struct {
 	int numsizes;
 } font_t;
 
-extern const unsigned char bw_deffont[], bw_deffont_bold[], bw_widefont[];
+extern const unsigned char bw_deffont[], bw_deffont_bold[];
 
 static cvar_t *r_font, *r_quakefont, *r_font_shadow, *r_font_outline;
 static font_t fonts[MAX_FONTS];
@@ -317,30 +303,15 @@ static fontsize_t *font_size(font_t *f, float height)
 		float scale;
 		fs->pixelsize = want;
 		/* the smallest square atlas the glyphs fit in */
-		for (dim = 256; dim <= 4096; dim *= 2) {
-			stbtt_pack_context pc;
-			stbtt_pack_range ranges[BW_ARRAY_COUNT(font_ranges)];
-			int base = 0, ok;
+		for (dim = 128; dim <= 2048; dim *= 2) {
 			Mem_Free(alpha);
 			alpha = Mem_Alloc((size_t)dim * dim);
-			memset(fs->chars, 0, sizeof(fs->chars));
-			for (size_t i = 0; i < BW_ARRAY_COUNT(font_ranges); i++) {
-				memset(&ranges[i], 0, sizeof(ranges[i]));
-				ranges[i].font_size = (float)want;
-				ranges[i].first_unicode_codepoint_in_range = font_ranges[i][0];
-				ranges[i].num_chars = font_ranges[i][1];
-				ranges[i].chardata_for_range = fs->chars + base;
-				base += font_ranges[i][1];
-			}
-			if (!stbtt_PackBegin(&pc, alpha, dim, dim, 0, 1, NULL))
-				continue;
-			ok = stbtt_PackFontRanges(&pc, f->ttf, 0, ranges, (int)BW_ARRAY_COUNT(ranges));
-			stbtt_PackEnd(&pc);
-			if (ok)
+			if (stbtt_BakeFontBitmap(f->ttf, stbtt_GetFontOffsetForIndex(f->ttf, 0), (float)want, alpha, dim, dim,
+			                         FONT_FIRST, FONT_COUNT, fs->chars) > 0)
 				break;
 		}
-		if (dim > 4096) {
-			dim = 4096;
+		if (dim > 2048) {
+			dim = 2048;
 			Con_DPrintf("font %s: size %d did not fit\n", f->name, want);
 		}
 		fs->atlasdim = dim;
@@ -622,20 +593,10 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	Str_Copy(f->name, path, sizeof(f->name));
 	if (!load_ttf(f, path)) {
 		/* a missing "Verdana Bold" or "fonts/x-bold.ttf" falls back to the
-		 * default face's bold, a missing Verdana to DejaVu Sans, which has
-		 * Verdana's wide letters (CS:S chat is Verdana) */
-		bool verdana = false;
-		for (const char *p = path; *p; p++) {
-			f->bold |= !Str_NICmp(p, "bold", 4);
-			verdana |= !Str_NICmp(p, "verdana", 7);
-		}
-		if (verdana && !f->bold) {
-			stbtt_InitFont(&f->info, bw_widefont, stbtt_GetFontOffsetForIndex(bw_widefont, 0));
-			f->ttf = (uint8_t *)bw_widefont;
-			f->embedded = true;
-			Str_Copy(f->file, "(bundled) DejaVu Sans", sizeof(f->file));
-		}
-		Con_DPrintf("font %s: no TrueType file, using %s\n", path, f->ttf ? f->file : "the default font");
+		 * default face's bold */
+		for (const char *p = path; *p && !f->bold; p++)
+			f->bold = !Str_NICmp(p, "bold", 4);
+		Con_DPrintf("font %s: no TrueType file, using the default font\n", path);
 	}
 	(void)name;
 	return slot;
@@ -732,9 +693,8 @@ static bool markup(const char **p, float *color, const float *deflt)
 
 static float char_advance(font_t *f, fontsize_t *fs, int c, float sx, float sy)
 {
-	int g = fs ? glyph_index(c) : -1;
-	if (g >= 0)
-		return fs->chars[g].xadvance * (sy / fs->pixelsize) * (sx / sy);
+	if (fs && c >= FONT_FIRST && c < FONT_FIRST + FONT_COUNT)
+		return fs->chars[c - FONT_FIRST].xadvance * (sy / fs->pixelsize) * (sx / sy);
 	(void)f;
 	return sx;
 }
@@ -806,9 +766,8 @@ static float draw_text(float x, float y, const char *text, float sx, float sy, c
 			if (!measure && in2d) {
 				float gx, gy, gw, gh, s1, t1, s2, t2;
 				bool draw = false;
-				int g = fs ? glyph_index(c) : -1;
-				if (g >= 0) {
-					stbtt_packedchar *b = &fs->chars[g];
+				if (fs && c >= FONT_FIRST && c < FONT_FIRST + FONT_COUNT) {
+					stbtt_bakedchar *b = &fs->chars[c - FONT_FIRST];
 					float inv = 1.0f / fs->atlasdim, ox = x, base = y + ascent;
 					if (snap) {
 						ox = roundf(ox * r_2dscale) / r_2dscale;
