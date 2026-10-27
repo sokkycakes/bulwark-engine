@@ -357,6 +357,7 @@ int R_FindFont(const char *name);
 void R_SetDrawFont(int slot);
 float R_DrawFontScale(void);
 const char *R_FontRenderer(int slot);
+const char *R_FontEntry(int slot);
 void R_ShutdownDraw(void);
 
 /* --- GDI-compatible TrueType text (r_gdifont.c) --------------------------- */
@@ -370,6 +371,7 @@ typedef struct {
 } rgglyph_t;
 
 void RG_Init(void);
+bool RG_Enabled(void);
 rgfont_t *RG_Load(const char *spec);
 void RG_Free(rgfont_t *f);
 rgsize_t *RG_Size(rgfont_t *f, int tall);

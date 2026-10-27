@@ -552,7 +552,10 @@ static void Listfonts_f(int argc, const char **argv)
 	FS_List("fonts/*.ttf", true, font_file, &count);
 	FS_List("fonts/*.otf", true, font_file, &count);
 	FS_List("fonts/*.font", true, font_file, &count);
-	Con_Printf("%d font files\nLoaded:\n", count);
+	Con_Printf("%d font files\n", count);
+	if (!RG_Enabled())
+		Con_Printf("r_gdifont is 0: face names such as \"Verdana\" are not looked up\n");
+	Con_Printf("Loaded:\n");
 	for (int i = 0; i < 64; i++) {
 		const char *name;
 		bool ttf;
@@ -562,6 +565,8 @@ static void Listfonts_f(int argc, const char **argv)
 		Con_Printf("  %2d %s (%s)", i, name, R_FontRenderer(i));
 		for (int k = 0; k < n; k++)
 			Con_Printf("%s%d", k ? "," : " sizes ", sizes[k]);
+		if (strchr(name, ',') && R_FontEntry(i)[0])
+			Con_Printf(" using %s", R_FontEntry(i));
 		Con_Printf("\n");
 	}
 }

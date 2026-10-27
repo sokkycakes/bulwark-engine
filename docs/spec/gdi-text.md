@@ -107,7 +107,11 @@ are kept.
 - **`fontfaces [family]`** lists the index (family, weight, italic, game or
   system, path). With a family it also prints which file that name
   resolves to. `listfonts` shows which renderer each loaded font ended up
-  on (gdifont, stb_truetype or built-in).
+  on (gdifont, stb_truetype or built-in) and, for a fallback list, which
+  entry loaded (`using Verdana`). Both say so when `r_gdifont` is 0. With
+  `r_gdifont 0`, a face name is never looked up, so a list such as
+  chat.font's falls through to its file entry. `r_gdifont` is archived, so
+  a 0 set once stays in the game folder's config.cfg.
 
 ### Search-path changes
 
@@ -118,8 +122,9 @@ game directory added. Two things follow it:
 - The face index rescans the game's `fonts/` when the generation differs
   from the one it was scanned at.
 - `R_LoadFont` reuses a loaded font with the same path only if it was
-  loaded at the current generation. Otherwise it loads it again into the
-  same slot, so the font number the game holds stays valid.
+  loaded at the current generation and with the same `r_gdifont` setting.
+  Otherwise it loads it again into the same slot, so the font number the
+  game holds stays valid.
 
 Before this, a font loaded before a game directory was mounted kept what
 it resolved to then. Nuclide loads chat.font early, so with Verdana only
