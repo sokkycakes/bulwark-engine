@@ -827,7 +827,7 @@ static void spawn_point(ptype_t *t, const float *org, const float *dir, float co
 	if (t->spawnchance < 1 && frand() > t->spawnchance)
 		return;
 	if (t->sound[0] && depth == 0)
-		S_StartSound(0, 0, t->sound, org, t->soundvol, t->soundattn, t->soundpitch / 100.0f, 0);
+		S_StartSound(0, 0, t->sound, org, t->soundvol, t->soundattn, t->soundpitch, 0); /* percent, as S_StartSound takes it */
 	spawn_light(t, org);
 	if (t->kind == PT_DECAL || t->kind == PT_UDECAL) {
 		if (t->count[0] > 0 || t->count[1] > 0)

@@ -25,6 +25,7 @@
 /* sets the tail's overall level: the generic room's tail sits about 12 dB
  * under the direct sound */
 #define LATE_LEVEL 0.12f
+#define DC_POLE 0.995f /* the wet input's DC blocker, about 35 Hz at 44.1 kHz */
 #define SOUND_SPEED 13500.0f /* units per second, taking a unit as an inch */
 
 /* reverbinfo_t as fteextensions.qc lays it out: EFX reverb properties */
@@ -116,6 +117,7 @@ static struct {
 	int latetap, echotap;
 	float lategain, echofb, echoout;
 	float inlp, inlp_a;   /* wet input low-pass for gainhf */
+	float dcin, dcout;    /* wet input DC blocker */
 	float drylp[2], drylp_a;
 	float modphase, modstep, moddepth;
 	float fade;           /* 0..1, the wet level while switching */
@@ -222,7 +224,7 @@ static void clear_buffers(void)
 		for (int a = 0; a < NUM_ALLPASS; a++)
 			memset(dsp.ap[s][a], 0, sizeof(float) * dsp.aplen[s][a]);
 	}
-	dsp.inlp = 0;
+	dsp.inlp = dsp.dcin = dsp.dcout = 0;
 }
 
 /* --- the mixer side ------------------------------------------------------------ */
@@ -299,6 +301,12 @@ void S_ApplyDSP(float *buf, int frames, float volume)
 			r = r + (dsp.drylp[1] - r) * dsp.fade;
 		}
 		in = (buf[i * 2] + buf[i * 2 + 1]) * 0.5f;
+		/* rooms don't ring at 0 Hz: a DC blocker keeps an offset in the
+		 * sounds from building up in the combs */
+		x = in - dsp.dcin + DC_POLE * dsp.dcout;
+		dsp.dcin = in;
+		dsp.dcout = x;
+		in = x;
 		dsp.inlp += (1 - dsp.inlp_a) * (in - dsp.inlp);
 		dsp.pre[dsp.prepos] = dsp.inlp;
 		/* early reflections */
@@ -349,9 +357,13 @@ void S_ApplyDSP(float *buf, int frames, float volume)
 				sum += y;
 			}
 			for (int a = 0; a < NUM_ALLPASS; a++) {
-				float *b = dsp.ap[s][a], y = b[dsp.appos[s][a]];
-				b[dsp.appos[s][a]] = sum + y * dsp.apgain;
-				sum = y - sum * dsp.apgain;
+				/* v = x + g v[n-D], y = v[n-D] - g v: unity gain at every
+				 * frequency. Feeding the input rather than v forward
+				 * gave each stage 1/(1-g) - g at DC, up to about 50x
+				 * across four, which pinned a busy mix to the rail */
+				float *b = dsp.ap[s][a], y = b[dsp.appos[s][a]], v = sum + y * dsp.apgain;
+				b[dsp.appos[s][a]] = v;
+				sum = y - v * dsp.apgain;
 				if (++dsp.appos[s][a] >= dsp.aplen[s][a])
 					dsp.appos[s][a] = 0;
 			}
