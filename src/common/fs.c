@@ -15,6 +15,7 @@
 static char fs_basedir[1024] = ".";
 static char fs_gamedirs[FS_MAX_PATHS][64];
 static int fs_numgamedirs;
+static int fs_generation; /* bumped whenever the search path changes */
 
 /* --- packages ---------------------------------------------------------------- */
 
@@ -300,6 +301,7 @@ void FS_Init(const char *basedir)
 	Str_Copy(fs_basedir, basedir && *basedir ? basedir : ".", sizeof(fs_basedir));
 	fs_numgamedirs = 0;
 	free_packs();
+	fs_generation++;
 }
 
 const char *FS_BaseDir(void) { return fs_basedir; }
@@ -313,6 +315,7 @@ void FS_AddGameDir(const char *gamedir)
 		return;
 	Str_Copy(fs_gamedirs[fs_numgamedirs++], gamedir, sizeof(fs_gamedirs[0]));
 	add_packs(fs_numgamedirs - 1);
+	fs_generation++;
 }
 
 /* rescans the packages of every game directory, for files added while running */
@@ -321,7 +324,10 @@ void FS_Restart(void)
 	free_packs();
 	for (int i = 0; i < fs_numgamedirs; i++)
 		add_packs(i);
+	fs_generation++;
 }
+
+int FS_Generation(void) { return fs_generation; }
 
 int FS_NumGameDirs(void) { return fs_numgamedirs; }
 const char *FS_GameDirAt(int i) { return i >= 0 && i < fs_numgamedirs ? fs_gamedirs[i] : NULL; }
@@ -331,6 +337,7 @@ void FS_SetGameDirs(const char *const *dirs, int count)
 {
 	free_packs();
 	fs_numgamedirs = 0;
+	fs_generation++;
 	for (int i = 0; i < count; i++)
 		FS_AddGameDir(dirs[i]);
 }

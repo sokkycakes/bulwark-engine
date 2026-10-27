@@ -6,6 +6,7 @@
  * nearest-sampled atlas per cell height. See docs/spec/gdi-text.md.
  * ISC licence, see LICENSE. */
 #include "r_local.h"
+#include "../common/cmd.h"
 #include "../common/fs.h"
 
 #ifdef BW_HAVE_GDIFONT
@@ -49,16 +50,22 @@ struct rgfont_s {
 	int numsizes;
 };
 
-static cvar_t *r_gdifont, *r_gdifont_aa;
+static cvar_t *r_gdifont, *r_gdifont_aa, *r_gdifont_systemfonts;
+
+static void Fontfaces_f(int argc, const char **argv);
 
 void RG_Init(void)
 {
+	Cmd_AddD("fontfaces", Fontfaces_f, "fontfaces [family]: the TrueType faces that font names such as \"Verdana\" can resolve to");
 	r_gdifont = Cvar_Get("r_gdifont", "1", CVAR_ARCHIVE,
 	                     "Draw TrueType fonts the way Windows GDI does (gdifont); 0 uses stb_truetype as before. "
 	                     "Applies to fonts loaded afterwards");
 	r_gdifont_aa = Cvar_Get("r_gdifont_aa", "1", CVAR_ARCHIVE,
 	                        "1: ANTIALIASED_QUALITY (the font's gasp table picks greyscale or 1-bit per size), "
 	                        "0: NONANTIALIASED_QUALITY (always 1-bit)");
+	r_gdifont_systemfonts = Cvar_Get("r_gdifont_systemfonts", "1", 0,
+	                                 "Look up face names such as \"Verdana\" in the system's font folders as well as "
+	                                 "the game's fonts/ folder");
 }
 
 /* --- face names ------------------------------------------------------------ */
@@ -72,7 +79,9 @@ typedef struct {
 
 static rgentry_t *rg_index;
 static int rg_count, rg_cap;
-static bool rg_scanned;
+static bool rg_scanned;     /* the system folders are in the index */
+static int rg_gamegen = -1; /* FS_Generation() the game's fonts were listed at */
+static int rg_systemfonts = -1;
 
 static bool font_ext(const char *name)
 {
@@ -132,15 +141,31 @@ static void list_game_font(const char *name, const char *searchpath, void *ctx)
 	Mem_Free(data);
 }
 
-/* Every TrueType-outline font the game or the system has, in search order:
-   the game's fonts/ folder, the Windows font folders, then the Linux and
-   macOS ones. Built once, on the first face-name lookup. */
-static void build_index(void)
+/* The game's TrueType fonts: listed again whenever the search path has
+   changed since (a game switch, a mod mounted, packages rescanned), since
+   which fonts/ folders and packages are mounted decides what is there. The
+   index was once built a single time, so a face found only in a game
+   directory mounted later stayed unknown, and one from a game unmounted
+   since stayed listed. */
+static void index_game_fonts(void)
+{
+	int n = 0;
+	for (int i = 0; i < rg_count; i++)
+		if (!rg_index[i].ingame)
+			rg_index[n++] = rg_index[i];
+	rg_count = n;
+	rg_gamegen = FS_Generation();
+	FS_List("fonts/*", true, list_game_font, NULL);
+}
+
+/* The system's TrueType fonts: the Windows font folders, then the Linux
+   and macOS ones. These don't depend on the game, so they are scanned once,
+   on the first face-name lookup. */
+static void index_system_fonts(void)
 {
 	const char *home = getenv("HOME"), *env;
 	char dir[512];
 	rg_scanned = true;
-	FS_List("fonts/*", true, list_game_font, NULL);
 #ifdef _WIN32
 	env = getenv("WINDIR");
 	snprintf(dir, sizeof(dir), "%s/Fonts", env ? env : "C:/Windows");
@@ -168,30 +193,71 @@ static void build_index(void)
 	scan_dir("/System/Library/Fonts", 0);
 #endif
 	(void)home;
-	Con_DPrintf("gdifont: %d TrueType faces indexed\n", rg_count);
+}
+
+static void update_index(void)
+{
+	int sys = r_gdifont_systemfonts && r_gdifont_systemfonts->value ? 1 : 0;
+	bool changed = false;
+	if (sys != rg_systemfonts) {
+		/* start over: the system fonts are being added or dropped */
+		rg_count = 0;
+		rg_scanned = false;
+		rg_gamegen = -1;
+		rg_systemfonts = sys;
+	}
+	if (sys && !rg_scanned) {
+		index_system_fonts();
+		changed = true;
+	}
+	if (rg_gamegen != FS_Generation()) {
+		index_game_fonts();
+		changed = true;
+	}
+	if (changed)
+		Con_DPrintf("gdifont: %d TrueType faces indexed\n", rg_count);
 }
 
 /* The file for a family: an exact family-name match (case-insensitive),
    upright before italic, then the weight nearest the request, so weight
-   >= 600 picks the bold file when there is one. */
+   >= 600 picks the bold file when there is one. On a tie the game's own
+   file wins over the system's, then the earlier one in search order. */
 static const rgentry_t *find_face(const char *family, int weight)
 {
 	const rgentry_t *best = NULL;
 	int bestscore = 1 << 30;
-	if (!rg_scanned)
-		build_index();
+	update_index();
 	for (int i = 0; i < rg_count; i++) {
 		const rgentry_t *e = &rg_index[i];
 		int score;
 		if (Str_ICmp(e->family, family))
 			continue;
-		score = (e->italic ? 10000 : 0) + abs(e->weight - weight);
+		score = ((e->italic ? 10000 : 0) + abs(e->weight - weight)) * 2 + (e->ingame ? 0 : 1);
 		if (score < bestscore) {
 			bestscore = score;
 			best = e;
 		}
 	}
 	return best;
+}
+
+static void Fontfaces_f(int argc, const char **argv)
+{
+	int n = 0;
+	update_index();
+	for (int i = 0; i < rg_count; i++) {
+		const rgentry_t *e = &rg_index[i];
+		if (argc > 1 && Str_ICmp(e->family, argv[1]))
+			continue;
+		Con_Printf("  \"%s\" weight %d%s: %s%s\n", e->family, e->weight, e->italic ? " italic" : "", e->path,
+		           e->ingame ? " (game)" : "");
+		n++;
+	}
+	if (argc > 1) {
+		const rgentry_t *e = find_face(argv[1], 400);
+		Con_Printf("%s resolves to %s\n", argv[1], e ? e->path : "nothing");
+	}
+	Con_Printf("%d faces\n", n);
 }
 
 static uint8_t *read_os_file(const char *path, size_t *len)

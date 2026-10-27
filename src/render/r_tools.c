@@ -559,7 +559,7 @@ static void Listfonts_f(int argc, const char **argv)
 		int sizes[16], n;
 		if (!R_FontInfo(i, &name, &ttf, sizes, &n))
 			continue;
-		Con_Printf("  %2d %s%s", i, name, ttf ? "" : " (built-in bitmap font)");
+		Con_Printf("  %2d %s (%s)", i, name, R_FontRenderer(i));
 		for (int k = 0; k < n; k++)
 			Con_Printf("%s%d", k ? "," : " sizes ", sizes[k]);
 		Con_Printf("\n");
