@@ -121,5 +121,25 @@ no game is running.
 
 Hit-testing ignores transforms, so a scaled panel is clicked where it would
 be unscaled. Script `Panel.style` setters cover only background, size,
-opacity and transform. Backdrop blur, releasing textures in the renderer, a geometry cache, UTF-8
+opacity and transform; set other properties in the `style` attribute given
+to `$.CreatePanel`. CSS filters (`blur`, `drop-shadow`), `mask-image` and
+backdrop blur are not drawn.
+
+Layout behaviours that differ from a browser and that ports must allow for:
+
+- A transform that transitions from `none` to a translate jumps at the
+  halfway point (the operation lists differ); give the resting state an
+  explicit `translateY( 0px )`.
+- The default `overflow: squish` shrinks children larger than their parent;
+  use `overflow: noclip` (or `clip`) for pages that letterbox a stage.
+- A `Button` without a background is not hit; create rows with
+  `hittest: "true"`.
+- A wrapped `Label`'s height does not reach a `fit-children` parent; put
+  wrapped labels straight into the flowing container.
+- Children are placed inside their parent's border, not at its outer edge.
+- A label's baseline sits at its top plus `max( 0, ( line-height - size ) / 2 )`
+  plus the font's ascender, lower than a browser's for fonts with tall
+  ascenders; ports offset labels by the difference.
+
+Not done yet: releasing textures in the renderer, releasing textures in the renderer, a geometry cache, UTF-8
 text entry beyond Latin-1, and single draws larger than 65535 vertices.
