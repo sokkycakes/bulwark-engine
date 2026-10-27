@@ -60,7 +60,10 @@ out over `snd_nominaldistance` (1000) units; 0 plays it everywhere. A WAV
   or `input_angles`. Feeding the bobbed angles back used to make the pitch
   run into the ±89° clamp and the roll build up to 76° within a second of
   walking.
-- Models are drawn with their pitch inverted, as in Quake. View models
+- Models are drawn with their pitch inverted, as in Quake, while
+  `r_meshpitch` is -1 (the default). Nuclide sets `r_meshpitch 1` when its
+  server game starts, and then models use their pitch as a view does. The
+  server publishes `r_meshpitch` in serverinfo and clients copy it. View models
   (RF_VIEWMODEL or RF_DEPTHHACK) are the exception: Nuclide gives them the
   camera's own angles, so drawing them with the camera's convention keeps
   the gun pointing where the camera does. FTE, run as a black box, inverts

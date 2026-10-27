@@ -244,8 +244,8 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	e->entnum = (int)efloat(vm, ent, EF.entnum, 0);
 	if (EF.forceshader >= 0 && f[EF.forceshader].f > 0)
 		e->forceshader = R_MaterialForHandle((int)f[EF.forceshader].f);
-	/* models face their angles with pitch inverted, as in Quake; brush
-	 * models use the angles as given. View models (RF_VIEWMODEL or
+	/* models face their angles with pitch inverted, as in Quake, unless
+	 * r_meshpitch is 1 (Nuclide); brush models use the angles as given. View models (RF_VIEWMODEL or
 	 * RF_DEPTHHACK) are given the camera's angles by games such as Nuclide,
 	 * so they keep the camera's convention and point where the camera does;
 	 * r_viewmodel_quakepitch 1 inverts them like other models, as FTE does */
@@ -253,7 +253,7 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 		float a[3] = {e->angles[0], e->angles[1], e->angles[2]};
 		bool vm = (e->renderflags & (1 | 4)) && !(r_viewmodel_quakepitch && r_viewmodel_quakepitch->ivalue);
 		if (e->model && e->model->type != MOD_BRUSH && !vm)
-			a[0] = -a[0];
+			a[0] *= QC_MeshPitch();
 		AnglesToAxis(a, e->axis);
 	}
 	if (e->renderflags & 1) {

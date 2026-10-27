@@ -259,7 +259,10 @@ void BWBody::FrameUpdate(float dt)
 
 	m_aim_pos = target;
 	want = vectoangles(target - eye);
-	want_x = -want_x;	/* v_angle pitch is positive looking down */
+	/* v_angle pitch is positive looking down; vectoangles gives that too
+	   under r_meshpitch 1 (Nuclide), and the opposite as in Quake otherwise */
+	if (bw_cvar("r_meshpitch") <= 0)
+		want_x = -want_x;
 	if (want_x < -180)
 		want_x += 360;
 	if (want_x > 180)

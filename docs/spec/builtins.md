@@ -24,6 +24,12 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
 - `digest_hex` supports CRC16 (CRC-16/CCITT-FALSE, the variant Nuclide's
   entityDef code expects), MD5, SHA1 and SHA256. The algorithms are written
   from RFC 1321 and FIPS 180-4 and checked against Python's hashlib.
+- `vectoangles` gives Quake's pitch (positive is up) while `r_meshpitch` is
+  -1, the default, and a view's pitch (positive is down, so -45 for a vector
+  45° up) when it is 1, as Nuclide sets it. Nuclide's weapons turn the view
+  into a launch direction with `vectoangles` and fire along it with
+  `makevectors`, so with the Quake pitch a Demoman grenade aimed up flew
+  down. Checked against FTE run as a black box with Nuclide's settings.
 - `rotate_axis`-style helpers (`rotatevectorsbyangle`, `rotatevectorsbyvectors`)
   follow the doc comments, but have not been checked against content that
   depends on them. *Unverified.*

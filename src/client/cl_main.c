@@ -98,6 +98,16 @@ const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size)
 
 const char *CL_ServerKey(const char *key, char *out, size_t size) { return info_get(cl.serverinfo, key, out, size); }
 
+/* the server's r_meshpitch decides how this client's game code and renderer
+ * read pitch, since the game sets it on the server (Nuclide's entry.qc) */
+static void CL_ServerMeshPitch(void)
+{
+	char buf[16];
+	QC_MeshPitch(); /* registered before it is set */
+	if (CL_ServerKey("r_meshpitch", buf, sizeof(buf))[0])
+		Cvar_Set("r_meshpitch", buf);
+}
+
 static void build_userinfo(char *out, size_t size)
 {
 	out[0] = 0;
@@ -407,6 +417,7 @@ static void parse_serverdata(msg_t *m)
 	cl.csprogscrc = (uint16_t)MSG_ReadUShort(m);
 	MSG_ReadLong(m); /* size, for a future download */
 	Str_Copy(cl.serverinfo, MSG_ReadString(m), sizeof(cl.serverinfo));
+	CL_ServerMeshPitch();
 	cl.state = ca_loading;
 	cl.servercommandframe = 0;
 	cl.time = 0;
@@ -619,6 +630,8 @@ static void parse_server_message(msg_t *m, bool reliable)
 			char key[256];
 			Str_Copy(key, MSG_ReadString(m), sizeof(key));
 			info_set(cl.serverinfo, sizeof(cl.serverinfo), key, MSG_ReadString(m));
+			if (!Str_ICmp(key, "r_meshpitch"))
+				CL_ServerMeshPitch();
 			CSQC_ServerInfoChanged();
 			break;
 		}
