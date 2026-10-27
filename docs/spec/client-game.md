@@ -47,8 +47,9 @@ Entity sounds from the server use server entity numbers. The client game's
 follows an entity through its csprogs copy when a sound has
 `SOUNDFLAG_FOLLOW`. Channel 0 mixes any number of samples, other channels of
 an entity replace each other, and `SOUNDFLAG_NOREPLACE` leaves a playing
-channel alone, as `fteextensions.qc` describes. Attenuation 1 fades a sound
-out over `snd_nominaldistance` (1000) units; 0 plays it everywhere. A WAV
+channel alone, as `fteextensions.qc` describes. Attenuation names a sound
+level in dB that falls off with distance as in Source (see "Distance and
+direction" in sound.md); 0 plays it everywhere. A WAV
 `cue ` chunk marks the frame a sample loops back to.
 
 ## The camera and view models
