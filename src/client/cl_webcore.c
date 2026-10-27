@@ -105,6 +105,9 @@ static bool page_layout(const char *url, char *layout, size_t lsize, char *query
 		if (!file || !file[1] || !Str_ICmp(file + 1, "index.html")) {
 			if (file)
 				*file = 0;
+			/* a page directly under data/web/: scratch.html -> layout/web/scratch.xml */
+			else if ((dot = strrchr(dir, '.')) && (!Str_ICmp(dot, ".html") || !Str_ICmp(dot, ".htm")))
+				*dot = 0;
 			snprintf(layout, lsize, "layout/web/%s.xml", dir);
 		} else {
 			*file++ = 0;
