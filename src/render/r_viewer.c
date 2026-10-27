@@ -38,6 +38,7 @@ static float yaw = 30, pitch = 10, dist, spin = 1;
 static int frame, skin;
 static bool paused;
 static double animtime;
+static float seqtime; /* time into the animation shown, for models with named ones */
 
 static float cam[3], camang[3];
 static bspmap_t *mapworld; /* the world mapedit loaded, while it is still cl.world */
@@ -131,6 +132,7 @@ static void ModelViewer_f(int argc, const char **argv)
 	Str_Copy(modelname, argv[1], sizeof(modelname));
 	mode = VIEW_MODEL;
 	frame = skin = 0;
+	seqtime = 0;
 	paused = false;
 	animtime = cl.realtime;
 	yaw = 30;
@@ -210,8 +212,8 @@ bool V_KeyEvent(int key, bool down)
 	case K_DOWNARROW: pitch = BW_MAX(pitch - 10, -89.0f); break;
 	case K_MWHEELUP: case '=': case '+': dist = BW_MAX(4.0f, dist * 0.85f); break;
 	case K_MWHEELDOWN: case '-': dist *= 1.18f; break;
-	case K_PGUP: frame++; paused = true; break;
-	case K_PGDN: frame--; paused = true; break;
+	case K_PGUP: frame++; seqtime = 0; paused = !R_FrameToName(R_LoadModel(modelname), 0); break;
+	case K_PGDN: frame--; seqtime = 0; paused = !R_FrameToName(R_LoadModel(modelname), 0); break;
 	case ']': skin++; break;
 	case '[': skin = BW_MAX(0, skin - 1); break;
 	case K_SPACE: paused = !paused; animtime = cl.realtime; break;
@@ -257,7 +259,11 @@ static void draw_model(int w, int h)
 		return;
 	}
 	n = BW_MAX(1, R_ModelNumFrames(m));
-	if (!paused && cl.realtime - animtime >= 0.1) {
+	if (R_FrameToName(m, 0)) {
+		/* named animations (sequences): play the one picked */
+		if (!paused)
+			seqtime += (float)cl.frametime;
+	} else if (!paused && cl.realtime - animtime >= 0.1) {
 		frame = (frame + 1) % n;
 		animtime = cl.realtime;
 	}
@@ -279,6 +285,7 @@ static void draw_model(int w, int h)
 		float a[3] = {0, 0, 0};
 		e->model = m;
 		e->frame = e->frame2 = frame;
+		e->frame1time = e->frame2time = seqtime;
 		e->skin = skin;
 		AnglesToAxis(a, e->axis);
 	}

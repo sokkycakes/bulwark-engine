@@ -153,6 +153,47 @@ static bool parse_meshes(rd_t *r, studio_submodel_t *sm, int nummesh, int meshin
 	return true;
 }
 
+/* the texture and skin tables, from a model or its companion texture file */
+static bool parse_textures(rd_t *r, studio_model_t *m)
+{
+	const uint8_t *buf = r->buf;
+	int n = rdi(buf + H_TEXTURES), idx = rdi(buf + H_TEXTURES + 4);
+	if (!count_ok(r, "texture", n, idx, TEX_SIZE))
+		return false;
+	m->numtextures = n;
+	m->textures = Mem_Alloc(sizeof(studio_texture_t) * (n ? n : 1));
+	for (int i = 0; i < n; i++) {
+		const uint8_t *p = buf + idx + i * TEX_SIZE;
+		studio_texture_t *t = &m->textures[i];
+		rdname(t->name, sizeof(t->name), p, 64);
+		t->flags = rdi(p + 64);
+		t->width = rdi(p + 68);
+		t->height = rdi(p + 72);
+		int64_t data = rdi(p + 76);
+		if (t->width < 1 || t->height < 1 || t->width > MAX_TEX_DIM || t->height > MAX_TEX_DIM)
+			return fail(r, "texture %d: size %dx%d", i, t->width, t->height);
+		if (!span(r, data, (int64_t)t->width * t->height + 768, 1))
+			return fail(r, "texture %d: pixels run past the end", i);
+		t->pixels = buf + data;
+		t->palette = t->pixels + (int64_t)t->width * t->height;
+	}
+	m->numskinref = rdi(buf + H_SKINREF);
+	m->numskinfamilies = rdi(buf + H_SKINFAM);
+	idx = rdi(buf + H_SKININDEX);
+	if (m->numskinref < 0 || m->numskinfamilies < 0 || m->numskinref > 1024 || m->numskinfamilies > 1024)
+		return fail(r, "skin table %dx%d", m->numskinfamilies, m->numskinref);
+	if (!span(r, idx, (int64_t)m->numskinref * m->numskinfamilies, 2))
+		return fail(r, "skin table runs past the end");
+	m->skins = Mem_Alloc(sizeof(int16_t) * (m->numskinref * m->numskinfamilies + 1));
+	for (int i = 0; i < m->numskinref * m->numskinfamilies; i++) {
+		m->skins[i] = rds(buf + idx + 2 * i);
+		if (m->numtextures && (m->skins[i] < 0 || m->skins[i] >= m->numtextures))
+			return fail(r, "skin entry %d: texture %d out of range", i, m->skins[i]);
+	}
+
+	return true;
+}
+
 static bool parse(studio_model_t *m, const uint8_t *buf, size_t len, char *err, size_t errlen)
 {
 	rd_t r = {buf, len, err, errlen};
@@ -251,39 +292,8 @@ static bool parse(studio_model_t *m, const uint8_t *buf, size_t len, char *err, 
 	}
 
 	/* textures (a model with none keeps them in a companion file) */
-	n = rdi(buf + H_TEXTURES), idx = rdi(buf + H_TEXTURES + 4);
-	if (!count_ok(&r, "texture", n, idx, TEX_SIZE))
+	if (!parse_textures(&r, m))
 		return false;
-	m->numtextures = n;
-	m->textures = Mem_Alloc(sizeof(studio_texture_t) * (n ? n : 1));
-	for (int i = 0; i < n; i++) {
-		const uint8_t *p = buf + idx + i * TEX_SIZE;
-		studio_texture_t *t = &m->textures[i];
-		rdname(t->name, sizeof(t->name), p, 64);
-		t->flags = rdi(p + 64);
-		t->width = rdi(p + 68);
-		t->height = rdi(p + 72);
-		int64_t data = rdi(p + 76);
-		if (t->width < 1 || t->height < 1 || t->width > MAX_TEX_DIM || t->height > MAX_TEX_DIM)
-			return fail(&r, "texture %d: size %dx%d", i, t->width, t->height);
-		if (!span(&r, data, (int64_t)t->width * t->height + 768, 1))
-			return fail(&r, "texture %d: pixels run past the end", i);
-		t->pixels = buf + data;
-		t->palette = t->pixels + (int64_t)t->width * t->height;
-	}
-	m->numskinref = rdi(buf + H_SKINREF);
-	m->numskinfamilies = rdi(buf + H_SKINFAM);
-	idx = rdi(buf + H_SKININDEX);
-	if (m->numskinref < 0 || m->numskinfamilies < 0 || m->numskinref > 1024 || m->numskinfamilies > 1024)
-		return fail(&r, "skin table %dx%d", m->numskinfamilies, m->numskinref);
-	if (!span(&r, idx, (int64_t)m->numskinref * m->numskinfamilies, 2))
-		return fail(&r, "skin table runs past the end");
-	m->skins = Mem_Alloc(sizeof(int16_t) * (m->numskinref * m->numskinfamilies + 1));
-	for (int i = 0; i < m->numskinref * m->numskinfamilies; i++) {
-		m->skins[i] = rds(buf + idx + 2 * i);
-		if (m->numtextures && (m->skins[i] < 0 || m->skins[i] >= m->numtextures))
-			return fail(&r, "skin entry %d: texture %d out of range", i, m->skins[i]);
-	}
 
 	/* body parts, sub-models and meshes */
 	n = rdi(buf + H_BODYPARTS), idx = rdi(buf + H_BODYPARTS + 4);
@@ -351,6 +361,21 @@ static bool parse(studio_model_t *m, const uint8_t *buf, size_t len, char *err, 
 			return fail(&r, "attachment %d: bone %d out of range", i, m->attachments[i].bone);
 	}
 	return true;
+}
+
+bool Studio_ParseTextures(studio_model_t *m, const uint8_t *buf, size_t len, char *err, size_t errlen)
+{
+	rd_t r = {buf, len, err, errlen};
+	if (len < H_SIZE || memcmp(buf, "IDST", 4) || rdi(buf + 4) != 10)
+		return fail(&r, "not a version 10 studio file");
+	Mem_Free(m->textures);
+	Mem_Free(m->skins);
+	m->textures = NULL, m->skins = NULL;
+	m->numtextures = 0;
+	if (parse_textures(&r, m))
+		return true;
+	m->numtextures = m->numskinref = m->numskinfamilies = 0;
+	return false;
 }
 
 bool Studio_Parse(studio_model_t *m, const uint8_t *buf, size_t len, char *err, size_t errlen)
@@ -512,6 +537,17 @@ bool Studio_DecodeFrame(const studio_model_t *m, int seq, int blend, int frame, 
 	return true;
 }
 
+void Studio_RestPose(const studio_model_t *m, float *out)
+{
+	for (int j = 0; j < m->numbones; j++) {
+		float *o = out + 10 * j;
+		const float *v = m->bones[j].value;
+		o[0] = v[0], o[1] = v[1], o[2] = v[2];
+		euler_to_quat(v + 3, o + 3);
+		o[7] = o[8] = o[9] = 1;
+	}
+}
+
 /* triangle commands: i16 n; n > 0 a strip, n < 0 a fan of -n vertices, 0
  * ends the list. Each vertex is four i16: vertex, normal, s, t */
 int Studio_CountTris(const studio_model_t *m, const studio_mesh_t *mesh, int numverts, int numnorms)
@@ -563,7 +599,7 @@ void Studio_Free(studio_model_t *m)
 
 typedef struct studiocache_s {
 	char name[128];
-	uint8_t *buf;
+	uint8_t *buf, *texbuf;
 	studio_model_t model;
 	bool ok;
 	struct studiocache_s *next;
@@ -596,6 +632,21 @@ const studio_model_t *Studio_Cached(const char *name)
 		Studio_Free(&c->model);
 		Mem_Free(c->buf), c->buf = NULL;
 		return NULL;
+	}
+	if (!c->model.numtextures && strlen(name) > 4 && strlen(name) < sizeof(c->name) - 1) {
+		/* the textures are in nameT.mdl */
+		char tname[130];
+		size_t tsize = 0, n = strlen(name) - 4;
+		snprintf(tname, sizeof(tname), "%.*sT%s", (int)n, name, name + n);
+		c->texbuf = (uint8_t *)FS_LoadFile(tname, &tsize);
+		if (!c->texbuf) {
+			tname[n] = 't';
+			c->texbuf = (uint8_t *)FS_LoadFile(tname, &tsize);
+		}
+		if (c->texbuf && !Studio_ParseTextures(&c->model, c->texbuf, tsize, err, sizeof(err))) {
+			Con_DPrintf("%s: %s\n", tname, err);
+			Mem_Free(c->texbuf), c->texbuf = NULL;
+		}
 	}
 	return &c->model;
 }
