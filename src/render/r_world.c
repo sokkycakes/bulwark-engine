@@ -926,7 +926,7 @@ void R_DrawSky(const float *mvp)
 		return;
 	if (!r_world.skybox && r_world.skyname[0]) {
 		/* worldspawn and the sky command name either a path or a set in
-		 * env/, or gfx/env/ where GoldSrc keeps them */
+		 * env/, gfx/env/ where GoldSrc keeps them, or Source's folder */
 		char env[96];
 		snprintf(env, sizeof(env), "env/%s", r_world.skyname);
 		r_world.skybox = R_LoadCubemap(r_world.skyname);
@@ -934,6 +934,12 @@ void R_DrawSky(const float *mvp)
 			r_world.skybox = R_LoadCubemap(env);
 		if (!r_world.skybox) {
 			snprintf(env, sizeof(env), "gfx/env/%s", r_world.skyname);
+			r_world.skybox = R_LoadCubemap(env);
+		}
+		if (!r_world.skybox) {
+			/* Source keeps its sets as textures under materials/skybox/,
+			 * faces named as GoldSrc's (sky_day01_01rt.vtf) */
+			snprintf(env, sizeof(env), "materials/skybox/%s", r_world.skyname);
 			r_world.skybox = R_LoadCubemap(env);
 		}
 	}
