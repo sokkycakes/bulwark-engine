@@ -890,12 +890,9 @@ static void r_getlight(qcvm_t *vm)
 
 static rmodel_t *model_arg(qcvm_t *vm, int n) { return R_ModelForIndex((int)QC_PFLOAT(vm, n)); }
 
-/* GoldSrc studio models aren't drawn yet, but the game still asks about
-   their sequences: those answers come from the model file */
-static const studio_model_t *studio_arg(qcvm_t *vm)
-{
-	return R_ModelNumFrames(model_arg(vm, 0)) ? NULL : QC_StudioModel(vm, (int)QC_PFLOAT(vm, 0));
-}
+/* a GoldSrc studio model's sequences are answered from the model file, as
+   the server answers them, rather than from its skeleton's animations */
+static const studio_model_t *studio_arg(qcvm_t *vm) { return QC_StudioModel(vm, (int)QC_PFLOAT(vm, 0)); }
 
 static void r_modelframecount(qcvm_t *vm)
 {

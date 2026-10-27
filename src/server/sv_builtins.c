@@ -388,12 +388,14 @@ static void bi_getentitytoken(qcvm_t *vm)
 	QC_ReturnString(vm, tok);
 }
 
-/* frame queries: skeletal models only so far (alias models need their
- * frame names read on the server too) */
+/* frame queries: skeletal and studio models only so far (alias models
+ * need their frame names read on the server too) */
 static skelmodel_t *skel_arg(qcvm_t *vm)
 {
 	int i = (int)QC_PFLOAT(vm, 0);
-	return i > 0 && i < sv.nummodels ? Skel_LoadModel(sv.models[i]) : NULL;
+	if (i <= 0 || i >= sv.nummodels || Studio_Cached(sv.models[i]))
+		return NULL; /* studio models answer from their sequences (studio_arg) */
+	return Skel_LoadModel(sv.models[i]);
 }
 
 static framegroup_t *group_arg(qcvm_t *vm, int n)
