@@ -21,6 +21,7 @@ engine tree.
   prioritized playable-slice plan, and repository working instructions.
 - Reviewed open PR #8. It is a standalone `mp.dll` execution harness; it does
   not implement native CSNZ rules or connect them to Bulwark gameplay.
+- Opened draft PR #9 against the engine source branch for this discovery checkpoint.
 - Searched accessible GitHub repositories for a CSNZ server emulator. No
   compatible emulator repository was found. CSO2 server results refer to a
   different title.
