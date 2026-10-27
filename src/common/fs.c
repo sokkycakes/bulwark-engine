@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -536,6 +537,46 @@ typedef struct {
 	int count, cap;
 } namelist_t;
 
+/* a file name against a search pattern: '*' and '?' stay within one path
+ * component. Nuclide lists subfolders with patterns of their own (maps in
+ * "maps/" and one level below), and Stiletto's decls/def/heroes.def
+ * includes its subfolder because the decls/def search doesn't reach it. */
+static bool path_match(const char *p, const char *s, bool nocase)
+{
+	for (; *p; p++, s++) {
+		if (*p == '*') {
+			while (*p == '*')
+				p++;
+			for (;; s++) {
+				if (path_match(p, s, nocase))
+					return true;
+				if (!*s || *s == '/')
+					return false;
+			}
+		}
+		if (!*s || (*p == '?' && *s == '/'))
+			return false;
+		if (*p != '?') {
+			int a = *p, b = *s;
+			if (nocase) {
+				a = tolower((unsigned char)a);
+				b = tolower((unsigned char)b);
+			}
+			if (a != b)
+				return false;
+		}
+	}
+	return !*s;
+}
+
+static int count_slashes(const char *s)
+{
+	int n = 0;
+	for (; *s; s++)
+		n += *s == '/';
+	return n;
+}
+
 static bool namelist_has(namelist_t *l, const char *n)
 {
 	for (int i = 0; i < l->count; i++)
@@ -566,11 +607,10 @@ static void walk(const char *root, const char *rel, const char *pattern, bool no
 		if (stat(full, &st))
 			continue;
 		if (S_ISDIR(st.st_mode)) {
-			/* '*' also matches '/', so any subdirectory may hold matches
-			 * once the pattern names a directory */
-			if (strchr(pattern, '/'))
+			/* only as deep as the pattern has components */
+			if (count_slashes(relname) < count_slashes(pattern))
 				walk(root, relname, pattern, nocase, seen, searchpath, fn, ctx, depth + 1);
-		} else if (Str_WildMatch(pattern, relname, nocase) && !namelist_has(seen, relname)) {
+		} else if (path_match(pattern, relname, nocase) && !namelist_has(seen, relname)) {
 			if (seen->count >= seen->cap) {
 				seen->cap = seen->cap ? seen->cap * 2 : 64;
 				seen->names = Mem_Realloc(seen->names, sizeof(char *) * seen->cap);
@@ -610,7 +650,7 @@ void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx)
 				continue;
 			for (int f = 0; f < pk->numfiles; f++) {
 				const char *n = pk->files[f].name;
-				if (!Str_WildMatch(pattern, n, nocase) || namelist_has(&seen, n))
+				if (!path_match(pattern, n, nocase) || namelist_has(&seen, n))
 					continue;
 				if (seen.count >= seen.cap) {
 					seen.cap = seen.cap ? seen.cap * 2 : 64;

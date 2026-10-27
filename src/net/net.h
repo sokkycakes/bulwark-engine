@@ -29,6 +29,8 @@ void NET_Shutdown(void);
 /* Opens (or reopens) the server's UDP socket on 'port'. 0 picks any port.
  * Returns false if binding failed; loopback still works. */
 bool NET_OpenServer(int port);
+/* NET_OpenServer's search for a free port passes over this one */
+void NET_ReservePort(int port);
 bool NET_OpenClient(void);
 void NET_CloseServer(void);
 int NET_ServerPort(void);

@@ -2092,6 +2092,10 @@ void SV_SetupClientSlots(void)
 		svs.clients = Mem_Alloc(sizeof(client_t) * (size_t)want);
 		svs.maxclients = want;
 	}
+	/* a second copy of the game on this machine would otherwise take the
+	 * port a pre-game lobby host listens on (27501 by default) */
+	cvar_t *lobby_port = Cvar_Find("lobby_port");
+	NET_ReservePort(lobby_port ? lobby_port->ivalue : 0);
 	if (svs.maxclients > 1 && !NET_ServerPort() && NET_OpenServer(sv_port->ivalue))
 		SV_MasterPortsOpened();
 	/* single player games run over loopback only */
