@@ -108,7 +108,7 @@ void MQC_Shutdown(void)
 
 bool MQC_Load(void)
 {
-	static const qc_builtin_t *tables[12];
+	static const qc_builtin_t *tables[16];
 	size_t len;
 	char *data;
 	MQC_Shutdown();
@@ -128,7 +128,8 @@ bool MQC_Load(void)
 	tables[8] = cl_altcon_builtins;
 	tables[9] = cl_webcore_builtins;
 	tables[10] = lobby_builtins;
-	tables[11] = NULL;
+	tables[11] = r_skin_builtins;
+	tables[12] = NULL;
 	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, 4096, 16 * 1024 * 1024);
 	Mem_Free(data);
 	if (!M.vm)

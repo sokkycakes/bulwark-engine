@@ -1,0 +1,176 @@
+/* The Create / Join Lobby dialog of both title pages (basemod-style panel).
+   The pages size it in fixed CSS pixels; here they are the 1024 x 768
+   artboard's at the 1080-line design height (x 1.40625). The pages ask for
+   "Trade Gothic", which WebCore never had, so it fell back to a plain sans:
+   Inter stands in. */
+
+.join-dialog
+{
+	width: 100%;
+	height: 100%;
+	opacity: 1;
+	transition-property: opacity;
+	transition-duration: 0.18s;
+	transition-timing-function: ease-out;
+	font-family: "Inter";
+}
+.join-dialog.is-hidden { opacity: 0; }
+.join-dialog.hidden { visibility: collapse; }
+
+.join-backdrop
+{
+	width: 100%;
+	height: 100%;
+	background-color: #0000008c;
+}
+
+.join-panel
+{
+	horizontal-align: center;
+	vertical-align: center;
+	width: 590.625px;
+	max-height: 80%;
+	height: fit-children;
+	flow-children: down;
+	background-color: #2a2a2aeb;
+	border: 2.8125px solid #666666;
+}
+
+.join-head
+{
+	width: 100%;
+	padding: 14.0625px 19.6875px;
+	border-bottom: 1.40625px solid #666666;
+	font-size: 18.28px;
+	letter-spacing: 1.1px;
+	text-transform: uppercase;
+	color: #cccccc;
+}
+
+.join-body
+{
+	width: 100%;
+	height: fit-children;
+	flow-children: down;
+	padding: 19.6875px;
+}
+
+.join-section
+{
+	width: 100%;
+	height: fit-children;
+	flow-children: down;
+	margin-bottom: 14.0625px;
+}
+.join-create .join-lan,
+.join-create .join-addr,
+.join-create .join-code { visibility: collapse; }
+.join-join .create-options { visibility: collapse; }
+
+.join-text
+{
+	font-size: 22.5px;
+	color: #ffffff;
+	margin-top: 22.5px;
+	margin-bottom: 22.5px;
+}
+
+.join-label
+{
+	vertical-align: center;
+	font-size: 18.28px;
+	letter-spacing: 0.73px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+
+.join-row
+{
+	width: 100%;
+	height: fit-children;
+	flow-children: right;
+}
+.btn-right { horizontal-align: right; }
+
+/* the LAN list: rows are built by the script */
+.join-list
+{
+	width: 100%;
+	min-height: 101.25px;
+	max-height: 253.125px;
+	height: fit-children;
+	margin: 11.25px 0px;
+	flow-children: down;
+	overflow: squish scroll;
+	border: 1.40625px solid #666666;
+	background-color: #00000040;
+}
+.join-empty
+{
+	width: 100%;
+	padding: 11.25px 14.0625px;
+	font-size: 18.28px;
+	font-style: italic;
+	color: #888888;
+}
+.lan-row
+{
+	width: 100%;
+	height: fit-children;
+	flow-children: right;
+	padding: 11.25px 14.0625px;
+	border-bottom: 1.40625px solid #66666673;
+}
+.lan-row.is-selected
+{
+	background-color: #4a999947;
+	border-bottom: 1.40625px solid #44aa99;
+}
+.lan-row Label
+{
+	font-size: 18.28px;
+	color: #ffffff;
+}
+.lan-row .lan-meta
+{
+	margin-left: 5px;
+	color: #888888;
+}
+
+.join-input
+{
+	width: fill-parent-flow( 1.0 );
+	vertical-align: center;
+	margin-right: 11.25px;
+	padding: 8.4375px 11.25px;
+	border: 1.40625px solid #555555;
+	background-color: #1a1a1acc;
+	color: #eeeeee;
+	font-size: 22.5px;
+}
+
+.btn
+{
+	width: fit-children;
+	height: fit-children;
+	padding: 11.25px 16.875px;
+	border: 1.40625px solid #666666;
+	background-color: #3c3c3cf2;
+}
+.btn:hover { border: 1.40625px solid #44aa99; }
+.btn:disabled { opacity: 0.4; }
+.btn:disabled:hover { border: 1.40625px solid #666666; }
+.btn Label
+{
+	font-size: 18.28px;
+	letter-spacing: 0.73px;
+	text-transform: uppercase;
+	color: #e0e0e0;
+}
+.create-options .btn { margin-bottom: 22.5px; }
+.btn-ghost { background-color: #00000000; }
+
+/* v1 leaves the dialog's labels bold (v2 forces normal weight) */
+.title-v1 .join-head,
+.title-v1 .join-label,
+.title-v1 .btn Label { font-weight: bold; }

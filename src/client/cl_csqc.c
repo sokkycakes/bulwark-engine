@@ -249,7 +249,7 @@ static const char *CL_ModelName(qcvm_t *vm, int index)
 
 bool CSQC_Load(void)
 {
-	static const qc_builtin_t *tables[12];
+	static const qc_builtin_t *tables[16];
 	size_t len;
 	char *data;
 	qcvm_t *vm;
@@ -275,7 +275,9 @@ bool CSQC_Load(void)
 	tables[7] = qc_uri_builtins;
 	tables[8] = cl_altcon_builtins;
 	tables[9] = cl_webcore_builtins;
-	tables[10] = NULL;
+	tables[10] = r_skin_builtins;
+	tables[11] = r_qclight_builtins;
+	tables[12] = NULL;
 	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)

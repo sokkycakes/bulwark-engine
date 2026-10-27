@@ -1,0 +1,145 @@
+/* Panorama port of Stiletto's data/web/ql-menu: a 640x480 stage, letterboxed
+   and transparent over the game. Positions and sizes come from the script. */
+.page {
+	width: 100%;
+	height: 100%;
+}
+
+#Stage {
+	horizontal-align: center;
+	vertical-align: center;
+	overflow: clip;
+}
+
+.layer {
+	width: 100%;
+	height: 100%;
+}
+
+.img {
+	background-size: 100% 100%;
+	background-repeat: no-repeat;
+}
+
+/* canvas text: standard_07_57 body, hooge_05_57 for the gametype chips */
+.t {
+	font-family: "standard_07_57";
+	white-space: nowrap;
+	text-overflow: noclip;
+	color: #ffffff;
+}
+
+.t.hooge {
+	font-family: "hooge_05_57";
+}
+
+/* 0.85 + sin(t / 280 ms) * 0.15 */
+.pulse-warmup {
+	animation-name: ql-pulse-warmup;
+	animation-duration: 1.76s;
+	animation-timing-function: ease-in-out;
+	animation-iteration-count: infinite;
+	animation-direction: alternate;
+}
+
+@keyframes ql-pulse-warmup {
+	from { opacity: 0.7; }
+	to { opacity: 1; }
+}
+
+/* 0.55 + sin(t / 500 ms) * 0.15 */
+.pulse-hint {
+	animation-name: ql-pulse-hint;
+	animation-duration: 3.14s;
+	animation-timing-function: ease-in-out;
+	animation-iteration-count: infinite;
+	animation-direction: alternate;
+}
+
+@keyframes ql-pulse-hint {
+	from { opacity: 0.4; }
+	to { opacity: 0.7; }
+}
+
+/* bgfill2 shader: base, two additive scrolling layers, two additive orbs */
+.bgfill {
+	overflow: clip;
+}
+
+.bgfill-base {
+	width: 100%;
+	height: 100%;
+	background-size: 100% 100%;
+}
+
+.bgfill-scroll {
+	width: 200%;
+	height: 100%;
+	flow-children: right;
+	-mix-blend-mode: additive;
+	animation-timing-function: linear;
+	animation-iteration-count: infinite;
+}
+
+.bgfill-tile {
+	width: 50%;
+	height: 100%;
+	background-size: 100% 100%;
+}
+
+/* o1 drifts right 0.1 widths/s, o2 left 0.18; the red (team) fill is faster */
+.bgfill-scroll.o1 {
+	opacity: 0.5;
+	animation-name: ql-scroll-right;
+	animation-duration: 10s;
+}
+
+.bgfill-scroll.o2 {
+	opacity: 0.4;
+	animation-name: ql-scroll-left;
+	animation-duration: 5.56s;
+}
+
+.bgfill-scroll.o1.team {
+	animation-name: ql-scroll-left;
+	animation-duration: 3.33s;
+}
+
+.bgfill-scroll.o2.team {
+	animation-duration: 4.55s;
+}
+
+@keyframes ql-scroll-right {
+	from { transform: translateX( -50% ); }
+	to { transform: translateX( 0% ); }
+}
+
+@keyframes ql-scroll-left {
+	from { transform: translateX( 0% ); }
+	to { transform: translateX( -50% ); }
+}
+
+.bgfill-orb {
+	background-size: 100% 100%;
+	-mix-blend-mode: additive;
+	transform-origin: 50% 50%;
+	animation-timing-function: linear;
+	animation-iteration-count: infinite;
+	animation-name: ql-orb-spin;
+}
+
+/* -25 and -18 degrees a second */
+.bgfill-orb.o6 {
+	opacity: 0.32;
+	animation-duration: 14.4s;
+}
+
+.bgfill-orb.o7 {
+	opacity: 0.26;
+	animation-duration: 20s;
+}
+
+@keyframes ql-orb-spin {
+	from { transform: rotateZ( 0deg ); }
+	to { transform: rotateZ( -360deg ); }
+}

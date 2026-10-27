@@ -274,7 +274,18 @@ typedef struct {
 	struct qcvm_s *vm;
 	int qcent;        /* entity in that vm */
 	int skeletonindex; /* a skeleton object of that vm posing the model, 0 for none */
+	const struct rskin_s *customskin; /* setcustomskin: geomsets and surface replacements */
 } rentity_t;
+
+/* custom skins (r_skin.c) */
+typedef struct rskin_s rskin_t;
+int R_SkinGeomset(const rskin_t *s, int group); /* the sub-model to draw, 0 by default */
+material_t *R_SkinReplace(const rskin_t *s, const char *surface);
+const rskin_t *R_EntitySkin(struct qcvm_s *vm, int ent);
+void R_ClearSkins(void);
+void R_ClearRemaps(void);
+/* QC dynamic lights (dynamiclight_spawnstatic), r_rtlights.c */
+void R_AddQCLights(void);
 
 typedef struct {
 	float origin[3];

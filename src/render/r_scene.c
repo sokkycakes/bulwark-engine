@@ -277,6 +277,7 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	e->frame2time = efloat(vm, ent, EF.frame2time, 0);
 	e->skin = (int)efloat(vm, ent, EF.skin, 0);
 	e->skeletonindex = (int)efloat(vm, ent, EF.skeletonindex, 0);
+	e->customskin = R_EntitySkin(vm, ent);
 	e->scale = efloat(vm, ent, EF.scale, 1);
 	if (e->scale == 0)
 		e->scale = 1;
@@ -547,6 +548,7 @@ void R_RenderScene(void)
 	}
 	R_UpdateParticles();
 	R_AddRTLights();
+	R_AddQCLights();
 	R_AddParticleLights();
 	Mat4_Identity(model);
 	/* the skyroom first, seen through the sky: then the sky itself isn't drawn */

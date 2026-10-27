@@ -1,0 +1,17 @@
+<!--
+	Panorama port of Stiletto's data/web/ql-menu/index.html (app.js): the Quake
+	Live style in-game menu. index.html?mode=arena is the duel/arena selector the
+	client game opens with menu_webcore arena <selector>; without a mode it shows
+	the warmup and Esc menu demo views. The original drew a 640x480 canvas; the
+	script builds the same picture from panels on a letterboxed stage.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/ql-menu.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/ql-menu.js" />
+	</scripts>
+	<Panel id="QlPage" class="page" hittest="false">
+	</Panel>
+</root>

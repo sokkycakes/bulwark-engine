@@ -323,6 +323,10 @@ typedef struct {
 	material_t *material;
 	int firstindex, numindexes;
 	int skinref; /* a studio model's skin slot, for skin families */
+	/* a studio model's body part and which of its sub-models this is (the
+	 * geomset a custom skin selects), -1 for meshes always drawn */
+	int geomgroup, geomvalue;
+	char name[64]; /* the surface a custom skin's "replace" names */
 } iqmmesh_t;
 
 typedef struct iqm_s {
@@ -427,8 +431,11 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	for (uint32_t m = 0; m < num_meshes; m++) {
 		const uint8_t *me = d + ofs_meshes + m * 24;
 		uint32_t mat = (uint32_t)rd32(me + 4), ft = (uint32_t)rd32(me + 16), nt = (uint32_t)rd32(me + 20);
+		uint32_t mname = (uint32_t)rd32(me);
 		const char *matname = mat < num_text ? text + mat : "";
 		char path[192];
+		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
+		Str_Copy(q->meshes[m].name, mname < num_text ? text + mname : "", sizeof(q->meshes[m].name));
 		/* a bare material name is looked up next to the model */
 		if (!strchr(matname, '/')) {
 			const char *slash = strrchr(mod->name, '/');
@@ -576,8 +583,10 @@ static void studio_vert(const studio_submodel_t *sm, const bonemat_t *rest, cons
 	*bone = (uint8_t)b;
 }
 
-/* the first sub-model of every body part, in the rest pose and skinned to
- * the bones, with the sequences as animations (Skel_LoadModel) */
+/* every sub-model of every body part, in the rest pose and skinned to the
+ * bones, with the sequences as animations (Skel_LoadModel). Each mesh knows
+ * its body part and sub-model: the first sub-model draws unless a custom
+ * skin's geomset picks another. */
 static bool load_studio(rmodel_t *mod)
 {
 	const studio_model_t *st = Studio_Cached(mod->name);
@@ -588,8 +597,8 @@ static bool load_studio(rmodel_t *mod)
 	if (!st)
 		return false;
 	for (int b = 0; b < st->numbodyparts; b++)
-		if (st->bodyparts[b].nummodels) {
-			const studio_submodel_t *sm = &st->bodyparts[b].models[0];
+		for (int s = 0; s < st->bodyparts[b].nummodels; s++) {
+			const studio_submodel_t *sm = &st->bodyparts[b].models[s];
 			for (int k = 0; k < sm->nummeshes; k++) {
 				maxverts += Studio_CountTris(st, &sm->meshes[k], sm->numverts, sm->numnorms) * 3;
 				nm++;
@@ -631,11 +640,9 @@ static bool load_studio(rmodel_t *mod)
 		}
 		Mem_Free(bytex);
 	}
-	for (int b = 0; b < st->numbodyparts; b++) {
-		const studio_submodel_t *sm;
-		if (!st->bodyparts[b].nummodels)
-			continue;
-		sm = &st->bodyparts[b].models[0];
+	for (int b = 0; b < st->numbodyparts; b++)
+	for (int s = 0; s < st->bodyparts[b].nummodels; s++) {
+		const studio_submodel_t *sm = &st->bodyparts[b].models[s];
 		for (int k = 0; k < sm->nummeshes; k++) {
 			const studio_mesh_t *me = &sm->meshes[k];
 			int slot = me->skinref, tex = st->skins && slot >= 0 && slot < st->numskinref ? st->skins[slot] : slot;
@@ -643,6 +650,10 @@ static bool load_studio(rmodel_t *mod)
 			const uint8_t *p = me->cmds;
 			iqmmesh_t *out = &q->meshes[q->nummeshes++];
 			out->skinref = slot;
+			/* single sub-model parts always draw */
+			out->geomgroup = st->bodyparts[b].nummodels > 1 ? b : -1;
+			out->geomvalue = s;
+			Str_Copy(out->name, t ? t->name : "", sizeof(out->name));
 			out->material = slot >= 0 && slot < q->numskinref ? q->famskins[slot] : R_FindMaterial("$default", MATF_MODEL);
 			out->firstindex = ni;
 			/* strips (n > 0) and fans (n < 0) of n vertices, until 0 */
@@ -1270,9 +1281,17 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
+			if (q->meshes[i].geomgroup >= 0 &&
+			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
+				continue; /* another sub-model of this body part */
 			if (!e->forceshader && q->famskins && e->skin > 0 && e->skin < q->numfamilies &&
 			    q->meshes[i].skinref >= 0 && q->meshes[i].skinref < q->numskinref)
 				mat = q->famskins[e->skin * q->numskinref + q->meshes[i].skinref]; /* a skin family */
+			if (!e->forceshader && e->customskin) {
+				material_t *r = R_SkinReplace(e->customskin, q->meshes[i].name);
+				if (r)
+					mat = r;
+			}
 			if (!q->meshes[i].numindexes || mat->nodraw)
 				continue;
 			bind_material(p, mat, e->alpha, translucentpass);

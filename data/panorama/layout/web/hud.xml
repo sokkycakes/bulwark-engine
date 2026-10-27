@@ -1,0 +1,71 @@
+<!--
+	Panorama port of Stiletto's data/web/hud/index.html: the in-game HUD the
+	client game creates as the gecko view "webcore_hud" and draws into its 4:3
+	HUD rectangle. The original paints a <canvas> every frame; here the same
+	pieces are panels, the game's images and labels, updated from hud.js.
+	It takes no input.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/hud.css" />
+	</styles>
+	<scripts>
+		<include src="file://{game}/data/web/hud/assets-data.js" />
+		<include src="file://{resources}/scripts/web/hud.js" />
+	</scripts>
+	<Panel id="Hud" class="hud hp-normal" hittest="false">
+		<Panel class="stage">
+			<Image id="Ring" class="ring" scaling="stretch" />
+			<Label id="Speed" class="speed" text="000" />
+
+			<Image class="time-plate" src="file://{game}/ui/time_indicator.png" scaling="stretch" />
+			<Label id="Timer" class="timer" text="00:00" />
+			<Label id="ScoreLeft" class="score score-left" text="0" />
+			<Label id="ScoreRight" class="score score-right" text="0" />
+			<Panel class="nameplate nameplate-left">
+				<Label id="NameLeft" class="name" text="P1" />
+			</Panel>
+			<Panel class="nameplate nameplate-right">
+				<Label id="NameRight" class="name" text="P2" />
+			</Panel>
+			<Image class="mini-pip mini-pip-0 ability-pip" scaling="stretch" />
+			<Image class="mini-pip mini-pip-1 ability-pip" scaling="stretch" />
+			<Image class="mini-pip mini-pip-2 ability-pip" scaling="stretch" />
+
+			<Panel id="HpBox" class="hp">
+				<Image class="hp-full" src="file://{game}/ui/hp_vector.png" scaling="stretch" />
+				<Image class="hp-low-img" src="file://{game}/data/web/hud/assets/hpLow.png" scaling="stretch" />
+				<Image class="hp-dead-img" src="file://{game}/ui/hp_dead_vector.png" scaling="stretch" />
+			</Panel>
+			<Label id="Clip" class="clip" text="0|" />
+			<Label id="Reserve" class="reserve" text="0" />
+			<Label id="Reload" class="reload" text="0.0" />
+			<Image id="Pip0" class="pip pip-0 ability-pip" scaling="stretch" />
+			<Image id="Pip1" class="pip pip-1 ability-pip" scaling="stretch" />
+			<Image id="Pip2" class="pip pip-2 ability-pip" scaling="stretch" />
+
+			<Panel id="Cooldown0" class="cooldown cooldown-0">
+				<Panel id="CdIcon0" class="cd-icon" />
+				<Panel class="cd-ring" />
+			</Panel>
+			<Panel id="Cooldown1" class="cooldown cooldown-1">
+				<Panel id="CdIcon1" class="cd-icon" />
+				<Panel class="cd-ring" />
+			</Panel>
+			<Panel id="Cooldown2" class="cooldown cooldown-2">
+				<Panel id="CdIcon2" class="cd-icon" />
+				<Panel class="cd-ring" />
+			</Panel>
+			<Label id="CdTime0" class="cd-time cd-time-0" text="" />
+			<Label id="CdTime1" class="cd-time cd-time-1" text="" />
+			<Label id="CdTime2" class="cd-time cd-time-2" text="" />
+		</Panel>
+
+		<Panel class="left">
+			<Image class="ex-plate" src="file://{game}/ui/ex_indicator.png" scaling="stretch" />
+			<Panel id="Gauge" class="gauge" />
+			<Label id="ExCount" class="ex-count" text="0" />
+			<Label class="ex-max" text="MAX" />
+		</Panel>
+	</Panel>
+</root>

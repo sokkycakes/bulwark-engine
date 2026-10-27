@@ -38,6 +38,8 @@ void R_PointParticles(int index, const float *org, const float *dir, float count
 typedef bool (*r_pichook_t)(const char *name, float x, float y, float w, float h, const float *rgb, float alpha,
                             float *size);
 void R_SetPicHook(r_pichook_t fn);
+extern const qc_builtin_t r_skin_builtins[];   /* r_skin.c: custom skins, remapshader, r_readimage */
+extern const qc_builtin_t r_qclight_builtins[]; /* r_rtlights.c: dynamiclight_* */
 
 /* a client game entity drawn every frame from now on (makestatic) */
 void R_MakeStatic(struct qcvm_s *vm, int e);

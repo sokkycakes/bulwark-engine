@@ -245,7 +245,12 @@ void R_LoadRTLights(void)
 	reload(r_shadow_realtime_world_import->ivalue ? "bsp" : "");
 }
 
-void R_ClearRTLights(void) { clear_lights(); }
+static void clear_qclights(void);
+void R_ClearRTLights(void)
+{
+	clear_lights();
+	clear_qclights();
+}
 
 /* --- the scene ---------------------------------------------------------------------------- */
 
@@ -779,3 +784,152 @@ void R_InitRTLights(void)
 	Cmd_AddD("r_editlights_save", Save_f, "Saves rtlights to maps/FOO.rtlights");
 	Cmd_AddD("r_editlights_reload", Reload_f, "Reload static rtlights. Argument can be rtlights|statics|bsp|none to override the source.");
 }
+
+/* --- the game's own lights (dynamiclight_spawnstatic) -------------------------------------
+ * Lights the client game makes and changes as it likes (Nuclide's
+ * light_dynamic, point_spotlight, beams). They light the scene like
+ * dynamic lights, with their style, until the map changes. Fields are
+ * fteextensions.qc's LFIELD_* numbers; the ones the renderer has no use for
+ * yet (cubemaps, cones, specular) are kept so dynamiclight_get returns them. */
+
+#define MAX_QCLIGHTS 256
+
+enum {
+	LF_ORIGIN, LF_COLOUR, LF_RADIUS, LF_FLAGS, LF_STYLE, LF_ANGLES, LF_FOV, LF_CORONA, LF_CORONASCALE,
+	LF_CUBEMAPNAME, LF_AMBIENTSCALE, LF_DIFFUSESCALE, LF_SPECULARSCALE, LF_ROTATION, LF_DIETIME, LF_RGBDECAY,
+	LF_RADIUSDECAY, LF_STYLESTRING, LF_NEARCLIP, LF_OWNER
+};
+
+typedef struct {
+	bool used;
+	float origin[3], color[3], angles[3], rotation[3], rgbdecay[3];
+	float radius, fov, corona, coronascale, ambient, diffuse, specular, dietime, radiusdecay, nearclip;
+	int flags, style, owner;
+	char cubemap[64], stylestring[64];
+} qclight_t;
+
+static qclight_t qclights[MAX_QCLIGHTS];
+
+static void clear_qclights(void) { memset(qclights, 0, sizeof(qclights)); }
+
+static float qclight_style(const qclight_t *l)
+{
+	const char *s = l->stylestring[0] ? l->stylestring : NULL;
+	size_t n;
+	if (!s)
+		return style_value(l->style);
+	n = strlen(s);
+	return (float)(s[(size_t)(cl.time * 10) % n] - 'a') / ('m' - 'a');
+}
+
+void R_AddQCLights(void)
+{
+	for (int i = 0; i < MAX_QCLIGHTS && r_scene.numdlights < R_MAX_DLIGHTS; i++) {
+		qclight_t *l = &qclights[i];
+		float c[3], v;
+		if (!l->used || l->radius <= 0)
+			continue;
+		if (l->dietime > 0 && cl.time >= l->dietime) {
+			l->used = false;
+			continue;
+		}
+		v = qclight_style(l) * (l->diffuse > 0 ? l->diffuse : 1);
+		for (int k = 0; k < 3; k++)
+			c[k] = l->color[k] * v;
+		R_AddDynamicLight(l->origin, l->radius, c);
+	}
+}
+
+static void bi_dynamiclight_spawnstatic(qcvm_t *vm)
+{
+	for (int i = 0; i < MAX_QCLIGHTS; i++) {
+		qclight_t *l = &qclights[i];
+		if (l->used)
+			continue;
+		memset(l, 0, sizeof(*l));
+		l->used = true;
+		VectorCopy(QC_PVEC(vm, 0), l->origin);
+		l->radius = QC_PFLOAT(vm, 1);
+		VectorCopy(QC_PVEC(vm, 2), l->color);
+		l->diffuse = 1;
+		l->coronascale = 1;
+		QC_ReturnFloat(vm, (float)i);
+		return;
+	}
+	QC_ReturnFloat(vm, -1);
+}
+
+static qclight_t *qclight_arg(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	return i >= 0 && i < MAX_QCLIGHTS && qclights[i].used ? &qclights[i] : NULL;
+}
+
+static void bi_dynamiclight_set(qcvm_t *vm)
+{
+	qclight_t *l = qclight_arg(vm);
+	const float *v = QC_PVEC(vm, 2);
+	float f = v[0];
+	if (!l)
+		return;
+	switch ((int)QC_PFLOAT(vm, 1)) {
+	case LF_ORIGIN: VectorCopy(v, l->origin); break;
+	case LF_COLOUR: VectorCopy(v, l->color); break;
+	case LF_RADIUS: l->radius = f; break;
+	case LF_FLAGS: l->flags = (int)f; break;
+	case LF_STYLE: l->style = (int)f; break;
+	case LF_ANGLES: VectorCopy(v, l->angles); break;
+	case LF_FOV: l->fov = f; break;
+	case LF_CORONA: l->corona = f; break;
+	case LF_CORONASCALE: l->coronascale = f; break;
+	case LF_CUBEMAPNAME: Str_Copy(l->cubemap, QC_PSTR(vm, 2), sizeof(l->cubemap)); break;
+	case LF_AMBIENTSCALE: l->ambient = f; break;
+	case LF_DIFFUSESCALE: l->diffuse = f; break;
+	case LF_SPECULARSCALE: l->specular = f; break;
+	case LF_ROTATION: VectorCopy(v, l->rotation); break;
+	case LF_DIETIME: l->dietime = f; break;
+	case LF_RGBDECAY: VectorCopy(v, l->rgbdecay); break;
+	case LF_RADIUSDECAY: l->radiusdecay = f; break;
+	case LF_STYLESTRING: Str_Copy(l->stylestring, QC_PSTR(vm, 2), sizeof(l->stylestring)); break;
+	case LF_NEARCLIP: l->nearclip = f; break;
+	case LF_OWNER: l->owner = QC_PINT(vm, 2); break;
+	default: break;
+	}
+}
+
+static void bi_dynamiclight_get(qcvm_t *vm)
+{
+	qclight_t *l = qclight_arg(vm);
+	float zero[3] = {0, 0, 0};
+	if (!l) {
+		QC_ReturnVector(vm, zero);
+		return;
+	}
+	switch ((int)QC_PFLOAT(vm, 1)) {
+	case LF_ORIGIN: QC_ReturnVector(vm, l->origin); break;
+	case LF_COLOUR: QC_ReturnVector(vm, l->color); break;
+	case LF_RADIUS: QC_ReturnFloat(vm, l->radius); break;
+	case LF_FLAGS: QC_ReturnFloat(vm, (float)l->flags); break;
+	case LF_STYLE: QC_ReturnFloat(vm, (float)l->style); break;
+	case LF_ANGLES: QC_ReturnVector(vm, l->angles); break;
+	case LF_FOV: QC_ReturnFloat(vm, l->fov); break;
+	case LF_CORONA: QC_ReturnFloat(vm, l->corona); break;
+	case LF_CORONASCALE: QC_ReturnFloat(vm, l->coronascale); break;
+	case LF_CUBEMAPNAME: QC_ReturnString(vm, l->cubemap); break;
+	case LF_AMBIENTSCALE: QC_ReturnFloat(vm, l->ambient); break;
+	case LF_DIFFUSESCALE: QC_ReturnFloat(vm, l->diffuse); break;
+	case LF_SPECULARSCALE: QC_ReturnFloat(vm, l->specular); break;
+	case LF_ROTATION: QC_ReturnVector(vm, l->rotation); break;
+	case LF_DIETIME: QC_ReturnFloat(vm, l->dietime); break;
+	case LF_RGBDECAY: QC_ReturnVector(vm, l->rgbdecay); break;
+	case LF_RADIUSDECAY: QC_ReturnFloat(vm, l->radiusdecay); break;
+	case LF_STYLESTRING: QC_ReturnString(vm, l->stylestring); break;
+	case LF_NEARCLIP: QC_ReturnFloat(vm, l->nearclip); break;
+	case LF_OWNER: QC_ReturnInt(vm, l->owner); break;
+	default: QC_ReturnVector(vm, zero); break;
+	}
+}
+
+const qc_builtin_t r_qclight_builtins[] = {
+	{"dynamiclight_spawnstatic", bi_dynamiclight_spawnstatic}, {"dynamiclight_set", bi_dynamiclight_set},
+	{"dynamiclight_get", bi_dynamiclight_get}, {NULL, NULL}};

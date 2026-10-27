@@ -233,6 +233,7 @@ add_library(bwclient STATIC
 	src/render/r_part.c
 	src/render/r_tools.c
 	src/render/r_rtlights.c
+	src/render/r_skin.c
 	src/render/r_viewer.c
 	src/render/r_hud.c
 	src/render/r_draw.c

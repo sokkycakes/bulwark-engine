@@ -73,6 +73,8 @@ void R_ClearMap(void)
 	R_FreeModels();
 	R_ClearRTLights();
 	R_ClearStatics();
+	R_ClearSkins();
+	R_ClearRemaps();
 	for (int i = 0; i < cl.nummodels; i++)
 		cl.models[i].render = NULL;
 }
@@ -1157,13 +1159,11 @@ const qc_builtin_t r_builtins[] = {
 	{"getsurfacenumtriangles", r_getsurfacenumtriangles}, {"getsurfacetriangle", r_getsurfacetriangle},
 	{"getsurfaceclippedpoint", r_getsurfaceclippedpoint},
 	/* not done yet: accepted so games carry on */
-	{"remapshader", r_nop}, {"setcustomskin", r_nop}, {"loadcustomskin", r_zero},
-	{"applycustomskin", r_nop}, {"releasecustomskin", r_nop}, {"dynamiclight_get", r_zero},
-	{"dynamiclight_set", r_nop}, {"dynamiclight_spawnstatic", r_zero}, {"boxparticles", r_nop},
+	{"boxparticles", r_nop},
 
 	{"skinforname", r_zero}, {"cin_open", r_zero}, {"cin_close", r_nop}, {"cin_setstate", r_nop},
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
-	{"r_uploadimage", r_uploadimage}, {"r_readimage", r_zero},
+	{"r_uploadimage", r_uploadimage},
 	{NULL, NULL}};
 
 uint8_t *R_DecodeImageFile(const uint8_t *data, size_t len, int *w, int *h) { return R_DecodeImage(data, len, w, h); }
