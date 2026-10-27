@@ -89,38 +89,39 @@ int gdifont_gasp_gray(const unsigned char *gasp, size_t len, int ppem)
 
 int gdifont_select_size(const gdifont_sizeinfo_t *si, int tall, int *ascent, int *descent)
 {
-	int cap = 1 << 30, p, i, wsum = si->win_ascent + si->win_descent;
+	int p, i, wsum = si->win_ascent + si->win_descent;
 
-	/* §3 rule 2: with a usable VDMX group, take the entries whose
-	   yMax - yMin fits, keep the largest such height and the smallest ppem
-	   that has it */
-	if (si->vdmx_count > 0) {
-		int best = -1, bh = -1, first = 1 << 30;
-		for (i = 0; i < si->vdmx_count; i++) {
-			int h = si->vdmx_ymax[i] - si->vdmx_ymin[i];
-			if (si->vdmx_ppem[i] < first)
-				first = si->vdmx_ppem[i];
-			if (h > tall)
-				continue;
-			if (h > bh || (h == bh && si->vdmx_ppem[i] < si->vdmx_ppem[best])) {
-				bh = h;
-				best = i;
-			}
-		}
-		if (best >= 0) {
-			*ascent = si->vdmx_ymax[best];
-			*descent = -si->vdmx_ymin[best];
-			return si->vdmx_ppem[best];
-		}
-		/* rule 3: nothing fits, so stay below the table's first size */
-		cap = first - 1;
-	}
-
-	/* §3 rule 3: largest ppem whose scaled win height fits */
+	/* §3: start from the largest ppem whose scaled win height fits */
 	p = 1;
 	if (wsum > 0 && si->units_per_em > 0)
-		while (p + 1 <= cap && rnd_div((long)(p + 1) * wsum, si->units_per_em) <= tall)
+		while (rnd_div((long)(p + 1) * wsum, si->units_per_em) <= tall)
 			p++;
+
+	/* With a usable VDMX group, step down from there until the entry's
+	   yMax - yMin fits; that entry gives the ascent and descent, and the
+	   cell can come out shorter than tall. Below the table's first size
+	   the win metrics apply again. (Fitted to run 40463306407: this also
+	   explains the 11 configs the "smallest ppem with the largest fitting
+	   height" rule missed.) */
+	if (si->vdmx_count > 0) {
+		int first = 1 << 30, last = -1;
+		for (i = 0; i < si->vdmx_count; i++) {
+			if (si->vdmx_ppem[i] < first) first = si->vdmx_ppem[i];
+			if (si->vdmx_ppem[i] > last) last = si->vdmx_ppem[i];
+		}
+		if (p <= last) {
+			for (; p >= first; p--)
+				for (i = 0; i < si->vdmx_count; i++)
+					if (si->vdmx_ppem[i] == p && si->vdmx_ymax[i] - si->vdmx_ymin[i] <= tall) {
+						*ascent = si->vdmx_ymax[i];
+						*descent = -si->vdmx_ymin[i];
+						return p;
+					}
+			if (p < 1)
+				p = 1;
+		}
+	}
+
 	*ascent = wsum > 0 ? rnd_div((long)si->win_ascent * tall, wsum) : tall;
 	*descent = tall - *ascent;
 	return p;
@@ -233,7 +234,20 @@ static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const cha
 		f->tm.external_leading = el > 0 ? rnd_div(el * ppem, upem) : 0;
 	}
 	f->tm.ave_char_width = rnd_div((long)os2->xAvgCharWidth * ppem, upem);
-	f->tm.max_char_width = (int)(f->face->size->metrics.max_advance >> 6);
+	{
+		/* tmMaxCharWidth: the largest hinted advance over every glyph.
+		   The scaled hhea advanceWidthMax came out too small in every
+		   config of run 40463306407. [F, under test] */
+		FT_Long gi;
+		int maxadv = (int)(f->face->size->metrics.max_advance >> 6);
+		for (gi = 0; gi < f->face->num_glyphs; gi++)
+			if (!FT_Load_Glyph(f->face, (FT_UInt)gi, FT_LOAD_TARGET_MONO)) {
+				int a = (int)((f->face->glyph->advance.x + 32) >> 6);
+				if (a > maxadv)
+					maxadv = a;
+			}
+		f->tm.max_char_width = maxadv;
+	}
 	f->tm.weight = weight;
 	f->tm.overhang = 0;
 
@@ -374,15 +388,31 @@ int gdifont_abc(gdifont_t *f, unsigned cp, gdifont_abc_t *out)
 	return 1;
 }
 
+/* An empty glyph (space): GDI returns no data, a 1x1 black box and a zero
+   origin (run 40463306407, section 8 of diagnose.py) */
+static void empty_glyph(gdifont_glyph_t *out, int incx)
+{
+	memset(out, 0, sizeof(*out));
+	out->bbx = out->bby = 1;
+	out->incx = incx;
+}
+
 int gdifont_glyph_mono(gdifont_t *f, unsigned cp, gdifont_glyph_t *out)
 {
 	FT_GlyphSlot s = render(f, cp, 1);
-	int x, y, w, h;
+	int x, y, w, h, ink = 0;
 	memset(out, 0, sizeof(*out));
 	if (!s)
 		return 0;
 	w = (int)s->bitmap.width;
 	h = (int)s->bitmap.rows;
+	for (y = 0; y < h && !ink; y++)
+		for (x = 0; x < w && !ink; x++)
+			ink = slot_pixel(&s->bitmap, x, y);
+	if (!ink) {
+		empty_glyph(out, advance_px(s));
+		return 1;
+	}
 	out->bbx = w;
 	out->bby = h;
 	out->ox = s->bitmap_left;
@@ -390,44 +420,47 @@ int gdifont_glyph_mono(gdifont_t *f, unsigned cp, gdifont_glyph_t *out)
 	out->incx = advance_px(s);
 	out->pitch = ((w + 31) / 32) * 4;   /* §4.2: DWORD-aligned rows */
 	out->size = out->pitch * h;
-	if (out->size) {
-		out->data = calloc(1, out->size);
-		if (!out->data)
-			return 0;
-		for (y = 0; y < h; y++)
-			for (x = 0; x < w; x++)
-				if (slot_pixel(&s->bitmap, x, y))
-					out->data[y * out->pitch + (x >> 3)] |= 0x80 >> (x & 7);
-	}
+	out->data = calloc(1, out->size);
+	if (!out->data)
+		return 0;
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++)
+			if (slot_pixel(&s->bitmap, x, y))
+				out->data[y * out->pitch + (x >> 3)] |= 0x80 >> (x & 7);
 	return 1;
 }
 
 int gdifont_glyph_gray8(gdifont_t *f, unsigned cp, gdifont_glyph_t *out)
 {
 	FT_GlyphSlot s = render(f, cp, 0);
-	int x, y, w, h;
+	int x, y, w, h, ink = 0;
 	memset(out, 0, sizeof(*out));
 	if (!s)
 		return 0;
 	w = (int)s->bitmap.width;
 	h = (int)s->bitmap.rows;
+	for (y = 0; y < h && !ink; y++)
+		for (x = 0; x < w && !ink; x++)
+			ink = slot_pixel(&s->bitmap, x, y);
+	if (!ink) {
+		empty_glyph(out, advance_px(s));
+		return 1;
+	}
 	out->bbx = w;
 	out->bby = h;
 	out->ox = s->bitmap_left;
 	out->oy = s->bitmap_top;
 	out->incx = advance_px(s);
-	out->pitch = (w + 3) & ~3;
+	out->pitch = (w + 3) & ~3;          /* §4.3: DWORD-aligned rows */
 	out->size = out->pitch * h;
-	if (out->size) {
-		out->data = calloc(1, out->size);
-		if (!out->data)
-			return 0;
-		/* §4.3: 0..64 levels. The exact GDI mapping is open; this is the
-		   FreeType coverage scaled with rounding. */
-		for (y = 0; y < h; y++)
-			for (x = 0; x < w; x++)
-				out->data[y * out->pitch + x] = (unsigned char)((slot_pixel(&s->bitmap, x, y) * 64 + 127) / 255);
-	}
+	out->data = calloc(1, out->size);
+	if (!out->data)
+		return 0;
+	/* §4.3: 0..64 levels. The exact GDI mapping is open [U]; this is
+	   FreeType's area coverage scaled with rounding, as in the spec. */
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++)
+			out->data[y * out->pitch + x] = (unsigned char)((slot_pixel(&s->bitmap, x, y) * 64 + 127) / 255);
 	return 1;
 }
 
@@ -462,24 +495,31 @@ int gdifont_text_out(gdifont_t *f, int x, int y, const unsigned *cps, int n,
 {
 	int i, pen = x, baseline = y + f->tm.ascent;
 	for (i = 0; i < n; i++) {
-		/* §4.4: quality 0 is always 1-bit; quality 1 follows gasp */
-		FT_GlyphSlot s;
 		gdifont_abc_t abc;
-		int gx, gy, w, h;
+		int gx, gy;
 		if (!gdifont_abc(f, cps[i], &abc))
 			continue;
-		s = render(f, cps[i], !f->gray_text);
-		if (!s)
-			continue;
-		w = (int)s->bitmap.width;
-		h = (int)s->bitmap.rows;
-		for (gy = 0; gy < h; gy++)
-			for (gx = 0; gx < w; gx++) {
-				int v = slot_pixel(&s->bitmap, gx, gy);
-				if (f->gray_text)
-					v = ((v * 16 + 127) / 255) * 255 / 16; /* 17 levels, §4.4 [U] */
-				put_px(dst, dstw, dsth, dstpitch, pen + s->bitmap_left + gx, baseline - s->bitmap_top + gy, v);
-			}
+		if (f->gray_text) {
+			/* §4.4: greyscale where gasp allows it at quality 1. The level
+			   ramp is open [U]; 17 evenly spaced levels as in the spec. */
+			FT_GlyphSlot s = render(f, cps[i], 0);
+			if (s)
+				for (gy = 0; gy < (int)s->bitmap.rows; gy++)
+					for (gx = 0; gx < (int)s->bitmap.width; gx++) {
+						int v = slot_pixel(&s->bitmap, gx, gy);
+						put_px(dst, dstw, dsth, dstpitch, pen + s->bitmap_left + gx, baseline - s->bitmap_top + gy,
+							((v * 16 + 127) / 255) * 255 / 16);
+					}
+		} else {
+			/* 1-bit: identical to GGO_BITMAP on Windows in 99.2-100% of
+			   glyphs (run 40463306407, diagnose.py section 1) */
+			FT_GlyphSlot s = render(f, cps[i], 1);
+			if (s)
+				for (gy = 0; gy < (int)s->bitmap.rows; gy++)
+					for (gx = 0; gx < (int)s->bitmap.width; gx++)
+						put_px(dst, dstw, dsth, dstpitch, pen + s->bitmap_left + gx, baseline - s->bitmap_top + gy,
+							slot_pixel(&s->bitmap, gx, gy));
+		}
 		pen += abc.a + abc.b + abc.c;
 	}
 	if (f->flags & (GDIFONT_UNDERLINE | GDIFONT_STRIKEOUT)) {
