@@ -28,7 +28,7 @@
 #define mkdir_p(p) mkdir(p, 0777)
 #endif
 
-static const char *g_faces[] = { "Tahoma", "Verdana", "Arial", "Courier New", "Trebuchet MS", "Times New Roman" };
+static const char *g_faces[] = { "Tahoma", "Verdana", "Arial", "Courier New", "Trebuchet MS", "Times New Roman", "Calibri" };
 static const int g_weights[] = { 400, 700 };
 static gdifont_tuning_t g_tune;
 static const char b64tab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

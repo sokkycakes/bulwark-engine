@@ -51,7 +51,7 @@ static void put_table_size(FILE *f, HDC dc, const char *tag)
 	fprintf(f, "\"%s\":%ld", tag, n == GDI_ERROR ? -1L : (long)n);
 }
 
-static const char *g_faces[] = { "Tahoma", "Verdana", "Arial", "Courier New", "Trebuchet MS", "Times New Roman" };
+static const char *g_faces[] = { "Tahoma", "Verdana", "Arial", "Courier New", "Trebuchet MS", "Times New Roman", "Calibri" };
 static const int g_weights[] = { 400, 700 };
 
 static void codepoints(int *out, int *count)
