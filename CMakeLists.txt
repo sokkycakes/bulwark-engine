@@ -124,6 +124,7 @@ add_library(bwclient STATIC
 	src/render/r_viewer.c
 	src/render/r_hud.c
 	src/render/r_draw.c
+	src/render/r_gdifont.c
 	src/render/r_model.c
 	src/render/r_scene.c
 	src/sound/snd_main.c
@@ -154,11 +155,14 @@ add_executable(srcconv tools/srcconv.c)
 target_link_libraries(srcconv ${CMAKE_DL_LIBS})
 
 # GDI-compatible TrueType rasterizer (docs/spec/gdi-text.md). Optional: only
-# built when FreeType is installed. Not used by the renderer.
+# built when FreeType is installed. With it, the renderer draws TrueType
+# fonts through it (src/render/r_gdifont.c); without it, stb_truetype as before.
 find_package(Freetype QUIET)
 if(FREETYPE_FOUND)
 	add_library(bwgdifont STATIC src/client/gdifont.c)
 	target_link_libraries(bwgdifont PUBLIC Freetype::Freetype)
+	target_link_libraries(bwclient PUBLIC bwgdifont)
+	target_compile_definitions(bwclient PRIVATE BW_HAVE_GDIFONT)
 	add_executable(gdidump tools/gdidump/gdidump.c)
 	target_link_libraries(gdidump bwgdifont)
 	add_executable(gdifonttest tests/gdifont/gdifonttest.c)
