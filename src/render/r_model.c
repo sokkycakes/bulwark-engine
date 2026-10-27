@@ -1358,6 +1358,11 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 	if (m->type == MOD_BRUSH) {
 		bool trans = e->alpha < 1 || (e->renderflags & 8);
+		/* an entity wearing the map itself (modelindex 1): the scene draws the
+		 * world once; drawing it again here would also redo its visibility
+		 * with this entity's transform */
+		if (m == &r_world.submodels[0])
+			return;
 		if (trans == translucentpass || translucentpass)
 			R_DrawWorldModel(m, mvp, model, e->alpha, translucentpass);
 		return;
