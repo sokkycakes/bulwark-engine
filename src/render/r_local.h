@@ -384,6 +384,26 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot);
 int R_FindFont(const char *name);
 void R_SetDrawFont(int slot);
 void R_ShutdownDraw(void);
+
+/* --- GDI-compatible TrueType text (r_gdifont.c) --------------------------- */
+
+typedef struct rgfont_s rgfont_t;
+typedef struct rgsize_s rgsize_t;
+typedef struct {
+	int x, y, w, h; /* atlas rectangle of the glyph's ink */
+	int left, top;  /* ink offset from the pen and the cell top, in pixels */
+	int adv;        /* advance in pixels (A+B+C) */
+} rgglyph_t;
+
+void RG_Init(void);
+rgfont_t *RG_Load(const char *spec);
+void RG_Free(rgfont_t *f);
+rgsize_t *RG_Size(rgfont_t *f, int tall);
+int RG_Ascent(const rgsize_t *s);
+image_t *RG_Atlas(const rgsize_t *s);
+const rgglyph_t *RG_Glyph(rgsize_t *s, int cp);
+void RG_Upload(rgsize_t *s);
+int RG_AtlasSize(void);
 extern int r_vwidth, r_vheight; /* virtual 2D screen size */
 extern int r_pwidth, r_pheight; /* physical framebuffer size */
 extern float r_2dscale;

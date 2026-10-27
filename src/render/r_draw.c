@@ -227,6 +227,7 @@ typedef struct {
 	bool used;
 	char name[128];
 	uint8_t *ttf; /* NULL: the built-in bitmap font */
+	rgfont_t *gdi; /* a TrueType face drawn the GDI way (r_gdifont.c), or NULL */
 	stbtt_fontinfo info;
 	int requested[MAX_FONT_SIZES];
 	int numrequested;
@@ -340,10 +341,14 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 		return 0;
 	f = &fonts[slot];
 	Mem_Free(f->ttf);
+	RG_Free(f->gdi);
 	memset(f, 0, sizeof(*f));
 	f->used = true;
 	Str_Copy(f->name, path, sizeof(f->name));
-	if (!load_ttf(f, path))
+	/* a TrueType face (a bare name such as "Verdana", or a file with glyf
+	   outlines) goes to gdifont; anything else takes the old path unchanged */
+	f->gdi = RG_Load(path);
+	if (!f->gdi && !load_ttf(f, path))
 		Con_DPrintf("font %s: no TrueType file, using the built-in font\n", path);
 	(void)name;
 	(void)sizes;
@@ -447,10 +452,76 @@ static float char_advance(font_t *f, fontsize_t *fs, int c, float sx, float sy)
 	return sx;
 }
 
+/* Text in a gdifont face: glyphs exactly as ExtTextOut draws them, placed on
+   whole framebuffer pixels and advanced by whole-pixel ABC widths (no
+   kerning, as ExtTextOut applies none). The cell height is sy in framebuffer
+   pixels; sx does not stretch the text. */
+static float draw_text_gdi(font_t *f, float x, float y, const char *text, float sx, float sy, const float *rgb,
+                           float alpha, int flags, bool usemarkup, bool measure)
+{
+	float kx = r_vwidth > 0 ? r_pwidth / (float)r_vwidth : r_2dscale;
+	float ky = r_vheight > 0 ? r_pheight / (float)r_vheight : r_2dscale;
+	rgsize_t *s = RG_Size(f->gdi, (int)(sy * ky + 0.5f));
+	float color[4] = {rgb[0], rgb[1], rgb[2], alpha};
+	float atlas = (float)RG_AtlasSize();
+	int startpx = (int)lroundf(x * kx), px = startpx, maxpx = px, top = (int)lroundf(y * ky);
+	const char *p = text;
+	bool draw = !measure && in2d;
+	(void)sx;
+	if (!s)
+		return 0;
+	if (draw) {
+		/* make every glyph first, so the atlas is uploaded once */
+		const char *q = text;
+		float scratch[4];
+		while (*q) {
+			if (usemarkup && q[0] == '^' && q[1] == '^')
+				q++;
+			else if (usemarkup && markup(&q, scratch, rgb))
+				continue;
+			if (*q == '\n') {
+				q++;
+				continue;
+			}
+			RG_Glyph(s, utf8_next(&q));
+		}
+		RG_Upload(s);
+		set_state(RG_Atlas(s)->tex, flag_blend(flags, BLEND_ALPHA), 0, 0, NULL, 0);
+	}
+	while (*p) {
+		const rgglyph_t *g;
+		if (usemarkup && p[0] == '^' && p[1] == '^') {
+			p++;
+		} else if (usemarkup && markup(&p, color, rgb)) {
+			continue;
+		}
+		if (*p == '\n') {
+			p++;
+			maxpx = BW_MAX(maxpx, px);
+			px = startpx;
+			y += sy;
+			top = (int)lroundf(y * ky);
+			continue;
+		}
+		g = RG_Glyph(s, utf8_next(&p));
+		if (!g)
+			continue;
+		if (draw && g->w > 0) {
+			set_state(RG_Atlas(s)->tex, cur_blend, cur_src, cur_dst, NULL, 0);
+			quad((px + g->left) / kx, (top + g->top) / ky, g->w / kx, g->h / ky, g->x / atlas, g->y / atlas,
+			     (g->x + g->w) / atlas, (g->y + g->h) / atlas, color);
+		}
+		px += g->adv;
+	}
+	return (BW_MAX(maxpx, px) - startpx) / kx;
+}
+
 static float draw_text(float x, float y, const char *text, float sx, float sy, const float *rgb, float alpha,
                        int flags, bool usemarkup, bool measure)
 {
 	font_t *f = &fonts[r_drawfont];
+	if (f->gdi && sy > 0)
+		return draw_text_gdi(f, x, y, text, sx, sy, rgb, alpha, flags, usemarkup, measure);
 	fontsize_t *fs = sy > 0 ? font_size(f, sy) : NULL;
 	float color[4] = {rgb[0], rgb[1], rgb[2], alpha};
 	float startx = x, maxx = x;
@@ -611,6 +682,7 @@ void R_InitDraw(void)
 	scr_conheight = Cvar_Get("scr_conheight", "0.5", CVAR_ARCHIVE, "Console height, as a fraction of the screen");
 	scr_conalpha = Cvar_Get("scr_conalpha", "0.85", CVAR_ARCHIVE, "Console background opacity");
 	con_textsize = Cvar_Get("con_textsize", "8", CVAR_ARCHIVE, "Console text height in virtual pixels");
+	RG_Init();
 	fonts[0].used = true;
 	Str_Copy(fonts[0].name, "$builtin", sizeof(fonts[0].name));
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(indices) / 6; i++) {
@@ -628,6 +700,7 @@ void R_ShutdownDraw(void)
 {
 	for (int i = 0; i < MAX_FONTS; i++) {
 		Mem_Free(fonts[i].ttf);
+		RG_Free(fonts[i].gdi);
 		memset(&fonts[i], 0, sizeof(fonts[i]));
 	}
 	bitmapfont = NULL;
@@ -725,7 +798,7 @@ bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *nu
 		return false;
 	f = &fonts[slot];
 	*name = f->name;
-	*truetype = f->ttf != NULL;
+	*truetype = f->ttf != NULL || f->gdi != NULL;
 	*numsizes = f->numsizes;
 	for (int i = 0; i < f->numsizes; i++)
 		sizes[i] = f->sizes[i].pixelsize;

@@ -2,8 +2,135 @@
 
 `src/client/gdifont.c` reproduces what Windows GDI returns for TrueType
 fonts (TEXTMETRIC, ABC widths, `GetGlyphOutline` bitmaps and
-`ExtTextOutW` output) using FreeType on every platform. It is
-self-contained and not used by the renderer.
+`ExtTextOutW` output) using FreeType on every platform. The renderer
+draws TrueType fonts through it (see [In the renderer](#in-the-renderer)).
+
+## In the renderer
+
+`src/render/r_gdifont.c` connects gdifont to the 2D text path in
+`r_draw.c`. `loadfont` from QC, `con_font` and anything else that ends in
+`R_LoadFont` go through it. It is compiled in when CMake finds FreeType
+(`BW_HAVE_GDIFONT`). Without FreeType everything uses stb_truetype as before.
+
+### Which fonts it takes
+
+`R_LoadFont(path)` tries gdifont first, then the old path.
+
+1. **A file in the game.** `path`, `path.ttf`, `path.otf` and `path.ttc`
+   are tried through the virtual filesystem. If a file is found:
+   - gdifont takes it when it has TrueType outlines (a `glyf` table).
+   - CFF-flavoured OpenType (`.otf` with a `CFF ` table, such as Nuclide's
+     IBM Plex fonts) is left to stb_truetype exactly as before. gdifont
+     reproduces the TrueType rasterizer, and GDI draws CFF fonts through
+     a different one that was never measured.
+2. **A bare face name** such as `Verdana`, meaning one with no `/`, `\` or
+   `.`. This is looked up in a face index, described below.
+3. **Neither.** When nothing is found, or gdifont rejects the file, the old
+   code runs unchanged: the stb_truetype file lookup, then the built-in
+   bitmap font. The fallback was checked against the engine before this
+   change: a Nuclide frame with `chat.font` = Verdana and no Verdana
+   installed is identical to the pixel.
+
+### Name resolution
+
+The face index is built once, on the first bare-name lookup. Every font
+file found is opened with FreeType, and only face 0 of a `.ttc` is used.
+It records the family name, `usWeightClass`, italic (fsSelection bit 0)
+and whether the face has TrueType outlines. Only TrueType-outline faces
+are kept.
+
+- **Family name:** name ID 1, preferring the Windows Unicode entry in
+  English (US), then the Mac Roman one, then FreeType's family name.
+- **Where it looks, in this order:**
+  1. The game's `fonts/` folder (`FS_List("fonts/*")`, so pk3s and
+     mods count).
+  2. On Windows, `%WINDIR%\Fonts`, then
+     `%LOCALAPPDATA%\Microsoft\Windows\Fonts` (per-user installs).
+  3. Elsewhere:
+     - `$XDG_DATA_HOME/fonts`, `~/.local/share/fonts`, `~/.fonts`
+     - `~/Library/Fonts`
+     - `/usr/local/share/fonts`, `/usr/share/fonts`
+     - `/Library/Fonts`, `/System/Library/Fonts`
+
+     Each is searched recursively, at most 5 levels deep.
+- **Matching:** the family name matches case-insensitively. Upright beats
+  italic, then the closest `usWeightClass` to the requested weight wins.
+  The default weight is 400, and 600 or more picks the bold file.
+  - The weight is asked for with a suffix: `Verdana?bold` or
+    `Verdana?weight=700`.
+  - On ties, the earlier place in the search order wins, so a font in
+    the game overrides the system's.
+- **Bundling:** no Microsoft fonts are bundled. `fonts/chat.font` in
+  Nuclide says `path Verdana`, so Windows players get the real Verdana and
+  everyone else gets the old fallback, unless they have a Verdana installed
+  or put one in the game's `fonts/`.
+- **Spaces in family names:** Nuclide's `.font` parser splits on spaces, so
+  a family name with spaces must be quoted there, for example
+  `path "DejaVu Sans"`.
+
+### Drawing
+
+- **Cell height.** `tall` is the requested text height in framebuffer
+  pixels: `size × (framebuffer height / virtual height)`, rounded. It is
+  the CreateFont height of §3, so a 16 px font at a 2D scale of 1 is
+  `CreateFont(-16 … )`, not 16 ppem.
+- **Quality.**
+  - `ANTIALIASED_QUALITY` by default, so the font's `gasp` table
+    decides per size. Verdana at 16 is 1-bit on Windows and here.
+  - `r_gdifont_aa 0` forces `NONANTIALIASED_QUALITY` (always 1-bit).
+  - `r_gdifont 0` turns gdifont off for fonts loaded afterwards, which
+    gives the stb_truetype behaviour for TrueType files and the
+    built-in font for bare names.
+- **Glyph atlas.**
+  - Each glyph is drawn alone with `gdifont_text_out`, the
+    ExtTextOut path of §4.4, so it is whatever ExtTextOut would draw,
+    greyscale levels included.
+  - It is cropped to its ink and packed into a 512×512 atlas per
+    (height, quality). Up to 8 sizes are kept per font.
+  - The atlas is sampled nearest (`IMG_NEAREST`, no mipmaps), with white
+    RGB and coverage in alpha.
+  - Glyphs are added on first use, and the atlas is uploaded again before
+    the string that needed them is drawn.
+- **Placement.**
+  - The pen starts at the string origin rounded to a whole framebuffer
+    pixel, and every glyph is placed at a whole-pixel offset from it.
+    Texels and pixels therefore line up one to one.
+  - The pen advances by A+B+C (§5) in whole pixels. No kerning is
+    applied, as ExtTextOut applies none by default.
+  - The string's `sx` (horizontal stretch) is ignored on this path, since
+    GDI has no such stretch.
+  - Lines step by the requested height (`sy`), as before.
+  - Colour and alpha come from the vertex colour, as on the stb path.
+- **Glyph limits.** Codepoints below 32 draw nothing and have no advance.
+  A full atlas (768 distinct glyphs per size, or no room left) still
+  advances but draws nothing for the extra glyphs.
+
+### Verified
+
+With Nuclide under Xvfb at 1024×768 (2D scale 1), chat was set to the
+stand-in `"DejaVu Sans"` (the same file gdidump's `Verdana_400.ttf`
+stand-in is) at size 16, and two `say` lines were sent over a black clear
+colour. The chat pixels were compared with lines composed from gdidump's
+per-glyph ExtTextOut crops at tall 16, with pens advanced by A+B+C.
+
+| Quality | Pixels compared | Differing |
+| --- | --- | --- |
+| ANTIALIASED (q1, greyscale for this font's `gasp`) | 12166 | 0 |
+| NONANTIALIASED (q0, `r_gdifont_aa 0`) | 12166 | 0 |
+
+Each line was compared over its whole box, ink and background. No glyph
+boxes overlapped in these strings. Screenshots are in the project's
+`font/visual/` folder (`chat-*.png`).
+
+Not verified:
+
+- Real Verdana: the Microsoft core fonts could not be installed in the test
+  environment.
+- The Windows font-folder scan, which is code that has never run.
+- macOS.
+- Fractional 2D scales.
+- Overlapping glyphs: each glyph is blended as its own quad, whereas
+  ExtTextOut draws the whole string at once.
 
 ## How it was established
 
