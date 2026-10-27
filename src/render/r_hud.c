@@ -85,36 +85,18 @@ static int gather_teams(const scoreline_t *p, int n, teamline_t *out)
 
 static void box(float x, float y, float w, float h) { R_DrawFill(x, y, w, h, black, 0.6f, 0); }
 
-/* A row of fields at column positions in text heights. Padding with spaces
- * only lines up in a fixed-width font, so each field goes to its own place;
- * a negative position right-aligns the field to end there (numbers). */
-static void row(float x, float y, float size, const float *rgb, const char *const *cells, const float *at, int n)
-{
-	for (int i = 0; i < n; i++) {
-		float cx = x + fabsf(at[i]) * size;
-		if (at[i] < 0)
-			cx -= R_StringWidth(cells[i], size, size, true);
-		R_DrawString(cx, y, cells[i], size, size, rgb, 1, 0, true);
-	}
-}
-
 static void draw_scores(int w, int h, float size)
 {
 	static scoreline_t lines[CL_MAX_PLAYERS];
-	static const float at[] = {-5, -11, 13, 23};
-	static const char *const head[] = {"frags", "ping", "team", "name"};
 	int n = gather(lines);
 	float bw = size * 40, x = (w - bw) / 2, y = h * 0.15f;
 	box(x - size, y - size, bw + size * 2, (n + 2) * size * 1.25f + size);
-	row(x, y, size, gold, head, at, 4);
+	R_DrawString(x, y, "frags  ping  team      name", size, size, gold, 1, 0, false);
 	y += size * 1.5f;
 	for (int i = 0; i < n; i++, y += size * 1.25f) {
-		char frags[16], ping[16], team[16];
-		const char *cells[] = {frags, ping, team, lines[i].name};
-		snprintf(frags, sizeof(frags), "%g", lines[i].frags);
-		snprintf(ping, sizeof(ping), "%d", lines[i].ping);
-		snprintf(team, sizeof(team), "%.8s", lines[i].team);
-		row(x, y, size, lines[i].slot == cl.playerslot ? gold : white, cells, at, 4);
+		char line[160];
+		snprintf(line, sizeof(line), "%5g  %4d  %-8.8s  %s", lines[i].frags, lines[i].ping, lines[i].team, lines[i].name);
+		R_DrawString(x, y, line, size, size, lines[i].slot == cl.playerslot ? gold : white, 1, 0, true);
 	}
 }
 
@@ -122,21 +104,16 @@ static void draw_teamscores(int w, int h, float size)
 {
 	static scoreline_t lines[CL_MAX_PLAYERS];
 	static teamline_t teams[CL_MAX_PLAYERS];
-	static const float at[] = {-5, -14, -20, 22};
-	static const char *const head[] = {"frags", "players", "ping", "team"};
 	int n = gather(lines), t = gather_teams(lines, n, teams);
 	float bw = size * 32, x = (w - bw) / 2, y = h * 0.15f;
 	box(x - size, y - size, bw + size * 2, (t + 2) * size * 1.25f + size);
-	row(x, y, size, gold, head, at, 4);
+	R_DrawString(x, y, "frags  players  ping  team", size, size, gold, 1, 0, false);
 	y += size * 1.5f;
 	for (int i = 0; i < t; i++, y += size * 1.25f) {
-		char frags[16], players[16], ping[16], team[40];
-		const char *cells[] = {frags, players, ping, team};
-		snprintf(frags, sizeof(frags), "%g", teams[i].frags);
-		snprintf(players, sizeof(players), "%d", teams[i].players);
-		snprintf(ping, sizeof(ping), "%d", teams[i].players ? teams[i].ping / teams[i].players : 0);
-		snprintf(team, sizeof(team), "%.32s", teams[i].team[0] ? teams[i].team : "(none)");
-		row(x, y, size, white, cells, at, 4);
+		char line[128];
+		snprintf(line, sizeof(line), "%5g  %7d  %4d  %.32s", teams[i].frags, teams[i].players,
+		         teams[i].players ? teams[i].ping / teams[i].players : 0, teams[i].team[0] ? teams[i].team : "(none)");
+		R_DrawString(x, y, line, size, size, white, 1, 0, true);
 	}
 }
 
@@ -150,11 +127,9 @@ static void draw_dm(int w, int h, float size)
 		return;
 	box(x - size * 0.5f, y - size * 0.5f, size * 21, n * size * 1.25f + size * 0.5f);
 	for (int i = 0; i < n; i++, y += size * 1.25f) {
-		static const float at[] = {-4, 5};
-		char frags[16];
-		const char *cells[] = {frags, lines[i].name};
-		snprintf(frags, sizeof(frags), "%g", lines[i].frags);
-		row(x, y, size, lines[i].slot == cl.playerslot ? gold : white, cells, at, 2);
+		char line[96];
+		snprintf(line, sizeof(line), "%4g %s", lines[i].frags, lines[i].name);
+		R_DrawString(x, y, line, size, size, lines[i].slot == cl.playerslot ? gold : white, 1, 0, true);
 	}
 }
 
@@ -169,9 +144,7 @@ static void draw_info(int w, int h, float size)
 	R_DrawString(x, y, "server info", size, size, gold, 1, 0, false);
 	y += size * 1.5f;
 	while (*p == '\\') {
-		static const float at[] = {0, 21};
-		char key[64], value[256];
-		const char *cells[] = {key, value};
+		char key[64], value[256], line[340];
 		size_t n;
 		p++;
 		n = strcspn(p, "\\");
@@ -183,7 +156,8 @@ static void draw_info(int w, int h, float size)
 		n = strcspn(p, "\\");
 		snprintf(value, sizeof(value), "%.*s", (int)BW_MIN(n, sizeof(value) - 1), p);
 		p += n;
-		row(x, y, size, white, cells, at, 2);
+		snprintf(line, sizeof(line), "%-20s %s", key, value);
+		R_DrawString(x, y, line, size, size, white, 1, 0, true);
 		y += size * 1.25f;
 	}
 }
