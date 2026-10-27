@@ -18,6 +18,8 @@
 #include FT_TRUETYPE_TABLES_H
 #include FT_TRUETYPE_TAGS_H
 #include FT_OUTLINE_H
+#include FT_SFNT_NAMES_H
+#include FT_TRUETYPE_IDS_H
 
 struct gdifont_s {
 	FT_Library lib;
@@ -63,6 +65,81 @@ static unsigned char *load_table(FT_Face face, FT_ULong tag, size_t *len)
 	}
 	*len = n;
 	return buf;
+}
+
+/* name ID 1 as ASCII/Latin-1: Windows Unicode (3,1) preferred, US English
+   first; Mac Roman (1,0) as a fallback */
+static int family_name(FT_Face face, char *out, size_t outsize)
+{
+	FT_UInt i, n = FT_Get_Sfnt_Name_Count(face);
+	int best = -1, bestscore = -1;
+	FT_SfntName nm;
+	for (i = 0; i < n; i++) {
+		int score;
+		if (FT_Get_Sfnt_Name(face, i, &nm) || nm.name_id != TT_NAME_ID_FONT_FAMILY)
+			continue;
+		if (nm.platform_id == TT_PLATFORM_MICROSOFT && (nm.encoding_id == TT_MS_ID_UNICODE_CS || nm.encoding_id == TT_MS_ID_SYMBOL_CS))
+			score = nm.language_id == TT_MS_LANGID_ENGLISH_UNITED_STATES ? 3 : 2;
+		else if (nm.platform_id == TT_PLATFORM_MACINTOSH && nm.encoding_id == TT_MAC_ID_ROMAN)
+			score = 1;
+		else
+			continue;
+		if (score > bestscore) {
+			bestscore = score;
+			best = (int)i;
+		}
+	}
+	if (best < 0 || outsize == 0 || FT_Get_Sfnt_Name(face, (FT_UInt)best, &nm))
+		return 0;
+	{
+		size_t o = 0;
+		FT_UInt j;
+		int wide = nm.platform_id == TT_PLATFORM_MICROSOFT;
+		for (j = 0; j + (wide ? 1 : 0) < nm.string_len && o + 1 < outsize; j += wide ? 2 : 1) {
+			unsigned c = wide ? (unsigned)(nm.string[j] << 8 | nm.string[j + 1]) : nm.string[j];
+			out[o++] = (char)(c < 0x100 ? c : '?');
+		}
+		out[o] = 0;
+	}
+	return 1;
+}
+
+int gdifont_describe(const char *path, const void *data, size_t size, int index,
+	char *family, size_t familysize, int *weight, int *italic, int *truetype)
+{
+	FT_Library lib;
+	FT_Face face;
+	FT_ULong glyf = 0;
+	TT_OS2 *os2;
+	int faces;
+	if (familysize)
+		family[0] = 0;
+	*weight = 400;
+	*italic = 0;
+	*truetype = 0;
+	if (FT_Init_FreeType(&lib))
+		return 0;
+	if (path ? FT_New_Face(lib, path, index, &face) : FT_New_Memory_Face(lib, data, (FT_Long)size, index, &face)) {
+		FT_Done_FreeType(lib);
+		return 0;
+	}
+	faces = (int)face->num_faces;
+	if (!family_name(face, family, familysize) && face->family_name && familysize) {
+		strncpy(family, face->family_name, familysize - 1);
+		family[familysize - 1] = 0;
+	}
+	os2 = FT_IS_SFNT(face) ? FT_Get_Sfnt_Table(face, FT_SFNT_OS2) : NULL;
+	if (os2 && os2->version != 0xFFFF) {
+		*weight = os2->usWeightClass;
+		*italic = (os2->fsSelection & 1) != 0;
+	} else {
+		*weight = (face->style_flags & FT_STYLE_FLAG_BOLD) ? 700 : 400;
+		*italic = (face->style_flags & FT_STYLE_FLAG_ITALIC) != 0;
+	}
+	*truetype = FT_IS_SFNT(face) && !FT_Load_Sfnt_Table(face, TTAG_glyf, 0, NULL, &glyf) && glyf > 0;
+	FT_Done_Face(face);
+	FT_Done_FreeType(lib);
+	return faces;
 }
 
 long gdifont_table_size(const gdifont_t *f, const char tag[4])
