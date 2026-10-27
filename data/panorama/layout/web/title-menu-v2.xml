@@ -77,7 +77,7 @@
 						<Panel id="JoinList" class="join-list">
 							<Label class="join-empty" text="Press Refresh to find LAN lobbies" />
 						</Panel>
-						<Button id="JoinConnect" class="btn" enabled="false" onactivate="TitleMenu.JoinSelected()">
+						<Button id="JoinConnect" class="btn" onactivate="TitleMenu.JoinSelected()">
 							<Label text="Join Selected" />
 						</Button>
 					</Panel>

@@ -52,7 +52,6 @@ Label
 	width: 200px;
 	height: 44px;
 	text-align: center;
-	font-family: "Iosevka Charon Mono";
 	font-weight: 500;
 	font-size: 32px;
 	color: #d9e0e5;
@@ -72,20 +71,18 @@ Label
 .timer
 {
 	x: 620px;
-	y: 102px;
+	y: 97px;
 	width: 200px;
 	height: 40px;
 	text-align: center;
-	font-family: "Trade Gothic Next LT Pro BdCn";
 	font-size: 28px;
 }
 
 .score
 {
-	y: 68px;
+	y: 78px;
 	width: 200px;
 	height: 96px;
-	font-family: "Helvetica Neue 97 Black Condensed";
 	font-size: 76px;
 	color: #c7c7c7;
 	text-shadow: 0px 0px 4px 3 #00000080;
@@ -113,9 +110,8 @@ Label
 }
 .name
 {
-	y: 7.5px;
+	y: 4.5px;
 	height: 24px;
-	font-family: "Trade Gothic Next LT Pro BdCn";
 	font-size: 14.8px;
 }
 .nameplate-left .name { x: 12.7px; width: 140px; text-align: left; }
@@ -167,7 +163,6 @@ Label
 	width: 160px;
 	height: 40px;
 	text-align: center;
-	font-family: "04b09";
 	font-size: 33px;
 }
 .reserve
@@ -177,7 +172,6 @@ Label
 	width: 80px;
 	height: 20px;
 	text-align: center;
-	font-family: "04b09";
 	font-size: 16px;
 }
 .reload
@@ -187,7 +181,6 @@ Label
 	width: 80px;
 	height: 26px;
 	text-align: center;
-	font-family: "Iosevka Charon Mono";
 	font-weight: 700;
 	font-size: 20px;
 	color: #e5e5eb;
@@ -243,7 +236,6 @@ Label
 	width: 60px;
 	height: 16px;
 	text-align: center;
-	font-family: "Helvetica Neue 97 Black Condensed";
 	font-size: 11px;
 	color: #e5e5eb;
 	visibility: collapse;
@@ -280,24 +272,29 @@ Label
 .ex-count
 {
 	x: 224px;
-	y: 880px;
+	y: 883px;
 	width: 160px;
 	height: 120px;
 	text-align: center;
-	font-family: "Helvetica Neue 97 Black Condensed Oblique";
 	font-size: 96px;
 	text-shadow: 0px 0px 4px 3 #00000080;
 }
 .ex-max
 {
 	x: 407px;
-	y: 893px;
+	y: 897px;
 	width: 120px;
 	height: 46px;
 	text-align: center;
-	font-family: "Helvetica Neue 97 Black Condensed Oblique";
 	font-size: 36px;
 	text-shadow: 0px 0px 4px 3 #00000080;
 	visibility: collapse;
 }
 .drive-max .ex-max { visibility: visible; }
+
+/* font families, one class per face the canvas used */
+.f-trade { font-family: "Trade Gothic Next LT Pro BdCn"; }
+.f-helv { font-family: "Helvetica Neue 97 Black Condensed"; }
+.f-helv-ob { font-family: "Helvetica Neue 97 Black Condensed Oblique"; }
+.f-iosevka { font-family: "Iosevka Charon Mono"; }
+.f-pixel { font-family: "04b09"; }

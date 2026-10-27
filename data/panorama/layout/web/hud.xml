@@ -16,17 +16,17 @@
 	<Panel id="Hud" class="hud hp-normal" hittest="false">
 		<Panel class="stage">
 			<Image id="Ring" class="ring" scaling="stretch" />
-			<Label id="Speed" class="speed" text="000" />
+			<Label id="Speed" class="speed f-iosevka" text="000" />
 
 			<Image class="time-plate" src="file://{game}/ui/time_indicator.png" scaling="stretch" />
-			<Label id="Timer" class="timer" text="00:00" />
-			<Label id="ScoreLeft" class="score score-left" text="0" />
-			<Label id="ScoreRight" class="score score-right" text="0" />
+			<Label id="Timer" class="timer f-trade" text="00:00" />
+			<Label id="ScoreLeft" class="score f-helv score-left" text="0" />
+			<Label id="ScoreRight" class="score f-helv score-right" text="0" />
 			<Panel class="nameplate nameplate-left">
-				<Label id="NameLeft" class="name" text="P1" />
+				<Label id="NameLeft" class="name f-trade" text="P1" />
 			</Panel>
 			<Panel class="nameplate nameplate-right">
-				<Label id="NameRight" class="name" text="P2" />
+				<Label id="NameRight" class="name f-trade" text="P2" />
 			</Panel>
 			<Image class="mini-pip mini-pip-0 ability-pip" scaling="stretch" />
 			<Image class="mini-pip mini-pip-1 ability-pip" scaling="stretch" />
@@ -37,9 +37,9 @@
 				<Image class="hp-low-img" src="file://{game}/data/web/hud/assets/hpLow.png" scaling="stretch" />
 				<Image class="hp-dead-img" src="file://{game}/ui/hp_dead_vector.png" scaling="stretch" />
 			</Panel>
-			<Label id="Clip" class="clip" text="0|" />
-			<Label id="Reserve" class="reserve" text="0" />
-			<Label id="Reload" class="reload" text="0.0" />
+			<Label id="Clip" class="clip f-pixel" text="0|" />
+			<Label id="Reserve" class="reserve f-pixel" text="0" />
+			<Label id="Reload" class="reload f-iosevka" text="0.0" />
 			<Image id="Pip0" class="pip pip-0 ability-pip" scaling="stretch" />
 			<Image id="Pip1" class="pip pip-1 ability-pip" scaling="stretch" />
 			<Image id="Pip2" class="pip pip-2 ability-pip" scaling="stretch" />
@@ -56,16 +56,16 @@
 				<Panel id="CdIcon2" class="cd-icon" />
 				<Panel class="cd-ring" />
 			</Panel>
-			<Label id="CdTime0" class="cd-time cd-time-0" text="" />
-			<Label id="CdTime1" class="cd-time cd-time-1" text="" />
-			<Label id="CdTime2" class="cd-time cd-time-2" text="" />
+			<Label id="CdTime0" class="cd-time f-helv cd-time-0" text="" />
+			<Label id="CdTime1" class="cd-time f-helv cd-time-1" text="" />
+			<Label id="CdTime2" class="cd-time f-helv cd-time-2" text="" />
 		</Panel>
 
 		<Panel class="left">
 			<Image class="ex-plate" src="file://{game}/ui/ex_indicator.png" scaling="stretch" />
 			<Panel id="Gauge" class="gauge" />
-			<Label id="ExCount" class="ex-count" text="0" />
-			<Label class="ex-max" text="MAX" />
+			<Label id="ExCount" class="ex-count f-helv-ob" text="0" />
+			<Label class="ex-max f-helv-ob" text="MAX" />
 		</Panel>
 	</Panel>
 </root>

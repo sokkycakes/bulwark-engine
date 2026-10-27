@@ -295,24 +295,6 @@ var QlMenu = (function ()
 		this.items = next.map( function ( n ) { return { key: n.key, panel: n.panel }; } );
 	};
 
-	function opList()
-	{
-		return ops.map( function ( op )
-		{
-			var key = op.type + "|" + op.cls + "|" + op.style + "|" + ( op.text || "" );
-			return {
-				key: key,
-				make: function ( parent )
-				{
-					var props = { "class": op.cls, style: op.style, hittest: "false" };
-					if ( op.text !== undefined )
-						props.text = op.text;
-					return $.CreatePanel( op.type, parent, "", props );
-				}
-			};
-		} );
-	}
-
 	function onHitOver( id ) { state.hover = id; }
 	function onHitOut( id ) { if ( state.hover === id ) state.hover = null; }
 	function onHitClick( id )
@@ -1123,12 +1105,6 @@ var QlMenu = (function ()
 
 	function init()
 	{
-		// TEMP-DEBUG
-		if ( fte_query( "cvar:ql_menu_debug" ) === "1" )
-		{
-			var q = fte_query;
-			fte_query = function ( r ) { var x = q( r ); if ( r !== "getarena" && r.indexOf( "cvar:" ) !== 0 ) $.Msg( "QL " + r + " -> " + x ); return x; };
-		}
 		root = $( "#QlPage" ) || $.GetContextPanel();
 		stage = $.CreatePanel( "Panel", root, "Stage", { hittest: "false" } );
 		artLayer = new Layer( $.CreatePanel( "Panel", stage, "Art", { "class": "layer", hittest: "false" } ) );

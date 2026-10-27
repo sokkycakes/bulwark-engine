@@ -432,9 +432,7 @@
 }
 .chat-send Label
 {
-	vertical-align: center;
-	line-height: 36px;
-	margin-bottom: 7px; /* Panorama sets Trade Gothic lower in its line than a browser */
+	y: -4px; /* Panorama sets Trade Gothic lower in its line than a browser */
 }
 
 /* footer (72:281): the Esc key and Leave */

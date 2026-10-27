@@ -12,6 +12,7 @@ extern "C" {
 #include "../client/keys.h"
 #include "../render/render.h"
 int Key_NumForName(const char *name);
+bool Key_IsDown(int key);
 }
 
 #include "ui/panorama/panorama_font_atlas.hpp"
@@ -931,6 +932,9 @@ bool UI_KeyEvent(int key, bool down, int unicode)
 		if (pk != PanoramaKey::Unknown) {
 			PanoramaKeyEvent ev;
 			ev.key = pk;
+			ev.shift = Key_IsDown(K_LSHIFT);
+			ev.ctrl = Key_IsDown(K_LCTRL);
+			ev.alt = Key_IsDown(K_LALT);
 			v->pv.handle_key_down(ev);
 		} else if (unicode >= 32) {
 			char text[8] = {0};
@@ -941,7 +945,10 @@ bool UI_KeyEvent(int key, bool down, int unicode)
 	char buf[8];
 	const char *name = key_name(key, unicode, buf, sizeof(buf));
 	if (name) {
-		std::string json = "{\"key\":" + js_quote(name) + ",\"down\":" + (down ? "true" : "false") + "}";
+		std::string json = "{\"key\":" + js_quote(name) + ",\"down\":" + (down ? "true" : "false") +
+		                   ",\"shift\":" + (Key_IsDown(K_LSHIFT) ? "true" : "false") +
+		                   ",\"ctrl\":" + (Key_IsDown(K_LCTRL) ? "true" : "false") +
+		                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") + "}";
 		UI_Post(v->num, "key", json.c_str());
 	}
 	return true;

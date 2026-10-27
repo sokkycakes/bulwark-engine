@@ -370,6 +370,7 @@ var TitleMenu = (function ()
 	var frame = $( "#BgFrame" );
 	buildBase( frame );
 	buildPattern( frame );
+	joinConnect.enabled = false;
 
 	Bulwark.On( "key", function ( e )
 	{

@@ -779,18 +779,22 @@ static void begin_start(void)
 		if (!FS_FileExists(path))
 			Con_Printf("^3lobby: %s isn't in this game; the server will use its default rules\n", path);
 	}
-	Cbuf_AddText(va("set sv_background 0\nset coop 0\nset deathmatch 1\nset maxplayers %d\nset sv_playerslots %d\n"
-	                "set g_gametype %s\n",
-	                L.max, L.max, gametype));
-	if (atoi(L.timelimit) > 0)
-		Cbuf_AddText(va("set timelimit %s\n", L.timelimit));
-	if (atoi(L.fraglimit) > 0)
-		Cbuf_AddText(va("set fraglimit %s\n", L.fraglimit));
-	if (mode && mode->startcmds[0]) {
-		Cbuf_AddText(mode->startcmds);
-		Cbuf_AddText("\n");
+	{
+		strbuf_t sb = {0};
+		SB_Printf(&sb, "set sv_background 0\nset coop 0\nset deathmatch 1\nset maxplayers %d\nset sv_playerslots %d\n"
+		               "set g_gametype %s\n",
+		          L.max, L.max, gametype);
+		if (atoi(L.timelimit) > 0)
+			SB_Printf(&sb, "set timelimit %s\n", L.timelimit);
+		if (atoi(L.fraglimit) > 0)
+			SB_Printf(&sb, "set fraglimit %s\n", L.fraglimit);
+		if (mode && mode->startcmds[0])
+			SB_Printf(&sb, "%s\n", mode->startcmds);
+		SB_Printf(&sb, "map %s\n", L.map);
+		/* ahead of anything waiting in the buffer (a script's waits) */
+		Cbuf_InsertText(sb.data);
+		SB_Free(&sb);
 	}
-	Cbuf_AddText(va("map %s\n", L.map));
 }
 
 /* the host's server is up: tell the guests where it is */
@@ -899,9 +903,7 @@ static void guest_start(const json_t *j)
 		inet_ntop(AF_INET, &L.hostaddr.sin_addr, ip, sizeof(ip));
 		Con_Printf("lobby: the game is on %s:%d\n", ip, port);
 		/* the title's background map gives way to the real game */
-		if (sv.active)
-			Cbuf_AddText("killserver\n");
-		Cbuf_AddText(va("connect %s:%d\n", ip, port));
+		Cbuf_InsertText(va("%sconnect %s:%d\n", sv.active ? "killserver\n" : "", ip, port));
 	}
 	L.phase = LOBBY_INGAME;
 	Str_Copy(L.status, "Connecting to the game...", sizeof(L.status));

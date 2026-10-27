@@ -1,0 +1,50 @@
+<!--
+	Panorama port of Stiletto's data/web/pause-menu/index.html: the in-game
+	pause page (a port of the Slint pause draft). Figma 16:9 frame 1280 x 720:
+	positions are percentages of the view, as the page's own
+	calc(100% * n / 1280|720) are, and sizes the page gives in 100vh / 720
+	are at the 1080-line design height. Transparent: the game shows through.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/pause-menu.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/pause-menu.js" />
+	</scripts>
+
+	<Panel id="Stage" class="stage">
+		<Panel class="panel" hittest="false">
+			<Panel class="panel-edge panel-edge-top" hittest="false" />
+			<Panel class="panel-edge panel-edge-bottom" hittest="false" />
+		</Panel>
+
+		<Panel class="banner" hittest="false">
+			<Label class="banner-label" text="PAUSE" hittest="false" />
+		</Panel>
+
+		<Panel id="FocusBar" class="focus-bar" hittest="false">
+			<Panel class="focus-edge focus-edge-top" hittest="false" />
+			<Panel class="focus-edge focus-edge-bottom" hittest="false" />
+		</Panel>
+
+		<Button id="Item0" class="menu-item item-0" onactivate="PauseMenu.Click(0)" onmouseover="PauseMenu.Select(0)">
+			<Label text="Return to Game" hittest="false" />
+		</Button>
+		<Button id="Item1" class="menu-item item-1" onactivate="PauseMenu.Click(1)" onmouseover="PauseMenu.Select(1)">
+			<Label text="Host Menu" hittest="false" />
+		</Button>
+		<Button id="Item2" class="menu-item item-2" onactivate="PauseMenu.Click(2)" onmouseover="PauseMenu.Select(2)">
+			<Label text="Change Team" hittest="false" />
+		</Button>
+		<Button id="Item3" class="menu-item item-3" onactivate="PauseMenu.Click(3)" onmouseover="PauseMenu.Select(3)">
+			<Label text="Call a Vote" hittest="false" />
+		</Button>
+		<Button id="Item4" class="menu-item item-4" onactivate="PauseMenu.Click(4)" onmouseover="PauseMenu.Select(4)">
+			<Label text="Settings" hittest="false" />
+		</Button>
+		<Button id="Item5" class="menu-item item-5" onactivate="PauseMenu.Click(5)" onmouseover="PauseMenu.Select(5)">
+			<Label text="Leave Game" hittest="false" />
+		</Button>
+	</Panel>
+</root>

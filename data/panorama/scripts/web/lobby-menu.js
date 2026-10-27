@@ -136,7 +136,6 @@ var LobbyMenu = (function ()
 	}
 
 	// --- page state (main.jsx) ---
-	var stage = $( "#LobbyStage" );
 	var nav = $( "#LobbyMenuNav" );
 	var snapshot = normalize( { active: false, players: [] } );
 	var notice = "";
@@ -327,7 +326,6 @@ var LobbyMenu = (function ()
 
 	function rowAction( index )
 	{
-		var s = snapshot;
 		if ( index === 0 ) return function () { OpenDialog( "options" ); };
 		if ( index === 1 ) return function () { OpenDialog( "ruleset" ); };
 		if ( index === 2 ) return function () { OpenDialog( "map" ); };
