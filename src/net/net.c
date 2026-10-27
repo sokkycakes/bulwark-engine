@@ -118,6 +118,10 @@ static int open_udp(int port)
 	return s;
 }
 
+/* a port the next-free-port search passes over */
+static int reserved_port;
+void NET_ReservePort(int port) { reserved_port = port; }
+
 bool NET_OpenServer(int port)
 {
 	struct sockaddr_in6 sa;
@@ -126,7 +130,8 @@ bool NET_OpenServer(int port)
 	sockets[NS_SERVER] = open_udp(port);
 	/* another server has the port: the next free one */
 	for (int i = 1; sockets[NS_SERVER] < 0 && port && i < 10; i++)
-		sockets[NS_SERVER] = open_udp(port + i);
+		if (port + i != reserved_port)
+			sockets[NS_SERVER] = open_udp(port + i);
 	if (sockets[NS_SERVER] < 0)
 		return false;
 	sock_v4[NS_SERVER] = last_open_v4;

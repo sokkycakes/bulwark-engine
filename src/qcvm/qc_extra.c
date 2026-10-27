@@ -506,8 +506,32 @@ static void bi_search_begin(qcvm_t *vm)
 	ctx.s = &vm->extra->searches[h];
 	memset(ctx.s, 0, sizeof(*ctx.s));
 	ctx.s->inuse = true;
-	FS_List(pattern, (flags & 1) != 0, search_add, &ctx);
+	if (flags & 16) {
+		/* SB_MULTISEARCH: patterns separated by colons */
+		char one[1024];
+		for (const char *p = pattern; *p;) {
+			const char *e = strchr(p, ':');
+			size_t n = e ? (size_t)(e - p) : strlen(p);
+			if (n && n < sizeof(one)) {
+				memcpy(one, p, n);
+				one[n] = 0;
+				FS_List(one, (flags & 1) != 0, search_add, &ctx);
+			}
+			p += n + (e ? 1 : 0);
+		}
+	} else {
+		FS_List(pattern, (flags & 1) != 0, search_add, &ctx);
+	}
 	qsort(ctx.s->names, (size_t)ctx.s->count, sizeof(char *), cmp_names);
+	/* a file several patterns found is listed once */
+	int kept = 0;
+	for (int i = 0; i < ctx.s->count; i++) {
+		if (kept && !strcmp(ctx.s->names[kept - 1], ctx.s->names[i]))
+			Mem_Free(ctx.s->names[i]);
+		else
+			ctx.s->names[kept++] = ctx.s->names[i];
+	}
+	ctx.s->count = kept;
 	QC_ReturnFloat(vm, (float)h);
 }
 
