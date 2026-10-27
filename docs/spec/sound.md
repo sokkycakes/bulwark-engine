@@ -9,6 +9,42 @@ worked out on the main thread, and SDL pulls mixed frames from its own
 thread. Music is streamed separately and mixed in last, so room effects
 don't apply to it.
 
+### Distance and direction
+
+Sounds fall off the way Source's do. The attenuation a game passes picks a
+sound level in dB, and the level drops with distance by the inverse
+distance law. This section is written from Source's documented behaviour,
+not its code:
+
+- **Sound level.** Attenuation `a` names the level `L = 50 + 20 / a` dB.
+  That is Source's soundlevel/attenuation pairing as the Valve Developer
+  Community soundscript tables list it: 0.8 is SNDLVL_NORM (75 dB), 0.2 is
+  140 dB. Quake's ATTN_NORM 1 comes out as 70 dB, ATTN_IDLE 2 as 60 dB and
+  ATTN_STATIC 3 as about 57 dB. `a` is first scaled by
+  `1000 / s_nominaldistance`, so that cvar (1000, FTE's name and default)
+  stretches every sound's reach alike. Nuclide divides `s_nominaldistance`
+  by a sound's radius to get its attenuation, so the cvar must exist under
+  that name.
+- **Falloff.** The gain is `min(1, 10^((L - snd_refdb) / 20) * snd_refdist / d)`
+  at distance `d`. A sound is at full volume out to the distance where its
+  level has fallen to `snd_refdb`, then loses 6 dB with each doubling of
+  distance. `snd_refdb` 60 and `snd_refdist` 36 are the values Source
+  games show in their console. They come from memory and haven't been
+  checked against a Source game. A 75 dB sound is full out to about 200
+  units, half at 400 and a fifth at 1000. A 140 dB gunshot is full almost
+  anywhere. Below a gain of 0.002 (about -54 dB) a sound is silent.
+- **Attenuation 0** plays everywhere at full volume (SNDLVL_NONE, "plays
+  everywhere"). It is still panned by direction.
+- **Direction.** For a sound fully to one side, the far ear keeps 30%.
+  Inside `snd_refdist` the panning fades to centred, so a sound at the
+  listener's own position isn't hard to one side. The listener's own
+  sounds, and those flagged SOUNDFLAG_NOSPACIALISE, aren't panned.
+
+Before 2026-10-27, attenuation 1 faded linearly to silence at 1000 units,
+and attenuation 0 sounds weren't panned. The cvar was called
+`snd_nominaldistance`, so Nuclide read 0 and every one of its sounds
+played everywhere.
+
 ## Room effects (`src/sound/snd_dsp.c`)
 
 ### The game's reverb slots
