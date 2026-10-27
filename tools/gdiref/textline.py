@@ -52,8 +52,8 @@ def main():
     sides = [("windows", *load(wdir, face, tall, weight, aa)), ("gdifont", *load(cdir, face, tall, weight, aa))]
     for name, cfg, _ in sides:
         if cfg:
-            print("%s: ppem %d height %d ascent %d tables %s" % (name, cfg["ppem"], cfg["tmHeight"], cfg["tmAscent"],
-                                                                cfg.get("tables")))
+            print("%s: ppem %s height %s ascent %s internal leading %s" % (
+                name, cfg.get("ppem", "-"), cfg.get("tmHeight"), cfg.get("tmAscent"), cfg.get("tmInternalLeading")))
         else:
             print("%s: no config %s %d %d %d" % (name, face, tall, weight, aa))
     print("char  windows A/B/C   gdifont A/B/C")
