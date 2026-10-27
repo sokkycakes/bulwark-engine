@@ -750,6 +750,20 @@ static void query(int view, const char *req, strbuf_t *out)
 		Lobby_Query(req, out); /* the lobby's requests; anything else replies "" */
 }
 
+/* prints the reply a page would get, to check the bridge or to capture
+ * data for rendering a page elsewhere */
+static void WebcoreQuery_f(int argc, const char **argv)
+{
+	strbuf_t out = {0};
+	if (argc < 2) {
+		Con_Printf("usage: webcore_query <request>\n");
+		return;
+	}
+	query(0, argv[1], &out);
+	Con_Printf("%s\n", out.data ? out.data : "");
+	SB_Free(&out);
+}
+
 /* --- set-up -------------------------------------------------------------------------- */
 
 /* fonts the pages name by family (FTE's plugin registered them from the
@@ -804,6 +818,7 @@ void WC_Init(void)
 	Cmd_AddD("menu_webcore_lobby", MenuWebcoreLobby_f, "Open the lobby page");
 	Cmd_AddD("menu_lobby_create", MenuLobbyCreate_f, "Create a LAN lobby and show it");
 	Cmd_AddD("webcore_closemenu", CloseMenu_f, "Close the HTML menu page");
+	Cmd_AddD("webcore_query", WebcoreQuery_f, "webcore_query \"<request>\": print the bridge's reply to a page request");
 	UI_SetQueryHandler(query);
 	R_SetPicHook(pic_hook);
 	Plug_SetBuiltinHook(WC_PluginLoad);
