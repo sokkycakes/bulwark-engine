@@ -1,0 +1,144 @@
+/*
+ * gdifont: TrueType text rasterized the way Windows GDI does it, using
+ * FreeType on every platform.
+ *
+ * Built from black-box measurements of Windows GDI (see docs/spec/gdi-text.md
+ * for every rule and the evidence behind it). Self-contained: it does not
+ * touch the renderer, it only turns a font file into metrics and bitmaps.
+ *
+ * Coordinates follow GDI: y grows down on bitmaps, glyph origins are given
+ * as (left bearing, distance from baseline up to the top row).
+ */
+#ifndef GDIFONT_H
+#define GDIFONT_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct gdifont_s gdifont_t;
+
+/* CreateFont fdwQuality values that are emulated */
+enum {
+	GDIFONT_NONANTIALIASED = 0, /* NONANTIALIASED_QUALITY: always 1-bit */
+	GDIFONT_ANTIALIASED = 1     /* ANTIALIASED_QUALITY: grey or 1-bit per gasp */
+};
+
+/* CreateFont flags. Italic is recorded only: synthetic italic and bold were
+   not measured, so pass the italic or bold font file itself. */
+enum {
+	GDIFONT_ITALIC = 1,
+	GDIFONT_UNDERLINE = 2,
+	GDIFONT_STRIKEOUT = 4
+};
+
+/* TEXTMETRIC subset, in pixels */
+typedef struct {
+	int height;           /* tmHeight */
+	int ascent;           /* tmAscent */
+	int descent;          /* tmDescent */
+	int internal_leading; /* tmInternalLeading = height - ppem */
+	int external_leading; /* tmExternalLeading */
+	int ave_char_width;   /* tmAveCharWidth */
+	int max_char_width;   /* tmMaxCharWidth */
+	int weight;           /* tmWeight */
+	int overhang;         /* tmOverhang (0, measured for bold faces) */
+	int ppem;             /* the em size glyphs are hinted and rendered at */
+} gdifont_metrics_t;
+
+/* GetCharABCWidths */
+typedef struct {
+	int a;
+	int b;
+	int c;
+} gdifont_abc_t;
+
+/* GetGlyphOutline result */
+typedef struct {
+	int bbx, bby;          /* gmBlackBoxX / gmBlackBoxY */
+	int ox, oy;            /* gmptGlyphOrigin */
+	int incx, incy;        /* gmCellIncX / gmCellIncY */
+	int pitch;             /* bytes per row, a multiple of 4 */
+	int size;              /* pitch * bby: the value GetGlyphOutline returns */
+	unsigned char *data;   /* malloc'd; NULL when size is 0 */
+} gdifont_glyph_t;
+
+/* The sizing inputs from the font file, for gdifont_select_size */
+typedef struct {
+	int units_per_em;
+	int win_ascent, win_descent;
+	int vdmx_count;          /* entries in the usable VDMX group, 0 if none */
+	const unsigned short *vdmx_ppem;
+	const short *vdmx_ymax, *vdmx_ymin;
+} gdifont_sizeinfo_t;
+
+/*
+ * Create a font. height is the CreateFont cell height (> 0). weight 0 means
+ * 400. The data is copied. Returns NULL on failure; err (if not NULL)
+ * receives a short reason.
+ */
+gdifont_t *gdifont_create_memory(const void *data, size_t size, int height, int weight,
+	int flags, int quality, const char **err);
+gdifont_t *gdifont_create_file(const char *path, int height, int weight,
+	int flags, int quality, const char **err);
+void gdifont_free(gdifont_t *f);
+
+/* As gdifont_create_memory, but renders ppem_delta ems away from the size
+   rule's choice while keeping its line metrics. A diagnostic for
+   tools/gdiref/best_ppem.py, not for normal use. */
+gdifont_t *gdifont_create_memory_ex(const void *data, size_t size, int height, int weight,
+	int flags, int quality, int ppem_delta, const char **err);
+
+const gdifont_metrics_t *gdifont_metrics(const gdifont_t *f);
+const char *gdifont_family(const gdifont_t *f);
+int gdifont_quality(const gdifont_t *f);
+int gdifont_flags(const gdifont_t *f);
+
+/* Size of an sfnt table in bytes, or -1 when the font has none */
+long gdifont_table_size(const gdifont_t *f, const char tag[4]);
+
+/* GetCharABCWidthsW for one codepoint. Returns 1 on success. */
+int gdifont_abc(gdifont_t *f, unsigned cp, gdifont_abc_t *out);
+
+/* GetGlyphOutline(GGO_BITMAP): 1 bit per pixel, MSB first, rows padded to 4
+   bytes. Returns 1 on success; release with gdifont_glyph_release. */
+int gdifont_glyph_mono(gdifont_t *f, unsigned cp, gdifont_glyph_t *out);
+
+/* GetGlyphOutline(GGO_GRAY8_BITMAP): one byte per pixel, 0..64, rows padded
+   to 4 bytes. Ignores gasp: always greyscale. */
+int gdifont_glyph_gray8(gdifont_t *f, unsigned cp, gdifont_glyph_t *out);
+
+void gdifont_glyph_release(gdifont_glyph_t *g);
+
+/* Whether ExtTextOut output for this font is greyscale (1) or 1-bit (0) */
+int gdifont_text_is_gray(const gdifont_t *f);
+
+/*
+ * ExtTextOutW with TA_LEFT | TA_TOP, transparent background, no lpDx. The
+ * pen starts at (x, y), y being the top of the cell, and advances by
+ * A + B + C per character. Writes coverage 0..255 into an 8-bit buffer
+ * (1-bit output gives 0 or 255), keeping the larger value where glyphs
+ * overlap. Returns the total advance.
+ */
+int gdifont_text_out(gdifont_t *f, int x, int y, const unsigned *cps, int n,
+	unsigned char *dst, int dstw, int dsth, int dstpitch);
+
+/* Total advance of a string, as gdifont_text_out would move the pen */
+int gdifont_text_width(gdifont_t *f, const unsigned *cps, int n);
+
+/*
+ * The size rule on its own (spec section 3), for testing: pick the ppem,
+ * ascent and descent for a cell height. Returns the ppem.
+ */
+int gdifont_select_size(const gdifont_sizeinfo_t *si, int tall, int *ascent, int *descent);
+
+/* Whether a gasp table (raw sfnt bytes) asks for greyscale at this ppem */
+int gdifont_gasp_gray(const unsigned char *gasp, size_t len, int ppem);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
