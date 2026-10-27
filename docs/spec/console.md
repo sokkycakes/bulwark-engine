@@ -451,7 +451,7 @@ held and the matching `-` command when it's let go.
 | `floodprot` | floodprot [messages seconds silence]: chat flood protection |
 | `flush` | Rescan the game directories for packages |
 | `fly` | Toggle flying (cheat) |
-| `fog` | fog <density> [r g b]: set the fog (0 turns it off) |
+| `fog` | fog <density> [r g b]: set the fog (0 turns it off); densities as Quake maps give them (squared exponential, a 64th of the density per unit) |
 | `force_centerview` | Level the view pitch |
 | `+forward` / `-forward` | Move forward |
 | `fps_preset` | fps_preset <fast\|normal\|nice>: set the effect cvars for speed or looks |

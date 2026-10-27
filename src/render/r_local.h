@@ -283,6 +283,7 @@ int R_SkinGeomset(const rskin_t *s, int group); /* the sub-model to draw, 0 by d
 material_t *R_SkinReplace(const rskin_t *s, const char *surface);
 const rskin_t *R_EntitySkin(struct qcvm_s *vm, int ent);
 void R_ClearSkins(void);
+material_t *R_Q1TextureMaterial(const uint8_t *mt, size_t avail, int *w, int *h, bool hl);
 void R_ClearRemaps(void);
 /* QC dynamic lights (dynamiclight_spawnstatic), r_rtlights.c */
 void R_AddQCLights(void);

@@ -76,15 +76,16 @@
 	width: 200%;
 	height: 100%;
 	flow-children: right;
-	-mix-blend-mode: additive;
 	animation-timing-function: linear;
 	animation-iteration-count: infinite;
 }
 
+/* the blend goes on the painted tiles: a blend mode is per panel */
 .bgfill-tile {
 	width: 50%;
 	height: 100%;
 	background-size: 100% 100%;
+	-mix-blend-mode: additive;
 }
 
 /* o1 drifts right 0.1 widths/s, o2 left 0.18; the red (team) fill is faster */

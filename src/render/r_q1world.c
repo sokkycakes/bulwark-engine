@@ -273,6 +273,12 @@ static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int
 	return m;
 }
 
+/* a map's texture for a BSP drawn as a model (r_model.c) */
+material_t *R_Q1TextureMaterial(const uint8_t *mt, size_t avail, int *w, int *h, bool hl)
+{
+	return texture_material(mt, avail, w, h, hl);
+}
+
 /* --- the world ------------------------------------------------------------------- */
 
 typedef struct {

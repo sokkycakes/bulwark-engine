@@ -267,7 +267,7 @@
 .room-label
 {
 	x: 6px;
-	y: 1.5px;
+	y: -1px;
 	flow-children: down;
 }
 .room-label Label
@@ -282,7 +282,7 @@
 	y: 3px;
 	font-family: "Trade Gothic Next LT Pro BdCn";
 	font-size: 35.2px;
-	line-height: 43.5px;
+	line-height: 37px;
 }
 .room-code-long .room-value
 {
@@ -430,7 +430,12 @@
 	font-size: 35.2px;
 	line-height: 42px;
 }
-.chat-send Label { vertical-align: center; }
+.chat-send Label
+{
+	vertical-align: center;
+	line-height: 36px;
+	margin-bottom: 7px; /* Panorama sets Trade Gothic lower in its line than a browser */
+}
 
 /* footer (72:281): the Esc key and Leave */
 .footer-hint
@@ -458,6 +463,7 @@
 	vertical-align: center;
 	height: 48px;
 	min-width: 111px;
+	line-height: 40px;
 	padding-left: 6.6px;
 	padding-right: 6.6px;
 	background-color: #454545e8;

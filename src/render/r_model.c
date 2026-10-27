@@ -12,6 +12,8 @@
 #include <stdlib.h>
 
 static int32_t rd32(const uint8_t *p) { return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
+static int16_t rd16(const uint8_t *p) { return (int16_t)(p[0] | (p[1] << 8)); }
+static uint16_t rdu16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static float rdf(const uint8_t *p)
 {
 	float f;
@@ -719,6 +721,141 @@ static bool load_studio(rmodel_t *mod)
 	return true;
 }
 
+/* --- BSP files drawn as models ------------------------------------------------ */
+
+/* Quake's item boxes (maps/b_bh25.bsp and the like) are small BSP maps used
+ * as models. The first model's faces become one static mesh per texture,
+ * lit like any model; their lightmaps aren't used. Q1 BSP29, BSP2 and
+ * GoldSrc BSP30; record layouts as in docs/spec/bsp.md. */
+static bool load_bspmodel(rmodel_t *mod, const uint8_t *d, size_t size)
+{
+	enum { L_TEXTURES = 2, L_VERTEXES = 3, L_TEXINFO = 6, L_FACES = 7, L_EDGES = 12, L_SURFEDGES = 13,
+	       L_MODELS = 14, L_COUNT = 15 };
+	struct {
+		int32_t ofs, len;
+	} l[L_COUNT];
+	bool b2 = !memcmp(d, "BSP2", 4), hl = rd32(d) == 30;
+	int facesize = b2 ? 28 : 20, edgesize = b2 ? 8 : 4;
+	int numtex = 0, firstface, numfaces, numverts, numedges, numsurfedges, numtexinfo, nv = 0, ni = 0;
+	material_t **mats = NULL;
+	int (*sizes)[2] = NULL;
+	iqm_t *q;
+	if (size < 4 + L_COUNT * 8)
+		return false;
+	for (int i = 0; i < L_COUNT; i++) {
+		l[i].ofs = rd32(d + 4 + i * 8);
+		l[i].len = rd32(d + 8 + i * 8);
+		if (l[i].ofs < 0 || l[i].len < 0 || (size_t)l[i].ofs + l[i].len > size)
+			return false;
+	}
+	if (l[L_MODELS].len < 64)
+		return false;
+	firstface = rd32(d + l[L_MODELS].ofs + 56);
+	numfaces = rd32(d + l[L_MODELS].ofs + 60);
+	numverts = l[L_VERTEXES].len / 12;
+	numedges = l[L_EDGES].len / edgesize;
+	numsurfedges = l[L_SURFEDGES].len / 4;
+	numtexinfo = l[L_TEXINFO].len / 40;
+	if (firstface < 0 || numfaces < 0 || (int64_t)firstface + numfaces > l[L_FACES].len / facesize)
+		return false;
+	if (l[L_TEXTURES].len >= 4) {
+		const uint8_t *tl = d + l[L_TEXTURES].ofs;
+		numtex = rd32(tl);
+		if (numtex < 0 || 4 + (int64_t)numtex * 4 > l[L_TEXTURES].len)
+			numtex = 0;
+		mats = Mem_Alloc(sizeof(*mats) * (numtex + 1));
+		sizes = Mem_Alloc(sizeof(*sizes) * (numtex + 1));
+		for (int i = 0; i < numtex; i++) {
+			int32_t o = rd32(tl + 4 + i * 4);
+			sizes[i][0] = sizes[i][1] = 64;
+			mats[i] = o < 0 || o + 40 > l[L_TEXTURES].len
+			              ? R_FindMaterial("$default", MATF_MODEL)
+			              : R_Q1TextureMaterial(tl + o, (size_t)(l[L_TEXTURES].len - o), &sizes[i][0], &sizes[i][1], hl);
+		}
+	}
+	q = Mem_Alloc(sizeof(*q));
+	/* a face of n edges is a fan of n - 2 triangles */
+	for (int f = 0; f < numfaces; f++) {
+		const uint8_t *fp = d + l[L_FACES].ofs + (firstface + f) * facesize;
+		int n = b2 ? rd32(fp + 12) : rd16(fp + 8);
+		if (n >= 3 && n <= 256) {
+			nv += n;
+			ni += (n - 2) * 3;
+		}
+	}
+	q->verts = Mem_Alloc(sizeof(rvert_t) * (nv + 1));
+	q->indices = Mem_Alloc(sizeof(uint32_t) * (ni + 1));
+	q->meshes = Mem_Alloc(sizeof(iqmmesh_t) * (numtex + 1));
+	/* one mesh per texture, faces in texture order */
+	for (int t = -1; t < numtex; t++) {
+		int first = q->numindexes;
+		for (int f = 0; f < numfaces; f++) {
+			const uint8_t *fp = d + l[L_FACES].ofs + (firstface + f) * facesize;
+			int firstedge = b2 ? rd32(fp + 8) : rd32(fp + 4), n = b2 ? rd32(fp + 12) : rd16(fp + 8);
+			int ti = b2 ? rd32(fp + 16) : rd16(fp + 10), side = b2 ? rd32(fp + 4) : rd16(fp + 2);
+			int plane = b2 ? rd32(fp) : rdu16(fp);
+			const uint8_t *tip;
+			float vecs[2][4], normal[3] = {0, 0, 1};
+			int miptex, base = q->numverts;
+			if (n < 3 || n > 256 || ti < 0 || ti >= numtexinfo || firstedge < 0 || firstedge + n > numsurfedges)
+				continue;
+			tip = d + l[L_TEXINFO].ofs + ti * 40;
+			miptex = rd32(tip + 32);
+			if (miptex < 0 || miptex >= numtex)
+				miptex = -1;
+			if (miptex != t)
+				continue;
+			for (int k = 0; k < 8; k++)
+				vecs[k / 4][k % 4] = rdf(tip + k * 4);
+			if (plane >= 0 && (int64_t)(plane + 1) * 20 <= rd32(d + 4 + 1 * 8 + 4)) {
+				const uint8_t *pp = d + rd32(d + 4 + 1 * 8) + plane * 20;
+				for (int k = 0; k < 3; k++)
+					normal[k] = rdf(pp + k * 4) * (side ? -1.0f : 1.0f);
+			}
+			for (int e = 0; e < n; e++) {
+				int se = rd32(d + l[L_SURFEDGES].ofs + (firstedge + e) * 4), edge = se < 0 ? -se : se, v;
+				rvert_t *out = &q->verts[q->numverts];
+				const uint8_t *ep;
+				if (edge >= numedges)
+					break;
+				ep = d + l[L_EDGES].ofs + edge * edgesize;
+				v = b2 ? rd32(ep + (se < 0 ? 4 : 0)) : rdu16(ep + (se < 0 ? 2 : 0));
+				if (v < 0 || v >= numverts)
+					break;
+				for (int k = 0; k < 3; k++) {
+					out->xyz[k] = rdf(d + l[L_VERTEXES].ofs + v * 12 + k * 4);
+					out->normal[k] = normal[k];
+				}
+				out->st[0] = (DotProduct(out->xyz, vecs[0]) + vecs[0][3]) / (t >= 0 ? sizes[t][0] : 64);
+				out->st[1] = (DotProduct(out->xyz, vecs[1]) + vecs[1][3]) / (t >= 0 ? sizes[t][1] : 64);
+				memset(out->color, 255, 4);
+				q->numverts++;
+			}
+			/* a fan, wound for GL's counter-clockwise fronts as the world is */
+			for (int k = 2; k < q->numverts - base; k++) {
+				q->indices[q->numindexes++] = (uint32_t)base;
+				q->indices[q->numindexes++] = (uint32_t)(base + k);
+				q->indices[q->numindexes++] = (uint32_t)(base + k - 1);
+			}
+		}
+		if (q->numindexes > first) {
+			iqmmesh_t *m = &q->meshes[q->nummeshes++];
+			m->material = t >= 0 ? mats[t] : R_FindMaterial("$default", MATF_MODEL);
+			m->firstindex = first;
+			m->numindexes = q->numindexes - first;
+			m->skinref = -1;
+			m->geomgroup = m->geomvalue = -1;
+			if (t >= 0)
+				Str_Copy(m->name, m->material->name, sizeof(m->name));
+		}
+	}
+	Mem_Free(mats);
+	Mem_Free(sizes);
+	finish_iqm(mod, q);
+	Con_DPrintf("%s: BSP model, %d triangles\n", mod->name, q->numindexes / 3);
+	return true;
+}
+
 /* --- cache ------------------------------------------------------------------ */
 
 #define MAX_RMODELS 2048
@@ -965,6 +1102,9 @@ rmodel_t *R_LoadModel(const char *name)
 		int n = atoi(name + 1);
 		return r_world.loaded && n >= 0 && n < r_world.numsubmodels ? &r_world.submodels[n] : NULL;
 	}
+	/* the map itself, named by its file (a game asking for world.model) */
+	if (r_world.loaded && r_world.numsubmodels && !Str_ICmp(name, r_world.name))
+		return &r_world.submodels[0];
 	for (int i = 0; i < nummodels; i++)
 		if (!Str_ICmp(models[i]->name, name))
 			return models[i];
@@ -987,6 +1127,8 @@ rmodel_t *R_LoadModel(const char *name)
 		m->loaded = load_studio(m);
 	else if (size >= 4 && !memcmp(d, "IDSP", 4))
 		m->loaded = load_sprite(m, d, size);
+	else if (size >= 4 && (rd32(d) == 29 || rd32(d) == 30 || !memcmp(d, "BSP2", 4)))
+		m->loaded = load_bspmodel(m, d, size);
 	else {
 		/* a plugin may turn it into an IQM (Source .mdl) */
 		size_t qlen;

@@ -339,7 +339,7 @@ static void Fog_f(int argc, const char **argv)
 	}
 	d = (float)atof(argv[1]);
 	if (r_fog_linear->ivalue && d > 0)
-		d = 3.0f / d; /* about 95% fogged at that distance with exponential fog */
+		d = 64 * 1.732f / d; /* about 95% fogged at that distance */
 	r_world.fog[3] = d;
 	if (argc > 4) {
 		r_world.fog[0] = (float)atof(argv[2]);

@@ -167,7 +167,7 @@ static const char *fs_world =
 	"  }\n"
 	"  vec3 c = d.rgb * light;\n"
 	"  if (u_usefullbright > 0.0) c += texture(u_fullbright, v_tc).rgb;\n"
-	"  if (u_fog.w > 0.0) { float f = clamp(exp(-u_fog.w * length(v_pos - u_vieworg)), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
+	"  if (u_fog.w > 0.0) { float z = u_fog.w * length(v_pos - u_vieworg); float f = clamp(exp(-z * z), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
 	"  o_color = vec4(c, d.a) * u_color;\n"
 	"}\n";
 
@@ -202,7 +202,7 @@ static const char *fs_model =
 	"  }\n"
 	"  vec3 c = d.rgb * light;\n"
 	"  if (u_usefullbright > 0.0) c += texture(u_fullbright, v_tc).rgb;\n"
-	"  if (u_fog.w > 0.0) { float f = clamp(exp(-u_fog.w * length(v_pos - u_vieworg)), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
+	"  if (u_fog.w > 0.0) { float z = u_fog.w * length(v_pos - u_vieworg); float f = clamp(exp(-z * z), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
 	"  o_color = vec4(c, d.a) * u_color;\n"
 	"}\n";
 

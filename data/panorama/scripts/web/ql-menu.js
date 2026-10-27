@@ -225,9 +225,24 @@ var QlMenu = (function ()
 			top = y - asc * size + 0.2 * size;
 		else
 			top = y - asc * size;
+		// a label box that stays inside the stage, aligned the way the canvas was
 		var align = o.align || "left";
-		var span = 1000;
-		var left = align === "center" ? x - span / 2 : align === "right" ? x - span : x;
+		var span, left;
+		if ( align === "center" )
+		{
+			span = 2 * Math.max( 1, Math.min( x, W - x ) );
+			left = x - span / 2;
+		}
+		else if ( align === "right" )
+		{
+			span = Math.max( 1, x );
+			left = 0;
+		}
+		else
+		{
+			span = Math.max( 1, W - x );
+			left = x;
+		}
 		var style = "position:" + px( left ) + " " + px( top ) + " 0px;width:" + px( span ) + ";" +
 			"font-size:" + px( size ) + ";text-align:" + align + ";";
 		if ( o.color !== null )
@@ -1108,6 +1123,12 @@ var QlMenu = (function ()
 
 	function init()
 	{
+		// TEMP-DEBUG
+		if ( fte_query( "cvar:ql_menu_debug" ) === "1" )
+		{
+			var q = fte_query;
+			fte_query = function ( r ) { var x = q( r ); if ( r !== "getarena" && r.indexOf( "cvar:" ) !== 0 ) $.Msg( "QL " + r + " -> " + x ); return x; };
+		}
 		root = $( "#QlPage" ) || $.GetContextPanel();
 		stage = $.CreatePanel( "Panel", root, "Stage", { hittest: "false" } );
 		artLayer = new Layer( $.CreatePanel( "Panel", stage, "Art", { "class": "layer", hittest: "false" } ) );

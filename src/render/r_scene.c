@@ -460,6 +460,10 @@ void R_SetupView(void)
 		} else if (r_world.hasfog) {
 			memcpy(r_viewfog, r_world.fog, sizeof(r_viewfog));
 		}
+		/* densities are as Quake maps give them ("fog" "0.05 r g b"): squared
+		 * exponential fog at a 64th of the density per unit, the convention
+		 * Quake mappers' tools and documentation use */
+		r_viewfog[3] /= 64;
 	}
 }
 

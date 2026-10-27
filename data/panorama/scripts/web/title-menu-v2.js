@@ -268,12 +268,19 @@ var TitleMenu = (function ()
 	// the same artwork) in slices whose opacity samples the mask.
 	var FW = 1365, FH = 768;
 	var TILE_W = 428.224, TILE_H = 70.272;
-	// logotile.svg (429 x 71, meet) drawn into the tile box; logo units -> frame
-	var LOGO_S = Math.min( TILE_W / 429, TILE_H / 71 );
-	var LOGO_W = 460, LOGO_H = 204;
-	// where in the logo the second line ("swift") reaches up into the first
+	// design pixels per artboard unit, vertically (the view is 1080 high)
+	var PX = 1080 / FH;
+	// logotile.svg is 429 x 71 and keeps its aspect in the stretched tile box
+	// (meet): at 4:3 and wider it fills the tile's height and is centred, so
+	// in design pixels its scale doesn't depend on the view's width
+	var LS = TILE_H * PX / 71;
+	// the tile's wordmark is the logo's first line, 1.824 units in
+	var LOGO_X = 1.824, LOGO_W = 460, LOGO_H = 204;
+	// where the logo's second line ("swift") reaches up into the first
 	var SWIFT_X0 = 174, SWIFT_X1 = 256, SWIFT_TOP = 62.5;
-	var SLICES = [ 0, 87, 174, 256, 343, TILE_W / LOGO_S ];
+	var SLICES = [ LOGO_X, 87, 174, 256, 343, LOGO_X + 429 ];
+	// frame units per design pixel across, at 16:9 (only used to sample the mask)
+	var FX_PER_PX = FW / ( 1920 * FW / 1024 );
 
 	function maskAt( x, y )
 	{
@@ -289,6 +296,7 @@ var TitleMenu = (function ()
 	}
 
 	function pct( v, total ) { return ( v / total * 100 ).toFixed( 4 ) + "%"; }
+	function px( v ) { return v.toFixed( 3 ) + "px"; }
 
 	function hex2( a )
 	{
@@ -306,29 +314,36 @@ var TitleMenu = (function ()
 			for ( var s = 0; s <= STOPS; s++ )
 				stops.push( "color-stop( " + ( s / STOPS ).toFixed( 4 ) + ", #333333" + hex2( maskAt( s / STOPS * FW, cy ) ) + " )" );
 			$.CreatePanel( "Panel", frame, "", { class: "bg-row", style:
-				"y: " + pct( y0, FH ) + "; height: " + pct( y1 - y0 + 0.5, FH ) + ";" +
+				"y: " + pct( y0, FH ) + "; height: " + pct( y1 - y0, FH ) + ";" +
 				"background-color: gradient( linear, 0% 0%, 100% 0%, " + stops.join( ", " ) + " );" } );
 		}
 	}
 
-	// one piece of one tile: frame rect [fx0,fx1] x [fy0,fy1] of the tile whose
-	// box starts at (tx, ty)
-	function addSlice( frame, tx, ty, fx0, fy0, fx1, fy1 )
+	// the visible rows [vy0, vy1] of the tile whose box starts at (tx, ty):
+	// a panel over the tile box, the wordmark centred in it, cut into slices
+	function addTile( frame, tx, ty, vy0, vy1 )
 	{
-		var w = fx1 - fx0, h = fy1 - fy0;
-		if ( w < 0.25 || h < 0.25 )
+		if ( vy1 - vy0 < 0.25 )
 			return;
-		var a = 0.11 * maskAt( ( fx0 + fx1 ) / 2, ( fy0 + fy1 ) / 2 );
-		if ( a < 0.004 )
-			return;
-		var dw = LOGO_W * LOGO_S, dh = LOGO_H * LOGO_S;
-		// CSS background-position %: offset = (box - image) * p
-		var bx = ( tx - fx0 ) / ( w - dw ) * 100, by = ( ty - fy0 ) / ( h - dh ) * 100;
-		$.CreatePanel( "Panel", frame, "", { class: "bg-tile", style:
-			"x: " + pct( fx0, FW ) + "; y: " + pct( fy0, FH ) + "; width: " + pct( w, FW ) + "; height: " + pct( h, FH ) + ";" +
-			"background-size: " + ( dw / w * 100 ).toFixed( 4 ) + "% " + ( dh / h * 100 ).toFixed( 4 ) + "%;" +
-			"background-position: " + bx.toFixed( 4 ) + "% " + by.toFixed( 4 ) + "%;" +
-			"opacity: " + a.toFixed( 4 ) + ";" } );
+		var tile = $.CreatePanel( "Panel", frame, "", { class: "bg-tile", style:
+			"x: " + pct( tx, FW ) + "; y: " + pct( vy0, FH ) + "; width: " + pct( TILE_W, FW ) + "; height: " + pct( vy1 - vy0, FH ) + ";" } );
+		var mark = $.CreatePanel( "Panel", tile, "", { class: "bg-mark", style: "width: " + px( 429 * LS ) + ";" } );
+		for ( var s = 0; s + 1 < SLICES.length; s++ )
+		{
+			var l0 = SLICES[ s ], l1 = SLICES[ s + 1 ];
+			var bottom = Math.min( vy1, ty + ( l0 >= SWIFT_X0 && l1 <= SWIFT_X1 ? SWIFT_TOP : 71 ) * TILE_H / 71 );
+			if ( bottom - vy0 < 0.25 )
+				continue;
+			var cx = tx + TILE_W / 2 + ( ( l0 + l1 ) / 2 - LOGO_X - 214.5 ) * LS * FX_PER_PX;
+			var a = 0.11 * maskAt( cx, ( vy0 + bottom ) / 2 );
+			if ( a < 0.004 )
+				continue;
+			$.CreatePanel( "Panel", mark, "", { class: "bg-slice", style:
+				"x: " + px( ( l0 - LOGO_X ) * LS ) + "; width: " + px( ( l1 - l0 ) * LS ) + "; height: " + px( ( bottom - vy0 ) * PX ) + ";" +
+				"background-size: " + px( LOGO_W * LS ) + " " + px( LOGO_H * LS ) + ";" +
+				"background-position: " + px( -l0 * LS ) + " " + px( -( vy0 - ty ) * PX ) + ";" +
+				"opacity: " + a.toFixed( 4 ) + ";" } );
+		}
 	}
 
 	// HORIZONTAL_HEXAGONAL tiling, as the page's two masked layers draw it:
@@ -347,16 +362,7 @@ var TitleMenu = (function ()
 			{
 				var ty = oy + k * TILE_H;
 				for ( var tx = ox - TILE_W * Math.ceil( ox / TILE_W ); tx < FW; tx += TILE_W )
-				{
-					for ( var s = 0; s + 1 < SLICES.length; s++ )
-					{
-						var lx0 = SLICES[ s ], lx1 = SLICES[ s + 1 ];
-						var bottom = lx0 >= SWIFT_X0 && lx1 <= SWIFT_X1 ? SWIFT_TOP : TILE_H / LOGO_S;
-						addSlice( frame, tx, ty,
-							Math.max( 0, tx + lx0 * LOGO_S ), Math.max( by0, ty ),
-							Math.min( FW, tx + lx1 * LOGO_S ), Math.min( by1, ty + bottom * LOGO_S ) );
-					}
-				}
+					addTile( frame, tx, ty, Math.max( by0, ty ), Math.min( by1, ty + TILE_H ) );
 			}
 		}
 	}
