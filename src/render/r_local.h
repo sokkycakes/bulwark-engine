@@ -269,6 +269,7 @@ typedef struct {
 	int renderflags;
 	int effects;
 	int drawflags;
+	bool mirrored; /* axis has a negative determinant: cull the other face */
 	material_t *forceshader;
 	struct qcvm_s *vm;
 	int qcent;        /* entity in that vm */

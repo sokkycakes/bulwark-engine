@@ -9,7 +9,7 @@
 
 rscene_t r_scene;
 rstats_t r_stats;
-static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch;
+static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch, *r_viewmodel_mirror;
 
 /* entity fields addentity reads, looked up once per client game */
 static struct {
@@ -264,6 +264,14 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 			o[k] = r_scene.origin[k] + axis[0][k] * e->origin[0] + axis[1][k] * e->origin[1] + axis[2][k] * e->origin[2];
 		memcpy(e->origin, o, sizeof(o));
 		memcpy(e->axis, axis, sizeof(axis));
+	}
+	/* view models mirrored left to right: Counter-Strike's view models are
+	 * built for the left hand and the game shows them mirrored */
+	e->mirrored = false;
+	if ((e->renderflags & (1 | 4)) && r_viewmodel_mirror && r_viewmodel_mirror->ivalue) {
+		for (int k = 0; k < 3; k++)
+			e->axis[1][k] = -e->axis[1][k];
+		e->mirrored = true;
 	}
 }
 
@@ -540,6 +548,8 @@ void R_InitScene(void)
 	fov = Cvar_Get("fov", "90", CVAR_ARCHIVE, "Horizontal field of view at 4:3, widened for wider screens");
 	r_viewmodel_quakepitch = Cvar_Get("r_viewmodel_quakepitch", "0", CVAR_ARCHIVE,
 	                                  "1 inverts view model pitch like other models (FTE's behaviour); 0 makes them follow the camera");
+	r_viewmodel_mirror = Cvar_Get("r_viewmodel_mirror", "0", CVAR_ARCHIVE,
+	                              "1 mirrors view models left to right (for models built for the other hand)");
 	r_viewmodel_fov = Cvar_Get("r_viewmodel_fov", "0", CVAR_ARCHIVE,
 	                           "Field of view for view models (like Source's viewmodel_fov); 0 uses the view's");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");

@@ -494,6 +494,23 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 
 /* --- GoldSrc studio models ---------------------------------------------------- */
 
+/* "#WWWHHHname.bmp": a stand-in for the image models/texture/name.bmp
+ * (with the '#WWWHHH' kept in the file name), which is WWW x HHH pixels.
+ * Counter-Strike Online models carry a tiny placeholder under such names,
+ * and their texture coordinates are in the external image's pixels */
+static bool studio_extsize(const studio_texture_t *t, int *w, int *h)
+{
+	const char *n = t->name;
+	if (n[0] != '#')
+		return false;
+	for (int i = 1; i <= 6; i++)
+		if (n[i] < '0' || n[i] > '9')
+			return false;
+	*w = (n[1] - '0') * 100 + (n[2] - '0') * 10 + (n[3] - '0');
+	*h = (n[4] - '0') * 100 + (n[5] - '0') * 10 + (n[6] - '0');
+	return *w > 0 && *h > 0;
+}
+
 /* a studio texture: 8-bit pixels with their own palette. Flag 0x40
  * (masked) makes the last palette entry see-through, 0x20 is additive and
  * 0x04 fullbright (docs/spec/studio-mdl.md) */
@@ -510,6 +527,13 @@ static material_t *studio_skin(const char *model, const studio_texture_t *t)
 	/* a replacement image or material by that name wins */
 	if (R_ImageExists(name) || FS_FileExists(va("%s.mat", name)))
 		return R_FindMaterial(name, MATF_MODEL);
+	{
+		int ew, eh;
+		char ext[96];
+		snprintf(ext, sizeof(ext), "models/texture/%s", tex);
+		if (studio_extsize(t, &ew, &eh) && R_ImageExists(ext))
+			return R_FindMaterial(ext, MATF_MODEL);
+	}
 	rgba = Mem_Alloc((size_t)t->width * t->height * 4);
 	for (int i = 0; i < t->width * t->height; i++) {
 		uint8_t c = t->pixels[i];
@@ -543,8 +567,11 @@ static void studio_vert(const studio_submodel_t *sm, const bonemat_t *rest, cons
 	for (int r = 0; r < 3; r++)
 		v->normal[r] = rest[nb][r * 4] * in[0] + rest[nb][r * 4 + 1] * in[1] + rest[nb][r * 4 + 2] * in[2];
 	/* texture coordinates are in pixels */
-	v->st[0] = t ? (float)s / t->width : 0;
-	v->st[1] = t ? (float)tt / t->height : 0;
+	int tw = t ? t->width : 1, th = t ? t->height : 1;
+	if (t)
+		studio_extsize(t, &tw, &th);
+	v->st[0] = t ? (float)s / tw : 0;
+	v->st[1] = t ? (float)tt / th : 0;
 	memset(v->color, 255, 4);
 	*bone = (uint8_t)b;
 }
@@ -996,6 +1023,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		return;
 	if (depthhack)
 		qglDepthRange(0, 0.3);
+	if (e->mirrored)
+		qglCullFace(GL_FRONT);
 	R_UseProgram(PROG_MODEL);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
@@ -1054,6 +1083,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	}
 	if (depthhack)
 		qglDepthRange(0, 1);
+	if (e->mirrored)
+		qglCullFace(GL_BACK);
 	GL_SetCull(true);
 }
 
