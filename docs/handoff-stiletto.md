@@ -91,7 +91,9 @@ the script as `location.search`.
     mask shapes as solid art.
   - File searches let `*` cross folders, so hero defs loaded before
     `player.def` and a duel never spawned anyone. A host plus guest duel
-    through the lobby now reaches "FIGHT!".
+    through the lobby now plays to a result: with the guest using `kill`
+    each round, the arena went Round 1 → 2 → 3 → MATCH END at 3-0 and the
+    host showed "player WINS THE MATCH".
   - A second copy on one machine no longer takes the lobby port for its
     game server.
   - `webcore_query <request>` prints the bridge's reply, for tests.
@@ -107,8 +109,11 @@ the script as `location.search`.
    no internet rendezvous service. Spec 9.13 sketches the reference's
    broker/ICE design if this is wanted.
 2. **Ragdolls and `brush_*`** are listed above.
-3. A full duel between two clients played to a result through the lobby
-   has not been run; the two-client test stops at the first round's start.
+3. **Observed, not investigated:** in the two-client duel both players were
+   named "player" although each cfg ran `seta name ...` first (possibly the
+   archived-cvar reset noted below), and the match end showed a dialog
+   ("Stiletto Swift / Proto / Tomboy Princess", OK) whose source and FTE
+   behaviour were not checked.
 
 ## Known limitations, not fixed
 
@@ -192,6 +197,6 @@ only one such test at a time.
 
 ## Suggested next steps
 
-1. Run a full duel between two clients through the lobby, to a result.
+1. Look into the two observations in item 3 of Not finished.
 2. If wanted: ragdolls, an internet lobby rendezvous, transform-aware
    hit-testing in PanoramaEngine, and CSS filters.
