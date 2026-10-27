@@ -252,19 +252,6 @@ add_library(bwclient STATIC
 	${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
 	${CMAKE_BINARY_DIR}/generated/bw_widefont.c)
 target_link_libraries(bwclient PUBLIC bwserver bwui)
-# FreeType hints glyphs, which keeps small crisp text like Source's; without
-# it fonts are rasterised by stb_truetype. PanoramaEngine's copy is used when
-# it is part of the build, otherwise the system's.
-if(TARGET freetype)
-	target_link_libraries(bwclient PRIVATE freetype)
-	target_compile_definitions(bwclient PRIVATE BW_FREETYPE)
-else()
-	find_package(Freetype QUIET)
-	if(FREETYPE_FOUND)
-		target_link_libraries(bwclient PRIVATE Freetype::Freetype)
-		target_compile_definitions(bwclient PRIVATE BW_FREETYPE)
-	endif()
-endif()
 target_include_directories(bwclient PRIVATE third_party)
 
 if(SDL2_FOUND)
