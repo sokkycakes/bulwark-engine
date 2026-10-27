@@ -1,0 +1,108 @@
+<!--
+	Panorama port of Stiletto's data/web/h3-main-menu/index.html: a Halo 3
+	style main menu mock-up built from H3EK tag data. Two pages share one
+	16:9 screen: main_menu and the pregame_lobby template (five modes), with
+	the tag-timed slide transitions, a stub overlay for screens the mock-up
+	doesn't model, and the debug HUD (`). The menu data is the page's own
+	data.js, loaded from the game. Nothing here talks to the engine, as in
+	the page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/h3-main-menu.css" />
+	</styles>
+	<scripts>
+		<include src="file://{game}/data/web/h3-main-menu/data.js" />
+		<include src="file://{resources}/scripts/web/h3-main-menu.js" />
+	</scripts>
+
+	<Panel id="H3Page" class="page" hittest="false">
+		<Panel id="Stage" hittest="false">
+			<Panel id="Screen" class="fill intro" hittest="false">
+				<Panel class="fill bg-base" hittest="false" />
+				<Panel class="fill bg-blue" hittest="false" />
+				<Panel class="fill bg-orange" hittest="false" />
+
+				<!-- PAGE: main_menu -->
+				<Panel id="PageMain" class="h3page page-main off" hittest="false">
+					<Panel id="TitleLogo" class="img delayd-fade-in" hittest="false" />
+					<Panel id="BungieLogo" class="delayd-fade-in" hittest="false">
+						<Panel id="BungieImage" class="fill img bungie-dim" hittest="false" />
+					</Panel>
+					<Label id="BuildText" class="mono delayd-fade-in" text="build 12070.07.10.18.2128.delta" hittest="false" />
+
+					<Panel id="MenuPanel" hittest="false">
+						<Panel class="mm-header" hittest="false" />
+						<Panel class="mm-body" hittest="false" />
+						<Panel class="mm-footer" hittest="false" />
+						<Panel class="skirt mm-skirt" hittest="false" />
+						<Panel id="MenuPrimary" hittest="false" />
+						<Panel id="MainList" hittest="false" />
+						<Panel id="ButtonKeys" class="button-keys" hittest="false" />
+						<Label id="VersionText" class="t" text="version 1.0" hittest="false" />
+					</Panel>
+				</Panel>
+
+				<!-- PAGE: pregame_lobby (the shared template) -->
+				<Panel id="PageLobby" class="h3page page-lobby off hidden" hittest="false">
+					<Panel class="fill lobby-tint-base" hittest="false" />
+					<Panel class="fill lobby-tint-blue" hittest="false" />
+					<Panel class="fill lobby-tint-orange" hittest="false" />
+
+					<Panel id="LobbyPanel" hittest="false">
+						<Panel class="lb-header" hittest="false" />
+						<Label id="LobbyTitle" class="t" text="CUSTOM GAMES" hittest="false" />
+						<Panel class="lb-body" hittest="false" />
+						<!-- the body's flow: list, status, preview, game name -->
+						<Panel id="LobbyFlow" hittest="false">
+							<Panel id="LobbyList" hittest="false" />
+							<Label id="LobbyStatusHeading" class="t" text="Ready" hittest="false" />
+							<Label id="LobbyStatus" class="t" text="" hittest="false" />
+							<Panel id="LobbyPreview" hittest="false">
+								<Panel class="fill preview-map" hittest="false" />
+								<Panel class="fill preview-glow" hittest="false" />
+								<Panel class="preview-gametype" hittest="false">
+									<Label id="LobbyGametype" class="t" text="SLAYER" hittest="false" />
+								</Panel>
+								<Panel class="fill preview-shade" hittest="false" />
+							</Panel>
+							<Label id="LobbyGameName" class="t" text="" hittest="false" />
+						</Panel>
+						<Panel class="lb-footer" hittest="false" />
+						<Panel id="LobbyButtonKeys" class="button-keys" hittest="false" />
+						<Panel class="skirt lb-skirt" hittest="false" />
+					</Panel>
+
+					<Panel id="LobbyPlayers" hittest="false">
+						<Label id="LobbyPlayersCount" class="t" text="1" hittest="false" />
+						<Label id="LobbyPlayersSep" class="t" text="/" hittest="false" />
+						<Label id="LobbyPlayersMax" class="t" text="16" hittest="false" />
+					</Panel>
+					<Panel id="LobbyRoster" hittest="false" />
+				</Panel>
+
+				<Panel id="BlackFade" class="black-fade" hittest="false" />
+
+				<Panel id="Debug" class="hidden" hittest="false">
+					<Label id="DebugScreen" class="mono" text="screen: main_menu" hittest="false" />
+					<Label id="DebugFocus" class="mono" text="focus: 0" hittest="false" />
+					<Button id="DebugOnline" onactivate="H3Menu.ToggleOnline()">
+						<Label id="DebugOnlineLabel" class="mono" text="online: [ ]" hittest="false" />
+					</Button>
+					<Label id="DebugNav" class="mono" text="nav: -" hittest="false" />
+				</Panel>
+			</Panel>
+
+			<!-- submenu stub (start_menu_settings, start_menu_hq, ...) -->
+			<Button id="Overlay" class="hidden" onactivate="H3Menu.CloseOverlay()">
+				<Panel class="overlay-card" hittest="false">
+					<Label id="OverlayTitle" class="t" text="Submenu" hittest="false" />
+					<Label id="OverlayTag" class="mono" text="" hittest="false" />
+					<Label class="t overlay-hint" text="B / Esc to return" hittest="false" />
+				</Panel>
+			</Button>
+		</Panel>
+
+		<Label id="ControlsHint" class="mono" html="true" text="&lt;b&gt;Controls:&lt;/b&gt; Up/Down or W/S — move · Enter or A — confirm · Esc or B — back · X — Settings · Y — Friends (online) · ` — toggle debug" hittest="false" />
+	</Panel>
+</root>
