@@ -1,6 +1,7 @@
 # Handoff: running Stiletto on Bulwark
 
-Status as of 2026-10-27, branch `claude/project-thread-upkyrb`.
+Status as of 2026-10-27, branch `claude/project-thread-wbkro8` (the work
+below up to `a49dae0` was on `claude/project-thread-upkyrb`).
 
 ## The goal and the rules
 
@@ -37,8 +38,9 @@ deliberately not read: `docs/verification/2026-09-12-figma-lobby-engine.patch`,
 | Renderer additions | `r_skin.c` (custom skins, body groups, `remapshader`, `r_readimage`), `r_svg.c` + `third_party/nanosvg`, `r_rtlights.c` (QC dynamic lights), `r_model.c` (BSP files as models) | |
 
 URL mapping: `fte://data/web/<dir>/index.html?q` → `panorama/layout/web/<dir>.xml`,
-and other files → `layout/web/<dir>/<name>.xml`. The query reaches the
-script as `location.search`.
+other files → `layout/web/<dir>/<name>.xml`, and a page directly under
+`data/web/` (`scratch.html`) → `layout/web/scratch.xml`. The query reaches
+the script as `location.search`.
 
 ## Done
 
@@ -55,10 +57,25 @@ script as `location.search`.
   countdown, cancel, chat, map/ruleset/limits, start. The host runs a
   listen server and guests connect. Verified with two processes on one
   machine.
-- **Ported pages, finished and verified:** `title-menu-v2` (the one
-  Stiletto uses), `title-menu`, `pause-menu`, `lobby-menu`, `ql-menu` (duel
-  selector plus the warmup/escape views), `hud`, `webcore-test`
-  (index). Each was compared with a Chromium render of the original.
+- **Ported pages, finished and verified:** every page under
+  `data/web/` the game can load. `title-menu-v2` (the one Stiletto uses),
+  `title-menu`, `pause-menu`, `lobby-menu`, `ql-menu` (duel selector plus
+  the warmup/escape views) and `ql-menu/menu-demo`, `hud`, `h3-main-menu`
+  (both pages, all five lobby modes, transitions, overlays, keys and mouse),
+  `scratch` (the MGS4 mock-up), `webcore-test` (index and the six smoke
+  pages), `test/simple` and `basemod-cef-test/menu`. Each was compared with
+  a Chromium render of the original at 1920x1080; the differences left are
+  fonts the game doesn't ship (stand-ins are named in each stylesheet) and
+  the effects listed under Known limitations. `h3-main-menu-copy`, an older
+  snapshot that fetched its data (which its own note says crashed FTE's
+  loader), opens the `h3-main-menu` port; its plainer background gradient
+  is not reproduced.
+- **Checked:** no QC, cfg or header in the branch names a
+  `basemod-wireframes*` page; they are browser-only prototypes and are not
+  ported.
+- **The half-finished revisions of `699e8d3`** (SVG art, `Bulwark.Width/
+  Height`, `Bulwark.MouseX/MouseY`, the drawn `ql-menu` cursor) were opened,
+  checked against the originals and kept.
 - **Engine fixes found while testing:**
   - Q1 item boxes (`maps/b_*.bsp`) are now drawn.
   - Fog uses Quake's density convention; LibreQuake maps were white.
@@ -68,6 +85,16 @@ script as `location.search`.
   - `serverkey("mapname")` works.
   - A page closing itself no longer crashes the engine.
   - Fonts register before the title opens.
+  - UI text was drawn too thin: atlas glyphs are premultiplied but were
+    blended as straight alpha.
+  - SVG `<mask>` is drawn (nanosvg patch plus `r_svg.c`); the HUD drew its
+    mask shapes as solid art.
+  - File searches let `*` cross folders, so hero defs loaded before
+    `player.def` and a duel never spawned anyone. A host plus guest duel
+    through the lobby now reaches "FIGHT!".
+  - A second copy on one machine no longer takes the lobby port for its
+    game server.
+  - `webcore_query <request>` prints the bridge's reply, for tests.
 - **Game-mode matrix:** deathmatch, teamdm, domination, lastmanstanding,
   invasion, singleplayer, duel and dm_lobby ran for 60 s or more each with
   bots on Q1, Q3 and FTEW maps, with no engine errors. Remaining log
@@ -76,29 +103,24 @@ script as `location.search`.
 
 ## Not finished
 
-1. **Half-finished revisions in the last commit (`699e8d3`).** Four port
-   agents were stopped mid-edit while updating `hud`, `title-menu-v2` /
-   `title-menu`, `ql-menu` and `lobby-menu` to use SVG art,
-   `Bulwark.Width/Height`, `Bulwark.MouseX/MouseY` and a drawn cursor in
-   `ql-menu`. Open each page and check the log for JS errors; finish or
-   revert per file (`git diff 699e8d3~1 699e8d3 -- data/`). The smoke flow
-   below still worked after the stop.
-2. **`h3-main-menu` port barely started.** It is reachable with
-   `set webcore_menu_url "fte://data/web/h3-main-menu/index.html"`. Also
-   still to do: `h3-main-menu-copy` (decide whether it differs),
-   `test/simple.html`, `basemod-cef-test/menu.html`, and the other
-   `webcore-test/*.html` pages. The `basemod-wireframes*` folders are
-   browser-only prototypes, not loaded by the game; no QC/cfg check was
-   finished to confirm that.
-3. **Online room codes work on the LAN only**, found by discovery; there is
+1. **Online room codes work on the LAN only**, found by discovery; there is
    no internet rendezvous service. Spec 9.13 sketches the reference's
    broker/ICE design if this is wanted.
-4. **Ragdolls and `brush_*`** are listed above.
+2. **Ragdolls and `brush_*`** are listed above.
+3. A full duel between two clients played to a result through the lobby
+   has not been run; the two-client test stops at the first round's start.
 
 ## Known limitations, not fixed
 
 - PanoramaEngine hit-testing ignores transforms. Ports compute positions
-  instead of scaling panels.
+  instead of scaling panels. `h3-main-menu` and `scratch` scale their stage
+  down on views narrower than 16:9, where mouse hits on `h3-main-menu` miss.
+- No CSS filters, masks or backdrop blur. `h3-main-menu`'s overlay has no
+  blur behind it; `scratch` draws its icon glow into the SVGs and adds the
+  brightening of its drop-shadow filter back with an additive layer.
+- Layout quirks ports allow for (transitions from `none`, `squish`,
+  background-less buttons, wrapped labels, children inside borders, label
+  baselines) are listed in `docs/spec/ui.md`.
 - `Panel.style` from script only sets background, width, height, opacity
   and transform. There is no CSS `mask-image`, no skew, no circular
   clipping, and `<Image scaling="stretch-to-fit-preserve-aspect">` stretches.
@@ -170,10 +192,6 @@ only one such test at a time.
 
 ## Suggested next steps
 
-1. Finish or revert the half-done port revisions (item 1).
-2. Port `h3-main-menu` and the small test pages; confirm nothing loads the
-   `basemod-wireframes` pages.
-3. Run a full duel between two clients through the lobby. The arena selector
-   flow has only been tested with one client.
-4. If wanted: ragdolls, an internet lobby rendezvous, and transform-aware
-   hit-testing in PanoramaEngine.
+1. Run a full duel between two clients through the lobby, to a result.
+2. If wanted: ragdolls, an internet lobby rendezvous, transform-aware
+   hit-testing in PanoramaEngine, and CSS filters.

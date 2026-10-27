@@ -35,3 +35,14 @@ needs no new parameters:
 - `src/panorama_font_atlas.cpp`: faces are chosen within the asked family
   (then the default one) by nearest weight, and glyph cache keys hold the
   wider value.
+
+### Changes to nanosvg
+
+nanosvg ignores `<mask>`, so masked art drew its mask shapes as ordinary
+ones. Bulwark's `nanosvg.h` marks them instead (each change is commented
+`Bulwark:`): `NSVGshape` gains `mask` (the mask applied to the shape or its
+group), `maskDef` (the mask the shape belongs to) and `maskAlpha`
+(`mask-type: alpha`, else luminance); the parser reads `mask="url(#id)"`,
+`mask-type` and the content of `<mask id=...>` as marked shapes. Drawing the
+masks is Bulwark's own code in `src/render/r_svg.c`, which rasterises each
+mask and applies it to the runs of shapes that use it.

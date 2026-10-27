@@ -4,11 +4,15 @@
 
 Bulwark has no HTML engine. It runs these pages as Panorama views
 ([ui.md](ui.md)): `fte://data/web/<dir>/index.html` names the layout
-`panorama/layout/web/<dir>.xml` (other files `layout/web/<dir>/<name>.xml`),
-and `data/panorama/` in Bulwark's source tree holds Panorama ports of
-Stiletto's pages: `title-menu-v2`, `title-menu`, `h3-main-menu`,
-`pause-menu`, `lobby-menu`, `ql-menu`, `hud`, and the `webcore-test`,
-`test` and `basemod-cef-test` smoke pages. They use the game's own art,
+`panorama/layout/web/<dir>.xml` (other files `layout/web/<dir>/<name>.xml`,
+and a page directly under `data/web/` such as `scratch.html` is
+`layout/web/scratch.xml`), and `data/panorama/` in Bulwark's source tree
+holds Panorama ports of every Stiletto page: `title-menu-v2`, `title-menu`,
+`h3-main-menu` (and its older `h3-main-menu-copy`), `pause-menu`,
+`lobby-menu`, `ql-menu` (and `menu-demo`), `hud`, the `scratch` MGS4 mock-up,
+and the `webcore-test`, `test` and `basemod-cef-test` smoke pages. The
+`basemod-wireframes*` folders are browser-only prototypes that nothing in
+the game loads, and are not ported. They use the game's own art,
 fonts and scripted data in place (`{game}/...`) and send the same
 `fte_query` requests as the HTML pages. `src/client/cl_webcore.c` is the
 menu surface, the `gecko_*` builtins and the bridge below; the lobby is
