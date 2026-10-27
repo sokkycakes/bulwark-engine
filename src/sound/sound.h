@@ -13,6 +13,14 @@ bool S_PrecacheSound(const char *name);
 void S_StartSound(int ent, int channel, const char *name, const float *origin, float volume, float attenuation,
                   float pitch, int flags);
 void S_StopAllSounds(void);
+/* music by name (music/x, with or without an extension); false when it can't play */
+bool S_PlayMusic(const char *name, bool loop);
+void S_StopMusic(void);
+bool S_MusicPlaying(void);
+/* a sound for the interface, not placed in the world; S_LocalSoundPlaying
+ * says whether that sample is still playing from an earlier call */
+void S_LocalSound(const char *name);
+bool S_LocalSoundPlaying(const char *name);
 void S_Update(const float *origin, const float *forward, const float *right, const float *up);
 
 /* a stream of samples from elsewhere (video soundtracks): interleaved

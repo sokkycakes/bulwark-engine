@@ -274,7 +274,8 @@ bool CSQC_Load(void)
 	tables[6] = cl_hostcache_builtins;
 	tables[7] = qc_uri_builtins;
 	tables[8] = cl_altcon_builtins;
-	tables[9] = NULL;
+	tables[9] = cl_webcore_builtins;
+	tables[10] = NULL;
 	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)
@@ -392,6 +393,7 @@ void CSQC_Shutdown(void)
 {
 	if (!cl.csqc)
 		return;
+	WC_ClientGameShutdown();
 	if (CS.Shutdown)
 		QC_Execute(cl.csqc, CS.Shutdown);
 	QC_Free(cl.csqc);

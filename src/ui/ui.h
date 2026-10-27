@@ -18,7 +18,8 @@ extern "C" {
 #include "../qcvm/qcvm.h"
 
 enum {
-	UI_INPUT = 1 /* the view takes keyboard and mouse input */
+	UI_INPUT = 1, /* the view takes keyboard and mouse input */
+	UI_EMBED = 2  /* not drawn with the others: UI_DrawAt puts it where it is wanted */
 };
 
 /* scripts reach the engine through Bulwark.Send(action, arg); "cmd" runs a
@@ -28,9 +29,24 @@ typedef void (*ui_action_fn)(int view, const char *action, const char *arg);
 void UI_Init(void);
 void UI_Shutdown(void);
 void UI_SetActionHandler(ui_action_fn fn);
+/* fte_query(request) in a script returns what this writes to reply */
+typedef void (*ui_query_fn)(int view, const char *request, strbuf_t *reply);
+void UI_SetQueryHandler(ui_query_fn fn);
 void UI_InitQC(void); /* sends script actions to CSQC_UIAction */
 
 int UI_Open(const char *layout, int flags); /* returns a view number, 0 on failure */
+/* as UI_Open, running bootstrap (JavaScript, may be NULL) before the layout's scripts */
+int UI_OpenEx(const char *layout, int flags, const char *bootstrap);
+bool UI_LayoutExists(const char *layout);
+void UI_SetFlags(int view, int flags);
+int UI_Flags(int view);
+/* draws a UI_EMBED view into a rectangle of virtual pixels, laid out at that
+ * size; rgb and alpha tint it */
+void UI_DrawAt(int view, float x, float y, float w, float h, const float *rgb, float alpha);
+void UI_ViewSize(int view, float *w, float *h); /* virtual pixels */
+/* registers a font for CSS font-family: family, at a weight; path is a
+ * game file. Views opened after this can use it. */
+bool UI_AddFont(const char *family, const char *path, int weight);
 void UI_Close(int view);
 void UI_CloseAll(void);
 bool UI_IsOpen(int view);

@@ -32,10 +32,15 @@ using namespace panorama;
 
 namespace {
 
-/* every UI file lives under panorama/ in the game dirs */
+/* every UI file lives under panorama/ in the game dirs, except what a
+ * layout names as {game}/<path>: any game file (a game's own scripts and
+ * art, used in place) */
 std::string ui_path(std::string_view path)
 {
 	std::string p(path);
+	size_t g = p.find("{game}/");
+	if (g != std::string::npos)
+		return p.substr(g + 7);
 	if (p.rfind("panorama/", 0) == 0)
 		return p;
 	return "panorama/" + p;
@@ -149,6 +154,7 @@ var Bulwark = (function () {
 	return {
 		Send: function (action, arg) { $.__host(String(action), arg === undefined ? "" : String(arg)); },
 		Cmd: function (command) { $.__host("cmd", String(command)); },
+		Query: function (request) { return fte_query(request); },
 		On: function (event, fn) { (handlers[event] = handlers[event] || []).push(fn); },
 		__recv: function (event, value) {
 			var list = handlers[event];
@@ -159,6 +165,22 @@ var Bulwark = (function () {
 		}
 	};
 })();
+
+/* fte_query(request): a synchronous request to the engine. The reply comes
+ * back as an attribute of the document root, written while $.__host runs. */
+var fte_query = (function () {
+	var root = null;
+	return function (request) {
+		if (!root) {
+			root = $.GetContextPanel();
+			while (root && root.GetParent())
+				root = root.GetParent();
+		}
+		$.__host("__query", String(request));
+		return root ? root.GetAttributeString("bwreply", "") : "";
+	};
+})();
+var window = globalThis;
 )JS";
 
 /* a JS string literal, so engine text can't escape into code */
@@ -198,14 +220,25 @@ struct View {
 	};
 	std::vector<Batch> batches;
 	bool batches_dirty = true;
+	/* UI_EMBED views: the size they were last drawn at, in virtual pixels */
+	float embed_w = 0, embed_h = 0;
+	float drawn_scale = 0; /* virtual pixels per design unit the batches were built for */
 };
 
 Backend backend;
 PanoramaFontAtlas fonts;
 bool fonts_loaded;
+bool fonts_dirty; /* UI_AddFont added a face: reload before the next frame */
 std::vector<std::unique_ptr<View>> views;
 int next_view = 1;
 ui_action_fn action_handler;
+ui_query_fn query_handler;
+/* fonts registered for CSS font-family (UI_AddFont): game file and font key */
+struct ExtraFace {
+	std::string path;
+	int key;
+};
+std::vector<ExtraFace> extra_faces;
 float mouse_x, mouse_y;
 bool mouse_down;
 double last_frame_scale;
@@ -236,6 +269,18 @@ void viewport_design(float &w, float &h)
 	h = vh * s;
 }
 
+/* an embedded view is laid out at the size it is drawn */
+void view_viewport(const View &v, float &w, float &h)
+{
+	if ((v.flags & UI_EMBED) && v.embed_w > 0 && v.embed_h > 0) {
+		float s = R_Get2DScale() / ui_scale();
+		w = v.embed_w * s;
+		h = v.embed_h * s;
+		return;
+	}
+	viewport_design(w, h);
+}
+
 int face_weight(const char *name)
 {
 	std::string n(name);
@@ -262,6 +307,11 @@ void add_face(const char *name, const char *searchpath, void *ctx)
 		if (f.path == base)
 			return;
 	faces->push_back({base, face_weight(base)});
+	/* each file is also a family of its own name, without the extension */
+	std::string fam(base);
+	if (fam.find('.') != std::string::npos)
+		fam.erase(fam.rfind('.'));
+	faces->push_back({base, panorama_register_font_family(fam) * kPanoramaFontFamilyStride + 400});
 }
 
 /* every font in panorama/fonts/ joins one family; weights come from the
@@ -271,6 +321,8 @@ void load_fonts()
 	PanoramaFontAtlasLoadOptions opts;
 	FS_List("panorama/fonts/*.ttf", true, add_face, &opts.faces);
 	FS_List("panorama/fonts/*.otf", true, add_face, &opts.faces);
+	for (const ExtraFace &f : extra_faces)
+		opts.faces.push_back({f.path, f.key});
 	if (opts.faces.empty()) {
 		Con_Printf("^3ui: no fonts in panorama/fonts/; text will not draw\n");
 		return;
@@ -278,10 +330,13 @@ void load_fonts()
 	opts.resource_root = "/nonexistent-bulwark-ui-root";
 	opts.font_bytes_provider = [](std::string_view face) -> std::optional<std::vector<unsigned char>> {
 		std::vector<unsigned char> bytes;
-		if (!load_bytes("panorama/fonts/" + std::string(face), bytes))
+		std::string name(face);
+		/* registered faces are named by their game path, the others by file name */
+		if (!load_bytes(name.find('/') != std::string::npos ? name : "panorama/fonts/" + name, bytes))
 			return std::vector<unsigned char>(); /* handled: never look on disk */
 		return bytes;
 	};
+	fonts.clear();
 	fonts_loaded = fonts.load(opts);
 	if (!fonts_loaded)
 		Con_Printf("^3ui: couldn't load the fonts in panorama/fonts/\n");
@@ -299,13 +354,56 @@ std::string image_path(std::string src)
 		while (!src.empty() && (src.back() == '"' || src.back() == '\''))
 			src.pop_back();
 	}
+	if (src.rfind("data:", 0) == 0)
+		return src;
 	if (src.rfind("file://", 0) == 0)
 		src = src.substr(7);
 	if (src.rfind("{images}/", 0) == 0)
 		return "panorama/images/" + src.substr(9);
+	/* any game file, for layouts that use a game's own art */
+	if (src.rfind("{game}/", 0) == 0)
+		return src.substr(7);
 	if (src.rfind("{resources}/", 0) == 0)
 		return ui_path(src.substr(12));
 	return ui_path(src);
+}
+
+/* data:image/...;base64,... decoded into an image named after its hash */
+std::string data_url_image(const std::string &url)
+{
+	size_t comma = url.find(',');
+	if (comma == std::string::npos || url.compare(comma - 7, 7, ";base64") != 0)
+		return std::string();
+	std::vector<unsigned char> bytes;
+	unsigned bits = 0;
+	int nbits = 0;
+	for (size_t i = comma + 1; i < url.size(); i++) {
+		char c = url[i];
+		int v = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52
+		        : c == '+' ? 62 : c == '/' ? 63 : -1;
+		if (v < 0)
+			continue;
+		bits = (bits << 6) | (unsigned)v;
+		nbits += 6;
+		if (nbits >= 8) {
+			nbits -= 8;
+			bytes.push_back((unsigned char)(bits >> nbits));
+		}
+	}
+	unsigned h = 2166136261u;
+	for (unsigned char b : bytes)
+		h = (h ^ b) * 16777619u;
+	char name[64];
+	snprintf(name, sizeof(name), "_ui/data%08x", h);
+	if (!R_ImageHandle(name)) {
+		int w = 0, ih = 0;
+		uint8_t *px = R_DecodeImageFile(bytes.data(), bytes.size(), &w, &ih);
+		if (!px)
+			return std::string();
+		R_UploadImage(name, px, w, ih);
+		Mem_Free(px);
+	}
+	return name;
 }
 
 PanoramaTextureId texture_for(const std::string &path, float &w, float &h)
@@ -314,7 +412,8 @@ PanoramaTextureId texture_for(const std::string &path, float &w, float &h)
 	auto it = cache.find(path);
 	if (it == cache.end()) {
 		int iw = 0, ih = 0;
-		PanoramaTextureId id = backend.load_texture(path, iw, ih);
+		std::string src = path.rfind("data:", 0) == 0 ? data_url_image(path) : path;
+		PanoramaTextureId id = src.empty() ? 0 : backend.load_texture(src, iw, ih);
 		if (!id)
 			Con_Printf("^3ui: couldn't load image %s\n", path.c_str());
 		it = cache.emplace(path, std::make_pair(id, std::make_pair(iw, ih))).first;
@@ -367,6 +466,15 @@ View *find_view(int num)
 
 void host_action(View *v, const std::string &action, const std::string &arg)
 {
+	if (action == "__query") {
+		strbuf_t reply = {};
+		if (query_handler && arg.size() <= 4096)
+			query_handler(v->num, arg.c_str(), &reply);
+		if (PanoramaNode *root = v->pv.root())
+			root->attributes["bwreply"] = reply.data ? std::string(reply.data, reply.len) : std::string();
+		SB_Free(&reply);
+		return;
+	}
 	if (action == "cmd") {
 		Cbuf_AddText(arg.c_str());
 		Cbuf_AddText("\n");
@@ -479,7 +587,7 @@ const char *key_name(int key, int unicode, char *buf, size_t size)
 View *input_view()
 {
 	for (auto it = views.rbegin(); it != views.rend(); ++it)
-		if ((*it)->flags & UI_INPUT)
+		if (((*it)->flags & UI_INPUT) && !((*it)->flags & UI_EMBED))
 			return it->get();
 	return nullptr;
 }
@@ -526,6 +634,17 @@ void cmd_ui_eval(int argc, const char **argv)
 		js += argv[i];
 	}
 	UI_Eval(atoi(argv[1]), js.c_str());
+}
+
+/* ui_font <family> <game file> [weight]: a font for CSS font-family */
+void cmd_ui_font(int argc, const char **argv)
+{
+	if (argc < 3) {
+		Con_Printf("usage: ui_font <family> <file> [weight]\n");
+		return;
+	}
+	if (!UI_AddFont(argv[1], argv[2], argc > 3 ? atoi(argv[3]) : 400))
+		Con_Printf("ui_font: couldn't add %s\n", argv[2]);
 }
 
 void cmd_ui_stats(int argc, const char **argv)
@@ -589,6 +708,7 @@ void UI_Init(void)
 	Cmd_Add("ui_stats", cmd_ui_stats);
 	Cmd_Add("ui_click", cmd_ui_click);
 	Cmd_Add("ui_key", cmd_ui_key);
+	Cmd_AddD("ui_font", cmd_ui_font, "ui_font <family> <file> [weight]: a font for UI views' CSS font-family");
 }
 
 void UI_Shutdown(void)
@@ -599,9 +719,18 @@ void UI_Shutdown(void)
 }
 
 void UI_SetActionHandler(ui_action_fn fn) { action_handler = fn; }
+void UI_SetQueryHandler(ui_query_fn fn) { query_handler = fn; }
 
-int UI_Open(const char *layout, int flags)
+bool UI_LayoutExists(const char *layout) { return FS_FileExists(ui_path(layout).c_str()); }
+
+int UI_Open(const char *layout, int flags) { return UI_OpenEx(layout, flags, NULL); }
+
+int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 {
+	if (fonts_dirty) {
+		fonts_dirty = false;
+		load_fonts();
+	}
 	auto v = std::make_unique<View>();
 	View *vp = v.get();
 	v->num = next_view;
@@ -616,6 +745,8 @@ int UI_Open(const char *layout, int flags)
 	}
 	v->pv.resources().add_provider(std::make_unique<FsProvider>());
 	v->pv.runtime().add_bootstrap_script({"bulwark://prelude", bulwark_prelude});
+	if (bootstrap && *bootstrap)
+		v->pv.runtime().add_bootstrap_script({"bulwark://bootstrap", bootstrap});
 	v->pv.runtime().set_host_action_handler(
 	    [vp](const std::string &action, const std::string &arg) { host_action(vp, action, arg); });
 	PanoramaViewLoadOptions opts;
@@ -638,6 +769,85 @@ void UI_Close(int num)
 void UI_CloseAll(void) { views.clear(); }
 
 bool UI_IsOpen(int num) { return find_view(num) != nullptr; }
+
+void UI_SetFlags(int num, int flags)
+{
+	if (View *v = find_view(num)) {
+		if ((v->flags ^ flags) & UI_EMBED)
+			v->batches_dirty = true;
+		v->flags = flags;
+	}
+}
+
+int UI_Flags(int num)
+{
+	View *v = find_view(num);
+	return v ? v->flags : 0;
+}
+
+void UI_ViewSize(int num, float *w, float *h)
+{
+	View *v = find_view(num);
+	float dw = 0, dh = 0;
+	if (v) {
+		view_viewport(*v, dw, dh);
+		float s = ui_scale() / R_Get2DScale();
+		dw *= s;
+		dh *= s;
+	}
+	*w = dw;
+	*h = dh;
+}
+
+bool UI_AddFont(const char *family, const char *path, int weight)
+{
+	if (!FS_FileExists(path)) {
+		Con_DPrintf("ui: no font %s for %s\n", path, family);
+		return false;
+	}
+	int key = panorama_register_font_family(family) * kPanoramaFontFamilyStride + BW_CLAMP(weight, 1, 1000);
+	for (const ExtraFace &f : extra_faces)
+		if (f.path == path && f.key == key)
+			return true;
+	extra_faces.push_back({path, key});
+	fonts_dirty = true;
+	return true;
+}
+
+void UI_DrawAt(int num, float x, float y, float w, float h, const float *rgb, float alpha)
+{
+	View *v = find_view(num);
+	if (!v || !(v->flags & UI_EMBED) || w <= 0 || h <= 0)
+		return;
+	if (v->embed_w != w || v->embed_h != h) {
+		/* laid out at the new size on the next frame */
+		v->embed_w = w;
+		v->embed_h = h;
+		v->batches_dirty = true;
+	}
+	if (v->batches_dirty)
+		build_batches(*v);
+	float tint[4] = {rgb ? rgb[0] : 1, rgb ? rgb[1] : 1, rgb ? rgb[2] : 1, alpha};
+	std::vector<r2dvert_t> moved;
+	for (const View::Batch &b : v->batches) {
+		moved.assign(b.verts.begin(), b.verts.end());
+		for (r2dvert_t &vt : moved) {
+			vt.x += x;
+			vt.y += y;
+			for (int c = 0; c < 4; c++)
+				vt.rgba[c] = (uint8_t)BW_CLAMP(vt.rgba[c] * tint[c], 0, 255);
+		}
+		if (b.clip) {
+			float cx = BW_MAX(b.cx + x, x), cy = BW_MAX(b.cy + y, y);
+			float cx2 = BW_MIN(b.cx + x + b.cw, x + w), cy2 = BW_MIN(b.cy + y + b.ch, y + h);
+			R_Set2DClip(cx, cy, BW_MAX(0, cx2 - cx), BW_MAX(0, cy2 - cy));
+		} else {
+			R_Set2DClip(x, y, w, h);
+		}
+		R_Draw2DTriangles(b.image, moved.data(), (int)moved.size(), b.idx.data(), (int)b.idx.size(), b.blend);
+	}
+	R_Reset2DClip();
+}
 
 void UI_Post(int num, const char *event, const char *json)
 {
@@ -712,6 +922,18 @@ void UI_MouseMove(float x, float y)
 void UI_Frame(double dt)
 {
 	double start = Sys_Seconds();
+	if (fonts_dirty) {
+		fonts_dirty = false;
+		load_fonts();
+		if (fonts_loaded)
+			fonts.set_ui_scale(ui_scale());
+		for (auto &v : views) {
+			if (fonts_loaded)
+				v->pv.set_font_atlas(&fonts);
+			v->pv.invalidate_visual();
+			v->batches_dirty = true;
+		}
+	}
 	float w, h;
 	viewport_design(w, h);
 	double scale = ui_scale();
@@ -725,6 +947,7 @@ void UI_Frame(double dt)
 	/* a script can close views (Bulwark.Cmd("ui_close ...") runs later from
 	 * the command buffer, so iterating here is safe) */
 	for (auto &v : views) {
+		view_viewport(*v, w, h);
 		if (v->pv.viewport_width() != w || v->pv.viewport_height() != h)
 			v->pv.set_viewport(w, h);
 		PanoramaViewUpdateResult r = v->pv.update((float)dt);
@@ -749,6 +972,8 @@ void UI_Draw(void)
 {
 	double start = Sys_Seconds();
 	for (auto &v : views) {
+		if (v->flags & UI_EMBED)
+			continue;
 		if (v->batches_dirty)
 			build_batches(*v);
 		for (const View::Batch &b : v->batches) {

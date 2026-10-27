@@ -292,6 +292,9 @@ static bool try_load(const char *name, const char *path)
 	return true;
 }
 
+static bool (*builtin_hook)(const char *name);
+void Plug_SetBuiltinHook(bool (*fn)(const char *name)) { builtin_hook = fn; }
+
 /* plug_load name|path: bwplug_<name>.so in the engine's directory, then the base directory */
 static void PlugLoad_f(int argc, const char **argv)
 {
@@ -301,6 +304,8 @@ static void PlugLoad_f(int argc, const char **argv)
 		return;
 	}
 	const char *name = argv[1];
+	if (builtin_hook && builtin_hook(name))
+		return;
 	if (strchr(name, '/')) { /* a path: the name is its file's */
 		const char *base = strrchr(name, '/') + 1;
 		char n[64];

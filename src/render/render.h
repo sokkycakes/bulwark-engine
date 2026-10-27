@@ -33,6 +33,12 @@ void R_NewMap(void);             /* cl.world is loaded */
 
 /* particle effects by their index in cl.particles */
 void R_PointParticles(int index, const float *org, const float *dir, float count);
+/* drawpic of a name another module draws itself: return true when it is
+ * one. With size non-NULL it is asked for the picture's size instead. */
+typedef bool (*r_pichook_t)(const char *name, float x, float y, float w, float h, const float *rgb, float alpha,
+                            float *size);
+void R_SetPicHook(r_pichook_t fn);
+
 /* a client game entity drawn every frame from now on (makestatic) */
 void R_MakeStatic(struct qcvm_s *vm, int e);
 void R_SpawnFlash(const float *org, float radius, float lifetime, const float *rgb);
@@ -59,6 +65,7 @@ int R_ImageHandle(const char *name);    /* image or material by name, 0 if none 
 int R_UploadImage(const char *name, const uint8_t *rgba, int w, int h); /* creates or replaces */
 void R_UpdateImage(int handle, int x, int y, int w, int h, const uint8_t *rgba); /* a region, tightly packed */
 void R_ImageSize(int handle, int *w, int *h);
+uint8_t *R_DecodeImageFile(const uint8_t *data, size_t len, int *w, int *h); /* PNG, JPEG, TGA...: RGBA, Mem_Free it */
 float R_Get2DScale(void); /* framebuffer pixels per virtual pixel: lay out at R_GetSize * scale for sharp text */
 void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const uint16_t *idx, int numidx,
                        int blend);      /* image 0 draws untextured */

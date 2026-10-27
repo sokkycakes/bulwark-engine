@@ -9,10 +9,14 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <unistd.h>
 
 #define FS_MAX_PATHS 16
 
 static char fs_basedir[1024] = ".";
+/* Bulwark's own files (UI layouts and the like), searched after every game
+ * directory: loose files only, see FS_SetEngineDir */
+static char fs_enginedir[1024];
 static char fs_gamedirs[FS_MAX_PATHS][64];
 static int fs_numgamedirs;
 
@@ -293,16 +297,59 @@ void FS_PrintPath(void)
 			if (packs[k]->gamedir == i)
 				Con_Printf("  %s (%d files)\n", packs[k]->name, packs[k]->numfiles);
 	}
+	if (fs_enginedir[0])
+		Con_Printf("%s (engine data)\n", fs_enginedir);
 }
 
 void FS_Init(const char *basedir)
 {
 	Str_Copy(fs_basedir, basedir && *basedir ? basedir : ".", sizeof(fs_basedir));
 	fs_numgamedirs = 0;
+	if (!fs_enginedir[0])
+		FS_SetEngineDir(NULL);
 	free_packs();
 }
 
 const char *FS_BaseDir(void) { return fs_basedir; }
+
+static bool is_dir(const char *path)
+{
+	struct stat st;
+	return !stat(path, &st) && S_ISDIR(st.st_mode);
+}
+
+/* an explicit directory, or the data directory beside the executable, or
+ * the source tree's when running from a build directory inside it */
+void FS_SetEngineDir(const char *path)
+{
+	char exe[1024], try[1100];
+	ssize_t n;
+	fs_enginedir[0] = 0;
+	if (path && *path) {
+		if (is_dir(path))
+			Str_Copy(fs_enginedir, path, sizeof(fs_enginedir));
+		else
+			Con_Printf("engine data directory %s doesn't exist\n", path);
+		return;
+	}
+	n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	exe[n > 0 ? n : 0] = 0;
+	if (strrchr(exe, '/'))
+		*strrchr(exe, '/') = 0;
+	else
+		Str_Copy(exe, ".", sizeof(exe));
+	snprintf(try, sizeof(try), "%s/data", exe);
+	if (!is_dir(try))
+		snprintf(try, sizeof(try), "%s/../data", exe);
+#ifdef BW_SOURCE_DATADIR
+	if (!is_dir(try))
+		Str_Copy(try, BW_SOURCE_DATADIR, sizeof(try));
+#endif
+	if (is_dir(try))
+		Str_Copy(fs_enginedir, try, sizeof(fs_enginedir));
+}
+
+const char *FS_EngineDir(void) { return fs_enginedir; }
 
 void FS_AddGameDir(const char *gamedir)
 {
@@ -429,6 +476,11 @@ char *FS_LoadFile(const char *path, size_t *len)
 				return buf;
 		}
 	}
+	if (fs_enginedir[0]) {
+		int n = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
+		if (n > 0 && (size_t)n < sizeof(ospath))
+			return load_os_file(ospath, len);
+	}
 	return NULL;
 }
 
@@ -446,6 +498,11 @@ const char *FS_WhichPath(const char *path)
 			return fs_gamedirs[i];
 		if (find_in_packs(i, path, &pk))
 			return pk->name;
+	}
+	if (fs_enginedir[0]) {
+		int n = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
+		if (n > 0 && (size_t)n < sizeof(ospath) && !stat(ospath, &st) && S_ISREG(st.st_mode))
+			return "(engine)";
 	}
 	return NULL;
 }
@@ -564,6 +621,8 @@ void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx)
 			}
 		}
 	}
+	if (fs_enginedir[0])
+		walk(fs_enginedir, base, pattern, nocase, &seen, "(engine)", fn, ctx, 0);
 	for (int i = 0; i < seen.count; i++)
 		Mem_Free(seen.names[i]);
 	Mem_Free(seen.names);

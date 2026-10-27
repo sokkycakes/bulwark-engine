@@ -3437,7 +3437,33 @@ void apply_panorama_declaration(PanoramaComputedStyle& style, std::string_view p
     }
     else if (prop == "font-weight")
     {
-        style.font_weight = parse_font_weight(value, style.font_weight);
+        style.font_weight = panorama_font_family_of(style.font_weight) * kPanoramaFontFamilyStride +
+                            parse_font_weight(value, panorama_font_weight_of(style.font_weight));
+    }
+    else if (prop == "font-family")
+    {
+        // the first registered family in the list; unknown names keep the inherited one
+        std::size_t start = 0;
+        while (start <= value.size())
+        {
+            std::size_t comma = value.find(',', start);
+            if (comma == std::string_view::npos)
+            {
+                comma = value.size();
+            }
+            std::string name = trim(value.substr(start, comma - start));
+            if (name.size() >= 2 && (name.front() == '"' || name.front() == '\'') && name.back() == name.front())
+            {
+                name = name.substr(1, name.size() - 2);
+            }
+            const int family = panorama_find_font_family(name);
+            if (family > 0)
+            {
+                style.font_weight = family * kPanoramaFontFamilyStride + panorama_font_weight_of(style.font_weight);
+                break;
+            }
+            start = comma + 1;
+        }
     }
     else if (prop == "text-transform")
     {
@@ -5111,7 +5137,7 @@ void PanoramaStyleSheet::compute_node_impl(PanoramaNode& node, const PanoramaNod
     }
     if (ua_bold)
     {
-        style.font_weight = 700;
+        style.font_weight = panorama_font_family_of(style.font_weight) * kPanoramaFontFamilyStride + 700;
     }
     if (ua_italic)
     {
@@ -5795,6 +5821,42 @@ int panorama_run_font_weight(int base_weight, bool bold)
 {
     // CSS `font-weight: bold` is the absolute keyword 700 (html.css uses `bold`, not
     // the relative `bolder`); non-bold runs keep the element's computed weight.
-    return bold ? 700 : base_weight;
+    return bold ? panorama_font_family_of(base_weight) * kPanoramaFontFamilyStride + 700 : base_weight;
 }
+
+namespace
+{
+std::vector<std::string>& font_families()
+{
+    static std::vector<std::string> families;
+    return families;
+}
+}
+
+int panorama_register_font_family(std::string_view name)
+{
+    const int existing = panorama_find_font_family(name);
+    if (existing > 0)
+    {
+        return existing;
+    }
+    font_families().push_back(to_lower(trim(name)));
+    return static_cast<int>(font_families().size());
+}
+
+int panorama_find_font_family(std::string_view name)
+{
+    const std::string key = to_lower(trim(name));
+    const std::vector<std::string>& families = font_families();
+    for (std::size_t i = 0; i < families.size(); ++i)
+    {
+        if (families[i] == key)
+        {
+            return static_cast<int>(i) + 1;
+        }
+    }
+    return 0;
+}
+
+void panorama_clear_font_families() { font_families().clear(); }
 }

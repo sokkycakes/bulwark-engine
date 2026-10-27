@@ -6,6 +6,7 @@
 
 #include "client/client.h"
 #include "client/console.h"
+#include "client/lobby.h"
 #include "client/vid.h"
 #include "common/cmd.h"
 #include "common/common.h"
@@ -48,7 +49,7 @@ static bool GamePreHook(const char *line, int argc, const char **argv)
 
 static void usage(void)
 {
-	Con_Printf("usage: bulwark [-basedir dir] [-game dir]... [-headless] [-frames n] [-width w] [-height h]\n"
+	Con_Printf("usage: bulwark [-basedir dir] [-game dir]... [-enginedata dir] [-headless] [-frames n] [-width w] [-height h]\n"
 	           "               [-window] [+command args]...\n");
 }
 
@@ -68,6 +69,8 @@ int main(int argc, char **argv)
 			basedir = argv[++i];
 		else if (!strcmp(argv[i], "-game") && i + 1 < argc && numgames < 16)
 			games[numgames++] = argv[++i];
+		else if (!strcmp(argv[i], "-enginedata") && i + 1 < argc)
+			FS_SetEngineDir(argv[++i]);
 		else if (!strcmp(argv[i], "-frames") && i + 1 < argc)
 			maxframes = strtol(argv[++i], NULL, 10);
 		else if (!strcmp(argv[i], "-headless"))
@@ -121,6 +124,8 @@ int main(int argc, char **argv)
 	S_Init(headless);
 	UI_Init();
 	UI_InitQC();
+	WC_Init();
+	Lobby_Init();
 	Cmd_Add("quit", Quit_f);
 	Cmd_AddD("exit", Quit_f, "Quit the game");
 	cvar_t *fps_max = Cvar_Get("fps_max", "0", CVAR_ARCHIVE, "Frame rate cap, 0 for none");
@@ -142,6 +147,7 @@ int main(int argc, char **argv)
 			starts_game = true;
 	}
 	drop_menu_map = starts_game;
+	WC_SetStartsGame(starts_game);
 	if (cmds.data)
 		Cbuf_AddText(cmds.data);
 	SB_Free(&cmds);
@@ -208,6 +214,8 @@ int main(int argc, char **argv)
 		QC_URIFrame();
 		SV_Frame(gdt);
 		CL_Frame(gdt);
+		Lobby_Frame();
+		WC_Frame();
 		R_BeginFrame();
 		{
 			int w, h;

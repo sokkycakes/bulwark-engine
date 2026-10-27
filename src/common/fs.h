@@ -11,6 +11,10 @@ void FS_Init(const char *basedir);
 void FS_AddGameDir(const char *gamedir);
 const char *FS_GameDir(void); /* the writable (most recently added) game directory */
 const char *FS_BaseDir(void);
+/* Bulwark's own data (data/ in the source tree, or beside the executable),
+ * searched after every game directory; NULL picks the default */
+void FS_SetEngineDir(const char *path);
+const char *FS_EngineDir(void);
 void FS_Restart(void); /* rescan packages */
 int FS_NumGameDirs(void);
 const char *FS_GameDirAt(int i); /* 0 is the base game, searched last */

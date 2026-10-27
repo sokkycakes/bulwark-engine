@@ -382,6 +382,8 @@ void IN_KeyEvent(int key, bool down, int unicode)
 		/* the engine's menus take every key while open */
 		EM_KeyEvent(key, down, unicode);
 		return;
+	} else if ((down || !held_command[key]) && WC_KeyEvent(key, down, unicode)) {
+		return; /* the game's HTML menu page */
 	} else if ((down || !held_command[key]) && UI_KeyEvent(key, down, unicode)) {
 		return; /* a menu or other input view is open */
 	} else if (down || !held_command[key]) {

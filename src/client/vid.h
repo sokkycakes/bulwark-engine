@@ -15,6 +15,7 @@ void VID_Swap(void);
 void *VID_GetProcAddress(const char *name);
 void VID_SetMouseGrab(bool grab); /* relative mouse for looking around */
 void VID_SetCaption(const char *text);
+bool VID_SetClipboard(const char *text); /* UTF-8 text onto the system clipboard */
 void VID_GetMousePos(float *x, float *y);
 void VID_SetMousePos(float x, float y);
 

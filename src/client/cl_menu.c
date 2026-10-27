@@ -6,6 +6,7 @@
 #include "../common/manifest.h"
 #include "../net/pkg.h"
 #include "../server/sv_local.h"
+#include "lobby.h"
 
 #include "../common/cmd.h"
 #include "../common/cvar.h"
@@ -111,6 +112,8 @@ bool MQC_Load(void)
 	size_t len;
 	char *data;
 	MQC_Shutdown();
+	if (Cvar_Value("forceqmenu") != 0)
+		return false; /* the game asked for no menu module */
 	data = FS_LoadFile("menu.dat", &len);
 	if (!data)
 		return false;
@@ -123,7 +126,9 @@ bool MQC_Load(void)
 	tables[6] = cl_hostcache_builtins;
 	tables[7] = qc_uri_builtins;
 	tables[8] = cl_altcon_builtins;
-	tables[9] = NULL;
+	tables[9] = cl_webcore_builtins;
+	tables[10] = lobby_builtins;
+	tables[11] = NULL;
 	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, 4096, 16 * 1024 * 1024);
 	Mem_Free(data);
 	if (!M.vm)
@@ -262,6 +267,8 @@ bool MQC_ConsoleCommand(const char *line)
 static void Menu_Toggle_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
+	if (!M.vm && WC_ToggleMenu())
+		return; /* the game's HTML menus */
 	MQC_Toggle(-1);
 }
 
@@ -290,7 +297,7 @@ static void Menu_Restart_f(int argc, const char **argv)
 	(void)argc, (void)argv;
 	if (sv.active && cl.state != ca_active)
 		MQC_LoadWhenActive(); /* a map is starting */
-	else if (!MQC_Load())
+	else if (!MQC_Load() && Cvar_Value("forceqmenu") == 0)
 		Con_Printf("no menu.dat\n");
 }
 

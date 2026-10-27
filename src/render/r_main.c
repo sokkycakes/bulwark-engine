@@ -427,12 +427,20 @@ static void use_drawfont(qcvm_t *vm) { R_SetDrawFont((int)QC_GFloat(vm, drawfont
 
 static int argflags(qcvm_t *vm, int n) { return vm->argc > n ? (int)QC_PFLOAT(vm, n) : 0; }
 
+/* pictures drawn by another module (web views made with gecko_create) */
+static r_pichook_t pichook;
+void R_SetPicHook(r_pichook_t fn) { pichook = fn; }
+
 static void r_drawpic(qcvm_t *vm)
 {
 	float *pos = QC_PVEC(vm, 0), *size = QC_PVEC(vm, 2);
 	static const float white[3] = {1, 1, 1};
 	const float *rgb = vm->argc > 3 ? QC_PVEC(vm, 3) : white;
 	float alpha = vm->argc > 4 ? QC_PFLOAT(vm, 4) : 1;
+	if (pichook && pichook(QC_PSTR(vm, 1), pos[0], pos[1], size[0], size[1], rgb, alpha, NULL)) {
+		QC_ReturnFloat(vm, 1);
+		return;
+	}
 	R_DrawPic(pos[0], pos[1], size[0], size[1], R_FindMaterial(QC_PSTR(vm, 1), MATF_2D), 0, 0, 1, 1, rgb, alpha,
 	          argflags(vm, 5));
 	QC_ReturnFloat(vm, 1);
@@ -589,8 +597,13 @@ static void r_drawresetcliparea(qcvm_t *vm) { R_ResetClip(); }
 
 static void r_drawgetimagesize(qcvm_t *vm)
 {
-	material_t *m = R_FindMaterial(QC_PSTR(vm, 0), MATF_2D);
+	material_t *m;
 	float v[3] = {0, 0, 0};
+	if (pichook && pichook(QC_PSTR(vm, 0), 0, 0, 0, 0, NULL, 0, v)) {
+		QC_ReturnVector(vm, v);
+		return;
+	}
+	m = R_FindMaterial(QC_PSTR(vm, 0), MATF_2D);
 	if (m && !(m->diffuse && m->diffuse->missing && !m->fromfile)) {
 		v[0] = (float)m->width;
 		v[1] = (float)m->height;
@@ -1152,3 +1165,5 @@ const qc_builtin_t r_builtins[] = {
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
 	{"r_uploadimage", r_uploadimage}, {"r_readimage", r_zero},
 	{NULL, NULL}};
+
+uint8_t *R_DecodeImageFile(const uint8_t *data, size_t len, int *w, int *h) { return R_DecodeImage(data, len, w, h); }

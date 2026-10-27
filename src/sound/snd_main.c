@@ -490,6 +490,71 @@ static void Music_f(int argc, const char **argv)
 	Con_DPrintf("music: can't play %s\n", argv[1]);
 }
 
+bool S_PlayMusic(const char *name, bool loop)
+{
+	char base[160], path[192];
+	static const char *exts[] = {"", ".ogg", ".wav"};
+	char *dot;
+	media_playing = false;
+	if (!snd_started)
+		return false;
+	Str_Copy(base, name, sizeof(base));
+	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
+		bool ok;
+		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
+		if (i > 0 && !FS_FileExists(path))
+			continue;
+		SNDDMA_Lock();
+		ok = S_OpenMusic(path, loop);
+		SNDDMA_Unlock();
+		if (ok)
+			return true;
+		if (i == 0 && (dot = strrchr(base, '.')) && !strchr(dot, '/'))
+			*dot = 0;
+	}
+	return false;
+}
+
+void S_StopMusic(void)
+{
+	media_playing = false;
+	if (!snd_started)
+		return;
+	SNDDMA_Lock();
+	S_CloseMusic();
+	SNDDMA_Unlock();
+}
+
+bool S_MusicPlaying(void)
+{
+	bool on;
+	if (!snd_started)
+		return false;
+	SNDDMA_Lock();
+	on = S_MusicActive();
+	SNDDMA_Unlock();
+	return on;
+}
+
+void S_LocalSound(const char *name)
+{
+	if (snd_started)
+		start_sound(0, 0, S_FindSfx(name, true), NULL, 1, 0, 100, SNDF_CSQCENT, 0);
+}
+
+bool S_LocalSoundPlaying(const char *name)
+{
+	bool playing = false;
+	sfx_t *sfx;
+	if (!snd_started || !(sfx = S_FindSfx(name, false)))
+		return false;
+	SNDDMA_Lock();
+	for (int i = NUM_AMBIENT; i < MAX_CHANNELS && !playing; i++)
+		playing = channels[i].sfx == sfx && channels[i].ent == 0 && (channels[i].flags & SNDF_CSQCENT);
+	SNDDMA_Unlock();
+	return playing;
+}
+
 static void StopMusic_f(int argc, const char **argv)
 {
 	(void)argc;

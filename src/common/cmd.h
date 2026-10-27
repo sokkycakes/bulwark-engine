@@ -35,6 +35,9 @@ bool Terrain_PrepareMap(const char *name);
 void Plug_Frame(void);
 void Plug_Shutdown(void);
 void Plug_AutoLoad(void); /* the plugins next to the engine */
+/* plugins the engine stands in for itself (FTE's "webcore"): plug_load asks
+ * this first, and a true return counts as loaded */
+void Plug_SetBuiltinHook(bool (*fn)(const char *name));
 /* file formats plugins add (see bwplug.h) */
 #include "bwplug.h"
 const char *Plug_ImageExt(int n);

@@ -243,6 +243,17 @@ void EM_OpenMain(void);
 /* cl_master.c: the server list, as the browsers see it */
 extern const qc_builtin_t cl_hostcache_builtins[];
 extern const qc_builtin_t cl_altcon_builtins[]; /* cl_altcon.c: named consoles */
+
+/* cl_webcore.c: FTE webcore (HTML menu and HUD) games on Panorama views */
+void WC_Init(void);
+void WC_Frame(void);
+bool WC_PluginLoad(const char *name);
+bool WC_ToggleMenu(void); /* false: not using these menus */
+bool WC_MenuOpen(void);
+bool WC_KeyEvent(int key, bool down, int unicode);
+void WC_SetStartsGame(bool starts);
+void WC_ClientGameShutdown(void);
+extern const qc_builtin_t cl_webcore_builtins[];
 void CL_HostcacheRefresh(bool purge);
 int CL_HostcacheCount(void);
 const char *CL_HostcacheField(int n, const char *key, char *out, size_t size);

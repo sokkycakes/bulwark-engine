@@ -393,6 +393,8 @@ void VID_SetCaption(const char *text)
 		SDL_SetWindowTitle(window, text);
 }
 
+bool VID_SetClipboard(const char *text) { return SDL_SetClipboardText(text) == 0; }
+
 void VID_GetMousePos(float *x, float *y)
 {
 	int ix, iy;

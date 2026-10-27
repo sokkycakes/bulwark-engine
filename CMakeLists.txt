@@ -39,6 +39,8 @@ add_library(bwcommon STATIC
 	src/common/json.c
 	src/common/ftew.c)
 target_link_libraries(bwcommon PUBLIC m Threads::Threads ${CMAKE_DL_LIBS})
+# Bulwark's own data files (UI layouts), found here when nothing is installed beside the executable
+target_compile_definitions(bwcommon PRIVATE BW_SOURCE_DATADIR="${CMAKE_SOURCE_DIR}/data")
 
 add_library(bwscene STATIC
 	src/scene/scene.c
@@ -213,6 +215,8 @@ add_library(bwclient STATIC
 	src/client/console.c
 	src/client/cl_cmds.c
 	src/client/cl_altcon.c
+	src/client/cl_lobby.c
+	src/client/cl_webcore.c
 	src/client/cl_chat.c
 	src/client/cl_tp.c
 	src/client/cl_demo.c

@@ -1022,6 +1022,22 @@ struct PanoramaTextRun
 // face), other spans keep the element's computed weight. Shared by the layout
 // measure, the paint path, and the host glyph rasterizer so all three agree.
 [[nodiscard]] int panorama_run_font_weight(int base_weight, bool bold);
+
+// Font families (a Bulwark addition). A computed font_weight is a font key:
+// family * kPanoramaFontFamilyStride + CSS weight, so the text pipeline,
+// which passes weights everywhere, carries the family without new
+// parameters. Family 0 is the default; CSS `font-family` picks the first
+// listed name that was registered. Fonts given to PanoramaFontAtlas use the
+// same keys in PanoramaFontAtlasFace::weight.
+inline constexpr int kPanoramaFontFamilyStride = 1024;
+[[nodiscard]] inline int panorama_font_family_of(int key) { return key / kPanoramaFontFamilyStride; }
+[[nodiscard]] inline int panorama_font_weight_of(int key) { return key % kPanoramaFontFamilyStride; }
+// Returns the family's number (from 1), registering the name if it is new;
+// names compare case-insensitively.
+int panorama_register_font_family(std::string_view name);
+// 0 when the name was never registered
+[[nodiscard]] int panorama_find_font_family(std::string_view name);
+void panorama_clear_font_families();
 PanoramaTextShadow parse_panorama_text_shadow(std::string_view value);
 PanoramaBoxShadow parse_panorama_box_shadow(std::string_view value);
 PanoramaBlur parse_panorama_blur(std::string_view value);

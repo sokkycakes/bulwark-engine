@@ -1,4 +1,5 @@
 #include "ui/panorama/panorama_font_atlas.hpp"
+#include "ui/panorama/panorama_style.hpp"
 
 #include "ui/panorama/panorama_log.hpp"
 #include "ui/panorama/panorama_render_backend.hpp"
@@ -361,11 +362,12 @@ char32_t next_codepoint(std::string_view text, std::size_t& i)
     return cp;
 }
 
+// face_weight is a font key: family * kPanoramaFontFamilyStride + weight (Bulwark).
 std::uint64_t glyph_key(char32_t codepoint, int pixel_size, int face_weight)
 {
-    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(face_weight & 0x3FF)) << 54U) |
-           (static_cast<std::uint64_t>(static_cast<std::uint32_t>(pixel_size & 0x3FFFFF)) << 32U) |
-           static_cast<std::uint32_t>(codepoint);
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(face_weight & 0x7FFFFFF)) << 37U) |
+           (static_cast<std::uint64_t>(static_cast<std::uint32_t>(pixel_size & 0xFFFF)) << 21U) |
+           (static_cast<std::uint32_t>(codepoint) & 0x1FFFFFU);
 }
 
 unsigned char bitmap_alpha(const FT_Bitmap& bitmap, int x, int y)
@@ -671,6 +673,18 @@ struct PanoramaFontAtlas::Impl
         return std::max(1, static_cast<int>(std::lround(std::max(1.0F, font_size) * ui_scale)));
     }
 
+    static int face_distance(int face_key, int asked_key)
+    {
+        const int face_family = panorama_font_family_of(face_key);
+        const int asked_family = panorama_font_family_of(asked_key);
+        const int weight_distance = std::abs(panorama_font_weight_of(face_key) - panorama_font_weight_of(asked_key));
+        if (face_family == asked_family)
+        {
+            return weight_distance;
+        }
+        return (face_family == 0 ? 100000 : 200000) + weight_distance;
+    }
+
     [[nodiscard]] FontFace* face_for_weight(int font_weight)
     {
         if (faces.empty())
@@ -678,13 +692,16 @@ struct PanoramaFontAtlas::Impl
             return nullptr;
         }
 
+        // Bulwark: weights carry a family (panorama_font_family_of); faces of
+        // the asked family win, then the default family's
         FontFace* best = &faces.front();
-        int best_distance = std::abs(best->weight - font_weight);
+        int best_distance = face_distance(best->weight, font_weight);
         for (FontFace& font : faces)
         {
-            const int distance = std::abs(font.weight - font_weight);
+            const int distance = face_distance(font.weight, font_weight);
             if (distance < best_distance ||
-                (distance == best_distance && font_weight >= 600 && font.weight > best->weight))
+                (distance == best_distance && panorama_font_weight_of(font_weight) >= 600 &&
+                    font.weight > best->weight))
             {
                 best = &font;
                 best_distance = distance;
@@ -700,13 +717,16 @@ struct PanoramaFontAtlas::Impl
             return nullptr;
         }
 
+        // Bulwark: weights carry a family (panorama_font_family_of); faces of
+        // the asked family win, then the default family's
         const FontFace* best = &faces.front();
-        int best_distance = std::abs(best->weight - font_weight);
+        int best_distance = face_distance(best->weight, font_weight);
         for (const FontFace& font : faces)
         {
-            const int distance = std::abs(font.weight - font_weight);
+            const int distance = face_distance(font.weight, font_weight);
             if (distance < best_distance ||
-                (distance == best_distance && font_weight >= 600 && font.weight > best->weight))
+                (distance == best_distance && panorama_font_weight_of(font_weight) >= 600 &&
+                    font.weight > best->weight))
             {
                 best = &font;
                 best_distance = distance;
@@ -1284,7 +1304,9 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
                 continue;
             }
             faces.push_back(
-                PlannedFace{std::move(resolved), std::clamp(configured.weight, 1, 1000)});
+                PlannedFace{std::move(resolved),
+                    panorama_font_family_of(configured.weight) * kPanoramaFontFamilyStride +
+                        std::clamp(panorama_font_weight_of(configured.weight), 1, 1000)});
         }
     }
     else
