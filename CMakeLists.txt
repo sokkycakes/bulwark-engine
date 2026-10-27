@@ -152,3 +152,16 @@ set_target_properties(bwplug_source PROPERTIES PREFIX "" C_VISIBILITY_PRESET hid
 target_link_libraries(bwplug_source m)
 add_executable(srcconv tools/srcconv.c)
 target_link_libraries(srcconv ${CMAKE_DL_LIBS})
+
+# GDI-compatible TrueType rasterizer (docs/spec/gdi-text.md). Optional: only
+# built when FreeType is installed. Not used by the renderer.
+find_package(Freetype QUIET)
+if(FREETYPE_FOUND)
+	add_library(bwgdifont STATIC src/client/gdifont.c)
+	target_link_libraries(bwgdifont PUBLIC Freetype::Freetype)
+	add_executable(gdidump tools/gdidump/gdidump.c)
+	target_link_libraries(gdidump bwgdifont)
+	add_executable(gdifonttest tests/gdifont/gdifonttest.c)
+	target_link_libraries(gdifonttest bwgdifont)
+	add_test(NAME gdifont COMMAND gdifonttest)
+endif()
