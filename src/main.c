@@ -116,6 +116,7 @@ int main(int argc, char **argv)
 	Cmd_Add("path", Path_f);
 	Cmd_DescribeAll();
 	Cmd_ProtectLocal();
+	Plug_AutoLoad();
 	Cmd_SetPreHook(GamePreHook);
 	Cmd_SetFallback(CL_ForwardToServer);
 

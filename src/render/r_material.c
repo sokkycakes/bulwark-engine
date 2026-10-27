@@ -8,6 +8,7 @@
  * ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -464,7 +465,34 @@ bool R_MaterialFileExists(const char *name)
 {
 	char base[128];
 	strip_ext(name, base, sizeof(base));
-	return FS_FileExists(va("%s.mat", base)) || find_script(base) || find_script(name);
+	return FS_FileExists(va("%s.mat", base)) || find_script(base) || find_script(name) || Plug_MaterialExists(base);
+}
+
+/* a material a plugin read (a Source .vmt) */
+static void from_plugin(material_t *m, const bwplug_material_t *pm, int flags)
+{
+	int f = pm->flags;
+	if (pm->diffuse[0])
+		m->diffuse = R_FindImage(pm->diffuse, image_flags(m, flags));
+	if (pm->normal[0] && R_ImageExists(pm->normal))
+		m->normal = R_FindImage(pm->normal, image_flags(m, flags));
+	if (pm->fullbright[0] && R_ImageExists(pm->fullbright))
+		m->fullbright = R_FindImage(pm->fullbright, image_flags(m, flags));
+	if (f & BWPLUG_MAT_UNLIT)
+		m->program = MP_UNLIT;
+	if (f & BWPLUG_MAT_WATER)
+		m->program = MP_WATER;
+	if (f & BWPLUG_MAT_ADDITIVE)
+		m->blend = BLEND_ADD, m->src = GL_ONE, m->dst = GL_ONE;
+	else if ((f & BWPLUG_MAT_TRANSLUCENT) || (pm->alpha > 0 && pm->alpha < 1))
+		m->blend = BLEND_ALPHA, m->src = GL_SRC_ALPHA, m->dst = GL_ONE_MINUS_SRC_ALPHA;
+	m->alphatest = (f & BWPLUG_MAT_ALPHATEST) != 0;
+	m->twosided = (f & BWPLUG_MAT_TWOSIDED) != 0;
+	m->nodraw = (f & BWPLUG_MAT_NODRAW) != 0;
+	m->sky = (f & BWPLUG_MAT_SKY) != 0;
+	if (pm->alpha > 0 && pm->alpha < 1)
+		m->alpha = pm->alpha;
+	m->fromfile = true;
 }
 
 material_t *R_FindMaterial(const char *name, int flags)
@@ -474,6 +502,7 @@ material_t *R_FindMaterial(const char *name, int flags)
 	char *text = NULL;
 	size_t len;
 	scriptdef_t *sd;
+	bwplug_material_t pm;
 	if (!name || !*name)
 		name = "$default";
 	for (m = materials[name_hash(name)]; m; m = m->next)
@@ -492,6 +521,8 @@ material_t *R_FindMaterial(const char *name, int flags)
 		lexer_t l = {sd->text, "", false};
 		parse_body(m, &l, flags);
 		m->fromfile = true;
+	} else if (Plug_LoadMaterial(base, &pm)) {
+		from_plugin(m, &pm, flags);
 	} else {
 		m->diffuse = R_FindImage(name, image_flags(m, flags));
 	}

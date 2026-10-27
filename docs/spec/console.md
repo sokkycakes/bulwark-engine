@@ -243,8 +243,11 @@ of it, and say so when used:
   supported.
 - **`dtls_*`**: Bulwark has no DTLS, so there are no certificates to
   manage.
-- **Plugins** are Bulwark's own (`bwplug_<name>.so` with `bwplug_init`),
-  not FTE's plugin API.
+- **Plugins** are Bulwark's own (`bwplug_<name>.so` with `bwplug_init`,
+  see `src/common/bwplug.h`), not FTE's plugin API. Plugins can add image,
+  material and model formats, and every plugin next to the engine loads at
+  startup. The Source formats (VTF, VMT, MDL) come this way, from
+  `bwplug_source.so`; see [source-formats.md](source-formats.md).
 
 ## Full list
 

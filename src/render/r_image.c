@@ -2,6 +2,7 @@
  * Decoding uses stb_image (public domain). ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,7 +73,10 @@ static uint8_t *decode_file(const char *path, int *w, int *h)
 		return NULL;
 	if (strstr(path, ".lmp"))
 		out = decode_lmp(data, len, w, h);
-	else
+	else if ((out = Plug_DecodeImage(path, data, len, w, h)) != NULL) {
+		Mem_Free(data);
+		return out;
+	} else
 		out = stbi_load_from_memory(data, (int)len, w, h, &comp, 4);
 	if (!out && !strstr(path, ".lmp"))
 		Con_DPrintf("couldn't decode %s: %s\n", path, stbi_failure_reason());
@@ -103,6 +107,12 @@ uint8_t *R_LoadPixels(const char *name, int *w, int *h)
 		if (FS_FileExists(path) && (p = decode_file(path, w, h)))
 			return p;
 	}
+	/* then the formats plugins add (.vtf) */
+	for (int i = 0; Plug_ImageExt(i); i++) {
+		snprintf(path, sizeof(path), "%s%s", base, Plug_ImageExt(i));
+		if (FS_FileExists(path) && (p = decode_file(path, w, h)))
+			return p;
+	}
 	return NULL;
 }
 
@@ -115,6 +125,11 @@ bool R_ImageExists(const char *name)
 	strip_ext(name, base, sizeof(base));
 	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
 		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
+		if (FS_FileExists(path))
+			return true;
+	}
+	for (int i = 0; Plug_ImageExt(i); i++) {
+		snprintf(path, sizeof(path), "%s%s", base, Plug_ImageExt(i));
 		if (FS_FileExists(path))
 			return true;
 	}
