@@ -363,18 +363,22 @@ static void bi_gettagindex(qcvm_t *vm)
 
 /* the entity's placement, with the pitch of a model turned the Quake way.
  * View models (RF_VIEWMODEL or RF_DEPTHHACK) keep the camera's pitch, as
- * the renderer draws them (r_viewmodel_quakepitch, r_scene.c) */
+ * the renderer draws them (r_viewmodel_quakepitch, r_scene.c), and are
+ * mirrored when it mirrors them */
 static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 {
 	static const float zero[3];
-	static cvar_t *quakepitch;
+	static cvar_t *quakepitch, *mirror;
 	const float *o = vm->fofs.origin >= 0 ? &QC_EdictFields(vm, ent)[vm->fofs.origin].f : zero;
 	const float *a = vm->fofs.angles >= 0 ? &QC_EdictFields(vm, ent)[vm->fofs.angles].f : zero;
 	float ang[3] = {-a[0], a[1], a[2]}, f[3], r[3], u[3];
 	float scale = QC_EFloat(vm, ent, vm->fofs.scale);
 	if (!quakepitch)
 		quakepitch = Cvar_Find("r_viewmodel_quakepitch");
-	if (((int)QC_EFloat(vm, ent, vm->fofs.renderflags) & (1 | 4)) && !(quakepitch && quakepitch->ivalue))
+	bool vm_model = ((int)QC_EFloat(vm, ent, vm->fofs.renderflags) & (1 | 4)) != 0;
+	if (!mirror)
+		mirror = Cvar_Find("r_viewmodel_mirror");
+	if (vm_model && !(quakepitch && quakepitch->ivalue))
 		ang[0] = a[0];
 	if (scale == 0)
 		scale = 1;
@@ -382,6 +386,10 @@ static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 	for (int k = 0; k < 3; k++)
 		f[k] *= scale, r[k] *= scale, u[k] *= scale;
 	Bone_FromVectors(out, o, f, r, u);
+	/* mirrored view models (r_viewmodel_mirror, r_scene.c): their tags
+	 * and attachments are mirrored with them */
+	if (vm_model && mirror && mirror->ivalue)
+		out[1] = -out[1], out[5] = -out[5], out[9] = -out[9];
 }
 
 /* bone b (0-based) of an entity in model space, from its skeleton object

@@ -714,8 +714,196 @@ static bool load_studio(rmodel_t *mod)
 static rmodel_t *models[MAX_RMODELS];
 static int nummodels;
 
+/* --- sprites (.spr) ----------------------------------------------------------- */
+
+/* GoldSrc sprites (IDSP version 2; the header is described in r_image.c).
+ * Each frame becomes its own material, named "model:N" as spriteframe names
+ * them, with frame groups counting each member. The frame's origin is the
+ * offset of its top left corner from the sprite's centre. Orientation types:
+ * 0 parallel upright, 1 facing upright, 2 parallel, 3 oriented, 4 parallel
+ * oriented (DESIGN: the usual meanings of these Quake sprite types). */
+typedef struct {
+	float left, right, top, bottom;
+	material_t *material;
+} spriteframe_t;
+
+typedef struct sprite_s {
+	int type, format, numframes;
+	spriteframe_t *frames;
+} sprite_t;
+
+static bool sprite_frame(rmodel_t *mod, sprite_t *s, const uint8_t *d, size_t size, size_t *ofs)
+{
+	spriteframe_t *f;
+	int32_t ox, oy, w, h;
+	if (*ofs + 16 > size)
+		return false;
+	ox = rd32(d + *ofs), oy = rd32(d + *ofs + 4), w = rd32(d + *ofs + 8), h = rd32(d + *ofs + 12);
+	if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || *ofs + 16 + (size_t)w * h > size)
+		return false;
+	*ofs += 16 + (size_t)w * h;
+	f = &s->frames[s->numframes];
+	f->left = (float)ox;
+	f->right = (float)(ox + w);
+	f->top = (float)oy;
+	f->bottom = (float)(oy - h);
+	f->material = R_FindMaterial(s->numframes ? va("%s:%d", mod->name, s->numframes) : mod->name, MATF_MODEL);
+	s->numframes++;
+	return true;
+}
+
+static bool load_sprite(rmodel_t *mod, const uint8_t *d, size_t size)
+{
+	sprite_t *s;
+	size_t ofs;
+	int npal, count, total = 0;
+	if (size < 42 || rd32(d + 4) != 2)
+		return false;
+	count = rd32(d + 28);
+	npal = d[40] | (d[41] << 8);
+	if (count <= 0 || count > 4096 || npal <= 0 || npal > 256 || 42 + (size_t)npal * 3 > size)
+		return false;
+	/* count the frames, groups included, before making them */
+	ofs = 42 + (size_t)npal * 3;
+	for (int i = 0; i < count; i++) {
+		int n = 1;
+		if (ofs + 4 > size)
+			return false;
+		if (rd32(d + ofs) != 0) {
+			if (ofs + 8 > size)
+				return false;
+			n = rd32(d + ofs + 4);
+			if (n <= 0 || n > 1024)
+				return false;
+			ofs += 4 + (size_t)n * 4;
+		}
+		ofs += 4;
+		for (int g = 0; g < n; g++) {
+			int32_t w, h;
+			if (ofs + 16 > size)
+				return false;
+			w = rd32(d + ofs + 8), h = rd32(d + ofs + 12);
+			if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
+				return false;
+			ofs += 16 + (size_t)w * h;
+		}
+		total += n;
+	}
+	s = Mem_Alloc(sizeof(*s));
+	s->type = rd32(d + 8);
+	s->format = rd32(d + 12);
+	s->frames = Mem_Alloc(sizeof(spriteframe_t) * total);
+	ofs = 42 + (size_t)npal * 3;
+	for (int i = 0; i < count; i++) {
+		int n = 1;
+		if (rd32(d + ofs) != 0) {
+			n = rd32(d + ofs + 4);
+			ofs += 4 + (size_t)n * 4;
+		}
+		ofs += 4;
+		for (int g = 0; g < n; g++)
+			if (!sprite_frame(mod, s, d, size, &ofs)) {
+				Mem_Free(s->frames);
+				Mem_Free(s);
+				return false;
+			}
+	}
+	for (int i = 0; i < s->numframes; i++) {
+		const spriteframe_t *f = &s->frames[i];
+		float r = BW_MAX(BW_MAX(fabsf(f->left), fabsf(f->right)), BW_MAX(fabsf(f->top), fabsf(f->bottom)));
+		for (int k = 0; k < 3; k++)
+			mod->mins[k] = BW_MIN(mod->mins[k], -r), mod->maxs[k] = BW_MAX(mod->maxs[k], r);
+	}
+	mod->sprite = s;
+	mod->numframes = s->numframes;
+	mod->type = MOD_SPRITE;
+	return true;
+}
+
+/* sprites face the camera, always in the translucent pass. Additive sprites
+ * (texture format 1, EF_ADDITIVE or RF_ADDITIVE) add onto the scene */
+static void draw_sprite(rentity_t *e, const float *viewproj)
+{
+	const glprog_t *p = &r_progs[PROG_UNLIT];
+	const sprite_t *s = e->model->sprite;
+	const spriteframe_t *f = &s->frames[e->frame >= 0 && e->frame < s->numframes ? e->frame : 0];
+	material_t *mat = e->forceshader ? e->forceshader : f->material;
+	float right[3], up[3], c[4], rgba[4], sc = e->scale;
+	bool additive = s->format == 1 || (e->effects & 32) || (e->renderflags & 8);
+	GLenum src = GL_SRC_ALPHA, dst = additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA;
+	rvert_t v[4];
+	static const uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
+	if (!mat->diffuse)
+		return;
+	switch (s->type) {
+	case 0: /* parallel upright: turns about the vertical, square to the view */
+	case 1: /* facing upright: turns about the vertical towards the viewer */
+		up[0] = up[1] = 0, up[2] = 1;
+		if (s->type == 0)
+			right[0] = r_scene.right[0], right[1] = r_scene.right[1];
+		else
+			right[0] = e->origin[1] - r_scene.origin[1], right[1] = r_scene.origin[0] - e->origin[0];
+		right[2] = 0;
+		if (VectorNormalize(right) < 1e-6f)
+			VectorCopy(r_scene.right, right);
+		break;
+	case 3: /* oriented: the entity's own axes */
+		for (int k = 0; k < 3; k++)
+			right[k] = -e->axis[1][k], up[k] = e->axis[2][k];
+		break;
+	case 4: { /* parallel, turned by the entity's roll */
+		float a = e->angles[2] * (float)M_PI / 180, cs = cosf(a), sn = sinf(a);
+		for (int k = 0; k < 3; k++) {
+			right[k] = r_scene.right[k] * cs + r_scene.up[k] * sn;
+			up[k] = r_scene.up[k] * cs - r_scene.right[k] * sn;
+		}
+		break;
+	}
+	default:
+		VectorCopy(r_scene.right, right);
+		VectorCopy(r_scene.up, up);
+	}
+	for (int k = 0; k < 3; k++) {
+		float l = f->left * sc, r = f->right * sc, t = f->top * sc, b = f->bottom * sc;
+		v[0].xyz[k] = e->origin[k] + right[k] * l + up[k] * b;
+		v[1].xyz[k] = e->origin[k] + right[k] * l + up[k] * t;
+		v[2].xyz[k] = e->origin[k] + right[k] * r + up[k] * t;
+		v[3].xyz[k] = e->origin[k] + right[k] * r + up[k] * b;
+	}
+	for (int i = 0; i < 4; i++) {
+		v[i].st[0] = i < 2 ? 0.0f : 1.0f;
+		v[i].st[1] = (i == 1 || i == 2) ? 0.0f : 1.0f;
+		memset(v[i].normal, 0, sizeof(v[i].normal));
+		memset(v[i].color, 255, 4);
+	}
+	rgba[0] = e->colormod[0], rgba[1] = e->colormod[1], rgba[2] = e->colormod[2], rgba[3] = e->alpha;
+	if (!rgba[0] && !rgba[1] && !rgba[2])
+		rgba[0] = rgba[1] = rgba[2] = 1;
+	if (e->forceshader && mat->fromfile && mat->blend != BLEND_OPAQUE) {
+		int b;
+		R_PickBlend(mat, BLEND_ALPHA, src, dst, &b, &src, &dst);
+	}
+	R_BlendColor(src, rgba, c);
+	R_UseProgram(PROG_UNLIT);
+	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, viewproj);
+	qglUniform4f(p->u_color, c[0], c[1], c[2], c[3]);
+	qglUniform4f(p->u_tcmod, 0, 0, 1, 1);
+	qglUniform1f(p->u_alphatest, s->format == 3 ? 0.5f : 0.0f);
+	GL_BindTexture(0, GL_TEXTURE_2D, mat->diffuse->tex);
+	GL_SetBlend(BLEND_CUSTOM, src, dst);
+	GL_SetDepth(true, false);
+	GL_SetCull(false);
+	R_StreamDraw(GL_TRIANGLES, v, 4, idx, 6);
+	GL_SetCull(true);
+	GL_SetDepth(true, true);
+}
+
 static void free_model(rmodel_t *m)
 {
+	if (m->sprite) {
+		Mem_Free(m->sprite->frames);
+		Mem_Free(m->sprite);
+	}
 	if (m->alias) {
 		alias_t *a = m->alias;
 		Mem_Free(a->poses);
@@ -786,6 +974,8 @@ rmodel_t *R_LoadModel(const char *name)
 		m->loaded = load_iqm(m, d, size);
 	else if (size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
 		m->loaded = load_studio(m);
+	else if (size >= 4 && !memcmp(d, "IDSP", 4))
+		m->loaded = load_sprite(m, d, size);
 	else {
 		/* a plugin may turn it into an IQM (Source .mdl) */
 		size_t qlen;
@@ -1017,6 +1207,16 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		bool trans = e->alpha < 1 || (e->renderflags & 8);
 		if (trans == translucentpass || translucentpass)
 			R_DrawWorldModel(m, mvp, model, e->alpha, translucentpass);
+		return;
+	}
+	if (m->type == MOD_SPRITE) {
+		if (translucentpass) {
+			if (depthhack)
+				qglDepthRange(0, 0.3);
+			draw_sprite(e, viewmodel ? r_scene.vmviewproj : r_scene.viewproj);
+			if (depthhack)
+				qglDepthRange(0, 1);
+		}
 		return;
 	}
 	if ((e->alpha < 1 || (e->renderflags & 8)) != translucentpass)
