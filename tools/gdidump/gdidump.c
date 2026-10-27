@@ -7,7 +7,7 @@
  *
  * --ppem-offset renders N ems away from the size rule's choice (for
  * tools/gdiref/best_ppem.py). --tune overrides gdifont_tuning_t fields
- * (gray_method, gray_hint, sample_phase, nogridfit, aa_measure) to score
+ * (see gdifont.h) to score
  * alternatives against Windows.
  *
  * Font files are looked up as <fonts_dir>/<Face>_<weight>.ttf (or .ttc), the
@@ -211,6 +211,8 @@ int main(int argc, char **argv)
 				else if (!strcmp(kv, "sample_phase")) g_tune.sample_phase = v;
 				else if (!strcmp(kv, "nogridfit")) g_tune.nogridfit = v;
 				else if (!strcmp(kv, "aa_measure")) g_tune.aa_measure = v;
+				else if (!strcmp(kv, "sample_nudge")) g_tune.sample_nudge = v;
+				else if (!strcmp(kv, "mono_method")) g_tune.mono_method = v;
 				else { fprintf(stderr, "gdidump: unknown tuning %s\n", kv); return 2; }
 			}
 		} else
