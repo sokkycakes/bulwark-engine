@@ -487,6 +487,9 @@ static float draw_text(float x, float y, const char *text, float sx, float sy, c
 				     b->y1 / (float)FONT_ATLAS, color);
 			} else if (!fs && c > 32 && c < 128) {
 				float s = (c % 16) / 16.0f, t = (c / 16) / 16.0f;
+				/* flushes a full batch (a console page of text is more
+				 * than one) and restores the font after inline images */
+				set_state(tex, cur_blend, cur_src, cur_dst, NULL, 0);
 				quad(x, y, sx, sy, s, t, s + 1 / 16.0f, t + 1 / 16.0f, color);
 			}
 		}
