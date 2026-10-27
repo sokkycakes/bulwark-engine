@@ -1,0 +1,103 @@
+<!--
+	Panorama port of Stiletto's data/web/scratch.html: a static MGS4 style
+	"Weapons" screen mock-up. The page lays out a 690x403 viewport and scales
+	it to fit the view; this lays the viewport out at the 1080-line scale
+	(x2.68) and scales it down only when the view is narrower than it. The
+	equip slots, backpack rows, button legend and range graph are built by the
+	script from the page's markup. Nothing here talks to the engine, as in the
+	page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/scratch.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/scratch.js" />
+	</scripts>
+
+	<Panel id="ScratchPage" class="page" hittest="false">
+		<Panel id="Viewport" hittest="false">
+			<!-- side rails -->
+			<Panel id="RailLeft" class="panel rail" hittest="false">
+				<Panel class="fringe" hittest="false" />
+				<Panel class="panel-hi" hittest="false" />
+				<Panel class="panel-lo" hittest="false" />
+			</Panel>
+			<Label id="RailLeftText" class="t rail-text" text="METAL GEAR MK.III" hittest="false" />
+			<Panel id="RailRight" class="panel rail" hittest="false">
+				<Panel class="fringe" hittest="false" />
+				<Panel class="panel-hi" hittest="false" />
+				<Panel class="panel-lo" hittest="false" />
+			</Panel>
+			<Label id="RailRightText" class="t rail-text" text="MANUFACTURED BY HAL EMMERICH" hittest="false" />
+
+			<!-- header -->
+			<Panel id="HeaderIcon" hittest="false" />
+			<Label id="HeaderTitle" class="t bright" text="Weapons" hittest="false" />
+
+			<!-- LEFT: equip -->
+			<Panel id="EquipPanel" class="panel" hittest="false">
+				<Panel class="fringe" hittest="false" />
+				<Panel class="panel-hi" hittest="false" />
+				<Panel class="panel-lo" hittest="false" />
+				<Panel id="EquipHeader" class="rule-bottom" hittest="false" />
+				<Label id="EquipLabel" class="t" text="EQUIP" hittest="false" />
+				<Label id="EquipKg" class="t bright" text="9.8kg" hittest="false" />
+				<Label id="EquipCount" class="t dim" text="[ 5/5 ]" hittest="false" />
+				<Panel id="EquipSlots" hittest="false" />
+				<Panel id="EquipCustom" class="rule-top" hittest="false" />
+				<Label id="EquipCustomText" class="t" text="158" hittest="false" />
+			</Panel>
+
+			<!-- CENTER: backpack -->
+			<Panel id="BackpackPanel" class="panel" hittest="false">
+				<Panel class="fringe" hittest="false" />
+				<Panel class="panel-hi" hittest="false" />
+				<Panel class="panel-lo" hittest="false" />
+				<Panel id="BackpackHeader" class="rule-bottom" hittest="false" />
+				<Label id="BackpackLabel" class="t" text="BACKPACK" hittest="false" />
+				<Panel id="BackpackTabs" class="rule-bottom" hittest="false" />
+				<Label id="TabTitle" class="t bright" text="EXPLOSIVES" hittest="false" />
+				<Panel id="TabPip0" class="tab-pip" hittest="false" />
+				<Panel id="TabPip1" class="tab-pip active" hittest="false" />
+				<Panel id="TabPip2" class="tab-pip" hittest="false" />
+				<Panel id="ItemList" hittest="false" />
+			</Panel>
+
+			<!-- button legend -->
+			<Panel id="LegendPanel" class="panel" hittest="false">
+				<Panel class="fringe" hittest="false" />
+				<Panel class="panel-hi" hittest="false" />
+				<Panel class="panel-lo" hittest="false" />
+			</Panel>
+
+			<!-- detail -->
+			<Panel id="DetailPanel" class="panel" hittest="false">
+				<Panel class="fringe" hittest="false" />
+				<Panel class="panel-hi" hittest="false" />
+				<Panel class="panel-lo" hittest="false" />
+				<Label id="DetailName" class="t bright" text="CHAFF G." hittest="false" />
+				<Label id="DetailMeta1" class="t" text="PROJECTILE" hittest="false" />
+				<Label id="DetailMeta2" class="t" text="WEIGHT : 0.8kg" hittest="false" />
+				<Panel id="DetailRule" class="rule-bottom" hittest="false" />
+				<Label id="StatsTop" class="t" text="F50" hittest="false" />
+				<Panel id="StatsGraph" hittest="false">
+					<Panel class="fringe" hittest="false" />
+					<Panel id="StatsGridV" hittest="false" />
+					<Panel id="StatsGridH" hittest="false" />
+					<Panel id="StatsLine" hittest="false" />
+				</Panel>
+				<Label id="RangeLabel" class="t" text="30.0m" hittest="false" />
+				<Label id="RangeAxis" class="t dim" text="Range" hittest="false" />
+			</Panel>
+
+			<!-- footer -->
+			<Panel id="Bumper" hittest="false">
+				<Label class="t bright bumper-text" text="L1" hittest="false" />
+			</Panel>
+			<Label id="ViewerText" class="t bright" text="VIEWER" hittest="false" />
+			<Label id="FooterInfo" class="t" text="Electronic jamming grenade." hittest="false" />
+			<Label id="Drebin" class="t dim" text="DREBIN 422905 DP / EQUIP 19.9kg" hittest="false" />
+		</Panel>
+	</Panel>
+</root>

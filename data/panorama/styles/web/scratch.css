@@ -1,0 +1,312 @@
+/* Panorama port of Stiletto's data/web/scratch.html (MGS4 style "Weapons").
+   The page's viewport is 690x403 page px, scaled to fit the view; at 1080
+   lines that is x2.6799 (1080 / 403), so 1 page px is 2.68 layout px here and
+   the viewport is 1849.1 wide. Positions are the page's, measured at that
+   scale and relative to the viewport (top-level parts) or to their panel's
+   or row's box inside its border, where Panorama places children.
+
+   The page forces every element to 9px Verdana (24.12px here), which the game
+   doesn't ship: Inter stands in. Label tops sit 2.95px above the page's text
+   box tops, because Inter's ascender puts the baseline lower in the box.
+   Panorama has no filters here, so the icons' drop-shadow glow is drawn into
+   their SVGs as soft strokes, and the ui-root's red/cyan drop-shadow fringe
+   (half a page px) isn't drawn. */
+
+.page {
+	width: 100%;
+	height: 100%;
+	background-color: #000000;
+	overflow: noclip;
+}
+
+#Viewport {
+	width: 1849.1px;
+	height: 1080px;
+	horizontal-align: center;
+	vertical-align: center;
+	overflow: clip;
+	background-color: #000000;
+}
+
+.t {
+	font-family: "Inter";
+	font-weight: normal;
+	font-size: 24.12px;
+	line-height: 26.8px;
+	height: 26.8px;
+	white-space: nowrap;
+	text-overflow: noclip;
+	overflow: noclip;
+	text-align: left;
+	color: #d8d2a8;
+}
+.bright { color: #f4eed0; }
+.dim { color: #7a7e6a; }
+.right { text-align: right; }
+.center { text-align: center; }
+
+.rule-bottom { border-bottom: 2.68px solid #3a4038; }
+.rule-top { border-top: 2.68px solid #3a4038; }
+
+/* --- the glassy panel: a frame, the glass ramp and two sheens ------------------- */
+
+.panel {
+	y: 118.8px;
+	height: 779.3px;
+	border: 2.68px solid #6a7060;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #b4c3b42e ), color-stop( 0.06, #b4c3b42e ), color-stop( 0.14, #00000000 ), color-stop( 0.5, #141c1a8c ), color-stop( 0.86, #00000000 ), color-stop( 0.94, #8ca09138 ), to( #8ca09138 ) );
+	overflow: clip;
+}
+/* the page's ui-root filter, a pair of 0.2 alpha red and cyan drop-shadows
+   half a page px either side, lights every translucent layer from behind by
+   about 0.4 a (1 - a) of their colours (a: the layer stack's alpha), some
+   11 levels on the glass; Panorama has no filters, so it is added back */
+.fringe {
+	width: 100%;
+	height: 100%;
+	mix-blend-mode: additive;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #0c0b0c ), color-stop( 0.14, #050505 ), color-stop( 0.5, #0c0b0c ), color-stop( 0.86, #050505 ), to( #0c0b0c ) );
+}
+.panel-hi {
+	width: 100%;
+	height: 22%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #dce6d22e ), color-stop( 0.6, #b4c3af0f ), to( #00000000 ) );
+}
+.panel-lo {
+	width: 100%;
+	height: 20%;
+	vertical-align: bottom;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #00000000 ), color-stop( 0.4, #a0af9614 ), to( #c8d2b433 ) );
+}
+
+/* --- side rails ------------------------------------------------------------------- */
+
+.rail {
+	y: 53.9px;
+	width: 40.7px;
+	height: 972.1px;
+}
+#RailLeft { x: 37px; }
+#RailRight { x: 1771.5px; }
+
+/* the page sets the text vertical (writing-mode) and turns the left one over;
+   here a 600px label is turned about its centre */
+.rail-text {
+	y: 526.65px;
+	width: 600px;
+	text-align: center;
+	letter-spacing: 4.86px;
+	color: #7a7e6a;
+}
+#RailLeftText {
+	x: -245.65px;
+	transform: rotateZ( -90deg );
+}
+#RailRightText {
+	x: 1494.75px;
+	transform: rotateZ( 90deg );
+}
+
+/* --- header ------------------------------------------------------------------------- */
+
+#HeaderIcon {
+	x: 120.2px;
+	y: 54px;
+	width: 32.4px;
+	height: 32.4px;
+	border: 5.36px solid #f4eed0;
+	border-radius: 50%;
+}
+#HeaderTitle {
+	x: 171px;
+	y: 53.81px;
+}
+
+/* --- equip ------------------------------------------------------------------------- */
+
+#EquipPanel { x: 101.7px; width: 258.9px; }
+#EquipHeader { x: 7.42px; y: 4.22px; width: 238.8px; height: 38.1px; }
+#EquipLabel { x: 18.42px; y: 4.57px; }
+#EquipKg { x: 135.02px; y: 4.57px; width: 100px; text-align: right; }
+#EquipCount { x: 7.42px; y: 45.81px; width: 238.8px; text-align: center; }
+#EquipSlots { x: 7.42px; y: 80.92px; width: 238.8px; height: 650.5px; overflow: noclip; }
+#EquipCustom { x: 7.42px; y: 731.52px; width: 238.8px; height: 38.1px; }
+#EquipCustomText { x: 135.12px; y: 735.57px; width: 100px; text-align: right; }
+
+.slot {
+	width: 100%;
+	height: 127.5px;
+}
+.ghost-icon {
+	x: 95px;
+	y: 36.82px;
+	width: 48.6px;
+	height: 48.6px;
+	opacity: 0.3;
+	background-size: 100% 100%;
+}
+.ghost-weight {
+	x: 129.5px;
+	y: 0.27px;
+	width: 100px;
+	text-align: right;
+	color: #7a7e6a;
+	opacity: 0.8;
+}
+.slot-label {
+	y: 44.77px;
+	width: 100%;
+	text-align: center;
+}
+.slot.selected .slot-label { color: #f4eed0; }
+
+/* --- glass rows (equip slots and backpack items) ------------------------------------ */
+
+.glass-row {
+	border-top: 2.68px solid #c8d2be2e;
+	border-bottom: 2.68px solid #00000099;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #b4c3b42e ), color-stop( 0.08, #b4c3b42e ), color-stop( 0.15, #00000000 ), color-stop( 0.5, #141c1a8c ), color-stop( 0.85, #00000000 ), color-stop( 0.92, #8ca09138 ), to( #8ca09138 ) );
+	overflow: clip;
+}
+.row-hi {
+	width: 100%;
+	height: 35%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #dce6d238 ), color-stop( 0.5, #b4c3af14 ), to( #00000000 ) );
+}
+.row-lo {
+	width: 100%;
+	height: 30%;
+	vertical-align: bottom;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #00000000 ), color-stop( 0.5, #a0af961a ), to( #c8d2b440 ) );
+}
+.glass-row.selected {
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #dcd7af73 ), color-stop( 0.08, #dcd7af73 ), color-stop( 0.15, #b4aa7859 ), color-stop( 0.5, #7873508c ), color-stop( 0.85, #b4aa7859 ), color-stop( 0.92, #c8c39b8c ), to( #c8c39b8c ) );
+}
+.glass-row.selected .row-hi {
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #fff5c880 ), color-stop( 0.5, #dcd2a033 ), to( #00000000 ) );
+}
+.glass-row.selected .row-lo {
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #00000000 ), color-stop( 0.5, #c8b98240 ), to( #f0e1aa8c ) );
+}
+
+/* --- backpack ------------------------------------------------------------------------ */
+
+#BackpackPanel { x: 369.8px; width: 554.7px; }
+#BackpackHeader { x: 0px; y: 0px; width: 549.4px; height: 32.4px; }
+#BackpackLabel { x: 14.72px; y: -0.23px; }
+#BackpackTabs { x: 0px; y: 32.32px; width: 549.4px; height: 37.8px; }
+#TabTitle { x: 14.72px; y: 33.47px; }
+.tab-pip {
+	y: 47.72px;
+	width: 22.2px;
+	height: 4.3px;
+	background-color: #7a7e6a;
+}
+.tab-pip.active { background-color: #f4eed0; }
+#TabPip0 { x: 453.42px; }
+#TabPip1 { x: 482.92px; }
+#TabPip2 { x: 512.42px; }
+#ItemList { x: 0px; y: 73.32px; width: 549.4px; height: 700px; overflow: noclip; }
+
+.item {
+	width: 100%;
+	height: 67.6px;
+}
+.item-icon {
+	x: 14.07px;
+	y: 7.39px;
+	width: 47.47px;
+	height: 47.47px;
+	background-size: 100% 100%;
+}
+.item-weight { x: 72px; y: 14.77px; color: #7a7e6a; }
+.item-name { x: 133px; y: 14.77px; }
+.item-count { x: 434.5px; y: 14.77px; width: 100px; text-align: right; }
+.item.selected .item-weight,
+.item.selected .item-name,
+.item.selected .item-count { color: #f4eed0; }
+
+/* --- button legend ------------------------------------------------------------------- */
+
+#LegendPanel { x: 933.7px; width: 110.9px; }
+.legend-label {
+	x: 1.42px;
+	width: 70px;
+	text-align: right;
+}
+.legend-key {
+	x: 78.82px;
+	width: 19.4px;
+	height: 19.4px;
+	border: 2.68px solid #9aa088;
+	background-color: #00000080;
+	overflow: noclip;
+}
+/* the key's glyph is 9px page text too, centred on the 7.2px key; the
+   glyphs Inter lacks or draws far larger than the page's fallback are icons */
+.legend-glyph {
+	x: -12.98px;
+	y: -9.33px;
+	width: 40px;
+	text-align: center;
+	color: #f4eed0;
+}
+.legend-icon {
+	width: 100%;
+	height: 100%;
+	background-size: 100% 100%;
+}
+
+/* --- detail ------------------------------------------------------------------------- */
+
+#DetailPanel { x: 1053.9px; width: 693.6px; }
+#DetailName { x: 18.42px; y: 4.33px; }
+#DetailMeta1 { x: 18.42px; y: 37.56px; }
+#DetailMeta2 { x: 18.42px; y: 71.36px; }
+#DetailRule { x: 18.42px; y: 8.62px; width: 651.3px; height: 105.1px; }
+#StatsTop { x: 18.42px; y: 124.67px; }
+#StatsGraph {
+	x: 74.82px;
+	y: 124.42px;
+	width: 595px;
+	height: 640.9px;
+	border: 2.68px solid #3a4038;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #28322866 ), to( #0a0f0c99 ) );
+}
+#StatsGridV {
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #00000000 ), color-stop( 0.49, #00000000 ), color-stop( 0.5, #78826e33 ), color-stop( 0.51, #00000000 ), to( #00000000 ) );
+}
+#StatsGridH {
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 100%, 0% 0%, from( #00000000 ), color-stop( 0.49, #00000000 ), color-stop( 0.5, #78826e33 ), color-stop( 0.51, #00000000 ), to( #00000000 ) );
+}
+#StatsLine {
+	width: 100%;
+	height: 100%;
+	background-size: 100% 100%;
+}
+#RangeLabel { x: 556.02px; y: 729.67px; width: 100px; text-align: right; }
+#RangeAxis { x: 556.02px; y: 752.27px; width: 100px; text-align: right; }
+
+/* --- footer ------------------------------------------------------------------------- */
+
+#Bumper {
+	x: 116.5px;
+	y: 922.5px;
+	width: 50.6px;
+	height: 34.3px;
+	border: 2.68px solid #9aa088;
+	background-color: #00000066;
+	overflow: noclip;
+}
+.bumper-text {
+	y: -1.88px;
+	width: 100%;
+	text-align: center;
+}
+#ViewerText { x: 178.2px; y: 923.25px; }
+#FooterInfo { x: 388.2px; y: 923.25px; }
+#Drebin { x: 1229px; y: 923.25px; width: 500px; text-align: right; }
