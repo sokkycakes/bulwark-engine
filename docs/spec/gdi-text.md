@@ -16,20 +16,52 @@ draws TrueType fonts through it (see [In the renderer](#in-the-renderer)).
 
 `R_LoadFont(path)` tries gdifont first, then the old path.
 
-1. **A file in the game.** `path`, `path.ttf`, `path.otf` and `path.ttc`
-   are tried through the virtual filesystem. If a file is found:
-   - gdifont takes it when it has TrueType outlines (a `glyf` table).
+1. **A font file given by its path** (anything with `/`, `\` or `.`, such
+   as a mod's `resource/font/x.ttf`) stays on stb_truetype, as before
+   gdifont, unless the path ends in `?gdi`.
+   - With `?gdi`, `path`, `path.ttf`, `path.otf` and `path.ttc` are tried
+     through the virtual filesystem. gdifont takes the file when it has
+     TrueType outlines (a `glyf` table).
    - CFF-flavoured OpenType (`.otf` with a `CFF ` table, such as Nuclide's
-     IBM Plex fonts) is left to stb_truetype exactly as before. gdifont
-     reproduces the TrueType rasterizer, and GDI draws CFF fonts through
-     a different one that was never measured.
-2. **A bare face name** such as `Verdana`, meaning one with no `/`, `\` or
-   `.`. This is looked up in a face index, described below.
+     IBM Plex fonts) always stays on stb_truetype. gdifont reproduces the
+     TrueType rasterizer, and GDI draws CFF fonts through a different one
+     that was never measured.
+   - Why opt-in: gdifont draws what GDI draws without ClearType. For
+     ClearType-era faces that is bold, cramped text with uneven gaps. See
+     [ClearType-era faces](#cleartype-era-faces-calibri). A mod that ships
+     its own font file has not asked for that.
+2. **A bare face name** such as `Verdana` (no `/`, `\` or `.`): the
+   CreateFont-style request the GDI rules are for. A file of that name in
+   the game is tried first, then the face index described below.
 3. **Neither.** When nothing is found, or gdifont rejects the file, the old
    code runs unchanged: the stb_truetype file lookup, then the built-in
    bitmap font. The fallback was checked against the engine before this
    change: a Nuclide frame with `chat.font` = Verdana and no Verdana
    installed is identical to the pixel.
+
+### Fallback lists
+
+The path may list several fonts separated by commas. The first one that
+loads, through gdifont or stb_truetype, is used. The built-in font is used
+only when none of them load.
+
+An entry can end in `?size=N`. Text drawn with the font at its nominal
+size (the first number in loadfont's sizes, which Nuclide sets from the
+.font file's `size`) is then drawn at N instead. Other sizes are scaled in
+proportion, and `drawtextfield` spaces its lines by the scaled height.
+
+Nuclide's `base/fonts/chat.font` uses this:
+
+    path "Verdana,fonts/IBMPlexMono-Text.otf?size=12"
+    size 16
+
+Chat is Verdana at 16 where a Verdana is found. Otherwise it is IBM Plex
+Mono at 12, as it was before Verdana. With no Verdana installed, that
+frame is identical to the pixel to one from the engine and chat.font
+before the change.
+
+Entries can also carry the other suffixes, as in
+`"Verdana?bold,fonts/x.ttf"`.
 
 ### Name resolution
 
@@ -105,6 +137,43 @@ are kept.
   A full atlas (768 distinct glyphs per size, or no room left) still
   advances but draws nothing for the extra glyphs.
 
+### ClearType-era faces (Calibri)
+
+The 27p test build drew CSNZ's HUD font (calibrifzy4jw.ttf, given by path,
+12 px) through gdifont. It came out bold, with uneven gaps ("Time Re ma
+ining", "pla ye r").
+
+- **Engine glue: ruled out.** The text path reproduces gdifont exactly.
+  Carlito (metric-compatible with Calibri) as a Nuclide chat font at 12
+  matches gdidump's ExtTextOut glyphs pixel for pixel:
+  - 2D scale 1 (1024×768, cell 12): 2295 px.
+  - 2D scale 2 (1920×1080, cell 24): 9129 px.
+  - 2D scale 1.5 (cell 18): 4596 px.
+
+  These include negative A (`j`) and negative C (`r`, `t`, `R`). The
+  cell height is always the drawn size in framebuffer pixels, whatever
+  size the font was loaded at.
+- **gdifont versus Windows: the look is GDI's own.** Calibri was added
+  to the Windows capture (run 40566970541).
+  - Size choice is right at cell 12 (ppem 10). The tm metrics match at
+    11 of 17 heights (8 of 17 for bold); size choice for Calibri at
+    heights 8, 9, 19 and 24 is open.
+  - ABC matches 86–90% over the grid, and ExtTextOut at q1 82%.
+  - For "Time Remaining for Zombie Selection: 36 Sec player" at cell
+    12, Windows' own ExtTextOut line equals gdifont's at q1 and at q0,
+    and every glyph's ABC equals Windows'. The only exception is the
+    space's B and C at q1 (0,1,1 against 0,0,2), which gives the same
+    advance.
+
+  So GDI without ClearType draws Calibri this way. Its hints are made
+  for ClearType, and in grey and 1-bit modes they snap stems and
+  advances to whole pixels.
+- **Not checked:** calibrifzy4jw itself was not available. That it
+  behaves like Calibri is a guess from its name and the screenshot.
+
+Hence item 1 above: files given by path keep stb_truetype unless they ask
+for `?gdi`. A bare name such as `Calibri` still gets GDI's look.
+
 ### Verified
 
 With Nuclide under Xvfb at 1024×768 (2D scale 1), chat was set to the
@@ -128,9 +197,9 @@ Not verified:
   environment.
 - The Windows font-folder scan, which is code that has never run.
 - macOS.
-- Fractional 2D scales.
-- Overlapping glyphs: each glyph is blended as its own quad, whereas
-  ExtTextOut draws the whole string at once.
+- Overlapping glyphs beyond the few pixels in the Carlito test (3 px,
+  equal): each glyph is blended as its own quad, whereas ExtTextOut draws
+  the whole string at once.
 
 ## How it was established
 
@@ -358,6 +427,12 @@ sizes. 1-bit is GGO_BITMAP (the same at both qualities).
 | Trebuchet MS | 700 | 17/17 | 99.1% | 98.9% | 87.8% | 88.1% | 89.5% | 82.1% |
 | Verdana | 400 | 17/17 | 99.5% | 99.0% | 86.5% | 86.5% | 89.4% | 80.1% |
 | Verdana | 700 | 17/17 | 99.9% | 98.4% | 93.3% | 93.3% | 88.6% | 76.8% |
+| Calibri | 400 | 11/17 | 86.5% | 89.9% | 75.7% | 75.6% | 81.7% | 75.4% |
+| Calibri | 700 | 8/17 | 87.1% | 87.8% | 78.1% | 78.5% | 82.8% | 77.9% |
+
+Calibri rows: run 40566970541, the first run with Calibri in the grid. The
+other rows are unchanged in that run. The all-face totals below are from
+before Calibri was added.
 
 All faces together:
 
@@ -393,5 +468,11 @@ All faces together:
 5. **Not covered by the capture:** underline and strikeout geometry,
    synthetic bold and italic, fonts with `hdmx`/`LTSH` or embedded bitmaps,
    and TrueType collections (gdidump opens face 0).
-6. **otm fields:** the `GetOutlineTextMetrics` fields that gdiref records
+6. **Calibri:**
+   - The size choice is wrong at heights 8, 9, 19 and 24 (and more for
+     bold). best_ppem shows ppem ±1, and at 24 neither neighbour fits.
+   - 1-bit is 8–57% equal at those heights and 75% overall, against
+     85–96% for the older faces.
+   - Calibri's hints are written for ClearType. [U]
+7. **otm fields:** the `GetOutlineTextMetrics` fields that gdiref records
    are not produced by gdidump. compare.py doesn't use them.

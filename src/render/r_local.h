@@ -383,6 +383,7 @@ void R_InitDraw(void);
 int R_LoadFont(const char *name, const char *path, const char *sizes, int slot);
 int R_FindFont(const char *name);
 void R_SetDrawFont(int slot);
+float R_DrawFontScale(void);
 void R_ShutdownDraw(void);
 
 /* --- GDI-compatible TrueType text (r_gdifont.c) --------------------------- */
