@@ -228,6 +228,9 @@ struct qcvm_s {
 	double profile_start;
 	char breakpoint[64];
 	struct qc_watch_s *watch;
+
+	/* called as an entity slot is freed, before its fields are cleared */
+	void (*free_hook)(qcvm_t *vm, int e);
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs

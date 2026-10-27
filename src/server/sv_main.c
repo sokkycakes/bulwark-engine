@@ -1,6 +1,7 @@
 /* Bulwark engine - server: progs lifecycle, map loading, entity spawning,
  * think and movement physics. ISC licence, see LICENSE. */
 #include "sv_local.h"
+#include "../script/script.h"
 #include "../common/cvar.h"
 #include "../common/cmd.h"
 #include "../common/fs.h"
@@ -257,7 +258,7 @@ static int spawn_entities(const char *data, bool world, int *first)
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, sv_stat_builtins, sv_sql_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, sv_stat_builtins, sv_sql_builtins, script_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
@@ -266,6 +267,7 @@ void SV_Shutdown(void)
 		if (QC_FindFunction(sv.vm, "SV_Shutdown"))
 			QC_ExecuteByName(sv.vm, "SV_Shutdown");
 		SV_SQLShutdown();
+		Script_LevelShutdown();
 		QC_Free(sv.vm);
 		SV_FreeRoutes();
 	}
@@ -373,6 +375,7 @@ bool SV_SpawnServer(const char *mapname)
 	vm->host = &sv;
 	vm->modelname = SV_ModelName;
 	sv.vm = vm;
+	Script_LevelInit(vm);
 	SV_SetupClientSlots();
 	vm->reserved_edicts = svs.maxclients;
 	vm->num_edicts = svs.maxclients + 1;
@@ -427,6 +430,19 @@ bool SV_SpawnServer(const char *mapname)
 		QC_ExecuteByName(vm, "initents");
 	}
 
+	/* maps/<name>.ent, when present, replaces the map's own entity lump */
+	{
+		char entpath[160];
+		size_t entlen;
+		char *ents;
+		snprintf(entpath, sizeof(entpath), "maps/%s.ent", mapname);
+		if ((ents = FS_LoadFile(entpath, &entlen))) {
+			Con_Printf("using entities from %s\n", entpath);
+			Mem_Free(sv.world->entities);
+			sv.world->entities = ents;
+		}
+	}
+	Script_LevelPreSpawn();
 	Host_Loading("server_entities", mapname, 0.15f);
 	if (scene) {
 		strbuf_t ents = {0};
@@ -440,6 +456,7 @@ bool SV_SpawnServer(const char *mapname)
 		spawn_map_entities(sv.world->entities);
 	}
 	sv.spawning = false;
+	Script_LevelSpawned();
 	SV_ClientsMapChanged();
 	SV_MVDMapSpawned();
 	SV_MasterMapSpawned();
@@ -781,6 +798,7 @@ void SV_Physics(void)
 		run_entity(e);
 	}
 	SV_ClientsPostThink();
+	Script_Frame(sv.time);
 	if (QC_GFloat(vm, G.force_retouch) > 0)
 		QC_SetGFloat(vm, G.force_retouch, QC_GFloat(vm, G.force_retouch) - 1);
 	if (QC_FindFunction(vm, "EndFrame")) {
@@ -978,6 +996,7 @@ void SV_Init(void)
 	Cmd_Add("pr_trace", PrTrace_f);
 	Cmd_Add("pr_profile", PrProfile_f);
 	Cmd_Add("sv", SV_Cmd_f);
+	Script_Init();
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
