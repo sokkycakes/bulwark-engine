@@ -757,8 +757,10 @@ static void query(int view, const char *req, strbuf_t *out)
  * panorama/webcore_fonts.cfg, which Bulwark's data directory provides */
 static void register_fonts(void)
 {
+	/* ahead of the rest of the config that loaded the plugin, which goes
+	 * on to open the title */
 	if (FS_FileExists("panorama/webcore_fonts.cfg"))
-		Cbuf_AddText("exec panorama/webcore_fonts.cfg\n");
+		Cbuf_InsertText("exec panorama/webcore_fonts.cfg\n");
 }
 
 static void PlugLoad(void)

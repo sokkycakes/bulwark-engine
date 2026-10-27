@@ -96,7 +96,16 @@ const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size)
 	return info_get(cl.playerinfo[slot], key, out, size);
 }
 
-const char *CL_ServerKey(const char *key, char *out, size_t size) { return info_get(cl.serverinfo, key, out, size); }
+const char *CL_ServerKey(const char *key, char *out, size_t size)
+{
+	const char *v = info_get(cl.serverinfo, key, out, size);
+	/* games ask for the map as "mapname" too (Stiletto's arena menu) */
+	if ((!v || !*v) && !strcmp(key, "mapname") && cl.mapname[0]) {
+		Str_Copy(out, cl.mapname, size);
+		return out;
+	}
+	return v;
+}
 
 /* the server's r_meshpitch decides how this client's game code and renderer
  * read pitch, since the game sets it on the server (Nuclide's entry.qc) */

@@ -1135,7 +1135,8 @@ static int handle_for(image_t *img)
 
 int R_ImageHandle(const char *name)
 {
-	image_t *img = R_FindImage(name, IMG_NOMIP);
+	/* pictures for 2D drawing: clamped, so a stretched edge doesn't wrap */
+	image_t *img = R_FindImage(name, IMG_NOMIP | IMG_CLAMP);
 	return img->missing ? 0 : handle_for(img);
 }
 

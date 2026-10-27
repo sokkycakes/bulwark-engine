@@ -155,6 +155,9 @@ var Bulwark = (function () {
 		Send: function (action, arg) { $.__host(String(action), arg === undefined ? "" : String(arg)); },
 		Cmd: function (command) { $.__host("cmd", String(command)); },
 		Query: function (request) { return fte_query(request); },
+		/* the view's size in layout pixels (the height is ui_designheight for a full-screen view) */
+		Width: function () { return __bwSize()[0]; },
+		Height: function () { return __bwSize()[1]; },
 		On: function (event, fn) { (handlers[event] = handlers[event] || []).push(fn); },
 		__recv: function (event, value) {
 			var list = handlers[event];
@@ -168,6 +171,17 @@ var Bulwark = (function () {
 
 /* fte_query(request): a synchronous request to the engine. The reply comes
  * back as an attribute of the document root, written while $.__host runs. */
+function __bwRoot() {
+	var r = $.GetContextPanel();
+	while (r && r.GetParent())
+		r = r.GetParent();
+	return r;
+}
+function __bwSize() {
+	var r = __bwRoot();
+	$.__host("__size", "");
+	return r ? [parseFloat(r.GetAttributeString("bwwidth", "0")), parseFloat(r.GetAttributeString("bwheight", "0"))] : [0, 0];
+}
 var fte_query = (function () {
 	var root = null;
 	return function (request) {
@@ -220,6 +234,8 @@ struct View {
 	};
 	std::vector<Batch> batches;
 	bool batches_dirty = true;
+	/* closed while its own script may still be running: freed next frame */
+	bool dead = false;
 	/* UI_EMBED views: the size they were last drawn at, in virtual pixels */
 	float embed_w = 0, embed_h = 0;
 	float drawn_scale = 0; /* virtual pixels per design unit the batches were built for */
@@ -459,13 +475,28 @@ bool resolve_images(PanoramaNode &node)
 View *find_view(int num)
 {
 	for (auto &v : views)
-		if (v->num == num)
+		if (v->num == num && !v->dead)
 			return v.get();
 	return nullptr;
 }
 
+/* views closed since the last frame go now, outside any of their scripts */
+void reap_views()
+{
+	views.erase(std::remove_if(views.begin(), views.end(), [](const auto &v) { return v->dead; }), views.end());
+}
+
 void host_action(View *v, const std::string &action, const std::string &arg)
 {
+	if (action == "__size") {
+		float w, h;
+		view_viewport(*v, w, h);
+		if (PanoramaNode *root = v->pv.root()) {
+			root->attributes["bwwidth"] = std::to_string(w);
+			root->attributes["bwheight"] = std::to_string(h);
+		}
+		return;
+	}
 	if (action == "__query") {
 		strbuf_t reply = {};
 		if (query_handler && arg.size() <= 4096)
@@ -587,7 +618,7 @@ const char *key_name(int key, int unicode, char *buf, size_t size)
 View *input_view()
 {
 	for (auto it = views.rbegin(); it != views.rend(); ++it)
-		if (((*it)->flags & UI_INPUT) && !((*it)->flags & UI_EMBED))
+		if (((*it)->flags & UI_INPUT) && !((*it)->flags & UI_EMBED) && !(*it)->dead)
 			return it->get();
 	return nullptr;
 }
@@ -760,13 +791,20 @@ int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 	return vp->num;
 }
 
+/* a script can close its own view (a page asking the engine to close it):
+ * the view is only marked here and freed at the start of the next frame */
 void UI_Close(int num)
 {
-	views.erase(std::remove_if(views.begin(), views.end(), [num](const auto &v) { return v->num == num; }),
-	            views.end());
+	for (auto &v : views)
+		if (v->num == num)
+			v->dead = true;
 }
 
-void UI_CloseAll(void) { views.clear(); }
+void UI_CloseAll(void)
+{
+	for (auto &v : views)
+		v->dead = true;
+}
 
 bool UI_IsOpen(int num) { return find_view(num) != nullptr; }
 
@@ -922,6 +960,7 @@ void UI_MouseMove(float x, float y)
 void UI_Frame(double dt)
 {
 	double start = Sys_Seconds();
+	reap_views();
 	if (fonts_dirty) {
 		fonts_dirty = false;
 		load_fonts();
@@ -930,6 +969,8 @@ void UI_Frame(double dt)
 		for (auto &v : views) {
 			if (fonts_loaded)
 				v->pv.set_font_atlas(&fonts);
+			/* font-family names that weren't registered yet resolve now */
+			v->pv.invalidate_style();
 			v->pv.invalidate_visual();
 			v->batches_dirty = true;
 		}
@@ -972,7 +1013,7 @@ void UI_Draw(void)
 {
 	double start = Sys_Seconds();
 	for (auto &v : views) {
-		if (v->flags & UI_EMBED)
+		if ((v->flags & UI_EMBED) || v->dead)
 			continue;
 		if (v->batches_dirty)
 			build_batches(*v);
