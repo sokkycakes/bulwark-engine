@@ -236,6 +236,10 @@ static int setup(gdifont_t *f, int height, int weight, const char **err)
 		ppem = 1;
 	free(vdmx); free(vp); free(vmax); free(vmin);
 
+	if (ppem < f->tune.v40_below) {
+		FT_UInt v40 = TT_INTERPRETER_VERSION_40;
+		FT_Property_Set(f->lib, "truetype", "interpreter-version", &v40);
+	}
 	if (FT_Set_Pixel_Sizes(f->face, 0, ppem)) {
 		*err = "FreeType could not set the size";
 		return 0;
@@ -375,7 +379,8 @@ const gdifont_tuning_t gdifont_default_tuning = {
 	0,  /* nogridfit: off */
 	5,  /* aa_measure: 4x4 sampled box (run 40466309200) */
 	0,  /* sample_nudge */
-	0   /* mono_method */
+	0,  /* mono_method */
+	0   /* v40_below */
 };
 
 /* A rendered glyph: one byte per pixel, rows top down. left/top as FreeType

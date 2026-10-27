@@ -113,6 +113,8 @@ typedef struct {
 	                       forced dropout mode: 2 smart with stubs, 3 smart
 	                       without stubs, 4 simple with stubs, 5 simple
 	                       without stubs */
+	int v40_below;      /* use the v40 interpreter at ppems below this
+	                       (0: always v35) */
 } gdifont_tuning_t;
 
 extern const gdifont_tuning_t gdifont_default_tuning;

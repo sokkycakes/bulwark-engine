@@ -213,6 +213,7 @@ int main(int argc, char **argv)
 				else if (!strcmp(kv, "aa_measure")) g_tune.aa_measure = v;
 				else if (!strcmp(kv, "sample_nudge")) g_tune.sample_nudge = v;
 				else if (!strcmp(kv, "mono_method")) g_tune.mono_method = v;
+				else if (!strcmp(kv, "v40_below")) g_tune.v40_below = v;
 				else { fprintf(stderr, "gdidump: unknown tuning %s\n", kv); return 2; }
 			}
 		} else
