@@ -94,7 +94,8 @@ typedef struct {
 	int ppem_delta;     /* render this many ems away from the size rule */
 	int gray_method;    /* 0: FreeType area coverage; 1: point sampling */
 	int gray_hint;      /* hinting for greyscale: 0 grayscale mode, 1 mono mode */
-	int sample_phase;   /* point sampling at 0: (i + 0.5) / n, 1: i / n */
+	int sample_phase;   /* point sampling at 0: (i + 0.5) / n, 1: i / n,
+	                       2: i / n across only, 3: i / n down only */
 	int nogridfit;      /* where gasp lacks GRIDFIT, load unhinted:
 	                       bit 0 for 1-bit output and ABC, bit 1 for grey */
 	int aa_measure;     /* measuring at ANTIALIASED quality:
