@@ -144,3 +144,9 @@
 	from { transform: rotateZ( 0deg ); }
 	to { transform: rotateZ( -360deg ); }
 }
+
+/* the page's own pointer, moved by the script */
+.cursor {
+	background-image: url("file://{game}/data/web/ql-menu/assets/3_cursor3.png");
+	background-size: 100% 100%;
+}

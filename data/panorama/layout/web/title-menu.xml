@@ -40,11 +40,9 @@
 			<Label text="Quit" hittest="false" />
 		</Button>
 
-		<!-- the page inlines these as data: URLs (object-fit: contain); the logo
-		     is an SVG there, and the game ships the same artwork as a PNG -->
-		<Panel class="logo-clip" hittest="false">
-			<Panel class="logo" hittest="false" />
-		</Panel>
+		<!-- the page inlines these as data: URLs; the same files are in its
+		     assets/ folder -->
+		<Panel class="logo" hittest="false" />
 		<Panel class="hint-glyph" hittest="false" />
 		<Label class="hint-label" text="Settings" hittest="false" />
 		<Panel class="tp-logo" hittest="false" />

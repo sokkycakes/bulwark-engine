@@ -45,14 +45,7 @@
 				</Button>
 				<!-- Figma guestLock (109:10): covers the four host rows for guests -->
 				<Panel id="GuestLock" class="guest-lock">
-					<Panel class="lock-art" hittest="false">
-						<Panel class="lock-shackle-clip">
-							<Panel class="lock-shackle" />
-						</Panel>
-						<Panel class="lock-leg" />
-						<Panel class="lock-body" />
-						<Panel class="lock-hole" />
-					</Panel>
+					<Image class="lock-art" src="file://{game}/data/web/lobby-menu/assets/guest-lock.svg" hittest="false" />
 					<Label class="guest-lock-text" text="Lobby settings locked to Host." />
 				</Panel>
 				<Button id="BtnStart" class="ui-button start-button row-4" tabindex="-1">

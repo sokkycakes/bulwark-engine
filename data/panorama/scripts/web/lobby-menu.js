@@ -415,7 +415,7 @@ var LobbyMenu = (function ()
 		return -1;
 	}
 
-	// navigation.js: arrows, W/S and Tab move focus; Esc opens or closes Leave
+	// navigation.js: arrows, W/S and (Shift+)Tab move focus; Esc opens or closes Leave
 	function onKey( e )
 	{
 		if ( !e || !e.down )
@@ -440,8 +440,8 @@ var LobbyMenu = (function ()
 			focus( rows[ ( cur + ( key === "WheelDown" ? 1 : -1 ) + rows.length ) % rows.length ] );
 			return;
 		}
-		// text fields keep their editing keys
-		if ( isEntry( focused ) && key !== "Tab" )
+		// the engine's shortcuts and the fields' editing keys are not ours
+		if ( e.ctrl || e.alt || ( isEntry( focused ) && key !== "Tab" ) )
 			return;
 		if ( key === " " )
 		{
@@ -450,8 +450,8 @@ var LobbyMenu = (function ()
 				Click( focused );
 			return;
 		}
-		var backward = [ "ArrowUp", "ArrowLeft", "w", "W" ].indexOf( key ) !== -1;
-		var forward = [ "ArrowDown", "ArrowRight", "s", "S", "Tab" ].indexOf( key ) !== -1;
+		var backward = [ "ArrowUp", "ArrowLeft", "w", "W" ].indexOf( key ) !== -1 || ( key === "Tab" && !!e.shift );
+		var forward = [ "ArrowDown", "ArrowRight", "s", "S" ].indexOf( key ) !== -1 || ( key === "Tab" && !e.shift );
 		if ( !backward && !forward )
 			return;
 		var inMenu = !dialog && rowIndex( focused ) >= 0;

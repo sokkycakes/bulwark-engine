@@ -15,7 +15,10 @@
 {
 	width: 1440px;
 	height: 1080px;
-	horizontal-align: center;
+	/* centred even when the view is narrower than 4:3 (horizontal-align
+	   would pin an overflowing stage to the left edge) */
+	x: 50%;
+	margin-left: -720px;
 }
 
 /* Figma bgPanel (109:18): fades in over the top 4.8%, out over the last 5% */
@@ -180,7 +183,7 @@
 	visibility: collapse;
 }
 .guest-locked .guest-lock { visibility: visible; }
-/* the lock artwork, drawn from panels: #adadad at 40% over #3d3d3d */
+/* the original lock artwork (an SVG), turned -28.42deg */
 .lock-art
 {
 	x: 32.89px;
@@ -188,45 +191,6 @@
 	width: 183.06px;
 	height: 233.07px;
 	transform: rotateZ( -28.42deg );
-}
-.lock-shackle-clip
-{
-	x: 35.01px;
-	width: 113.03px;
-	height: 57.53px;
-	overflow: clip;
-}
-.lock-shackle
-{
-	width: 113.03px;
-	height: 113.03px;
-	border: 34px solid #6a6a6a;
-	border-radius: 50%;
-}
-.lock-leg
-{
-	x: 114.03px;
-	y: 57.53px;
-	width: 34px;
-	height: 12.75px;
-	background-color: #6a6a6a;
-}
-.lock-body
-{
-	y: 70.27px;
-	width: 183.06px;
-	height: 162.8px;
-	border-radius: 34px;
-	background-color: #6a6a6a;
-}
-.lock-hole
-{
-	x: 70.27px;
-	y: 130.54px;
-	width: 42.52px;
-	height: 42.52px;
-	border-radius: 50%;
-	background-color: #3d3d3d;
 }
 .guest-lock-text
 {

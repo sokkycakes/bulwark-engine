@@ -139,17 +139,15 @@ var QlMenu = (function ()
 	// --- the 640x480 stage, letterboxed into the view ---------------------------
 
 	var K = 2.25; // design pixels per virtual pixel
-	var root = null, stage = null, artLayer = null, hitLayer = null;
+	var root = null, stage = null, artLayer = null, hitLayer = null, cursor = null;
 
-	// The view is ui_designheight tall and as wide as the window's aspect allows;
-	// scripts can't read the laid-out size, so the aspect comes from the cvars.
+	// the stage keeps its aspect and is centred in the view (layout pixels)
+	var viewW = 1920, viewH = 1080;
 	function computeScale()
 	{
-		var vw = parseFloat( fte_query( "cvar:vid_width" ) ) || 1920;
-		var vh = parseFloat( fte_query( "cvar:vid_height" ) ) || 1080;
-		var dh = parseFloat( fte_query( "cvar:ui_designheight" ) ) || 1080;
-		var dw = dh * vw / vh;
-		return Math.min( dw / W, dh / H );
+		viewW = Bulwark.Width() || viewW;
+		viewH = Bulwark.Height() || viewH;
+		return Math.min( viewW / W, viewH / H );
 	}
 
 	function px( v ) { return ( Math.round( v * K * 100 ) / 100 ) + "px"; }
@@ -1036,13 +1034,38 @@ var QlMenu = (function ()
 		};
 	}
 
+	// 3_cursor3.png is 32x32 with the arrow tip (hotspot) at about 18,18. The
+	// pointer is mapped into the stage and clamped to it, as the canvas did.
+	var CURSOR_HOT = 18, CURSOR_SIZE = 32;
+	var cursorK = 0, cursorAt = "";
+	function drawCursor()
+	{
+		if ( cursorK !== K )
+		{
+			cursorK = K;
+			cursor.style.width = px( CURSOR_SIZE );
+			cursor.style.height = px( CURSOR_SIZE );
+		}
+		var mx = ( Bulwark.MouseX() - ( viewW - W * K ) / 2 ) / K;
+		var my = ( Bulwark.MouseY() - ( viewH - H * K ) / 2 ) / K;
+		mx = Math.max( 0, Math.min( W, mx ) );
+		my = Math.max( 0, Math.min( H, my ) );
+		// position can't be restyled from script; a translation moves the paint only
+		var at = "translate3d( " + px( mx - CURSOR_HOT ) + ", " + px( my - CURSOR_HOT ) + ", 0px )";
+		if ( at !== cursorAt )
+		{
+			cursorAt = at;
+			cursor.style.transform = at;
+		}
+	}
+
 	var lastScaleCheck = 0;
 	function frame()
 	{
 		var t = now();
 		if ( t >= lastScaleCheck )
 		{
-			lastScaleCheck = t + 500;
+			lastScaleCheck = t + 100;
 			var k = computeScale();
 			if ( Math.abs( k - K ) > 0.0001 || !stage.__sized )
 			{
@@ -1059,6 +1082,7 @@ var QlMenu = (function ()
 			return { key: op.type + "|" + op.cls + "|" + op.style + "|" + ( op.text || "" ) + "|" + ( op.children ? JSON.stringify( op.children ) : "" ), make: makeOp( op ) };
 		} ) );
 		hitLayer.commit( hitList() );
+		drawCursor();
 		$.Schedule( 1 / 60, frame );
 	}
 
@@ -1105,10 +1129,16 @@ var QlMenu = (function ()
 
 	function init()
 	{
+		if ( fte_query( "cvar:ql_menu_debug" ) === "1" )
+		{
+			var q = fte_query;
+			fte_query = function ( r ) { var x = q( r ); if ( r !== "getarena" && r.indexOf( "cvar:" ) !== 0 ) $.Msg( "QL " + r + " -> " + x ); return x; };
+		}
 		root = $( "#QlPage" ) || $.GetContextPanel();
 		stage = $.CreatePanel( "Panel", root, "Stage", { hittest: "false" } );
 		artLayer = new Layer( $.CreatePanel( "Panel", stage, "Art", { "class": "layer", hittest: "false" } ) );
 		hitLayer = new Layer( $.CreatePanel( "Panel", stage, "Hits", { "class": "layer", hittest: "false" } ) );
+		cursor = $.CreatePanel( "Panel", stage, "Cursor", { "class": "cursor", hittest: "false" } );
 		toast( "Warmup UI · join a team + ready (need 4) · 1/2 views" );
 		if ( typeof Bulwark === "object" )
 			Bulwark.On( "key", onKey );

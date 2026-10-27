@@ -1,9 +1,9 @@
 /* Stiletto's in-game HUD. The original draws on a canvas authored for a
-   1440 x 1080 (4:3) frame; the client game draws this view into its 4:3 HUD
-   rectangle, which is always the full screen height, so the view is 1080
-   design pixels tall and positions here are the canvas coordinates. Centred
-   clusters sit in a 1440-wide stage centred in the view, the resource panel
-   is anchored to the left edge (as the canvas anchors it). */
+   1440 x 1080 (4:3) frame and scales it by view height / 1080; positions
+   here are the canvas coordinates. Centred clusters sit in a 1440-wide stage
+   centred in the view, the resource panel is anchored to the left edge (as
+   the canvas anchors them); hud.js scales both when the view is not 1080
+   design pixels tall. Images are the page's own (assets-data.js). */
 
 .hud
 {
@@ -19,6 +19,7 @@
 	horizontal-align: center;
 	vertical-align: center;
 	overflow: noclip;
+	transform-origin: 50% 50%;
 }
 
 .left
@@ -26,6 +27,8 @@
 	width: 600px;
 	height: 1080px;
 	vertical-align: center;
+	overflow: noclip;
+	transform-origin: 0% 50%;
 }
 
 Label
@@ -219,9 +222,6 @@ Label
 	opacity: 0.5;
 }
 .cooldown.ready .cd-icon { opacity: 1; }
-.cd-icon Panel { background-color: #ffffff; }
-.cd-icon .cd-cut { background-color: #00000080; }
-.cd-icon .cd-clip { background-color: transparent; overflow: clip; }
 .cd-ring
 {
 	width: 100%;
@@ -261,13 +261,6 @@ Label
 	width: 482px;
 	height: 31.6px;
 }
-.gauge Panel
-{
-	transform-origin: 0% 0%;
-}
-.gauge-ink { background-color: #000000; }
-.gauge-fill { background-color: #ffea2d; }
-.gauge-cap { border-radius: 50%; }
 
 .ex-count
 {

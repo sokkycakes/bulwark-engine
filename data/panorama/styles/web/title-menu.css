@@ -78,23 +78,17 @@
 	color: #ffffff;
 }
 
-/* the page's logo SVG has preserveAspectRatio="none", so it fills its box.
-   The PNG's bottom rows are empty; the box is cut a little short of them so
-   the texture's wrapped top row never shows along the bottom edge */
-.logo-clip
+/* the page's own logo SVG; it has preserveAspectRatio="none", so it fills
+   its box */
+.logo
 {
 	x: 62.3443%;
 	y: 57.6823%;
 	width: 33.6996%;
-	height: 25%;
-	overflow: clip;
-}
-.logo
-{
-	width: 100%;
-	height: 106.25%;
-	background-image: url("file://{game}/panorama/images/titlemenu/logo.png");
+	height: 26.5625%;
+	background-image: url("file://{game}/data/web/title-menu/assets/logovectorframe.svg");
 	background-size: 100% 100%;
+	background-repeat: no-repeat;
 }
 
 /* object-fit: contain */

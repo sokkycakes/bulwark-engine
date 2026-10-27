@@ -261,26 +261,13 @@ var TitleMenu = (function ()
 	}
 
 	// the backdrop: the page masks a #333 frame and its tiled "stiletto"
-	// wordmark with a radial alpha mask (viewport-mask.svg) and draws the
-	// tile from an SVG. Panorama has neither masks nor SVG, so the frame is
-	// rebuilt from rows whose gradients sample the mask, and the wordmark is
-	// cut out of the game's raster logo (panorama/images/titlemenu/logo.png,
-	// the same artwork) in slices whose opacity samples the mask.
+	// wordmark (assets/logotile.svg, the same file it inlines) with a radial
+	// alpha mask (viewport-mask.svg). Panorama has no masks, so the frame is
+	// rebuilt from rows whose gradients sample the mask, and the tiles are
+	// drawn in slices whose opacity samples it.
 	var FW = 1365, FH = 768;
 	var TILE_W = 428.224, TILE_H = 70.272;
-	// design pixels per artboard unit, vertically (the view is 1080 high)
-	var PX = 1080 / FH;
-	// logotile.svg is 429 x 71 and keeps its aspect in the stretched tile box
-	// (meet): at 4:3 and wider it fills the tile's height and is centred, so
-	// in design pixels its scale doesn't depend on the view's width
-	var LS = TILE_H * PX / 71;
-	// the tile's wordmark is the logo's first line, 1.824 units in
-	var LOGO_X = 1.824, LOGO_W = 460, LOGO_H = 204;
-	// where the logo's second line ("swift") reaches up into the first
-	var SWIFT_X0 = 174, SWIFT_X1 = 256, SWIFT_TOP = 62.5;
-	var SLICES = [ LOGO_X, 87, 174, 256, 343, LOGO_X + 429 ];
-	// frame units per design pixel across, at 16:9 (only used to sample the mask)
-	var FX_PER_PX = FW / ( 1920 * FW / 1024 );
+	var TILE_SLICES = 6;
 
 	function maskAt( x, y )
 	{
@@ -319,57 +306,81 @@ var TitleMenu = (function ()
 		}
 	}
 
-	// the visible rows [vy0, vy1] of the tile whose box starts at (tx, ty):
-	// a panel over the tile box, the wordmark centred in it, cut into slices
-	function addTile( frame, tx, ty, vy0, vy1 )
+	function viewSize()
 	{
-		if ( vy1 - vy0 < 0.25 )
-			return;
-		var tile = $.CreatePanel( "Panel", frame, "", { class: "bg-tile", style:
-			"x: " + pct( tx, FW ) + "; y: " + pct( vy0, FH ) + "; width: " + pct( TILE_W, FW ) + "; height: " + pct( vy1 - vy0, FH ) + ";" } );
-		var mark = $.CreatePanel( "Panel", tile, "", { class: "bg-mark", style: "width: " + px( 429 * LS ) + ";" } );
-		for ( var s = 0; s + 1 < SLICES.length; s++ )
+		var w = 0, h = 0;
+		if ( typeof Bulwark.Width === "function" )
 		{
-			var l0 = SLICES[ s ], l1 = SLICES[ s + 1 ];
-			var bottom = Math.min( vy1, ty + ( l0 >= SWIFT_X0 && l1 <= SWIFT_X1 ? SWIFT_TOP : 71 ) * TILE_H / 71 );
-			if ( bottom - vy0 < 0.25 )
-				continue;
-			var cx = tx + TILE_W / 2 + ( ( l0 + l1 ) / 2 - LOGO_X - 214.5 ) * LS * FX_PER_PX;
-			var a = 0.11 * maskAt( cx, ( vy0 + bottom ) / 2 );
-			if ( a < 0.004 )
-				continue;
-			$.CreatePanel( "Panel", mark, "", { class: "bg-slice", style:
-				"x: " + px( ( l0 - LOGO_X ) * LS ) + "; width: " + px( ( l1 - l0 ) * LS ) + "; height: " + px( ( bottom - vy0 ) * PX ) + ";" +
-				"background-size: " + px( LOGO_W * LS ) + " " + px( LOGO_H * LS ) + ";" +
-				"background-position: " + px( -l0 * LS ) + " " + px( -( vy0 - ty ) * PX ) + ";" +
-				"opacity: " + a.toFixed( 4 ) + ";" } );
+			w = Bulwark.Width();
+			h = Bulwark.Height();
 		}
+		return w > 0 && h > 0 ? [ w, h ] : [ 1920, 1080 ];
 	}
 
-	// HORIZONTAL_HEXAGONAL tiling, as the page's two masked layers draw it:
-	// even bands at background-position 0 0, odd bands at
-	// (tile_w / 2, tile_h) taken as CSS percentages, i.e. of (frame - tile)
-	function buildPattern( frame )
+	// the page's two masked layers, in view pixels: tiles tile_w x tile_h of
+	// the stretched frame with the SVG kept to its aspect inside each
+	// (preserveAspectRatio meet, centred); even bands at background-position
+	// 0 0, odd bands at (tile_w / 2, tile_h) taken as CSS percentages, i.e.
+	// of (frame - tile)
+	function buildPattern( layer, vw, vh )
 	{
-		var oddX = ( TILE_W / FW / 2 ) * ( FW - TILE_W );
-		var oddY = ( TILE_H / FH ) * ( FH - TILE_H );
-		for ( var b = 0; b * TILE_H < FH; b++ )
+		var fw = vw * FW / 1024, fh = vh;
+		var tw = fw * TILE_W / FW, th = fh * TILE_H / FH;
+		var sc = Math.min( tw / 429, th / 71 );
+		var mw = 429 * sc, mh = 71 * sc;
+		var mx = ( tw - mw ) / 2, my = ( th - mh ) / 2;
+		var oddX = ( TILE_W / FW / 2 ) * ( fw - tw ), oddY = ( TILE_H / FH ) * ( fh - th );
+		for ( var b = 0; b * th < fh; b++ )
 		{
-			var by0 = b * TILE_H, by1 = Math.min( FH, by0 + TILE_H );
+			var by0 = b * th, by1 = Math.min( fh, by0 + th );
 			var ox = b % 2 ? oddX : 0, oy = b % 2 ? oddY : 0;
-			var kFirst = Math.floor( ( by0 - oy ) / TILE_H ), kLast = Math.floor( ( by1 - oy ) / TILE_H );
-			for ( var k = kFirst; k <= kLast; k++ )
+			for ( var k = Math.floor( ( by0 - oy ) / th ); k <= Math.floor( ( by1 - oy ) / th ); k++ )
 			{
-				var ty = oy + k * TILE_H;
-				for ( var tx = ox - TILE_W * Math.ceil( ox / TILE_W ); tx < FW; tx += TILE_W )
-					addTile( frame, tx, ty, Math.max( by0, ty ), Math.min( by1, ty + TILE_H ) );
+				var ty = oy + k * th;
+				var y0 = Math.max( by0, ty + my ), y1 = Math.min( by1, ty + my + mh );
+				if ( y1 - y0 < 0.5 )
+					continue;
+				for ( var tx = ox - tw * Math.ceil( ox / tw ); tx < fw; tx += tw )
+				{
+					for ( var s = 0; s < TILE_SLICES; s++ )
+					{
+						var x0 = Math.max( 0, tx + mx + mw * s / TILE_SLICES );
+						var x1 = Math.min( fw, tx + mx + mw * ( s + 1 ) / TILE_SLICES );
+						if ( x1 - x0 < 0.5 )
+							continue;
+						var a = 0.11 * maskAt( ( x0 + x1 ) / 2 * FW / fw, ( y0 + y1 ) / 2 * FH / fh );
+						if ( a < 0.004 )
+							continue;
+						$.CreatePanel( "Panel", layer, "", { class: "bg-slice", style:
+							"x: " + px( x0 ) + "; y: " + px( y0 ) + "; width: " + px( x1 - x0 ) + "; height: " + px( y1 - y0 ) + ";" +
+							"background-size: " + px( mw ) + " " + px( mh ) + ";" +
+							"background-position: " + px( tx + mx - x0 ) + " " + px( ty + my - y0 ) + ";" +
+							"opacity: " + a.toFixed( 4 ) + ";" } );
+					}
+				}
 			}
 		}
 	}
 
 	var frame = $( "#BgFrame" );
 	buildBase( frame );
-	buildPattern( frame );
+	var patternLayer = $.CreatePanel( "Panel", frame, "BgPattern", { class: "bg-pattern" } );
+	var builtSize = "";
+
+	// the tiles depend on the view's aspect: rebuild when it changes
+	function watchSize()
+	{
+		var size = viewSize();
+		var key = size[ 0 ] + "x" + size[ 1 ];
+		if ( key !== builtSize )
+		{
+			builtSize = key;
+			patternLayer.RemoveAndDeleteChildren();
+			buildPattern( patternLayer, size[ 0 ], size[ 1 ] );
+		}
+		$.Schedule( 0.5, watchSize );
+	}
+	watchSize();
 	joinConnect.enabled = false;
 
 	Bulwark.On( "key", function ( e )

@@ -8,6 +8,7 @@
 var StilettoHud = (function ()
 {
 	var ASSETS = window.HUD_ASSETS || {};
+	var DESIGN_HEIGHT = 1080;
 
 	var HudState = {
 		matchTimeSeconds: 0,
@@ -162,108 +163,39 @@ var StilettoHud = (function ()
 		}
 	}
 
-	// --- static art the canvas drew from vector images ---
+	// --- art: the page's own image pack (assets-data.js), as the canvas drew it ---
 
-	function shape(parent, cls, css)
+	// the file each pack entry was made from, if the pack is missing
+	var ASSET_FILES = {
+		hudring: 'hudring.png', timeIndicator: 'time_indicator.svg', hpFull: 'hp_vector.svg', hpLow: 'hpLow.png',
+		hpDead: 'hp_dead_vector.svg', exIndicator: 'ex_indicator.svg', abilityPip: 'abilitypip1.png',
+		union: 'union.svg', circlesExt1: 'circles_ext1.svg', deployedCode: 'deployed_code.svg', deblur: 'deblur.svg'
+	};
+
+	function loadArt(panel)
 	{
-		return $.CreatePanel('Panel', parent, '', { class: cls, style: css });
+		var key = panel.GetAttributeString('data-asset', '');
+		if (key)
+			panel.SetImage(ASSETS[key] || 'file://{game}/data/web/hud/assets/' + ASSET_FILES[key]);
+		var kids = panel.Children();
+		for (var i = 0; i < kids.length; i++)
+			loadArt(kids[i]);
 	}
 
-	function px(v)
+	// The canvas scales everything by viewHeight / 1080: centred clusters stay
+	// centred on the view, the resource panel stays on its left edge.
+	function fitView()
 	{
-		return v.toFixed(2) + 'px';
-	}
-
-	// The Drive gauge (assets/union.svg, 482 x 31.6): two yellow bars tapering
-	// from round ends to a pinch in the middle, with a 5 px black rim. Each
-	// tapered half is a centre strip plus two strips rotated onto its top and
-	// bottom edges.
-	function buildGauge(parent)
-	{
-		var cy = 15.8, ends = [15.79, 466.21], mid = 241;
-		var layers = [
-			{ cls: 'gauge-ink', end: 15.79, waist: 9, band: 12 },
-			{ cls: 'gauge-fill', end: 10.79, waist: 4, band: 7.5 }
-		];
-		layers.forEach(function (l)
-		{
-			ends.forEach(function (x0)
-			{
-				var dir = x0 < mid ? 1 : -1;
-				var len = Math.abs(mid - x0);
-				var ang = Math.atan2(l.end - l.waist, len) * 180 / Math.PI;
-				var left = Math.min(x0, mid);
-				// centre strip, as tall as the waist
-				shape(parent, l.cls, 'x: ' + px(left) + '; y: ' + px(cy - l.waist) + '; width: ' + px(len) +
-					'; height: ' + px(l.waist * 2) + ';');
-				// top and bottom edges, from the round end towards the middle
-				var reach = len + 1;
-				var topY = cy - l.end, botY = cy + l.end - l.band;
-				var xs = dir > 0 ? x0 : x0 - reach;
-				var origin = dir > 0 ? '0%' : '100%';
-				shape(parent, l.cls, 'x: ' + px(xs) + '; y: ' + px(topY) + '; width: ' + px(reach) + '; height: ' + px(l.band) +
-					'; transform-origin: ' + origin + ' 0%; transform: rotate( ' + (dir * ang).toFixed(3) + 'deg );');
-				shape(parent, l.cls, 'x: ' + px(xs) + '; y: ' + px(botY) + '; width: ' + px(reach) + '; height: ' + px(l.band) +
-					'; transform-origin: ' + origin + ' 100%; transform: rotate( ' + (-dir * ang).toFixed(3) + 'deg );');
-				// round end
-				shape(parent, l.cls + ' gauge-cap', 'x: ' + px(x0 - l.end) + '; y: ' + px(cy - l.end) + '; width: ' + px(l.end * 2) +
-					'; height: ' + px(l.end * 2) + ';');
-			});
-		});
-	}
-
-	// Cooldown icons (Material symbols circles_ext, deployed_code, deblur),
-	// drawn from their SVG geometry into the 20 px slot.
-	function circle(parent, sx, sy, cx, cy, r)
-	{
-		shape(parent, 'cd-dot', 'x: ' + px((cx - r) * sx) + '; y: ' + px((cy - r) * sy) + '; width: ' + px(2 * r * sx) +
-			'; height: ' + px(2 * r * sy) + '; border-radius: 50%;');
-	}
-
-	function buildCirclesIcon(parent)
-	{
-		var sx = 20 / 41.667, sy = 20 / 39.583;
-		circle(parent, sx, sy, 8.333, 31.25, 8.333);
-		circle(parent, sx, sy, 33.333, 31.25, 8.333);
-		circle(parent, sx, sy, 20.833, 22.917, 3.958);
-		circle(parent, sx, sy, 20.833, 8.333, 8.333);
-	}
-
-	function buildCubeIcon(parent)
-	{
-		var sx = 20 / 37.5, sy = 20 / 41.667;
-		var w = 37.5 * sx, tip = 10.83 * sy;
-		var side = w / Math.SQRT2;
-		var squash = (2 * tip) / w;
-		[tip, 20 - tip].forEach(function (cy)
-		{
-			shape(parent, 'cd-solid', 'x: ' + px((w - side) / 2) + '; y: ' + px(cy - side / 2) + '; width: ' + px(side) +
-				'; height: ' + px(side) + '; transform: scale( 1, ' + squash.toFixed(4) + ' ) rotate( 45deg );');
-		});
-		shape(parent, 'cd-solid', 'x: 0px; y: ' + px(tip) + '; width: ' + px(w) + '; height: ' + px(20 - 2 * tip) + ';');
-		// the "Y" fold lines of the cube
-		var cx = w / 2, cy = 21.6 * sy, t = 1.6;
-		shape(parent, 'cd-cut', 'x: ' + px(cx - t / 2) + '; y: ' + px(cy) + '; width: ' + px(t) + '; height: ' + px(34.5 * sy - cy) + ';');
-		[-1, 1].forEach(function (d)
-		{
-			shape(parent, 'cd-cut', 'x: ' + px(d < 0 ? cx - 7.6 : cx) + '; y: ' + px(cy - t / 2) + '; width: 7.6px; height: ' + px(t) +
-				'; transform-origin: ' + (d < 0 ? '100%' : '0%') + ' 50%; transform: rotate( ' + (d * -30) + 'deg );');
-		});
-	}
-
-	function buildDeblurIcon(parent)
-	{
-		var sx = 20 / 38.542, sy = 20 / 39.583;
-		// right half of a disc
-		var half = shape(parent, 'cd-clip', 'x: ' + px(19.27 * sx) + '; y: 0px; width: ' + px(19.27 * sx) + '; height: 20px;');
-		shape(half, 'cd-dot', 'x: ' + px(-19.27 * sx) + '; y: ' + px(0.5 * sy) + '; width: ' + px(38.54 * sx) +
-			'; height: ' + px(38.54 * sy) + '; border-radius: 50%;');
-		var dots = [
-			[15.6, 1.1, 1], [15.6, 7.4, 2], [15.6, 16, 3.1], [15.6, 24.5, 3.1], [15.6, 33, 2], [15.6, 39.4, 1],
-			[7.2, 7.4, 2], [7.2, 16, 2], [7.2, 24.5, 2], [7.2, 33, 2],
-			[1, 16, 1], [1, 24.5, 1]
-		];
-		dots.forEach(function (d) { circle(parent, sx, sy, d[0], d[1], d[2]); });
+		if (typeof Bulwark === 'undefined' || !Bulwark.Height)
+			return;
+		var h = Bulwark.Height();
+		if (!(h > 0) || shown.viewH === h)
+			return;
+		shown.viewH = h;
+		var k = (h / DESIGN_HEIGHT).toFixed(4);
+		var t = Math.abs(h - DESIGN_HEIGHT) < 0.5 ? 'none' : 'scale( ' + k + ', ' + k + ' )';
+		el.Stage.style.transform = t;
+		el.Left.style.transform = t;
 	}
 
 	// --- per-frame update: touch panels only when their value changes ---
@@ -351,6 +283,7 @@ var StilettoHud = (function ()
 
 	function tick()
 	{
+		fitView();
 		refreshState();
 		updateHpShake(Date.now());
 		render();
@@ -361,18 +294,9 @@ var StilettoHud = (function ()
 	{
 		['Hud', 'HpBox', 'Speed', 'Timer', 'ScoreLeft', 'ScoreRight', 'NameLeft', 'NameRight', 'Clip', 'Reserve',
 			'Reload', 'ExCount', 'Pip0', 'Pip1', 'Pip2', 'Cooldown0', 'Cooldown1', 'Cooldown2', 'CdTime0', 'CdTime1',
-			'CdTime2'].forEach(function (id) { el[id] = $('#' + id); });
+			'CdTime2', 'Stage', 'Left'].forEach(function (id) { el[id] = $('#' + id); });
 
-		// the 2048 px ring and the ability pip come from the page's own data-URL pack
-		if (ASSETS.hudring)
-			$('#Ring').SetImage(ASSETS.hudring);
-		var pip = ASSETS.abilityPip || 'file://{game}/data/web/hud/assets/abilitypip1.png';
-		$('#Hud').FindChildrenWithClassTraverse('ability-pip').forEach(function (p) { p.SetImage(pip); });
-
-		buildGauge($('#Gauge'));
-		buildCirclesIcon($('#CdIcon0'));
-		buildCubeIcon($('#CdIcon1'));
-		buildDeblurIcon($('#CdIcon2'));
+		loadArt(el.Hud);
 
 		tick();
 	}
