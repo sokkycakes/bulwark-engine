@@ -42,4 +42,13 @@ if grep -q " $FAMILY (gdifont)" "$TMP/log"; then
 else
 	echo "FAIL index rescan after gamedir"; cat "$TMP/log"; fail=1
 fi
+# 3. A font loaded with r_gdifont 0 is loaded again once it is 1, and
+#    listfonts says which entry of the list was used.
+run +set r_gdifont 0 +gamedir mod +wait 5 +loadfont "$FAMILY,fonts/testface.ttf" 16 \
+	+set r_gdifont 1 +loadfont "$FAMILY,fonts/testface.ttf" 16 +listfonts
+if grep -q "$FAMILY,fonts/testface.ttf (gdifont) using $FAMILY\$" "$TMP/log"; then
+	echo "PASS reload after r_gdifont"
+else
+	echo "FAIL reload after r_gdifont"; cat "$TMP/log"; fail=1
+fi
 exit $fail

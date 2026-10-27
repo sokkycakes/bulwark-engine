@@ -258,6 +258,8 @@ static void Fontfaces_f(int argc, const char **argv)
 		Con_Printf("%s resolves to %s\n", argv[1], e ? e->path : "nothing");
 	}
 	Con_Printf("%d faces\n", n);
+	if (!RG_Enabled())
+		Con_Printf("r_gdifont is 0, so fonts loaded now do not use these\n");
 }
 
 static uint8_t *read_os_file(const char *path, size_t *len)
@@ -281,6 +283,9 @@ static uint8_t *read_os_file(const char *path, size_t *len)
 }
 
 /* --- fonts ------------------------------------------------------------------- */
+
+/* whether face names and ?gdi files go to gdifont (r_gdifont) */
+bool RG_Enabled(void) { return r_gdifont && r_gdifont->value; }
 
 rgfont_t *RG_Load(const char *spec)
 {
@@ -496,6 +501,7 @@ int RG_AtlasSize(void) { return RG_ATLAS; }
 #else /* no FreeType: everything stays on stb_truetype */
 
 void RG_Init(void) {}
+bool RG_Enabled(void) { return false; }
 rgfont_t *RG_Load(const char *spec) { (void)spec; return NULL; }
 void RG_Free(rgfont_t *f) { (void)f; }
 rgsize_t *RG_Size(rgfont_t *f, int tall) { (void)f; (void)tall; return NULL; }
