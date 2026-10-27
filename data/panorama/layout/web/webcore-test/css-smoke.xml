@@ -1,0 +1,17 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/css-smoke.html: the external stylesheet smoke page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<Panel class="page css-smoke" hittest="false">
+		<Panel class="main">
+			<Label class="h1" text="External stylesheet" />
+			<Label class="status" text="If you see a dark page, style.css loaded." />
+			<Panel class="alpha-card">
+				<Label text="Gradient card from style.css" />
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

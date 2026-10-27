@@ -1,0 +1,11 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/red.html: a plain red page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<Panel class="page red" hittest="false">
+
+	</Panel>
+</root>

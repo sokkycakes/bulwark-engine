@@ -1,0 +1,14 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/render-smoke.html: four colour tiles, the last at 50% white.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<Panel class="page render-smoke" hittest="false">
+		<Panel id="TileRed" class="tile" />
+		<Panel id="TileGreen" class="tile" />
+		<Panel id="TileBlue" class="tile" />
+		<Panel id="TileBlend" class="tile" />
+	</Panel>
+</root>
