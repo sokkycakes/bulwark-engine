@@ -26,6 +26,13 @@ bool S_LoadSfx(sfx_t *sfx);
 void S_FreeAllSfx(void);
 void S_ForEachSfx(void (*fn)(const sfx_t *sfx, void *ctx), void *ctx);
 
+/* --- distance (docs/spec/sound.md) ---------------------------------------- */
+
+/* the dB sound level a QC attenuation names; 0 for one heard everywhere */
+float S_SoundLevel(float attenuation);
+/* 0..1 gain at a distance */
+float S_DistanceGain(float attenuation, float dist);
+
 /* --- music --------------------------------------------------------------- */
 
 bool S_OpenMusic(const char *path, bool loop);

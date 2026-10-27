@@ -43,7 +43,9 @@ static bool snd_started; /* S_Init ran */
 static int snd_rate = 44100;
 static float listener_origin[3], listener_right[3] = {0, -1, 0};
 static float master_volume = 0.7f, music_volume = 0.5f, dsp_level = 1; /* copies the mixer reads */
-static cvar_t *s_volume, *s_bgmvolume, *s_nominaldist, *s_show;
+static cvar_t *s_volume, *s_bgmvolume, *s_nominaldist, *s_show, *s_refdb, *s_refdist;
+/* below this a sound is dropped (about -54 dB) */
+#define SND_CULL_GAIN 0.002f
 static float *mixbuf;
 static int mixbuf_frames;
 static float listener_forward[3] = {1, 0, 0};
@@ -94,28 +96,35 @@ static bool entity_origin(const channel_t *ch, float *out)
 	return true;
 }
 
-/* gains from distance and direction. Attenuation 1 fades a sound out over
- * s_nominaldist units; 0 plays it everywhere at full volume. */
+/* gains from distance and direction, as docs/spec/sound.md describes:
+ * the attenuation names a sound level in dB, the level falls 6 dB for each
+ * doubling of distance past a reference point, and the far ear keeps part
+ * of the sound. Attenuation 0 plays everywhere at full volume. */
 static void spatialise(channel_t *ch)
 {
 	float vol = ch->volume * ((ch->flags & SNDF_ABSVOLUME) ? 1.0f : master_volume);
 	float d[3], dist, gain, pan;
 	if ((ch->flags & SNDF_FOLLOW) && !ch->ambient)
 		entity_origin(ch, ch->origin);
-	if (is_listener(ch) || ch->attenuation <= 0) {
+	if (is_listener(ch)) {
 		ch->left = ch->right = vol;
 		return;
 	}
 	for (int i = 0; i < 3; i++)
 		d[i] = ch->origin[i] - listener_origin[i];
 	dist = sqrtf(DotProduct(d, d));
-	gain = vol * BW_MAX(0.0f, 1.0f - dist * ch->attenuation / BW_MAX(1.0f, s_nominaldist->value));
+	gain = vol * S_DistanceGain(ch->attenuation, dist);
+	if (gain < SND_CULL_GAIN)
+		gain = 0;
 	if (gain <= 0 || (ch->flags & SNDF_NOSPATIALISE) || dist < 1) {
 		ch->left = ch->right = gain;
 		return;
 	}
-	/* the far ear loses up to 70% for a sound fully to one side */
+	/* the far ear keeps 30% for a sound fully to one side; inside the
+	 * reference distance the sound centres, so one at your feet isn't
+	 * hard to one side */
 	pan = DotProduct(d, listener_right) / dist * 0.7f;
+	pan *= BW_MIN(1.0f, dist / BW_MAX(1.0f, s_refdist->value));
 	if (speakers_back) {
 		/* rear speakers: sides swap, and what's in front is quieter */
 		float front = DotProduct(d, listener_forward) / dist;
@@ -126,6 +135,21 @@ static void spatialise(channel_t *ch)
 	ch->right = gain * (1 - BW_MAX(0.0f, -pan));
 	if (speaker_mode == 1)
 		ch->left = ch->right = (ch->left + ch->right) * 0.5f;
+}
+
+float S_SoundLevel(float attenuation)
+{
+	/* scaled so s_nominaldistance stretches every sound's reach alike */
+	float a = attenuation * 1000.0f / BW_MAX(1.0f, s_nominaldist->value);
+	return a > 0 ? 50.0f + 20.0f / a : 0;
+}
+
+float S_DistanceGain(float attenuation, float dist)
+{
+	float level = S_SoundLevel(attenuation);
+	if (level <= 0)
+		return 1;
+	return BW_MIN(1.0f, powf(10, (level - s_refdb->value) / 20) * s_refdist->value / BW_MAX(1.0f, dist));
 }
 
 static channel_t *pick_channel(int ent, int entchannel, int flags)
@@ -745,7 +769,9 @@ void S_Init(bool headless)
 {
 	s_volume = Cvar_Get("volume", "0.7", CVAR_ARCHIVE, "Sound effect volume");
 	s_bgmvolume = Cvar_Get("bgmvolume", "0.5", CVAR_ARCHIVE, "Music volume");
-	s_nominaldist = Cvar_Get("snd_nominaldistance", "1000", 0, "Distance over which an attenuation 1 sound fades out");
+	s_nominaldist = Cvar_Get("s_nominaldistance", "1000", CVAR_ARCHIVE, "Scales every sound's reach: attenuations are taken relative to 1000 units");
+	s_refdb = Cvar_Get("snd_refdb", "60", 0, "Sound level heard at full volume at snd_refdist units");
+	s_refdist = Cvar_Get("snd_refdist", "36", 0, "Reference distance for snd_refdb");
 	s_show = Cvar_Get("snd_show", "0", 0, "Print how many sounds are playing");
 	Cmd_Add("music", Music_f);
 	Cmd_Add("stopmusic", StopMusic_f);
