@@ -371,16 +371,19 @@ int gdifont_quality(const gdifont_t *f) { return f->quality; }
 int gdifont_flags(const gdifont_t *f) { return f->flags; }
 int gdifont_text_is_gray(const gdifont_t *f) { return f->gray_text; }
 
+/* The best fit found; docs/spec/gdi-text.md lists every alternative that
+   was scored and the run it was scored in. */
 const gdifont_tuning_t gdifont_default_tuning = {
 	0,  /* ppem_delta */
-	1,  /* gray_method: point sampling (run 40465569113) */
-	0,  /* gray_hint: grayscale mode */
-	0,  /* sample_phase: sub-pixel centres */
-	0,  /* nogridfit: off */
-	5,  /* aa_measure: 4x4 sampled box (run 40466309200) */
-	0,  /* sample_nudge */
-	0,  /* mono_method */
-	0   /* v40_below */
+	1,  /* gray_method: point sampling, 8x8 / 4x4 (run 40465569113) */
+	0,  /* gray_hint: grayscale-mode hinting (runs 40465569113, 40467000659) */
+	0,  /* sample_phase: sub-pixel centres (runs 40465569113, 40467896104) */
+	0,  /* nogridfit: off, worse everywhere (run 40465569113) */
+	5,  /* aa_measure: ABC from the 4x4 sampled box (run 40466309200) */
+	0,  /* sample_nudge: none (run 40466309200) */
+	0,  /* mono_method: FreeType with the font's dropout control (runs
+	       40466309200, 40467000659) */
+	0   /* v40_below: v35 throughout (run 40467469320) */
 };
 
 /* A rendered glyph: one byte per pixel, rows top down. left/top as FreeType
