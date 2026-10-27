@@ -43,5 +43,5 @@ unmodified, with their licence text kept at the end of each file:
 
 Fonts in `data/fonts/` are shipped unmodified, each with its own licence file:
 
-- `DejaVuSansCondensed.ttf` from DejaVu Fonts 2.37: Bitstream Vera and Arev
+- `DejaVuSansCondensed.ttf` and `DejaVuSansCondensed-Bold.ttf` from DejaVu Fonts 2.37: Bitstream Vera and Arev
   font licences (permissive, see `data/fonts/DejaVu-LICENSE.txt`).

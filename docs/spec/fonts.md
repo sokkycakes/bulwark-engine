@@ -33,6 +33,11 @@ Arev licences, permissive and GPL-free) stands in. It is built into the
 executable by `cmake/embed.cmake`. Like Tahoma, it is a narrow humanist
 sans in the Verdana style. `listfonts` prints which file is in use.
 
+Bold works the same way. A font that failed to load and has "bold" in its
+name (`Verdana Bold`, `fonts/x-bold.ttf`) uses the default face's bold:
+`r_font` plus " Bold" (`tahomabd.ttf` for Tahoma), else the bundled
+DejaVu Sans Condensed Bold.
+
 `r_quakefont 1` brings back the 8x8 bitmap font (font8x8, public domain)
 for that text, exactly as before. Fonts a game loads itself are not
 affected.
@@ -53,7 +58,8 @@ affected.
     own dark background.
   - A game asks for them per font through loadfont's sizes string:
     `outline=1` (documented in fteextensions.qc), `shadow=1` or
-    `dropshadow=1`.
+    `dropshadow=1`. The same file loaded with different effects gets a
+    slot of its own.
 - `con_textsize 0` picks 8 for the Quake font and 12 for a TrueType face.
   `8` counts as `0` because every config saved before this change holds
   it.
