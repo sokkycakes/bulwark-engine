@@ -35,6 +35,23 @@ ReactOS or Source Engine material was used (see `CLEANROOM.md`).
 | 40463306407 | the spec ported to C (baseline) |
 | 40463949748 | VDMX "step down" rule (wrong, reverted), empty-glyph records |
 | 40464365435 | final VDMX rule, tmMaxCharWidth from the head bbox |
+| 40465569113 | variants: point-sampled grey, hinting mode, sample phase, no-gridfit, ABC at q1 |
+| 40466309200 | variants: ABC from sampled boxes, sample nudges, 1-bit by centre sampling |
+| 40467000659 | variants: forced dropout modes, mono-mode hinting for grey |
+| 40467469320 | variants: v40 interpreter at small ppems |
+| 40467896104 | variants: sample phase on one axis; final scores |
+
+**How variants were scored.** From 40465569113 on, each run scores
+several rule variants at once.
+- `gdifont_tuning_t` (gdifont.h) holds one switch per rule under test,
+  and `gdidump --tune` sets them.
+- The workflow renders each variant from the same capture, and
+  `tools/gdiref/score.py` prints identical fractions per face, both overall
+  and for heights 8–10.
+- score.py also shows how Windows' quality 1 output relates to its own
+  quality 0 output.
+- `tools/gdiref/sheets.py` prints Windows-vs-gdifont text strips as base64
+  PNGs (`SHEET <label> <data>` lines) into the job log.
 
 ## Rules
 
@@ -90,10 +107,35 @@ environment variable (§4.1).
 - **Empty glyphs** (space, U+00A0): GDI returns size 0, no data, a 1×1
   black box and origin (0, 0). [O] run 40463306407, diagnose.py section 8.
 
-### Greyscale glyphs, GGO_GRAY8 (§4.3)
+### Greyscale glyphs, GGO_GRAY8 (§4.3)  [F]
 
-- An FreeType grey render, levels `round(v·64/255)`, DWORD-aligned rows. It
-  ignores gasp. [U] mapping, see open items.
+- **Rule:** each pixel's value is the number of 8×8 sample points, at
+  sub-pixel centres ((i + 0.5)/8 of the pixel), that fall inside the hinted
+  outline, with no dropout control. That gives 0–64. The black box is the
+  tight box of non-zero pixels, and rows are DWORD-aligned. GGO_GRAY8
+  ignores gasp.
+  - The hinting is grayscale mode (`FT_LOAD_TARGET_NORMAL`).
+  - The sampler scales a copy of the hinted outline by 8, renders it
+    with FreeType's 1-bit rasterizer (`FT_OUTLINE_IGNORE_DROPOUTS`), and
+    counts per pixel.
+- **Why sampling:** run 40463306407 found that Windows' misses against
+  FreeType's area coverage were mostly 62/63 → 64 and 1/2 → 0, and that
+  its values take all 65 levels. That pattern points to counted sample
+  points rather than area.
+- **Result** (run 40465569113): 12.3% → 76.0% identical, and 96–98% of
+  pixels equal within glyphs of the same box (run 40466309200).
+- **Alternatives tested:**
+
+| alternative | GGO_GRAY8 identical | run |
+|---|---|---|
+| mono-mode hinting (GETINFO without grayscale) | 75.2% | 40465569113, 40467000659 |
+| samples at i/n | 0.8% | 40465569113 |
+| samples at i/n on x only | 1.1% | 40467896104 |
+| samples at i/n on y only | 1.0% | 40467896104 |
+| 1/64 sub-pixel nudge, each of 4 directions | 27.8–30.0% | 40466309200 |
+
+  The nudge result shows that FreeType's handling of samples that fall
+  exactly on an edge matches Windows.
 
 ### ExtTextOut (§4.4)
 
@@ -110,7 +152,17 @@ environment variable (§4.1).
     (freetype-py's `face.glyph` is a live view of one slot), so it placed
     mono pixels at the grey render's origin. With correct placement,
     ExtTextOut q0 tracks GGO_BITMAP within 0.4 points for every face.
-- **Greyscale output:** 17 evenly spaced levels, as the spec says. [U]
+- **Greyscale output:** a 4×4 sample count c (same sampler, sub-pixel
+  centres) maps to a level. [F]
+  - Counts 0 and 1 draw nothing; 2…16 map to 104, 124, 140, 154, 167,
+    178, 189, 199, 208, 217, 225, 233, 240, 248 and 255.
+  - These 15 levels are the only non-zero values Windows produced
+    (run 40463306407).
+  - Set against Windows' own GGO_GRAY8, a value near 4c lands on level c.
+  - The levels probably depend on the ClearType contrast setting (1200 on
+    the runner). [U]
+  - Result: greyscale ExtTextOut 48.5% → 84.2% (run 40465569113), and
+    88.3% with the ABC change below.
 - **Underline and strikeout:** drawn from `post` and OS/2 metrics. Not
   measured. [U]
 - **Synthetic bold and italic:** not implemented. Pass the real bold or
@@ -121,63 +173,96 @@ environment variable (§4.1).
 A = bitmap_left of the 1-bit render, B = its width, C = rounded advance
 − A − B, at the §3 ppem.
 
+**At ANTIALIASED quality, where gasp turns greyscale on**, A and B come
+from the box of the 4×4 sampled glyph (count ≥ 1). The advance still comes
+from the hinted load. [F]
+
+- **Evidence that this differs from q0** (run 40465569113, score.py):
+  - Windows' GGO_BITMAP at quality 1 equals quality 0 in 99.9–100% of
+    glyphs.
+  - Its ABC is identical too in configs whose text is 1-bit, but only
+    70–97% identical in configs whose text is greyscale.
+- **Result:** ABC at q1 88.3% → 98.1% (run 40466309200).
+- **Alternatives tested:**
+
+| alternative | ABC at q1 identical |
+|---|---|
+| FreeType area-coverage box, gasp-grey ppems only | 95.2% |
+| the same box at every ppem | 91.9% |
+| 8×8 sampled box | 97.1% |
+| 4×4 sampled visible pixels only (count ≥ 2) | 96.6% |
+| grayscale-mode hinting for ABC and GGO_BITMAP | no gain, and GGO_BITMAP got worse |
+
+The 1-bit glyphs (GGO_BITMAP, 1-bit text) stay as at quality 0.
+
+### Small sizes: hypotheses tested and rejected
+
+1-bit at heights 8–10 is the weakest area (Tahoma 400 at 8–10:
+143–149 of 261). None of these helped:
+
+| hypothesis | effect | run |
+|---|---|---|
+| Unhinted loading where gasp lacks GASP_GRIDFIT (Tahoma, Verdana and Arial have 0x000A at ppem ≤ 8), for 1-bit | 70.6% → 44.7% at heights 8–10 | 40465569113 |
+| The same, for greyscale | 71.5% → 56.0% (sampled) | 40465569113 |
+| Forced dropout modes for 1-bit (smart ± stubs, simple ± stubs) | 70.6% → 44.8–50.8% at 8–10; 90.6% → 83.5–84.9% overall | 40467000659 |
+| 1-bit by plain centre sampling (no dropout control) | 70.6% → 40.3% at 8–10 | 40466309200 |
+| v40 interpreter, all ppems or only below ppem 9 or 11 | 1-bit unchanged at 8–10, greyscale worse everywhere | 40467469320 |
+
+best_ppem.py confirms the ppem is right at these sizes. The remaining
+differences are most likely in the hinting itself; see open items.
+
 ## Measured match rates
 
-Run 40464365435, gdifont against Windows build 26100, per face and weight.
+Run 40467896104, gdifont against Windows build 26100, per face and weight.
 tm is tmHeight, tmAscent, tmDescent and tmMaxCharWidth together, over 17
-sizes. ABC and 1-bit are at quality 0.
+sizes. 1-bit is GGO_BITMAP (the same at both qualities).
 
-| face | weight | tm | ABC | 1-bit (GGO_BITMAP) | ExtTextOut q0 | ExtTextOut q1 | GGO_GRAY8 |
-|---|---|---|---|---|---|---|---|
-| Tahoma | 400 | 17/17 | 100.0% | 89.2% | 89.2% | 61.5% | 15.4% |
-| Tahoma | 700 | 17/17 | 99.9% | 92.2% | 92.2% | 61.2% | 15.3% |
-| Arial | 400 | 17/17 | 98.4% | 94.8% | 94.8% | 59.7% | 22.5% |
-| Arial | 700 | 17/17 | 98.1% | 96.7% | 96.8% | 33.0% | 20.7% |
-| Courier New | 400 | 17/17 | 99.7% | 95.2% | 95.2% | 74.4% | 4.8% |
-| Courier New | 700 | 17/17 | 99.9% | 90.1% | 90.5% | 35.2% | 2.6% |
-| Times New Roman | 400 | 17/17 | 98.2% | 88.7% | 88.8% | 47.8% | 6.8% |
-| Times New Roman | 700 | 17/17 | 97.7% | 87.0% | 87.1% | 31.5% | 6.2% |
-| Trebuchet MS | 400 | 17/17 | 99.3% | 85.5% | 85.7% | 50.1% | 13.1% |
-| Trebuchet MS | 700 | 17/17 | 99.1% | 87.8% | 88.1% | 25.3% | 12.8% |
-| Verdana | 400 | 17/17 | 99.5% | 86.5% | 86.5% | 51.4% | 14.0% |
-| Verdana | 700 | 17/17 | 99.9% | 93.3% | 93.3% | 51.4% | 14.1% |
+| face | weight | tm | ABC q0 | ABC q1 | 1-bit | ExtTextOut q0 | ExtTextOut q1 | GGO_GRAY8 |
+|---|---|---|---|---|---|---|---|---|
+| Tahoma | 400 | 17/17 | 100.0% | 98.8% | 89.2% | 89.2% | 90.4% | 76.6% |
+| Tahoma | 700 | 17/17 | 99.9% | 99.2% | 92.2% | 92.2% | 89.2% | 75.6% |
+| Arial | 400 | 17/17 | 98.4% | 96.8% | 94.8% | 94.8% | 89.1% | 75.6% |
+| Arial | 700 | 17/17 | 98.1% | 96.7% | 96.7% | 96.8% | 88.4% | 80.3% |
+| Courier New | 400 | 17/17 | 99.7% | 99.3% | 95.2% | 95.2% | 89.6% | 64.3% |
+| Courier New | 700 | 17/17 | 99.9% | 98.4% | 90.1% | 90.5% | 85.8% | 70.7% |
+| Times New Roman | 400 | 17/17 | 98.2% | 97.0% | 88.7% | 88.8% | 84.6% | 73.1% |
+| Times New Roman | 700 | 17/17 | 97.7% | 96.0% | 87.0% | 87.1% | 82.8% | 73.4% |
+| Trebuchet MS | 400 | 17/17 | 99.3% | 98.8% | 85.5% | 85.7% | 92.4% | 83.8% |
+| Trebuchet MS | 700 | 17/17 | 99.1% | 98.9% | 87.8% | 88.1% | 89.5% | 82.1% |
+| Verdana | 400 | 17/17 | 99.5% | 99.0% | 86.5% | 86.5% | 89.4% | 80.1% |
+| Verdana | 700 | 17/17 | 99.9% | 98.4% | 93.3% | 93.3% | 88.6% | 76.8% |
 
-For comparison, the spec's Python reference (`ftref.py`, run 40462351632)
-scored:
+All faces together:
 
-| measure | ftref.py | gdifont |
-|---|---|---|
-| 1-bit | 79.0–94.1% | 85.5–96.7% |
-| ABC | 91.6–100% | 97.7–100% |
-| ExtTextOut q0 | 69.5–88.8% | 85.7–96.8% |
-| size choice | 193/204 | 204/204 |
+| measure | ftref.py (run 40462351632) | gdifont, run 40464365435 | gdifont, run 40467896104 |
+|---|---|---|---|
+| ABC q0 | 91.6–100% per face | 99.1% | 99.1% |
+| ABC q1 | – | 88.3% | 98.1% |
+| 1-bit | 79.0–94.1% per face | 90.6% | 90.6% |
+| ExtTextOut q0 | 69.5–88.8% per face | 90.7% | 90.7% |
+| ExtTextOut q1 | 23.9–66.1% per face | 48.5% | 88.3% |
+| GGO_GRAY8 | 2–22% per face | 12.3% | 76.0% |
+| size choice | 193/204 | 204/204 | 204/204 |
 
 ## Open items
 
-1. **The greyscale mapping** (GGO_GRAY8 and greyscale ExtTextOut). The
-   coordinator is working on this in the Python reference. Evidence from
-   run 40463306407 that may help:
-   - Windows' greyscale ExtTextOut uses exactly 15 non-zero levels:
-     104, 124, 140, 154, 167, 178, 189, 199, 208, 217, 225, 233, 240, 248
-     and 255.
-   - Set against Windows' own GGO_GRAY8 at the same pixel, a GGO_GRAY8
-     value near 4c maps to level c of a 4×4 sample count, with counts 0
-     and 1 drawing nothing. This is consistent with a 4×4 sampled coverage
-     put through a contrast or gamma table.
-   - The GGO_GRAY8 misses against FreeType's area coverage are mostly
-     62/63 → 64 and 1/2 → 0, which suggests point sampling (8×8) rather
-     than area coverage.
-   - Not tested in CI.
-2. **ABC widths at ANTIALIASED quality** come out 81.8–96.4%, against
-   97.7–100% at quality 0, so GDI seems to measure A and B differently
-   when greyscale is on. Not investigated (1-px width mismatches are being
-   handled with the greyscale work).
-3. **Small sizes:** 1-bit at heights 8–10 is 114–223 of 261 for Tahoma,
-   Verdana, Times New Roman and Trebuchet MS. best_ppem confirms the ppem
-   is right, so it is hinting or rasterization (gasp gridfit is being
-   looked at upstream).
+1. **Small sizes (heights 8–10).** 1-bit is 52–94% there depending on the
+   face, and every hypothesis in the table above failed.
+   - The best_ppem and diagnose numbers show the ppem is right. The glyph
+     shapes differ.
+   - That suggests the font programs behave differently under Windows'
+     interpreter than under FreeType's v35, for example in what GETINFO
+     or MPS report. FreeType does not expose either of those as a
+     setting. [U]
+2. **Remaining greyscale misses.** Most are ±1 counts. They cluster in
+   glyphs whose 1-bit glyph also differs (about 35% gray8-identical there,
+   against about 80% where 1-bit is identical, run 40467000659). That
+   points at sub-pixel differences in the hinted outline, not at the
+   sampler.
+3. **Greyscale text levels at other contrast settings:** only contrast
+   1200 was measured.
 4. **Remaining 1-bit misses at ordinary sizes:** mostly "same box size,
-   other pixels", single pixels. [U] Dropout control or rounding.
+   other pixels", single pixels. [U]
 5. **Not covered by the capture:** underline and strikeout geometry,
    synthetic bold and italic, fonts with `hdmx`/`LTSH` or embedded bitmaps,
    and TrueType collections (gdidump opens face 0).

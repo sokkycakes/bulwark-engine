@@ -66,15 +66,17 @@ jobs:
           ./build/gdidump --ppem-offset 1 out/windows/fonts out/gdifont-p1
       - name: Render tuning variants
         # Each line is label and gdifont_tuning_t overrides (see gdifont.h);
-        # score.py ranks them against Windows below.
+        # score.py ranks them against Windows below. The experiments behind
+        # the defaults are listed in docs/spec/gdi-text.md; these two keep
+        # the previous rules as controls.
         run: |
           while read -r label tune; do
             [ -n "$label" ] || continue
             ./build/gdidump --tune "$tune" out/windows/fonts "out/var-$label"
             echo "$label=out/var-$label" >> out/variants.txt
           done <<'VARIANTS'
-          phase-x-only sample_phase=2
-          phase-y-only sample_phase=3
+          area-grey-control gray_method=0
+          abc-q0rule-control aa_measure=0
           VARIANTS
       - name: Compare with Windows
         run: |
