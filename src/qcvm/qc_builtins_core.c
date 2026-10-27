@@ -79,6 +79,15 @@ static float vec_yaw(const float *v)
 
 static void bi_vectoyaw(qcvm_t *vm) { QC_ReturnFloat(vm, vec_yaw(QC_PVEC(vm, 0))); }
 
+float QC_MeshPitch(void)
+{
+	static cvar_t *meshpitch;
+	if (!meshpitch)
+		meshpitch = Cvar_Get("r_meshpitch", "-1", CVAR_SERVERINFO,
+		                     "Pitch direction of mesh models and vectoangles: -1 as in Quake (positive pitch is up), 1 as for views (positive pitch is down). Nuclide sets 1");
+	return meshpitch->value < 0 ? -1.0f : 1.0f;
+}
+
 static void vec_angles(const float *fwd, const float *up, float *out)
 {
 	float yaw, pitch, roll = 0;
@@ -98,6 +107,10 @@ static void vec_angles(const float *fwd, const float *up, float *out)
 		AngleVectors(ang, NULL, r, u);
 		roll = atan2f(-DotProduct(up, r), DotProduct(up, u)) * (180.0f / (float)M_PI);
 	}
+	/* with r_meshpitch 1, the result uses the view convention (up is
+	 * negative pitch), so it goes straight back into makevectors */
+	if (QC_MeshPitch() > 0 && pitch != 0)
+		pitch = 360 - pitch;
 	out[0] = pitch;
 	out[1] = yaw;
 	out[2] = roll;

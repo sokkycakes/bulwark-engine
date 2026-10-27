@@ -367,6 +367,12 @@ static inline void QC_SetEInt(qcvm_t *vm, int e, int ofs, int32_t v)
 		QC_EdictFields(vm, e)[ofs].i = v;
 }
 
+/* r_meshpitch: the sign that mesh models' pitch carries, -1 for Quake (a
+ * model's angles pitch up where a view's pitch down) and 1 for games that
+ * use one convention for both, as Nuclide does (it sets r_meshpitch 1).
+ * vectoangles, mesh model drawing and tag matrices follow it. */
+float QC_MeshPitch(void);
+
 /* qc_debug.c: profile_*, coredump_*, extensionlist_*, breakpoint, watchpoint,
  * poke and pr_dumpplatform for each VM */
 void QC_InitDebugCommands(void);

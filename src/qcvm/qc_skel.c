@@ -361,7 +361,7 @@ static void bi_gettagindex(qcvm_t *vm)
 	QC_ReturnFloat(vm, m ? (float)(Skel_FindJoint(m, QC_PSTR(vm, 1)) + 1) : 0);
 }
 
-/* the entity's placement, with the pitch of a model turned the Quake way.
+/* the entity's placement, with the pitch of a model turned as r_meshpitch says.
  * View models (RF_VIEWMODEL or RF_DEPTHHACK) keep the camera's pitch, as
  * the renderer draws them (r_viewmodel_quakepitch, r_scene.c), and are
  * mirrored when it mirrors them */
@@ -371,7 +371,7 @@ static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 	static cvar_t *quakepitch, *mirror;
 	const float *o = vm->fofs.origin >= 0 ? &QC_EdictFields(vm, ent)[vm->fofs.origin].f : zero;
 	const float *a = vm->fofs.angles >= 0 ? &QC_EdictFields(vm, ent)[vm->fofs.angles].f : zero;
-	float ang[3] = {-a[0], a[1], a[2]}, f[3], r[3], u[3];
+	float ang[3] = {a[0] * QC_MeshPitch(), a[1], a[2]}, f[3], r[3], u[3];
 	float scale = QC_EFloat(vm, ent, vm->fofs.scale);
 	if (!quakepitch)
 		quakepitch = Cvar_Find("r_viewmodel_quakepitch");
