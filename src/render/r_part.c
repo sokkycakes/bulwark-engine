@@ -836,7 +836,7 @@ static void spawn_point(ptype_t *t, const float *org, const float *dir, float co
 	}
 	n = (int)(rrange(t->count[0], t->count[1]) * count * density + frand());
 	type_material(t);
-	for (int i = 0; i < n; i++) {
+	for (int i = 0, prev = -1; i < n; i++) {
 		particle_t *p = new_particle(t);
 		float r[3], h = t->spawnorg[0], v = t->spawnorg[1], sv = t->spawnvel[0], svv = t->spawnvel[1];
 		bool spread = !((i == 0 && t->nospreadfirst) || (i == n - 1 && t->nospreadlast));
@@ -875,6 +875,13 @@ static void spawn_point(ptype_t *t, const float *org, const float *dir, float co
 			break;
 		}
 		finish_spawn(t, p, dir, spread);
+		if (t->kind == PT_BEAM) {
+			/* a point effect's beam joins its particles in spawn order;
+			 * the first has nothing to join, so it draws nothing (and
+			 * may still emit) instead of stretching to the origin */
+			VectorCopy(prev >= 0 ? parts[prev].org : p->org, p->end);
+			prev = (int)(p - parts);
+		}
 	}
 }
 

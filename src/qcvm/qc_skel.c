@@ -6,6 +6,8 @@
 #include "../common/skel.h"
 #include "../common/cmd.h"
 #include "../common/fs.h"
+#include "../common/studio.h"
+#include "../common/cvar.h"
 
 #include <math.h>
 
@@ -359,14 +361,21 @@ static void bi_gettagindex(qcvm_t *vm)
 	QC_ReturnFloat(vm, m ? (float)(Skel_FindJoint(m, QC_PSTR(vm, 1)) + 1) : 0);
 }
 
-/* the entity's placement, with the pitch of a model turned the Quake way */
+/* the entity's placement, with the pitch of a model turned the Quake way.
+ * View models (RF_VIEWMODEL or RF_DEPTHHACK) keep the camera's pitch, as
+ * the renderer draws them (r_viewmodel_quakepitch, r_scene.c) */
 static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 {
 	static const float zero[3];
+	static cvar_t *quakepitch;
 	const float *o = vm->fofs.origin >= 0 ? &QC_EdictFields(vm, ent)[vm->fofs.origin].f : zero;
 	const float *a = vm->fofs.angles >= 0 ? &QC_EdictFields(vm, ent)[vm->fofs.angles].f : zero;
 	float ang[3] = {-a[0], a[1], a[2]}, f[3], r[3], u[3];
 	float scale = QC_EFloat(vm, ent, vm->fofs.scale);
+	if (!quakepitch)
+		quakepitch = Cvar_Find("r_viewmodel_quakepitch");
+	if (((int)QC_EFloat(vm, ent, vm->fofs.renderflags) & (1 | 4)) && !(quakepitch && quakepitch->ivalue))
+		ang[0] = a[0];
 	if (scale == 0)
 		scale = 1;
 	AngleVectors(ang, f, r, u);
@@ -375,27 +384,51 @@ static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 	Bone_FromVectors(out, o, f, r, u);
 }
 
-/* gettaginfo(ent, tag): the world position of a bone, the orientation in v_ */
-static void bi_gettaginfo(qcvm_t *vm)
+/* bone b (0-based) of an entity in model space, from its skeleton object
+ * if it has one, otherwise from its animation */
+static bool entity_bone(qcvm_t *vm, int ent, skelobj_t *s, skelmodel_t *m, int b, bonemat_t out)
 {
-	int ent = QC_PENT(vm, 0), tag = (int)QC_PFLOAT(vm, 1) - 1;
-	struct fieldcache_s *c = fields(vm);
-	skelobj_t *s = get_skel(vm, (int)QC_EFloat(vm, ent, c->skeletonindex));
-	skelmodel_t *m = model_for_index(vm, (int)QC_EFloat(vm, ent, vm->fofs.modelindex));
-	bonemat_t world, bone;
-	entity_matrix(vm, ent, world);
-	if (s && tag >= 0 && tag < s->model->numjoints) {
-		bone_abs(s, tag, bone);
-		Bone_Multiply(world, world, bone);
-	} else if (m && tag >= 0 && tag < m->numjoints) {
+	if (s && b >= 0 && b < s->model->numjoints) {
+		bone_abs(s, b, out);
+		return true;
+	}
+	if (m && b >= 0 && b < m->numjoints) {
 		bonemat_t *pose = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
 		entity_pose(vm, ent, m, pose);
 		Skel_ToAbsolute(m, pose, pose);
-		Bone_Multiply(world, world, pose[tag]);
+		memcpy(out, pose[b], sizeof(bonemat_t));
 		Mem_Free(pose);
+		return true;
+	}
+	return false;
+}
+
+/* gettaginfo(ent, tag): the world position of a bone, the orientation in
+ * v_. Tags past the bones are a studio model's attachments, in order, as
+ * games such as Nuclide number them (bone count + 1 + attachment) */
+static void bi_gettaginfo(qcvm_t *vm)
+{
+	int ent = QC_PENT(vm, 0), tag = (int)QC_PFLOAT(vm, 1) - 1;
+	int modelindex = (int)QC_EFloat(vm, ent, vm->fofs.modelindex);
+	struct fieldcache_s *c = fields(vm);
+	skelobj_t *s = get_skel(vm, (int)QC_EFloat(vm, ent, c->skeletonindex));
+	skelmodel_t *m = model_for_index(vm, modelindex);
+	int numjoints = s ? s->model->numjoints : m ? m->numjoints : 0;
+	const studio_model_t *st = tag >= numjoints && numjoints > 0 ? QC_StudioModel(vm, modelindex) : NULL;
+	bonemat_t world, bone;
+	entity_matrix(vm, ent, world);
+	if (tag >= 0 && tag < numjoints && entity_bone(vm, ent, s, m, tag, bone)) {
+		Bone_Multiply(world, world, bone);
+	} else if (st && tag - numjoints < st->numattachments &&
+	           entity_bone(vm, ent, s, m, st->attachments[tag - numjoints].bone, bone)) {
+		const studio_attachment_t *at = &st->attachments[tag - numjoints];
+		bonemat_t off;
+		Bone_Identity(off);
+		off[3] = at->org[0], off[7] = at->org[1], off[11] = at->org[2];
+		Bone_Multiply(bone, bone, off);
+		Bone_Multiply(world, world, bone);
 	} else {
-		/* no such bone (or a model attachment we don't read yet): the
-		 * entity's own placement, unscaled */
+		/* no such bone or attachment: the entity's own placement, unscaled */
 		for (int i = 0; i < 3; i++) {
 			float l = sqrtf(world[i] * world[i] + world[4 + i] * world[4 + i] + world[8 + i] * world[8 + i]);
 			if (l > 0)
