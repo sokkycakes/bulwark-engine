@@ -49,6 +49,12 @@ unmodified, with their licence text kept at the end of each file:
 - `lzma/` (LzmaDec.c, LzmaDec.h, 7zTypes.h, Compiler.h, Precomp.h) by Igor
   Pavlov, from the LZMA SDK: public domain. Used to decode compressed Source
   BSP lumps.
+
+Fonts in `data/fonts/` are shipped unmodified, each with its own licence file:
+
+- `DejaVuSansCondensed.ttf` from DejaVu Fonts 2.37: Bitstream Vera and Arev
+  font licences (permissive, see `data/fonts/DejaVu-LICENSE.txt`).
+
 ## Third-party libraries
 
 Libraries under `third_party/` are used as they are and listed with their
