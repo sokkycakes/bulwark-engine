@@ -93,7 +93,7 @@ if(NOT SDL2_FOUND)
 	endif()
 endif()
 
-# the bundled fallbacks for the default font (DejaVu Sans Condensed and its bold, see data/fonts)
+# bundled stand-ins for Tahoma, Tahoma Bold and Verdana (DejaVu Sans Condensed, its bold, DejaVu Sans; see data/fonts)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont.c
 	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed.ttf
 		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont.c -DNAME=bw_deffont -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
@@ -103,6 +103,10 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
 		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c -DNAME=bw_deffont_bold -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
 	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSansCondensed-Bold.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
 
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/bw_widefont.c
+	COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSans.ttf
+		-DOUT=${CMAKE_BINARY_DIR}/generated/bw_widefont.c -DNAME=bw_widefont -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+	DEPENDS ${CMAKE_SOURCE_DIR}/data/fonts/DejaVuSans.ttf ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
 add_library(bwclient STATIC
 	src/client/cl_master.c
 	src/client/cl_download.c
@@ -140,7 +144,8 @@ add_library(bwclient STATIC
 	src/sound/snd_dsp.c
 	src/sound/snd_mem.c
 	${CMAKE_BINARY_DIR}/generated/bw_deffont.c
-	${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c)
+	${CMAKE_BINARY_DIR}/generated/bw_deffont_bold.c
+	${CMAKE_BINARY_DIR}/generated/bw_widefont.c)
 target_link_libraries(bwclient PUBLIC bwserver)
 
 if(SDL2_FOUND)
