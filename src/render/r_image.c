@@ -229,8 +229,21 @@ uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h)
 	return len > 0 && len < (size_t)1 << 30 ? stbi_load_from_memory(data, (int)len, w, h, &comp, 4) : NULL;
 }
 
-/* tries the name as given, then with each known extension in turn */
+static uint8_t *load_pixels(const char *name, int *w, int *h);
+
+/* tries the name as given, then with each known extension in turn, then
+ * under textures/ (Nuclide's .mat files name images relative to it) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h)
+{
+	char tex[192];
+	uint8_t *p = load_pixels(name, w, h);
+	if (p || !name || !*name || !Str_NICmp(name, "textures/", 9) || name[0] == '*' || strstr(name, ".spr"))
+		return p;
+	snprintf(tex, sizeof(tex), "textures/%s", name);
+	return load_pixels(tex, w, h);
+}
+
+static uint8_t *load_pixels(const char *name, int *w, int *h)
 {
 	static const char *exts[] = {".tga", ".png", ".jpg", ".jpeg", ".bmp", ".lmp"};
 	char base[160], path[180];
@@ -256,7 +269,20 @@ uint8_t *R_LoadPixels(const char *name, int *w, int *h)
 	return NULL;
 }
 
+static bool image_exists(const char *name);
+
 bool R_ImageExists(const char *name)
+{
+	char tex[192];
+	if (image_exists(name))
+		return true;
+	if (!name || !*name || !Str_NICmp(name, "textures/", 9) || strstr(name, ".spr"))
+		return false;
+	snprintf(tex, sizeof(tex), "textures/%s", name);
+	return image_exists(tex);
+}
+
+static bool image_exists(const char *name)
 {
 	static const char *exts[] = {".tga", ".png", ".jpg", ".jpeg", ".bmp", ".lmp"};
 	char base[160], path[180];
