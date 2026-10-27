@@ -225,9 +225,10 @@ typedef struct {
 
 typedef struct {
 	bool used;
-	char name[128];
+	char name[256]; /* the path as given, fallbacks included */
 	uint8_t *ttf; /* NULL: the built-in bitmap font */
 	rgfont_t *gdi; /* a TrueType face drawn the GDI way (r_gdifont.c), or NULL */
+	float scale;   /* text size multiplier from the chosen entry's ?size=, else 1 */
 	stbtt_fontinfo info;
 	int requested[MAX_FONT_SIZES];
 	int numrequested;
@@ -282,7 +283,7 @@ static fontsize_t *font_size(font_t *f, float height)
 		fontsize_t *fs = &f->sizes[f->numsizes];
 		uint8_t *alpha = Mem_Alloc(FONT_ATLAS * FONT_ATLAS);
 		uint8_t *rgba = Mem_Alloc(FONT_ATLAS * FONT_ATLAS * 4);
-		char name[160];
+		char name[300];
 		int asc, desc, gap;
 		float scale;
 		fs->pixelsize = want;
@@ -310,7 +311,7 @@ static bool load_ttf(font_t *f, const char *path)
 {
 	static const char *exts[] = {"", ".ttf", ".otf"};
 	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
-		char name[160];
+		char name[520];
 		size_t len;
 		uint8_t *data;
 		snprintf(name, sizeof(name), "%s%s", path, exts[i]);
@@ -344,16 +345,48 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	RG_Free(f->gdi);
 	memset(f, 0, sizeof(*f));
 	f->used = true;
+	f->scale = 1;
 	Str_Copy(f->name, path, sizeof(f->name));
-	/* a TrueType face (a bare name such as "Verdana", or a file with glyf
-	   outlines) goes to gdifont; anything else takes the old path unchanged */
-	f->gdi = RG_Load(path);
-	if (!f->gdi && !load_ttf(f, path))
-		Con_DPrintf("font %s: no TrueType file, using the built-in font\n", path);
+	/* The path may list fallbacks, "Verdana,fonts/IBMPlexMono-Text.otf?size=12":
+	   the first entry that loads is used. ?size=N on an entry draws text that
+	   was asked for at the font's nominal size (the first of sizes) at N. */
+	{
+		char list[512], *entry, *next;
+		float nominal = sizes ? (float)atof(sizes) : 0;
+		Str_Copy(list, path, sizeof(list));
+		for (entry = list; entry; entry = next) {
+			char file[512];
+			const char *q;
+			if ((next = strchr(entry, ',')))
+				*next++ = 0;
+			while (*entry == ' ')
+				entry++;
+			if (!*entry)
+				continue;
+			/* a TrueType face (a bare name such as "Verdana", or a file with
+			   glyf outlines) goes to gdifont; anything else takes the old path */
+			f->gdi = RG_Load(entry);
+			Str_Copy(file, entry, sizeof(file));
+			if ((q = strchr(entry, '?')))
+				file[q - entry] = 0;
+			if (f->gdi || load_ttf(f, file)) {
+				const char *sz = q ? strstr(q, "size=") : NULL;
+				if (sz && atof(sz + 5) > 0 && nominal > 0)
+					f->scale = (float)atof(sz + 5) / nominal;
+				if (entry != list)
+					Con_DPrintf("font %s: using %s\n", path, entry);
+				break;
+			}
+		}
+		if (!f->gdi && !f->ttf)
+			Con_DPrintf("font %s: no TrueType file, using the built-in font\n", path);
+	}
 	(void)name;
-	(void)sizes;
 	return slot;
 }
+
+/* the size multiplier of the font text is drawn with (see R_LoadFont) */
+float R_DrawFontScale(void) { return fonts[r_drawfont].scale > 0 ? fonts[r_drawfont].scale : 1; }
 
 int R_FindFont(const char *name)
 {
@@ -520,6 +553,10 @@ static float draw_text(float x, float y, const char *text, float sx, float sy, c
                        int flags, bool usemarkup, bool measure)
 {
 	font_t *f = &fonts[r_drawfont];
+	if (f->scale > 0 && f->scale != 1) {
+		sx *= f->scale;
+		sy *= f->scale;
+	}
 	if (f->gdi && sy > 0)
 		return draw_text_gdi(f, x, y, text, sx, sy, rgb, alpha, flags, usemarkup, measure);
 	fontsize_t *fs = sy > 0 ? font_size(f, sy) : NULL;

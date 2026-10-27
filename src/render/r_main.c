@@ -512,13 +512,14 @@ static void r_drawtextfield(qcvm_t *vm)
 	const char *text = QC_PSTR(vm, 3);
 	static const float white[3] = {1, 1, 1};
 	static char lines[MAX_LINES][1024];
-	float sx, sy, y;
+	float sx, sy, y, lineh;
 	int nlines = 0, shown;
 	size_t n = 0;
 	const char *p = text, *lastspace = NULL;
 	char line[1024];
 	text_scale(vm, &sx, &sy);
 	use_drawfont(vm);
+	lineh = sy * R_DrawFontScale(); /* text is drawn at that height */
 	while (*p || n) {
 		bool flush = !*p || *p == '\n';
 		if (!flush) {
@@ -549,14 +550,14 @@ static void r_drawtextfield(qcvm_t *vm)
 	}
 	shown = nlines < MAX_LINES ? nlines : MAX_LINES;
 	/* only whole lines that fit are drawn */
-	while (shown > 0 && shown * sy > size[1] + 0.5f)
+	while (shown > 0 && shown * lineh > size[1] + 0.5f)
 		shown--;
 	switch (align & (2 | 8)) {
 	case 2: y = pos[1]; break;
-	case 8: y = pos[1] + size[1] - shown * sy; break;
-	default: y = pos[1] + (size[1] - shown * sy) / 2; break;
+	case 8: y = pos[1] + size[1] - shown * lineh; break;
+	default: y = pos[1] + (size[1] - shown * lineh) / 2; break;
 	}
-	for (int i = 0; i < shown; i++, y += sy) {
+	for (int i = 0; i < shown; i++, y += lineh) {
 		float w = R_StringWidth(lines[i], sx, sy, true), x;
 		switch (align & (1 | 4)) {
 		case 1: x = pos[0]; break;

@@ -222,6 +222,7 @@ rgfont_t *RG_Load(const char *spec)
 	char path[160], family[64];
 	const char *q;
 	int weight = 400, tt = 0, w, it;
+	bool bare;
 	uint8_t *data = NULL;
 	size_t len = 0;
 	rgfont_t *f;
@@ -239,6 +240,14 @@ rgfont_t *RG_Load(const char *spec)
 			weight = atoi(strstr(q, "weight=") + 7);
 	}
 
+	bare = !strpbrk(path, "/\\.");
+	/* A font file named by its path (a mod's own resource/font/x.ttf) stays on
+	   stb_truetype unless the path ends in ?gdi. gdifont draws what GDI draws
+	   without ClearType, which for ClearType-era faces such as Calibri is
+	   bold, cramped text (matched against Windows in CI run 40566970541);
+	   a bare face name is the CreateFont-style request GDI rules are for. */
+	if (!bare && !(q && strstr(q, "gdi")))
+		return NULL;
 	/* a file in the game, found the same way the stb_truetype path finds it:
 	   gdifont takes it only when it has TrueType outlines */
 	for (size_t i = 0; i < BW_ARRAY_COUNT(exts) && !data; i++) {
@@ -254,7 +263,7 @@ rgfont_t *RG_Load(const char *spec)
 	} else {
 		/* a bare face name such as "Verdana" */
 		const rgentry_t *e;
-		if (strpbrk(path, "/\\.") || !(e = find_face(path, weight)))
+		if (!bare || !(e = find_face(path, weight)))
 			return NULL;
 		data = e->ingame ? (uint8_t *)FS_LoadFile(e->path, &len) : read_os_file(e->path, &len);
 		if (!data)
