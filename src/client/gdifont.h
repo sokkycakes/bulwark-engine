@@ -85,11 +85,31 @@ gdifont_t *gdifont_create_file(const char *path, int height, int weight,
 	int flags, int quality, const char **err);
 void gdifont_free(gdifont_t *f);
 
-/* As gdifont_create_memory, but renders ppem_delta ems away from the size
-   rule's choice while keeping its line metrics. A diagnostic for
-   tools/gdiref/best_ppem.py, not for normal use. */
+/*
+ * Rendering choices that were measured against Windows. The defaults
+ * (gdifont_default_tuning) are the best fit found; the other values exist
+ * so tools/gdidump can score alternatives in CI. See docs/spec/gdi-text.md.
+ */
+typedef struct {
+	int ppem_delta;     /* render this many ems away from the size rule */
+	int gray_method;    /* 0: FreeType area coverage; 1: point sampling */
+	int gray_hint;      /* hinting for greyscale: 0 grayscale mode, 1 mono mode */
+	int sample_phase;   /* point sampling at 0: (i + 0.5) / n, 1: i / n */
+	int nogridfit;      /* where gasp lacks GRIDFIT, load unhinted:
+	                       bit 0 for 1-bit output and ABC, bit 1 for grey */
+	int aa_measure;     /* ABC, GGO_BITMAP and 1-bit text at ANTIALIASED:
+	                       0 mono-mode hinting as at quality 0,
+	                       1 grayscale-mode hinting, 2 the same only where gasp
+	                       turns grey on, 3 grayscale-mode hinting and the grey
+	                       render's box for ABC, 4 the same only where gasp
+	                       turns grey on */
+} gdifont_tuning_t;
+
+extern const gdifont_tuning_t gdifont_default_tuning;
+
+/* As gdifont_create_memory with explicit tuning (NULL for the defaults) */
 gdifont_t *gdifont_create_memory_ex(const void *data, size_t size, int height, int weight,
-	int flags, int quality, int ppem_delta, const char **err);
+	int flags, int quality, const gdifont_tuning_t *tuning, const char **err);
 
 const gdifont_metrics_t *gdifont_metrics(const gdifont_t *f);
 const char *gdifont_family(const gdifont_t *f);

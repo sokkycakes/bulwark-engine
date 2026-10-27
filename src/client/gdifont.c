@@ -17,6 +17,7 @@
 #include FT_DRIVER_H
 #include FT_TRUETYPE_TABLES_H
 #include FT_TRUETYPE_TAGS_H
+#include FT_OUTLINE_H
 
 struct gdifont_s {
 	FT_Library lib;
@@ -27,6 +28,8 @@ struct gdifont_s {
 	gdifont_metrics_t tm;
 	int units_per_em;
 	int gray_text;            /* ExtTextOut output is greyscale (§4.4) */
+	int gasp_flags;           /* gasp behaviour at this ppem */
+	gdifont_tuning_t tune;
 	int ul_pos, ul_size;      /* underline: rows below the baseline, thickness */
 	int so_pos, so_size;      /* strikeout: rows above the baseline, thickness */
 };
@@ -71,20 +74,26 @@ long gdifont_table_size(const gdifont_t *f, const char tag[4])
 	return (long)n;
 }
 
-int gdifont_gasp_gray(const unsigned char *gasp, size_t len, int ppem)
+/* gasp behaviour flags for a ppem: the first range whose rangeMaxPPEM >=
+   ppem. No table or no matching range: grid-fit and grey (0x000F). */
+static int gasp_flags(const unsigned char *gasp, size_t len, int ppem)
 {
-	/* §4.4: the first range whose rangeMaxPPEM >= ppem decides; GASP_DOGRAY
-	   (0x0002) means greyscale. No table or no matching range: greyscale. */
 	unsigned i, n;
 	if (!gasp || len < 4)
-		return 1;
+		return 0x000F;
 	n = rd16(gasp + 2);
 	for (i = 0; i < n && 4 + 4 * i + 4 <= len; i++) {
 		const unsigned char *r = gasp + 4 + 4 * i;
 		if ((unsigned)ppem <= rd16(r))
-			return (rd16(r + 2) & 2) != 0;
+			return (int)rd16(r + 2);
 	}
-	return 1;
+	return 0x000F;
+}
+
+int gdifont_gasp_gray(const unsigned char *gasp, size_t len, int ppem)
+{
+	/* §4.4: GASP_DOGRAY (0x0002) means greyscale */
+	return (gasp_flags(gasp, len, ppem) & 2) != 0;
 }
 
 int gdifont_select_size(const gdifont_sizeinfo_t *si, int tall, int *ascent, int *descent)
@@ -179,7 +188,7 @@ static int parse_vdmx(const unsigned char *v, size_t len, unsigned short **ppem,
 	return (int)recs;
 }
 
-static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const char **err)
+static int setup(gdifont_t *f, int height, int weight, const char **err)
 {
 	TT_OS2 *os2;
 	TT_HoriHeader *hhea;
@@ -222,7 +231,7 @@ static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const cha
 	si.vdmx_ppem = vp;
 	si.vdmx_ymax = vmax;
 	si.vdmx_ymin = vmin;
-	ppem = gdifont_select_size(&si, height, &asc, &desc) + ppem_delta;
+	ppem = gdifont_select_size(&si, height, &asc, &desc) + f->tune.ppem_delta;
 	if (ppem < 1)
 		ppem = 1;
 	free(vdmx); free(vp); free(vmax); free(vmin);
@@ -257,7 +266,8 @@ static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const cha
 	f->tm.overhang = 0;
 
 	gasp = load_table(f->face, TTAG_gasp, &glen);
-	f->gray_text = f->quality == GDIFONT_ANTIALIASED && gdifont_gasp_gray(gasp, glen, ppem);
+	f->gasp_flags = gasp_flags(gasp, glen, ppem);
+	f->gray_text = f->quality == GDIFONT_ANTIALIASED && (f->gasp_flags & 2);
 	free(gasp);
 
 	/* Underline and strikeout: not measured yet, taken from post and OS/2 */
@@ -276,11 +286,11 @@ static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const cha
 gdifont_t *gdifont_create_memory(const void *data, size_t size, int height, int weight,
 	int flags, int quality, const char **err)
 {
-	return gdifont_create_memory_ex(data, size, height, weight, flags, quality, 0, err);
+	return gdifont_create_memory_ex(data, size, height, weight, flags, quality, NULL, err);
 }
 
 gdifont_t *gdifont_create_memory_ex(const void *data, size_t size, int height, int weight,
-	int flags, int quality, int ppem_delta, const char **err)
+	int flags, int quality, const gdifont_tuning_t *tuning, const char **err)
 {
 	const char *dummy;
 	gdifont_t *f;
@@ -301,8 +311,9 @@ gdifont_t *gdifont_create_memory_ex(const void *data, size_t size, int height, i
 	f->filesize = size;
 	f->tall = height;
 	f->flags = flags;
+	f->tune = tuning ? *tuning : gdifont_default_tuning;
 	f->quality = quality == GDIFONT_ANTIALIASED ? GDIFONT_ANTIALIASED : GDIFONT_NONANTIALIASED;
-	if (!setup(f, height, weight > 0 ? weight : 400, ppem_delta, err)) {
+	if (!setup(f, height, weight > 0 ? weight : 400, err)) {
 		gdifont_free(f);
 		return NULL;
 	}
@@ -356,40 +367,233 @@ int gdifont_quality(const gdifont_t *f) { return f->quality; }
 int gdifont_flags(const gdifont_t *f) { return f->flags; }
 int gdifont_text_is_gray(const gdifont_t *f) { return f->gray_text; }
 
-/* Render one glyph into the slot: 1-bit (§4.2) or 8-bit grey (§4.3) */
-static FT_GlyphSlot render(gdifont_t *f, unsigned cp, int mono)
-{
-	FT_Int32 flags = FT_LOAD_RENDER | (mono ? FT_LOAD_TARGET_MONO | FT_LOAD_MONOCHROME : FT_LOAD_TARGET_NORMAL);
-	if (FT_Load_Char(f->face, cp, flags))
-		return NULL;
-	if (f->face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
-		return NULL;
-	return f->face->glyph;
-}
+const gdifont_tuning_t gdifont_default_tuning = {
+	0,  /* ppem_delta */
+	0,  /* gray_method */
+	0,  /* gray_hint */
+	0,  /* sample_phase */
+	0,  /* nogridfit */
+	0   /* aa_measure */
+};
 
-static int slot_pixel(const FT_Bitmap *bm, int x, int y)
-{
-	const unsigned char *row = bm->buffer + (bm->pitch >= 0 ? y * bm->pitch : (y - (int)bm->rows + 1) * bm->pitch);
-	if (bm->pixel_mode == FT_PIXEL_MODE_MONO)
-		return (row[x >> 3] & (0x80 >> (x & 7))) ? 255 : 0;
-	return row[x];
-}
+/* A rendered glyph: one byte per pixel, rows top down. left/top as FreeType
+   bitmap_left/bitmap_top. */
+typedef struct {
+	int w, h, left, top, adv;
+	unsigned char *px;
+} bmp_t;
 
 static int advance_px(FT_GlyphSlot s)
 {
 	return (int)((s->advance.x + 32) >> 6);
 }
 
+/* Unhinted where gasp lacks GASP_GRIDFIT, when the tuning asks for it */
+static int unhinted(const gdifont_t *f, int grey)
+{
+	return (f->tune.nogridfit & (grey ? 2 : 1)) && !(f->gasp_flags & 1);
+}
+
+/*
+ * Load the outline. mono_hint picks the hinting mode: in v35 the font's
+ * GETINFO reports grayscale only in grayscale mode, so hints can differ.
+ * The advance always comes from a hinted load.
+ */
+static FT_GlyphSlot load(gdifont_t *f, unsigned cp, int mono_hint, int nohint, int outline_only, int *adv)
+{
+	FT_Int32 fl = (outline_only ? FT_LOAD_NO_BITMAP : 0) | (mono_hint ? FT_LOAD_TARGET_MONO | FT_LOAD_MONOCHROME : FT_LOAD_TARGET_NORMAL);
+	if (nohint) {
+		if (FT_Load_Char(f->face, cp, fl))
+			return NULL;
+		*adv = advance_px(f->face->glyph);
+		fl |= FT_LOAD_NO_HINTING;
+	}
+	if (FT_Load_Char(f->face, cp, fl))
+		return NULL;
+	if (!nohint)
+		*adv = advance_px(f->face->glyph);
+	return f->face->glyph;
+}
+
+static int copy_slot(FT_GlyphSlot s, bmp_t *b, int adv)
+{
+	int x, y;
+	const FT_Bitmap *bm = &s->bitmap;
+	memset(b, 0, sizeof(*b));
+	b->w = (int)bm->width;
+	b->h = (int)bm->rows;
+	b->left = s->bitmap_left;
+	b->top = s->bitmap_top;
+	b->adv = adv;
+	if (!b->w || !b->h)
+		return 1;
+	b->px = malloc((size_t)b->w * b->h);
+	if (!b->px)
+		return 0;
+	for (y = 0; y < b->h; y++) {
+		const unsigned char *row = bm->buffer + (bm->pitch >= 0 ? y * bm->pitch : (y - b->h + 1) * bm->pitch);
+		for (x = 0; x < b->w; x++)
+			b->px[y * b->w + x] = bm->pixel_mode == FT_PIXEL_MODE_MONO
+				? ((row[x >> 3] & (0x80 >> (x & 7))) ? 255 : 0) : row[x];
+	}
+	return 1;
+}
+
+/* FreeType's own rasterizers: 1-bit (§4.2) or 8-bit area coverage */
+static int render_ft(gdifont_t *f, unsigned cp, int mono_hint, int nohint, int mono_out, bmp_t *b)
+{
+	int adv = 0;
+	FT_GlyphSlot s = load(f, cp, mono_hint, nohint, 0, &adv);
+	if (!s)
+		return 0;
+	if (s->format == FT_GLYPH_FORMAT_OUTLINE &&
+		FT_Render_Glyph(s, mono_out ? FT_RENDER_MODE_MONO : FT_RENDER_MODE_NORMAL))
+		return 0;
+	return copy_slot(s, b, adv);
+}
+
+/*
+ * Point sampling: each pixel counts which of n x n sample points fall inside
+ * the outline, with no dropout control. The points sit at (i + 0.5) / n of
+ * the pixel (phase 0) or at i / n from its top left corner (phase 1).
+ */
+static int render_sampled(gdifont_t *f, unsigned cp, int n, bmp_t *b)
+{
+	FT_GlyphSlot s;
+	FT_Outline o;
+	FT_BBox cb;
+	FT_Bitmap bm;
+	FT_Matrix m;
+	int x0, y0, x1, y1, W, H, x, y, minx, miny, maxx, maxy, adv = 0;
+	unsigned char *counts;
+
+	memset(b, 0, sizeof(*b));
+	s = load(f, cp, f->tune.gray_hint, unhinted(f, 1), 1, &adv);
+	if (!s)
+		return 0;
+	b->adv = adv;
+	if (s->format != FT_GLYPH_FORMAT_OUTLINE || s->outline.n_points == 0)
+		return 1;
+	FT_Outline_Get_CBox(&s->outline, &cb);
+	/* one pixel of margin so a shifted sample grid cannot clip */
+	x0 = (int)(cb.xMin >> 6) - 1;
+	y0 = (int)(cb.yMin >> 6) - 1;
+	x1 = (int)((cb.xMax + 63) >> 6) + 1;
+	y1 = (int)((cb.yMax + 63) >> 6) + 1;
+	W = x1 - x0;
+	H = y1 - y0;
+	if (W <= 0 || H <= 0 || W > 4096 || H > 4096)
+		return 0;
+	if (FT_Outline_New(f->lib, s->outline.n_points, s->outline.n_contours, &o))
+		return 0;
+	FT_Outline_Copy(&s->outline, &o);
+	FT_Outline_Translate(&o, -(FT_Pos)x0 * 64, -(FT_Pos)y0 * 64);
+	m.xx = m.yy = (FT_Fixed)n << 16;
+	m.xy = m.yx = 0;
+	FT_Outline_Transform(&o, &m);
+	/* the rasterizer samples sub-pixel centres; shifting the outline by
+	   half a sub-pixel moves the samples to i / n from the top left */
+	if (f->tune.sample_phase)
+		FT_Outline_Translate(&o, 32, -32);
+	o.flags &= ~(FT_OUTLINE_SMART_DROPOUTS | FT_OUTLINE_INCLUDE_STUBS);
+	o.flags |= FT_OUTLINE_IGNORE_DROPOUTS;
+
+	memset(&bm, 0, sizeof(bm));
+	bm.width = (unsigned)(W * n);
+	bm.rows = (unsigned)(H * n);
+	bm.pitch = (int)((bm.width + 15) / 16 * 2);
+	bm.pixel_mode = FT_PIXEL_MODE_MONO;
+	bm.num_grays = 2;
+	bm.buffer = calloc(1, (size_t)bm.pitch * bm.rows);
+	counts = calloc(1, (size_t)W * H);
+	if (!bm.buffer || !counts || FT_Outline_Get_Bitmap(f->lib, &o, &bm)) {
+		free(bm.buffer);
+		free(counts);
+		FT_Outline_Done(f->lib, &o);
+		return 0;
+	}
+	FT_Outline_Done(f->lib, &o);
+	for (y = 0; y < H * n; y++)
+		for (x = 0; x < W * n; x++)
+			if (bm.buffer[y * bm.pitch + (x >> 3)] & (0x80 >> (x & 7)))
+				counts[(y / n) * W + x / n]++;
+	free(bm.buffer);
+
+	minx = W; miny = H; maxx = -1; maxy = -1;
+	for (y = 0; y < H; y++)
+		for (x = 0; x < W; x++)
+			if (counts[y * W + x]) {
+				if (x < minx) minx = x;
+				if (x > maxx) maxx = x;
+				if (y < miny) miny = y;
+				if (y > maxy) maxy = y;
+			}
+	if (maxx >= 0) {
+		b->w = maxx - minx + 1;
+		b->h = maxy - miny + 1;
+		b->left = x0 + minx;
+		b->top = y1 - miny;     /* bitmap row 0 is pixel row y1 - 1 */
+		b->px = malloc((size_t)b->w * b->h);
+		if (!b->px) {
+			free(counts);
+			return 0;
+		}
+		for (y = 0; y < b->h; y++)
+			memcpy(b->px + y * b->w, counts + (miny + y) * W + minx, (size_t)b->w);
+	}
+	free(counts);
+	return 1;
+}
+
+/* Hinting mode for ABC, GGO_BITMAP and 1-bit text (tuning aa_measure) */
+static int measure_mono_hint(const gdifont_t *f)
+{
+	int m = f->tune.aa_measure;
+	if (f->quality != GDIFONT_ANTIALIASED || m == 0)
+		return 1;
+	if ((m == 2 || m == 4) && !f->gray_text)
+		return 1;
+	return 0;
+}
+
+/* The 1-bit glyph behind GGO_BITMAP, ABC and 1-bit text */
+static int mono_glyph(gdifont_t *f, unsigned cp, bmp_t *b)
+{
+	return render_ft(f, cp, measure_mono_hint(f), unhinted(f, 0), 1, b);
+}
+
+/* The greyscale glyph: values 0..64 for GGO_GRAY8 (n = 8) or 0..16 sample
+   counts for text (n = 4); with area coverage, 0..255 */
+static int grey_glyph(gdifont_t *f, unsigned cp, int n, bmp_t *b)
+{
+	if (f->tune.gray_method == 1)
+		return render_sampled(f, cp, n, b);
+	return render_ft(f, cp, f->tune.gray_hint, unhinted(f, 1), 0, b);
+}
+
+static int has_ink(const bmp_t *b)
+{
+	int i;
+	for (i = 0; i < b->w * b->h; i++)
+		if (b->px[i])
+			return 1;
+	return 0;
+}
+
 int gdifont_abc(gdifont_t *f, unsigned cp, gdifont_abc_t *out)
 {
 	/* §5: A = left bearing of the 1-bit render, B = its width,
 	   C = rounded advance - A - B */
-	FT_GlyphSlot s = render(f, cp, 1);
-	if (!s)
+	bmp_t b;
+	int m = f->tune.aa_measure;
+	int ok = (f->quality == GDIFONT_ANTIALIASED && (m == 3 || (m == 4 && f->gray_text)))
+		? render_ft(f, cp, 0, unhinted(f, 0), 0, &b) : mono_glyph(f, cp, &b);
+	if (!ok)
 		return 0;
-	out->a = s->bitmap_left;
-	out->b = (int)s->bitmap.width;
-	out->c = advance_px(s) - out->a - out->b;
+	out->a = b.left;
+	out->b = b.w;
+	out->c = b.adv - b.left - b.w;
+	free(b.px);
 	return 1;
 }
 
@@ -404,69 +608,63 @@ static void empty_glyph(gdifont_glyph_t *out, int incx)
 
 int gdifont_glyph_mono(gdifont_t *f, unsigned cp, gdifont_glyph_t *out)
 {
-	FT_GlyphSlot s = render(f, cp, 1);
-	int x, y, w, h, ink = 0;
+	bmp_t b;
+	int x, y;
 	memset(out, 0, sizeof(*out));
-	if (!s)
+	if (!mono_glyph(f, cp, &b))
 		return 0;
-	w = (int)s->bitmap.width;
-	h = (int)s->bitmap.rows;
-	for (y = 0; y < h && !ink; y++)
-		for (x = 0; x < w && !ink; x++)
-			ink = slot_pixel(&s->bitmap, x, y);
-	if (!ink) {
-		empty_glyph(out, advance_px(s));
+	if (!has_ink(&b)) {
+		empty_glyph(out, b.adv);
+		free(b.px);
 		return 1;
 	}
-	out->bbx = w;
-	out->bby = h;
-	out->ox = s->bitmap_left;
-	out->oy = s->bitmap_top;
-	out->incx = advance_px(s);
-	out->pitch = ((w + 31) / 32) * 4;   /* §4.2: DWORD-aligned rows */
-	out->size = out->pitch * h;
+	out->bbx = b.w;
+	out->bby = b.h;
+	out->ox = b.left;
+	out->oy = b.top;
+	out->incx = b.adv;
+	out->pitch = ((b.w + 31) / 32) * 4;   /* §4.2: DWORD-aligned rows */
+	out->size = out->pitch * b.h;
 	out->data = calloc(1, out->size);
-	if (!out->data)
-		return 0;
-	for (y = 0; y < h; y++)
-		for (x = 0; x < w; x++)
-			if (slot_pixel(&s->bitmap, x, y))
-				out->data[y * out->pitch + (x >> 3)] |= 0x80 >> (x & 7);
-	return 1;
+	if (out->data)
+		for (y = 0; y < b.h; y++)
+			for (x = 0; x < b.w; x++)
+				if (b.px[y * b.w + x])
+					out->data[y * out->pitch + (x >> 3)] |= 0x80 >> (x & 7);
+	free(b.px);
+	return out->data != NULL;
 }
 
 int gdifont_glyph_gray8(gdifont_t *f, unsigned cp, gdifont_glyph_t *out)
 {
-	FT_GlyphSlot s = render(f, cp, 0);
-	int x, y, w, h, ink = 0;
+	bmp_t b;
+	int x, y;
 	memset(out, 0, sizeof(*out));
-	if (!s)
+	if (!grey_glyph(f, cp, 8, &b))
 		return 0;
-	w = (int)s->bitmap.width;
-	h = (int)s->bitmap.rows;
-	for (y = 0; y < h && !ink; y++)
-		for (x = 0; x < w && !ink; x++)
-			ink = slot_pixel(&s->bitmap, x, y);
-	if (!ink) {
-		empty_glyph(out, advance_px(s));
+	if (!has_ink(&b)) {
+		empty_glyph(out, b.adv);
+		free(b.px);
 		return 1;
 	}
-	out->bbx = w;
-	out->bby = h;
-	out->ox = s->bitmap_left;
-	out->oy = s->bitmap_top;
-	out->incx = advance_px(s);
-	out->pitch = (w + 3) & ~3;          /* §4.3: DWORD-aligned rows */
-	out->size = out->pitch * h;
+	out->bbx = b.w;
+	out->bby = b.h;
+	out->ox = b.left;
+	out->oy = b.top;
+	out->incx = b.adv;
+	out->pitch = (b.w + 3) & ~3;          /* §4.3: DWORD-aligned rows */
+	out->size = out->pitch * b.h;
 	out->data = calloc(1, out->size);
-	if (!out->data)
-		return 0;
-	/* §4.3: 0..64 levels. The exact GDI mapping is open [U]; this is
-	   FreeType's area coverage scaled with rounding, as in the spec. */
-	for (y = 0; y < h; y++)
-		for (x = 0; x < w; x++)
-			out->data[y * out->pitch + x] = (unsigned char)((slot_pixel(&s->bitmap, x, y) * 64 + 127) / 255);
-	return 1;
+	if (out->data)
+		for (y = 0; y < b.h; y++)
+			for (x = 0; x < b.w; x++) {
+				int v = b.px[y * b.w + x];
+				/* sampled counts are 0..64 already; area coverage is
+				   scaled with rounding (§4.3) */
+				out->data[y * out->pitch + x] = (unsigned char)(f->tune.gray_method == 1 ? v : (v * 64 + 127) / 255);
+			}
+	free(b.px);
+	return out->data != NULL;
 }
 
 void gdifont_glyph_release(gdifont_glyph_t *g)
@@ -495,35 +693,37 @@ int gdifont_text_width(gdifont_t *f, const unsigned *cps, int n)
 	return w;
 }
 
+/* Greyscale text with point sampling: 4 x 4 count -> level. Counts 0 and 1
+   draw nothing. Observed in run 40463306407 (Windows build 26100, ClearType
+   contrast 1200): these are the only 15 non-zero levels Windows produced. */
+static const unsigned char eto_levels[17] = {
+	0, 0, 104, 124, 140, 154, 167, 178, 189, 199, 208, 217, 225, 233, 240, 248, 255
+};
+
 int gdifont_text_out(gdifont_t *f, int x, int y, const unsigned *cps, int n,
 	unsigned char *dst, int dstw, int dsth, int dstpitch)
 {
 	int i, pen = x, baseline = y + f->tm.ascent;
 	for (i = 0; i < n; i++) {
 		gdifont_abc_t abc;
-		int gx, gy;
+		bmp_t b;
+		int gx, gy, ok;
 		if (!gdifont_abc(f, cps[i], &abc))
 			continue;
-		if (f->gray_text) {
-			/* §4.4: greyscale where gasp allows it at quality 1. The level
-			   ramp is open [U]; 17 evenly spaced levels as in the spec. */
-			FT_GlyphSlot s = render(f, cps[i], 0);
-			if (s)
-				for (gy = 0; gy < (int)s->bitmap.rows; gy++)
-					for (gx = 0; gx < (int)s->bitmap.width; gx++) {
-						int v = slot_pixel(&s->bitmap, gx, gy);
-						put_px(dst, dstw, dsth, dstpitch, pen + s->bitmap_left + gx, baseline - s->bitmap_top + gy,
-							((v * 16 + 127) / 255) * 255 / 16);
-					}
-		} else {
-			/* 1-bit: identical to GGO_BITMAP on Windows in 99.2-100% of
-			   glyphs (run 40463306407, diagnose.py section 1) */
-			FT_GlyphSlot s = render(f, cps[i], 1);
-			if (s)
-				for (gy = 0; gy < (int)s->bitmap.rows; gy++)
-					for (gx = 0; gx < (int)s->bitmap.width; gx++)
-						put_px(dst, dstw, dsth, dstpitch, pen + s->bitmap_left + gx, baseline - s->bitmap_top + gy,
-							slot_pixel(&s->bitmap, gx, gy));
+		/* §4.4: greyscale where gasp allows it at quality 1, else 1-bit.
+		   1-bit text equals GGO_BITMAP on Windows in 99.2-100% of glyphs
+		   (diagnose.py section 1). */
+		ok = f->gray_text ? grey_glyph(f, cps[i], 4, &b) : mono_glyph(f, cps[i], &b);
+		if (ok) {
+			for (gy = 0; gy < b.h; gy++)
+				for (gx = 0; gx < b.w; gx++) {
+					int v = b.px[gy * b.w + gx];
+					if (f->gray_text)
+						v = f->tune.gray_method == 1 ? eto_levels[v > 16 ? 16 : v]
+							: ((v * 16 + 127) / 255) * 255 / 16; /* 17 even levels */
+					put_px(dst, dstw, dsth, dstpitch, pen + b.left + gx, baseline - b.top + gy, v);
+				}
+			free(b.px);
 		}
 		pen += abc.a + abc.b + abc.c;
 	}
