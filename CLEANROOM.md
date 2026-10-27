@@ -37,6 +37,17 @@ Whenever behaviour was learned from a probe or from content rather than a
 written spec, write it down in `docs/spec/` with how it was established. Code
 comments point at those files. If something is a guess, say so.
 
+## GDI text emulation (src/client/gdifont.c)
+
+The GDI-compatible TrueType rasterizer was built only from black-box
+measurements of Windows GDI: `tools/gdiref/gdiref.c` calls the public GDI
+API on a GitHub Windows runner and dumps what it returns, and CI compares
+that with the module's output (`.github/workflows/gdiref.yml`). Besides
+those captures, the inputs were the FreeType documentation, the
+OpenType/TrueType specs and Microsoft's public GDI API docs. No Source
+Engine, Wine or ReactOS code, or notes derived from them, were read.
+`docs/spec/gdi-text.md` records each rule and the run it came from.
+
 ## Third-party code
 
 Only public domain (or equally permissive) libraries go in `src/thirdparty/`,

@@ -248,7 +248,7 @@ static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const cha
 	   scaled hhea advanceWidthMax and the largest hinted advance were both
 	   too small in every config of runs 40463306407 and 40463949748; Arial
 	   (bbox 5457 units) gives 19 at ppem 7 and 21 at ppem 8 as Windows
-	   reports. [F, under test] */
+	   reports. [F] 204/204 in run 40464365435 */
 	{
 		long bw = (long)f->face->bbox.xMax - f->face->bbox.xMin;
 		f->tm.max_char_width = rnd_div(bw * ppem, upem);
