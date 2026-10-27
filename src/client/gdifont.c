@@ -89,39 +89,49 @@ int gdifont_gasp_gray(const unsigned char *gasp, size_t len, int ppem)
 
 int gdifont_select_size(const gdifont_sizeinfo_t *si, int tall, int *ascent, int *descent)
 {
-	int p, i, wsum = si->win_ascent + si->win_descent;
+	int cap = 1 << 30, p, i, wsum = si->win_ascent + si->win_descent;
 
-	/* §3: start from the largest ppem whose scaled win height fits */
-	p = 1;
-	if (wsum > 0 && si->units_per_em > 0)
-		while (rnd_div((long)(p + 1) * wsum, si->units_per_em) <= tall)
-			p++;
-
-	/* With a usable VDMX group, step down from there until the entry's
-	   yMax - yMin fits; that entry gives the ascent and descent, and the
-	   cell can come out shorter than tall. Below the table's first size
-	   the win metrics apply again. (Fitted to run 40463306407: this also
-	   explains the 11 configs the "smallest ppem with the largest fitting
-	   height" rule missed.) */
+	/* §3 with a usable VDMX group (fitted to runs 40463306407 and
+	   40463949748): walk the entries in ascending ppem and keep the last
+	   whose yMax - yMin fits in tall, but stop at the first whose height
+	   is exactly tall. So among equal heights the smallest ppem wins when
+	   the height is tall itself, and the largest when it is shorter. The
+	   entry gives the ascent and descent; the cell can be shorter than
+	   tall. */
 	if (si->vdmx_count > 0) {
-		int first = 1 << 30, last = -1;
-		for (i = 0; i < si->vdmx_count; i++) {
-			if (si->vdmx_ppem[i] < first) first = si->vdmx_ppem[i];
-			if (si->vdmx_ppem[i] > last) last = si->vdmx_ppem[i];
+		int best = -1, first = 1 << 30, q, next;
+		for (i = 0; i < si->vdmx_count; i++)
+			if (si->vdmx_ppem[i] < first)
+				first = si->vdmx_ppem[i];
+		for (q = first; q >= 0; q = next) {
+			int h = 0, at = -1;
+			next = -1;
+			for (i = 0; i < si->vdmx_count; i++) {
+				if (si->vdmx_ppem[i] == q)
+					at = i;
+				else if (si->vdmx_ppem[i] > q && (next < 0 || si->vdmx_ppem[i] < next))
+					next = si->vdmx_ppem[i];
+			}
+			h = si->vdmx_ymax[at] - si->vdmx_ymin[at];
+			if (h <= tall)
+				best = at;
+			if (h == tall)
+				break;
 		}
-		if (p <= last) {
-			for (; p >= first; p--)
-				for (i = 0; i < si->vdmx_count; i++)
-					if (si->vdmx_ppem[i] == p && si->vdmx_ymax[i] - si->vdmx_ymin[i] <= tall) {
-						*ascent = si->vdmx_ymax[i];
-						*descent = -si->vdmx_ymin[i];
-						return p;
-					}
-			if (p < 1)
-				p = 1;
+		if (best >= 0) {
+			*ascent = si->vdmx_ymax[best];
+			*descent = -si->vdmx_ymin[best];
+			return si->vdmx_ppem[best];
 		}
+		/* nothing fits: stay below the table's first size */
+		cap = first - 1;
 	}
 
+	/* §3 rule 3: largest ppem whose scaled win height fits */
+	p = 1;
+	if (wsum > 0 && si->units_per_em > 0)
+		while (p + 1 <= cap && rnd_div((long)(p + 1) * wsum, si->units_per_em) <= tall)
+			p++;
 	*ascent = wsum > 0 ? rnd_div((long)si->win_ascent * tall, wsum) : tall;
 	*descent = tall - *ascent;
 	return p;
@@ -234,19 +244,14 @@ static int setup(gdifont_t *f, int height, int weight, int ppem_delta, const cha
 		f->tm.external_leading = el > 0 ? rnd_div(el * ppem, upem) : 0;
 	}
 	f->tm.ave_char_width = rnd_div((long)os2->xAvgCharWidth * ppem, upem);
+	/* tmMaxCharWidth: the head bounding box width scaled to the ppem. The
+	   scaled hhea advanceWidthMax and the largest hinted advance were both
+	   too small in every config of runs 40463306407 and 40463949748; Arial
+	   (bbox 5457 units) gives 19 at ppem 7 and 21 at ppem 8 as Windows
+	   reports. [F, under test] */
 	{
-		/* tmMaxCharWidth: the largest hinted advance over every glyph.
-		   The scaled hhea advanceWidthMax came out too small in every
-		   config of run 40463306407. [F, under test] */
-		FT_Long gi;
-		int maxadv = (int)(f->face->size->metrics.max_advance >> 6);
-		for (gi = 0; gi < f->face->num_glyphs; gi++)
-			if (!FT_Load_Glyph(f->face, (FT_UInt)gi, FT_LOAD_TARGET_MONO)) {
-				int a = (int)((f->face->glyph->advance.x + 32) >> 6);
-				if (a > maxadv)
-					maxadv = a;
-			}
-		f->tm.max_char_width = maxadv;
+		long bw = (long)f->face->bbox.xMax - f->face->bbox.xMin;
+		f->tm.max_char_width = rnd_div(bw * ppem, upem);
 	}
 	f->tm.weight = weight;
 	f->tm.overhang = 0;

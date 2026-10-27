@@ -22,20 +22,22 @@ static void test_size_rule(void)
 	CHECK(asc == 13);            /* round(1854 * 16 / 2288) = round(12.97) */
 	CHECK(asc + desc == 16);
 
-	/* VDMX: step down from the win-formula ppem until the entry fits */
+	/* VDMX: last fitting entry, stopping at the first exact height */
 	{
 		static const unsigned short pp[] = { 8, 9, 10, 11, 12 };
 		static const short ymax[] = { 8, 9, 9, 11, 12 }, ymin[] = { -2, -2, -2, -2, -3 };
 		gdifont_sizeinfo_t v = { 2048, 2059, 430, 5, pp, ymax, ymin };
 		p = gdifont_select_size(&v, 12, &asc, &desc);
-		/* the win formula gives ppem 10; its entry (height 11) fits */
+		/* no entry is 12 tall: the largest ppem of the tallest fit */
 		CHECK(p == 10 && asc == 9 && desc == 2);
+		p = gdifont_select_size(&v, 11, &asc, &desc);
+		CHECK(p == 9 && asc == 9 && desc == 2);  /* exact: the smallest */
 		p = gdifont_select_size(&v, 15, &asc, &desc);
 		CHECK(p == 12 && asc + desc == 15);
 		p = gdifont_select_size(&v, 9, &asc, &desc);
 		CHECK(p == 7 && asc + desc == 9);       /* below the table: win metrics */
 		p = gdifont_select_size(&v, 14, &asc, &desc);
-		CHECK(p == 11 && asc == 11 && desc == 2); /* formula 11, height 13 fits */
+		CHECK(p == 11 && asc == 11 && desc == 2); /* height 13 fits, 15 does not */
 	}
 }
 
