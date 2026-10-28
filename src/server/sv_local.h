@@ -69,6 +69,7 @@ typedef struct {
 } server_t;
 
 extern server_t sv;
+extern int sv_spawncount; /* maps spawned so far; the host joins each new one */
 
 /* --- clients (sv_client.c) --- */
 typedef enum { CS_FREE, CS_CONNECTED, CS_SPAWNED } clientstate_t;

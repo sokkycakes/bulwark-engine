@@ -15,6 +15,7 @@
 #define G sv.vm->gofs
 
 server_t sv;
+int sv_spawncount;
 
 static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate;
 
@@ -456,6 +457,7 @@ bool SV_SpawnServer(const char *mapname)
 		spawn_map_entities(sv.world->entities);
 	}
 	sv.spawning = false;
+	sv_spawncount++;
 	Script_LevelSpawned();
 	SV_ClientsMapChanged();
 	SV_MVDMapSpawned();

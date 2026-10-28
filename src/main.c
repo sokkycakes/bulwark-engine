@@ -166,6 +166,7 @@ int main(int argc, char **argv)
 	double last = Sys_Seconds();
 	long frames = 0;
 	bool server_was_active = false, mode_applied = false;
+	int seen_spawncount = 0;
 	while (!quit_requested) {
 		double now, dt;
 		if (maxframes >= 0) {
@@ -198,11 +199,13 @@ int main(int argc, char **argv)
 			VID_ApplyMode();
 		}
 
-		/* a map started here: join it over loopback */
-		if (sv.active && !server_was_active) {
+		/* a map started here: join it over loopback. That includes a new
+		 * map started after "disconnect", which leaves the server running */
+		if (sv.active && (!server_was_active || (sv_spawncount != seen_spawncount && cl.state == ca_disconnected))) {
 			cl.listen = true;
 			CL_Connect("localhost");
 		}
+		seen_spawncount = sv_spawncount;
 		if (!sv.active && server_was_active)
 			cl.listen = false;
 		server_was_active = sv.active;
