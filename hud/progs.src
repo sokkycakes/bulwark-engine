@@ -6,6 +6,7 @@ art.qc
 modes.qc
 board.qc
 panels.qc
+levelpanel.qc
 crosshair.qc
 killfeed.qc
 weaponselect.qc

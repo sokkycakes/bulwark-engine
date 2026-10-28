@@ -680,6 +680,7 @@ CSM_Playroom(float id)
 		break;
 	default:
 		CSM_Zombie(45);
+		zv_zbzPlayroom = true;
 		cs_modeTitle = "CSO_GameMode_PlayRoom_ZombieZ";	/* no text in this build */
 		cs_modeFallback = "Hide-Out Zombie Z";
 	}

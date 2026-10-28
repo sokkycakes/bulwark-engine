@@ -26,6 +26,10 @@ HUD_Init(void)
 	precache_pic("resource/hud/hud_weapon_bg_top");
 	precache_pic("resource/hud/hud_weapon_bg_bottom");
 	precache_pic("resource/hud/hud_weapon_off_bg");
+	precache_pic("resource/zombiez/zmode_level_bg");
+	precache_pic("resource/zombiez/zmode_level_num");
+	precache_pic("resource/zombiez/zmode_level_bar");
+	precache_pic("resource/zombiez/zmode_level_bar_bg");
 	precache_pic("resource/hud/hud_dollar_bg");
 	precache_pic("resource/hud/hud_sb_num_bottom");
 	precache_pic("resource/hud/hud_sb_num_bottom_colon");
@@ -50,6 +54,7 @@ HUD_Draw(void)
 		Panels_DrawWeaponBox(g_hudFont);
 		Panels_DrawFlashlight();
 		Panels_DrawMoney();
+		LevelPanel_Draw();
 	} else {
 		/* dead players watch through the spectator bars (INFERRED, as
 		   in CS) */

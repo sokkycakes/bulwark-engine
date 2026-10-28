@@ -41,6 +41,8 @@ bool zv_giant;
 bool zv_tag;
 bool zv_touchdown;
 bool zv_mutate;			/* Zombi_3z */
+bool zv_zbz;			/* Zombie Z level and exp (ZombieZPlayer) */
+bool zv_zbzPlayroom;		/* Playroom Zombie Z (55): level set, no exp */
 bool zv_endlessHost;		/* ZE: "The Host Zombie has unlimited health" (OBSERVED) */
 bool zv_zombieRespawn;		/* ZE: "You will respawn if you die as a normal zombie" */
 
@@ -103,6 +105,110 @@ ZV_EquipHuman(entity p)
 	p.zv_hasFlag = 0;
 }
 
+/* --- Zombie Z level and exp ---------------------------------------------------
+   mp.dll's ZombieZPlayer (vtable 0x117beb30), SOURCE-CONFIRMED unless marked:
+   - Init (slot 1, FUN_108f7aa0): level 1, exp 25000 (one level's worth),
+     1 mutation point; sends ZBZInitLV (level, points).
+   - AddExp (slot 4, FUN_108f49f0, amount/type/force): not in mode 55, not
+     for negative amounts. Exp is capped at 40 levels (25000 each,
+     DAT_11d316b4) and at round cap * scale * 25000 when the round cap
+     (_DAT_11e62384) is set. Level = exp / 25000, at most 40. The percent
+     into the level goes out as ZBZExp when it moved over 3 points or on
+     force. A level up runs slot 0x16 (FUN_1090a4e0), which adds the
+     levels gained to the mutation points.
+   - The round cap is mp_winlimit (gamerules +0x4d0, FUN_1141b580) when a
+     player joins with none set (FUN_10748440).
+   - Kill exp (slot 0x2b, FUN_109090a0): a zombie killer gets
+     (5750 - 250 * round cap) * 2, type 5, forced (the two values are
+     static config objects 0x11e624e0 / 0x11e62528). A human killer only
+     gets exp from mutation 0x32, which is not ported.
+   - Playroom Zombie Z on join (FUN_1074a0f0): level 40, round cap =
+     mp_winlimit, money 32000.
+   Not ported: the cap scale (a float from gamerules +0x1f0 vtable 0x56c,
+   UNRESOLVED; autocvar_zbz_capscale, 0 = no round cap), mutation exp
+   bonuses (0x50/0x54), the item effects that grant 1/5/6 levels, and the
+   level-up message panel.
+   The HUD reads userinfo csnz_zbzlv / csnz_zbzexp (percent). */
+
+#define ZBZ_EXP_PER_LEVEL 25000
+#define ZBZ_MAX_LEVEL 40
+
+var float autocvar_zbz_capscale = 0;	/* UNRESOLVED factor, see above */
+
+.float zbz_level;
+.float zbz_exp;
+.float zbz_pct;
+.float zbz_points;
+float zbz_roundCap;
+
+void
+ZBZ_Publish(entity p)
+{
+	userinfo.SetInteger(p, "csnz_zbzlv", (int)p.zbz_level);
+	userinfo.SetInteger(p, "csnz_zbzexp", (int)p.zbz_pct);
+	userinfo.SetInteger(p, "csnz_zbzpoints", (int)p.zbz_points);
+}
+
+void
+ZBZ_Init(entity p)
+{
+	p.zbz_level = 1;
+	p.zbz_exp = ZBZ_EXP_PER_LEVEL;
+	p.zbz_pct = 0;
+	p.zbz_points = 1;
+	if (zbz_roundCap < 1)
+		zbz_roundCap = cs_goal;
+	if (zv_zbzPlayroom) {
+		/* SetLevel (FUN_10900ef0) clamps to 40 and leaves the exp */
+		p.zbz_level = ZBZ_MAX_LEVEL;
+		/* FUN_114b0560(32000 - money): above CS_MONEY_MAX, so set here */
+		p.cs_money = 32000;
+		userinfo.SetInteger(p, "csnz_cash", 32000);
+	}
+	ZBZ_Publish(p);
+}
+
+void
+ZBZ_AddExp(entity p, float amount, bool force)
+{
+	if (zv_zbzPlayroom || amount < 0 || !p.zbz_level)
+		return;
+
+	float full = ZBZ_MAX_LEVEL * ZBZ_EXP_PER_LEVEL;
+	p.zbz_exp = min(p.zbz_exp + amount, full);
+
+	float cap = full;
+	if (zbz_roundCap >= 1 && autocvar_zbz_capscale > 0)
+		cap = min(full, floor(zbz_roundCap * autocvar_zbz_capscale * ZBZ_EXP_PER_LEVEL));
+	p.zbz_exp = min(p.zbz_exp, cap);
+
+	float old = p.zbz_level;
+	p.zbz_level = min(ZBZ_MAX_LEVEL, floor(p.zbz_exp / ZBZ_EXP_PER_LEVEL));
+	float pct = floor((p.zbz_exp - p.zbz_level * ZBZ_EXP_PER_LEVEL) / ZBZ_EXP_PER_LEVEL * 100);
+
+	if (p.zbz_level > old) {
+		p.zbz_pct = pct;
+		p.zbz_points += p.zbz_level - old;
+		printf("csnz %.1f: %s reached Zombie Z level %d (%d%%)\n", time, p.netname, p.zbz_level, p.zbz_pct);
+		ZBZ_Publish(p);
+		return;
+	}
+	if (pct - p.zbz_pct > 3 || force) {
+		p.zbz_pct = pct;
+		printf("csnz %.1f: %s Zombie Z level %d, %d%%\n", time, p.netname, p.zbz_level, p.zbz_pct);
+		ZBZ_Publish(p);
+	}
+}
+
+/* FUN_109090a0: exp for the killer */
+void
+ZBZ_KillExp(entity killer)
+{
+	if (!zv_zbz || !(killer.flags & FL_CLIENT) || !ZV_IsZombie(killer))
+		return;
+	ZBZ_AddExp(killer, (5750 - 250 * zbz_roundCap) * 2, true);
+}
+
 /* turns a player into a zombie where they stand */
 void
 ZV_MakeZombie(entity p, bool isOrigin, vector where, vector ang)
@@ -134,6 +240,8 @@ ZV_MakeZombie(entity p, bool isOrigin, vector where, vector ang)
 void
 ZV_Equip(entity p)
 {
+	if (zv_zbz && !p.zbz_level)
+		ZBZ_Init(p);
 	/* a fresh round: everyone starts human (touchdown: by side) */
 	if (zv_touchdown && p.team == zv_attackers) {
 		ZA_BecomeZombie(p, "csm_zombie");
@@ -308,6 +416,7 @@ ZV_Infect(entity victim, entity attacker)
 		return;
 	attacker.frags++;
 	attacker.cs_kills++;
+	ZBZ_KillExp(attacker);
 	printf("csnz %.1f: %s infected %s\n", time, attacker.netname, victim.netname);
 	ZV_MakeZombie(victim, false, victim.origin, victim.v_angle);
 }
@@ -378,6 +487,7 @@ ZV_Killed(entity p, entity inflictor, entity attacker, string weapon)
 			attacker.cs_score += 1;
 			return;
 		}
+		ZBZ_KillExp(attacker);
 		if (zv_noInfect || zv_touchdown || zv_tag)
 			return;
 		p.zv_infectAt = time + 0.5;
@@ -418,6 +528,22 @@ ZV_GoalPoint(void)
 void
 ZV_TestHooks(void)
 {
+	/* a zombie infects a human (Zombie Z exp test) */
+	if (cvars.GetBool("cs_test_zbzinfect") && cs_state == CS_LIVE) {
+		entity z = world, h = world;
+		for (entity e = world; (e = next.Player(e));) {
+			if (!CS_Playing(e))
+				continue;
+			if (ZV_IsZombie(e))
+				z = e;
+			else
+				h = e;
+		}
+		if (z && h) {
+			cvars.SetString("cs_test_zbzinfect", "0");
+			ZV_Infect(h, z);
+		}
+	}
 	if (cvars.GetBool("cs_test_hescape")) {
 		cvars.SetString("cs_test_hescape", "0");
 		float k = 0;
@@ -776,6 +902,7 @@ CSM_Zombie(float id)
 		cs_modeFallback = "Zombie Z";
 		ZV_Zombi3();
 		zv_mutate = true;
+		zv_zbz = true;
 		break;
 	case 29:
 		cs_modeTitle = "CSO_GameMode_Zombi_4";
