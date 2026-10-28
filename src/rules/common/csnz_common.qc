@@ -277,6 +277,37 @@ CS_Tell(entity p, string msg)
 
 /* --- players and teams ---------------------------------------------------- */
 
+/* The radar's teammate positions. mp.dll's player think (FUN_114decd0,
+   SOURCE-CONFIRMED): once a second, a living player who has moved 64 units
+   or more since the last update sends the "Radar" message (index, x, y, z)
+   to each living teammate; FUN_11414ba0 sends everyone's to a player who
+   joins. Bulwark has no such message for the HUD progs, so the position
+   goes out as userinfo csnz_rpos, which every client gets; the HUD keeps to
+   teammates. An empty value is a dead or spectating player (the client
+   hides those through ScoreAttrib). */
+.vector cs_radarPos;
+.float cs_radarNext;
+
+void
+CS_RadarUpdate(entity p)
+{
+	if (p.classname == "spectator" || p.health <= 0) {
+		if (p.cs_radarNext) {
+			p.cs_radarNext = 0;
+			userinfo.SetString(p, "csnz_rpos", "");
+		}
+		return;
+	}
+	if (p.cs_radarNext && time < p.cs_radarNext)
+		return;
+	bool first = !p.cs_radarNext;
+	p.cs_radarNext = time + 1;
+	if (!first && vlen(p.origin - p.cs_radarPos) < 64)
+		return;
+	p.cs_radarPos = p.origin;
+	userinfo.SetString(p, "csnz_rpos", sprintf("%d %d %d", p.origin[0], p.origin[1], p.origin[2]));
+}
+
 bool
 CS_Playing(entity p)
 {
@@ -800,6 +831,7 @@ CS_Frame(void)
 		/* respawn modes bring dead players back after the delay */
 		if (p.cs_respawnAt > 0 && time >= p.cs_respawnAt && (cs_state == CS_LIVE || cs_state == CS_FREEZE))
 			CS_PutInGame(p);
+		CS_RadarUpdate(p);
 	}
 
 	if (time >= cs_nextInfo) {

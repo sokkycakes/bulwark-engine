@@ -58,6 +58,7 @@ HUD_Draw(void)
 		Panels_DrawFlashlight();
 		Panels_DrawMoney();
 		LevelPanel_Draw();
+		Radar_Draw();
 	} else {
 		/* dead players watch through the spectator bars (INFERRED, as
 		   in CS) */
