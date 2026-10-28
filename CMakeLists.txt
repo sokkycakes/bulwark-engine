@@ -3,7 +3,7 @@ project(bulwark C CXX)
 
 # Nintendo 3DS and DS builds use devkitPro's toolchain files
 # (-DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake or NDS.cmake); see
-# docs/platforms/3ds.md. They leave out what those systems can't host:
+# docs/platforms/3ds.md and nds.md. They leave out what those systems can't host:
 # dynamic plugins, PanoramaEngine and QuickJS, the host tools and tests.
 if(NINTENDO_3DS OR NINTENDO_DS)
 	set(BULWARK_CONSOLE ON)
@@ -20,6 +20,22 @@ endif()
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 	add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-sign-compare)
 	add_compile_definitions(_GNU_SOURCE)
+endif()
+
+# The DS (4 MB of RAM, no FPU) can't host the engine: it gets a small Quake
+# map viewer on its 3D hardware instead (docs/platforms/nds.md).
+# BULWARK_NDS_NITROFS names a folder to pack into the ROM as nitro:/.
+if(NINTENDO_DS)
+	add_executable(bulwark_nds src/platform/nds/main_nds.c src/platform/nds/world_nds.c)
+	target_link_libraries(bulwark_nds PRIVATE filesystem fat m)
+	set(BULWARK_NDS_NITROFS "" CACHE PATH "Folder to pack into the ROM (maps/, gfx/palette.lmp)")
+	if(BULWARK_NDS_NITROFS)
+		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Map viewer" SUBTITLE2 "github.com/sokkycakes"
+		               NITROFS "${BULWARK_NDS_NITROFS}")
+	else()
+		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Map viewer" SUBTITLE2 "github.com/sokkycakes")
+	endif()
+	return()
 endif()
 
 find_package(Threads REQUIRED)
