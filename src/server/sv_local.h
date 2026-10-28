@@ -188,6 +188,10 @@ void SV_RunStandardPlayerPhysics(int e);
 void SV_InitPMove(void);
 struct pmvars_s;
 void W_RunPlayerPhysics(qcvm_t *vm, int e, const struct pmvars_s *vars);
+/* One physics frame for entity e of vm: think, then the movetype's movement
+ * (only the think when move is false). The client game runs its own
+ * entities through this; see docs/spec/client-game.md. */
+void W_RunEntityPhysics(qcvm_t *vm, int e, double time, float frametime, float gravity, bool move);
 void SV_SyncServerinfoCvars(bool broadcast);
 extern const qc_builtin_t sv_client_builtins[];
 void SV_ClientReliableMsg(client_t *c, const msg_t *m);

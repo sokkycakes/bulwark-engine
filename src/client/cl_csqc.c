@@ -526,12 +526,46 @@ void CSQC_ParseEvent(msg_t *m, size_t len)
 	}
 }
 
+/* Client game entities get a physics frame before each view, as the
+ * customphysics doc comment in fteextensions.qc implies: their thinks run,
+ * and the ones the game spawned itself move by their movetype (Nuclide's
+ * gibs and debris are MOVETYPE_BOUNCE entities that only exist here and
+ * remove themselves from a think). Entities that mirror a server entity
+ * keep the snapshot positions and only think. See docs/spec/client-game.md. */
+static void csqc_physics(qcvm_t *vm)
+{
+	static double last;
+	double dt = cl.time - last;
+	float gravity;
+	worldctx_t *old;
+	if (dt < 0 || dt > 1) /* new map or a long stall */
+		dt = 0;
+	last = cl.time;
+	if (dt <= 0)
+		return;
+	if (dt > 0.1)
+		dt = 0.1;
+	gravity = info_float("sv_gravity", 800);
+	QC_SetGFloat(vm, G.frametime, (float)dt);
+	old = enter_world();
+	for (int e = 1; e < vm->num_edicts; e++) {
+		bool mirror;
+		if (vm->edicts[e].free)
+			continue;
+		mirror = CS.entnum >= 0 && QC_EFloat(vm, e, CS.entnum) > 0;
+		W_RunEntityPhysics(vm, e, cl.time, (float)dt, gravity, !mirror);
+	}
+	SV_SetWorldContext(old);
+}
+
 void CSQC_Frame(int width, int height)
 {
 	qcvm_t *vm = cl.csqc;
 	static double last;
 	if (!vm || !CS.UpdateView || cl.state != ca_active)
 		return;
+	set_frame_globals(vm);
+	csqc_physics(vm);
 	set_frame_globals(vm);
 	QC_SetGFloat(vm, G.frametime, (float)(cl.realtime - last));
 	QC_SetGFloat(vm, CS.clframetime, (float)(cl.realtime - last));

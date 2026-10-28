@@ -13,6 +13,28 @@ lines). `notmenu` is 1 while no menu progs is drawing over the game. Nuclide
 renders 3D with `renderscene`, then draws its HUD; the console draws over
 everything in `R_EndFrame`.
 
+Before that call, every client game entity gets a physics frame
+(`csqc_physics` in cl_csqc.c), using the server's toss, bounce, fly and
+noclip movement through `W_RunEntityPhysics`:
+
+- Its `think` runs when `nextthink` has come, and `customphysics`, when set,
+  replaces the movement, as that field's doc comment in fteextensions.qc
+  describes.
+- Entities the game spawned itself (`entnum` 0) then move by their
+  movetype, with gravity from the server's `sv_gravity` serverinfo key.
+- Entities that mirror a server entity (`entnum` above 0) only think. Their
+  position comes from snapshots and the engine's interpolation. Nuclide
+  gives other players MOVETYPE_FLY "for interpolation purposes", which
+  suggests FTE moves them between updates too; Bulwark doesn't.
+- The step is the client time since the last frame, at most 0.1 s.
+
+Found from Nuclide's client QC: `BreakModel_SpawnID` (propdata.qc) spawns
+gibs and debris as client-only MOVETYPE_BOUNCE entities that keep a think
+scheduled and remove themselves with `ScheduleThink(Disappear, fadetime)`.
+Without this frame they hung in the air where they spawned and never went
+away (until the 33-entry pool reused them). Other client-only entities
+that time out the same way, such as `EV_TraceDebug`'s, depend on it too.
+
 ## Things that have to hold
 
 - **`self` survives builtins.** `addentities` runs each entity's `predraw`

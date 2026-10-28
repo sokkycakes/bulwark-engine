@@ -468,24 +468,34 @@ bool SV_SpawnServer(const char *mapname)
 
 /* --- physics --------------------------------------------------------- */
 
-static float *ev(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(sv.vm, e)[ofs].f; }
+/* The movement below runs for whichever module's entities are current: the
+ * server's from SV_Physics, or the client game's from W_RunEntityPhysics
+ * (with SV_SetWorldContext pointing traces at the client's world). */
+static qcvm_t *pv;
+static double ptime;
+static float pdt, pgrav;
+static bool pmove_ents;
+#define PF pv->fofs
+#define PG pv->gofs
+
+static float *ev(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(pv, e)[ofs].f; }
 
 static bool run_think(int e, float thinktime_limit)
 {
-	qcvm_t *vm = sv.vm;
-	float thinktime = QC_EFloat(vm, e, F.nextthink);
+	qcvm_t *vm = pv;
+	float thinktime = QC_EFloat(vm, e, PF.nextthink);
 	func_t think;
 	if (thinktime <= 0 || thinktime > thinktime_limit)
 		return true;
-	if (thinktime < sv.time)
-		thinktime = (float)sv.time;
-	QC_SetEFloat(vm, e, F.nextthink, 0);
-	think = QC_EInt(vm, e, F.think);
+	if (thinktime < ptime)
+		thinktime = (float)ptime;
+	QC_SetEFloat(vm, e, PF.nextthink, 0);
+	think = QC_EInt(vm, e, PF.think);
 	if (!think)
 		return true;
-	QC_SetGFloat(vm, G.time, thinktime);
-	QC_SetGInt(vm, G.self, e);
-	QC_SetGInt(vm, G.other, 0);
+	QC_SetGFloat(vm, PG.time, thinktime);
+	QC_SetGInt(vm, PG.self, e);
+	QC_SetGInt(vm, PG.other, 0);
 	QC_Execute(vm, think);
 	return !vm->edicts[e].free;
 }
@@ -503,24 +513,24 @@ static void clamp_velocity(float *vel)
 
 static void impact(int e, int other)
 {
-	qcvm_t *vm = sv.vm;
-	int oldself = QC_GInt(vm, G.self), oldother = QC_GInt(vm, G.other);
-	func_t t = QC_EInt(vm, e, F.touch);
-	if (t && QC_EFloat(vm, e, F.solid) != SOLID_NOT) {
-		QC_SetGInt(vm, G.self, e);
-		QC_SetGInt(vm, G.other, other);
+	qcvm_t *vm = pv;
+	int oldself = QC_GInt(vm, PG.self), oldother = QC_GInt(vm, PG.other);
+	func_t t = QC_EInt(vm, e, PF.touch);
+	if (t && QC_EFloat(vm, e, PF.solid) != SOLID_NOT) {
+		QC_SetGInt(vm, PG.self, e);
+		QC_SetGInt(vm, PG.other, other);
 		QC_Execute(vm, t);
 	}
 	if (other > 0 && !vm->edicts[other].free) {
-		t = QC_EInt(vm, other, F.touch);
-		if (t && QC_EFloat(vm, other, F.solid) != SOLID_NOT) {
-			QC_SetGInt(vm, G.self, other);
-			QC_SetGInt(vm, G.other, e);
+		t = QC_EInt(vm, other, PF.touch);
+		if (t && QC_EFloat(vm, other, PF.solid) != SOLID_NOT) {
+			QC_SetGInt(vm, PG.self, other);
+			QC_SetGInt(vm, PG.other, e);
 			QC_Execute(vm, t);
 		}
 	}
-	QC_SetGInt(vm, G.self, oldself);
-	QC_SetGInt(vm, G.other, oldother);
+	QC_SetGInt(vm, PG.self, oldself);
+	QC_SetGInt(vm, PG.other, oldother);
 }
 
 static void clip_velocity(const float *in, const float *normal, float *out, float overbounce)
@@ -536,31 +546,31 @@ static void clip_velocity(const float *in, const float *normal, float *out, floa
 /* toss, bounce and fly-missile movement */
 static void physics_toss(int e, int movetype)
 {
-	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
-	float end[3], dt = sv.frametime;
-	int flags = (int)QC_EFloat(sv.vm, e, F.flags);
+	float *org = ev(e, PF.origin), *vel = ev(e, PF.velocity), *ang = ev(e, PF.angles), *avel = ev(e, PF.avelocity);
+	float end[3], dt = pdt;
+	int flags = (int)QC_EFloat(pv, e, PF.flags);
 	svtrace_t tr;
 	if (!org || !vel)
 		return;
 	if ((flags & FL_ONGROUND) && movetype != MOVETYPE_FLY && movetype != MOVETYPE_FLYMISSILE) {
 		if (vel[0] == 0 && vel[1] == 0 && vel[2] == 0)
 			return;
-		QC_SetEFloat(sv.vm, e, F.flags, (float)(flags & ~FL_ONGROUND));
+		QC_SetEFloat(pv, e, PF.flags, (float)(flags & ~FL_ONGROUND));
 	}
 	clamp_velocity(vel);
 	if (movetype == MOVETYPE_TOSS || movetype == MOVETYPE_BOUNCE || movetype == MOVETYPE_PHYSICS) {
-		float grav = F.gravity >= 0 && QC_EFloat(sv.vm, e, F.gravity) ? QC_EFloat(sv.vm, e, F.gravity) : 1;
-		vel[2] -= grav * sv_gravity->value * dt;
+		float grav = PF.gravity >= 0 && QC_EFloat(pv, e, PF.gravity) ? QC_EFloat(pv, e, PF.gravity) : 1;
+		vel[2] -= grav * pgrav * dt;
 	}
 	if (ang && avel)
 		for (int i = 0; i < 3; i++)
 			ang[i] += avel[i] * dt;
 	for (int i = 0; i < 3; i++)
 		end[i] = org[i] + vel[i] * dt;
-	SV_Move(org, ev(e, F.mins), ev(e, F.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
+	SV_Move(org, ev(e, PF.mins), ev(e, PF.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
 	VectorCopy(tr.endpos, org);
 	SV_LinkEdict(e, true);
-	if (sv.vm->edicts[e].free || tr.fraction == 1)
+	if (pv->edicts[e].free || tr.fraction == 1)
 		return;
 	if (tr.allsolid) {
 		/* stuck: stop rather than tunnel */
@@ -570,8 +580,8 @@ static void physics_toss(int e, int movetype)
 	clip_velocity(vel, tr.normal, vel, (movetype == MOVETYPE_BOUNCE) ? 1.5f : 1.0f);
 	if (tr.normal[2] > 0.7f && movetype != MOVETYPE_FLY && movetype != MOVETYPE_FLYMISSILE) {
 		if (vel[2] < 60 || movetype != MOVETYPE_BOUNCE) {
-			QC_SetEFloat(sv.vm, e, F.flags, (float)((int)QC_EFloat(sv.vm, e, F.flags) | FL_ONGROUND));
-			QC_SetEInt(sv.vm, e, F.groundentity, tr.ent);
+			QC_SetEFloat(pv, e, PF.flags, (float)((int)QC_EFloat(pv, e, PF.flags) | FL_ONGROUND));
+			QC_SetEInt(pv, e, PF.groundentity, tr.ent);
 			VectorClear(vel);
 			if (avel)
 				VectorClear(avel);
@@ -590,10 +600,10 @@ static void physics_toss(int e, int movetype)
  * function runs. Only translation pushes; turning movers carry nothing. */
 static bool push_entities(int pusher, const float *move)
 {
-	qcvm_t *vm = sv.vm;
+	qcvm_t *vm = pv;
 	int moved[512], nmoved = 0;
 	float saved[512][3];
-	float *porg = ev(pusher, F.origin), *pmin = ev(pusher, F.absmin), *pmax = ev(pusher, F.absmax);
+	float *porg = ev(pusher, PF.origin), *pmin = ev(pusher, PF.absmin), *pmax = ev(pusher, PF.absmax);
 	float lo[3], hi[3];
 	for (int i = 0; i < 3; i++) {
 		lo[i] = pmin[i] + BW_MIN(move[i], 0);
@@ -609,22 +619,22 @@ static bool push_entities(int pusher, const float *move)
 		svtrace_t tr;
 		if (vm->edicts[e].free || e == pusher)
 			continue;
-		mt = (int)QC_EFloat(vm, e, F.movetype);
-		solid = (int)QC_EFloat(vm, e, F.solid);
+		mt = (int)QC_EFloat(vm, e, PF.movetype);
+		solid = (int)QC_EFloat(vm, e, PF.solid);
 		if (mt == MOVETYPE_PUSH || mt == MOVETYPE_NONE || mt == MOVETYPE_NOCLIP || mt == MOVETYPE_FOLLOW)
 			continue;
 		if (solid == SOLID_NOT || solid == SOLID_TRIGGER || solid == SOLID_BSP || solid == SOLID_BSPTRIGGER)
 			continue;
-		org = ev(e, F.origin);
-		amin = ev(e, F.absmin);
-		amax = ev(e, F.absmax);
+		org = ev(e, PF.origin);
+		amin = ev(e, PF.absmin);
+		amax = ev(e, PF.absmax);
 		if (!org || !amin || !amax)
 			continue;
 		if (amin[0] > hi[0] || amin[1] > hi[1] || amin[2] > hi[2] || amax[0] < lo[0] || amax[1] < lo[1] ||
 		    amax[2] < lo[2])
 			continue;
-		flags = (int)QC_EFloat(vm, e, F.flags);
-		riding = (flags & FL_ONGROUND) && QC_EInt(vm, e, F.groundentity) == pusher;
+		flags = (int)QC_EFloat(vm, e, PF.flags);
+		riding = (flags & FL_ONGROUND) && QC_EInt(vm, e, PF.groundentity) == pusher;
 		if (!riding && !SV_InsideBrushEntity(pusher, e))
 			continue;
 		if (nmoved < 512) {
@@ -635,9 +645,9 @@ static bool push_entities(int pusher, const float *move)
 		for (int i = 0; i < 3; i++)
 			org[i] += move[i];
 		if (!riding)
-			QC_SetEFloat(vm, e, F.flags, (float)(flags & ~FL_ONGROUND));
+			QC_SetEFloat(vm, e, PF.flags, (float)(flags & ~FL_ONGROUND));
 		SV_LinkEdict(e, false);
-		SV_Move(org, ev(e, F.mins), ev(e, F.maxs), org, MOVE_NORMAL, e, &tr);
+		SV_Move(org, ev(e, PF.mins), ev(e, PF.maxs), org, MOVE_NORMAL, e, &tr);
 		if (!tr.startsolid)
 			continue;
 		/* a rider pressed against something only stays behind */
@@ -648,21 +658,21 @@ static bool push_entities(int pusher, const float *move)
 		}
 		/* blocked: put everything back */
 		for (int k = 0; k < nmoved; k++) {
-			VectorCopy(saved[k], ev(moved[k], F.origin));
+			VectorCopy(saved[k], ev(moved[k], PF.origin));
 			SV_LinkEdict(moved[k], false);
 		}
 		for (int i = 0; i < 3; i++)
 			porg[i] -= move[i];
 		SV_LinkEdict(pusher, false);
 		{
-			func_t b = QC_EInt(vm, pusher, F.blocked);
+			func_t b = QC_EInt(vm, pusher, PF.blocked);
 			if (b) {
-				int oldself = QC_GInt(vm, G.self), oldother = QC_GInt(vm, G.other);
-				QC_SetGInt(vm, G.self, pusher);
-				QC_SetGInt(vm, G.other, e);
+				int oldself = QC_GInt(vm, PG.self), oldother = QC_GInt(vm, PG.other);
+				QC_SetGInt(vm, PG.self, pusher);
+				QC_SetGInt(vm, PG.other, e);
 				QC_Execute(vm, b);
-				QC_SetGInt(vm, G.self, oldself);
-				QC_SetGInt(vm, G.other, oldother);
+				QC_SetGInt(vm, PG.self, oldself);
+				QC_SetGInt(vm, PG.other, oldother);
 			}
 		}
 		return false;
@@ -675,11 +685,11 @@ static bool push_entities(int pusher, const float *move)
 /* brush movers: move, pushing what is in the way, and advance ltime */
 static void physics_pusher(int e)
 {
-	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
-	float ltime = QC_EFloat(sv.vm, e, F.ltime), oldltime = ltime;
-	float thinktime = QC_EFloat(sv.vm, e, F.nextthink);
-	float movetime = sv.frametime;
-	if (thinktime < ltime + sv.frametime) {
+	float *org = ev(e, PF.origin), *vel = ev(e, PF.velocity), *ang = ev(e, PF.angles), *avel = ev(e, PF.avelocity);
+	float ltime = QC_EFloat(pv, e, PF.ltime), oldltime = ltime;
+	float thinktime = QC_EFloat(pv, e, PF.nextthink);
+	float movetime = pdt;
+	if (thinktime < ltime + pdt) {
 		movetime = thinktime - ltime;
 		if (movetime < 0)
 			movetime = 0;
@@ -689,7 +699,7 @@ static void physics_pusher(int e)
 		bool pushed = true;
 		for (int i = 0; i < 3; i++)
 			move[i] = vel[i] * movetime;
-		if ((move[0] || move[1] || move[2]) && QC_EFloat(sv.vm, e, F.solid) == SOLID_BSP)
+		if ((move[0] || move[1] || move[2]) && QC_EFloat(pv, e, PF.solid) == SOLID_BSP)
 			pushed = push_entities(e, move);
 		else
 			for (int i = 0; i < 3; i++)
@@ -698,47 +708,51 @@ static void physics_pusher(int e)
 			if (ang && avel)
 				for (int i = 0; i < 3; i++)
 					ang[i] += avel[i] * movetime;
-			QC_SetEFloat(sv.vm, e, F.ltime, ltime + movetime);
+			QC_SetEFloat(pv, e, PF.ltime, ltime + movetime);
 			SV_LinkEdict(e, false);
 		}
 	}
-	thinktime = QC_EFloat(sv.vm, e, F.nextthink);
-	if (thinktime > oldltime && thinktime <= QC_EFloat(sv.vm, e, F.ltime)) {
-		func_t think = QC_EInt(sv.vm, e, F.think);
-		QC_SetEFloat(sv.vm, e, F.nextthink, 0);
-		QC_SetGFloat(sv.vm, G.time, (float)sv.time);
-		QC_SetGInt(sv.vm, G.self, e);
-		QC_SetGInt(sv.vm, G.other, 0);
+	thinktime = QC_EFloat(pv, e, PF.nextthink);
+	if (thinktime > oldltime && thinktime <= QC_EFloat(pv, e, PF.ltime)) {
+		func_t think = QC_EInt(pv, e, PF.think);
+		QC_SetEFloat(pv, e, PF.nextthink, 0);
+		QC_SetGFloat(pv, PG.time, (float)ptime);
+		QC_SetGInt(pv, PG.self, e);
+		QC_SetGInt(pv, PG.other, 0);
 		if (think)
-			QC_Execute(sv.vm, think);
+			QC_Execute(pv, think);
 	}
 }
 
 static void physics_noclip(int e)
 {
-	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
+	float *org = ev(e, PF.origin), *vel = ev(e, PF.velocity), *ang = ev(e, PF.angles), *avel = ev(e, PF.avelocity);
 	if (!org || !vel)
 		return;
 	for (int i = 0; i < 3; i++) {
-		org[i] += vel[i] * sv.frametime;
+		org[i] += vel[i] * pdt;
 		if (ang && avel)
-			ang[i] += avel[i] * sv.frametime;
+			ang[i] += avel[i] * pdt;
 	}
 	SV_LinkEdict(e, false);
 }
 
 static void run_entity(int e)
 {
-	qcvm_t *vm = sv.vm;
-	int movetype = (int)QC_EFloat(vm, e, F.movetype);
-	func_t custom = QC_EInt(vm, e, F.customphysics);
-	float limit = (float)(sv.time + sv.frametime * 0.5);
+	qcvm_t *vm = pv;
+	int movetype = (int)QC_EFloat(vm, e, PF.movetype);
+	func_t custom = QC_EInt(vm, e, PF.customphysics);
+	float limit = (float)(ptime + pdt * 0.5);
 
+	if (!pmove_ents && !custom) {
+		run_think(e, limit);
+		return;
+	}
 	if (custom) {
 		/* the progs replaces engine movement for this entity */
-		QC_SetGInt(vm, G.self, e);
-		QC_SetGInt(vm, G.other, 0);
-		QC_SetGFloat(vm, G.time, (float)sv.time);
+		QC_SetGInt(vm, PG.self, e);
+		QC_SetGInt(vm, PG.other, 0);
+		QC_SetGFloat(vm, PG.time, (float)ptime);
 		QC_Execute(vm, custom);
 		if (!vm->edicts[e].free)
 			run_think(e, limit);
@@ -763,7 +777,7 @@ static void run_entity(int e)
 		return;
 	case MOVETYPE_STEP:
 		/* monsters fall when not on ground; walking is done by the progs */
-		if (!((int)QC_EFloat(vm, e, F.flags) & FL_ONGROUND))
+		if (!((int)QC_EFloat(vm, e, PF.flags) & FL_ONGROUND))
 			physics_toss(e, MOVETYPE_TOSS);
 		run_think(e, limit);
 		return;
@@ -774,9 +788,33 @@ static void run_entity(int e)
 	}
 }
 
+void W_RunEntityPhysics(qcvm_t *vm, int e, double time, float frametime, float gravity, bool move)
+{
+	qcvm_t *oldpv = pv;
+	double oldtime = ptime;
+	float olddt = pdt, oldgrav = pgrav;
+	bool oldmove = pmove_ents;
+	pv = vm;
+	ptime = time;
+	pdt = frametime;
+	pgrav = gravity;
+	pmove_ents = move;
+	run_entity(e);
+	pv = oldpv;
+	ptime = oldtime;
+	pdt = olddt;
+	pgrav = oldgrav;
+	pmove_ents = oldmove;
+}
+
 void SV_Physics(void)
 {
 	qcvm_t *vm = sv.vm;
+	pv = sv.vm;
+	ptime = sv.time;
+	pdt = sv.frametime;
+	pgrav = sv_gravity->value;
+	pmove_ents = true;
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGFloat(vm, G.frametime, sv.frametime);
 	if (QC_FindFunction(vm, "StartFrame")) {
