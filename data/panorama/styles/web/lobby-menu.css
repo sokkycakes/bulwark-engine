@@ -1,0 +1,566 @@
+/* Lobby page (Figma 72:2). The original is authored at 960 x 720 and scales
+   to fit; every design pixel here is 1.5 layout pixels, so the 1440 x 1080
+   stage fills the 1080-line view and is centred horizontally. Colours,
+   fonts and spacing follow data/web/lobby-menu/style.css. */
+
+.lobby-root
+{
+	width: 100%;
+	height: 100%;
+	font-family: "Inter";
+	color: #adadad;
+}
+
+.stage
+{
+	width: 1440px;
+	height: 1080px;
+	/* centred even when the view is narrower than 4:3 (horizontal-align
+	   would pin an overflowing stage to the left edge) */
+	x: 50%;
+	margin-left: -720px;
+}
+
+/* Figma bgPanel (109:18): fades in over the top 4.8%, out over the last 5% */
+.bg-panel
+{
+	x: 58.5px;
+	y: 21px;
+	width: 816px;
+	height: 1039.5px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #3d3d3d00 ), color-stop( 0.048077, #3d3d3db3 ), color-stop( 0.95, #3d3d3db3 ), to( #3d3d3d00 ) );
+}
+
+/* buttons: transparent, the hover/focus tint of .ui-button */
+.ui-button
+{
+	background-color: #00000000;
+	color: #adadad;
+}
+.ui-button:enabled:hover,
+.ui-button:enabled:focus
+{
+	color: #eaeef8;
+	background-color: #adc4df1f;
+}
+.ui-button:enabled:focus
+{
+	box-shadow: inset #adc4df 3px 0px 0px 0px;
+}
+.ui-button:enabled:active
+{
+	background-color: #adc4df3b;
+}
+
+/* mapPreview (72:184) */
+.map-preview
+{
+	x: 75px;
+	y: 100.125px;
+	width: 783px;
+	height: 262.87px;
+	background-color: #3e3e3ea6;
+	overflow: clip;
+}
+.map-summary
+{
+	x: 9px;
+	y: 8.685px;
+	width: 750px;
+	flow-children: down;
+}
+.summary-line
+{
+	font-size: 18px;
+	line-height: 22.5px;
+	color: #ffffffa6;
+}
+.map-title
+{
+	x: 10.5px;
+	y: 187.15px;
+	width: 762px;
+	height: 72px;
+	font-size: 60px;
+	font-weight: bold;
+	line-height: 72px;
+	color: #ffffffa6;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* List - Lobby Menu (72:210): title-menu-v2 rows with a sliding focus bar */
+.lobby-menu
+{
+	x: 79.5px;
+	y: 378.3px;
+	width: 777.6px;
+	height: 265.11px;
+	font-family: "standard 07_57";
+	font-size: 24px;
+	letter-spacing: -1.2px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.lobby-focus-bar
+{
+	width: 100%;
+	height: 36px;
+	y: 0px;
+	background-color: #bfbfbf;
+	transition-property: position;
+	transition-duration: 0.1s;
+	transition-timing-function: cubic-bezier( 0.2, 0.8, 0.2, 1 );
+	visibility: collapse;
+}
+.lobby-active .lobby-focus-bar { visibility: visible; }
+.sel-1 .lobby-focus-bar { y: 36px; }
+.sel-2 .lobby-focus-bar { y: 72px; }
+.sel-3 .lobby-focus-bar { y: 108px; }
+.sel-4 .lobby-focus-bar { y: 211.73px; }
+
+.setting-row
+{
+	width: 100%;
+	height: 36px;
+	padding-left: 6px;
+	flow-children: right;
+}
+.row-1 { y: 36px; }
+.row-2 { y: 72px; }
+.row-3 { y: 108px; }
+.setting-row Label,
+.start-button Label
+{
+	vertical-align: center;
+	white-space: nowrap;
+}
+.setting-value
+{
+	width: fill-parent-flow( 1 );
+	text-overflow: ellipsis;
+}
+#BtnChangeRuleset .setting-label { width: 130.5px; }
+#BtnChangeMap .setting-label { width: 73.5px; }
+#BtnServerType .setting-label { width: 192px; }
+
+.lobby-menu .ui-button,
+.lobby-menu .ui-button:enabled:hover,
+.lobby-menu .ui-button:enabled:focus,
+.lobby-menu .ui-button:enabled:active
+{
+	color: #ffffff;
+	background-color: #00000000;
+	box-shadow: none;
+}
+.lobby-menu .ui-button:enabled:hover,
+.lobby-menu .ui-button:enabled:focus,
+.lobby-menu .ui-button:enabled:active,
+.lobby-menu .ui-button.is-selected:enabled
+{
+	color: #404040;
+}
+.lobby-menu .ui-button:disabled { color: #888888; }
+
+.start-button
+{
+	y: 194.35px;
+	width: 100%;
+	height: 70.76px;
+	padding-left: 6px;
+}
+
+/* guestLock (109:10) */
+.guest-lock
+{
+	x: -4.5px;
+	y: -0.3px;
+	width: 783px;
+	height: 201px;
+	z-index: 4;
+	overflow: clip;
+	background-color: #3d3d3d;
+	visibility: collapse;
+}
+.guest-locked .guest-lock { visibility: visible; }
+/* the original lock artwork (an SVG), turned -28.42deg */
+.lock-art
+{
+	x: 32.89px;
+	y: -19.9px;
+	width: 183.06px;
+	height: 233.07px;
+	transform: rotateZ( -28.42deg );
+}
+.guest-lock-text
+{
+	width: 433.5px;
+	horizontal-align: right;
+	vertical-align: center;
+	margin-right: 73.5px;
+	text-align: right;
+	font-family: "standard 07_57";
+	font-size: 18px;
+	letter-spacing: 0px;
+	text-transform: none;
+	color: #ffffff;
+}
+
+/* playerListSmall / rosterInfo (72:245) */
+.roster
+{
+	x: 922.5px;
+	y: 43.5px;
+	width: 423px;
+	height: 546px;
+}
+.roster-info
+{
+	width: 100%;
+	height: 55.5px;
+	background-color: #242424b8;
+	color: #ffffff;
+}
+.room-code
+{
+	width: 167.09px;
+	height: 55.5px;
+	border-right: 1.5px solid #757575;
+	color: #ffffff;
+}
+.room-label
+{
+	x: 6px;
+	y: -1px;
+	flow-children: down;
+}
+.room-label Label
+{
+	font-size: 19.5px;
+	line-height: 23.6px;
+}
+.room-value
+{
+	horizontal-align: right;
+	margin-right: 6px;
+	y: 3px;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 35.2px;
+	line-height: 37px;
+}
+.room-code-long .room-value
+{
+	font-size: 28.5px;
+	letter-spacing: -0.75px;
+}
+.player-count
+{
+	horizontal-align: right;
+	margin-right: 9.5px;
+	y: 3px;
+	height: 48px;
+	flow-children: right;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 32.4px;
+	letter-spacing: 1.62px;
+	color: #eaeef8;
+}
+.player-count Label { vertical-align: center; }
+.count-slash
+{
+	color: #adc4df;
+	opacity: 0.6;
+	margin-left: 4.74px;
+	margin-right: 4.74px;
+}
+.count-max
+{
+	color: #adc4df;
+	opacity: 0.85;
+}
+.player-list
+{
+	y: 57px;
+	width: 423px;
+	height: 489px;
+	background-color: #00000033;
+	flow-children: down;
+	overflow: squish scroll;
+}
+.player-slot
+{
+	width: 100%;
+	height: 66px;
+	margin-bottom: 4.5px;
+}
+.nameplate
+{
+	width: 100%;
+	height: 66px;
+	padding-left: 13.5px;
+	padding-right: 13.5px;
+	flow-children: right;
+	background-color: #515151;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 24px;
+	letter-spacing: 1.38px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.nameplate Label { vertical-align: center; }
+.slot-name
+{
+	width: fill-parent-flow( 1 );
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+.slot-meta
+{
+	padding-left: 9px;
+	font-size: 16.5px;
+	color: #adc4df;
+}
+.nameplate.is-ready
+{
+	box-shadow: inset #adc4df 3px 0px 0px 0px;
+}
+
+/* chat (72:244) */
+.chat
+{
+	x: 81px;
+	y: 660px;
+	width: 775.5px;
+	height: 265.5px;
+	background-color: #242424b8;
+}
+.chat-messages
+{
+	width: 100%;
+	height: 219px;
+	padding: 10.5px 12px;
+	flow-children: down;
+	overflow: squish scroll;
+	font-size: 18px;
+	line-height: 25.5px;
+	color: #eaeef8;
+}
+.chat-message
+{
+	width: 100%;
+	flow-children: right;
+}
+.chat-name
+{
+	font-weight: bold;
+	color: #adc4df;
+	white-space: nowrap;
+}
+.chat-text
+{
+	width: fill-parent-flow( 1 );
+}
+.chat-compose
+{
+	y: 219px;
+	width: 100%;
+	height: 46.5px;
+	border-top: 1.5px solid #898989;
+	flow-children: right;
+}
+.chat-input
+{
+	width: fill-parent-flow( 1 );
+	height: 45px;
+	padding: 6px 12px;
+	background-color: #00000000;
+	border: 0px solid #00000000;
+	color: #ffffff;
+	font-size: 19.5px;
+	line-height: 33px;
+}
+.chat-input:focus
+{
+	box-shadow: inset #adc4df 0px -1.5px 0px 0px;
+}
+.chat-send
+{
+	width: 99px;
+	height: 45px;
+	border-left: 1.5px solid #898989;
+	padding-left: 16.5px;
+	color: #ffffff;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 35.2px;
+	line-height: 42px;
+}
+.chat-send Label
+{
+	y: -4px; /* Panorama sets Trade Gothic lower in its line than a browser */
+}
+
+/* footer (72:281): the Esc key and Leave */
+.footer-hint
+{
+	x: 72px;
+	y: 930px;
+	height: 66px;
+}
+.leave-hint
+{
+	height: 66px;
+	flow-children: right;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 35.2px;
+	line-height: 48px;
+}
+.esc-key
+{
+	width: 66px;
+	height: 66px;
+	margin-right: -1.5px;
+}
+.leave-text
+{
+	vertical-align: center;
+	height: 48px;
+	min-width: 111px;
+	line-height: 40px;
+	padding-left: 6.6px;
+	padding-right: 6.6px;
+	background-color: #454545e8;
+}
+
+.status-line
+{
+	x: 81px;
+	y: 1012.5px;
+	width: 1264.5px;
+	font-size: 19.5px;
+	line-height: 27px;
+	color: #eaeef8;
+	z-index: 30;
+}
+.status-line.error { color: #ffb3a9; }
+
+/* dialogs */
+.dialog-backdrop
+{
+	width: 100%;
+	height: 100%;
+	z-index: 20;
+	background-color: #00000080;
+	visibility: collapse;
+}
+.dialog-backdrop.is-open { visibility: visible; }
+.dismiss-overlay
+{
+	width: 100%;
+	height: 100%;
+}
+.dismiss-overlay:enabled:hover,
+.dismiss-overlay:enabled:focus
+{
+	background-color: #00000000;
+	box-shadow: none;
+}
+.dialog-panel
+{
+	width: 750px;
+	horizontal-align: center;
+	vertical-align: center;
+	padding: 36px;
+	flow-children: down;
+	background-color: #242424f7;
+	border-top: 3px solid #898989;
+	border-bottom: 3px solid #898989;
+	color: #eaeef8;
+}
+.leave-dialog { width: 600px; }
+.dialog-title
+{
+	width: 100%;
+	margin-bottom: 24px;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 42px;
+	line-height: 51px;
+	text-transform: uppercase;
+}
+.dialog-text
+{
+	width: 100%;
+	margin-top: 18px;
+	margin-bottom: 18px;
+	font-size: 19.5px;
+	line-height: 28.5px;
+	color: #adadad;
+}
+.choice-list,
+.options-content
+{
+	width: 100%;
+	flow-children: down;
+	visibility: collapse;
+}
+.kind-map #MapChoices,
+.kind-ruleset #RulesetChoices,
+.kind-server #ServerChoices,
+.kind-options #OptionsContent
+{
+	visibility: visible;
+}
+.choice,
+.dialog-back
+{
+	width: 100%;
+	padding: 12px;
+	color: #eaeef8;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 35.2px;
+	line-height: 43.5px;
+	text-transform: uppercase;
+}
+.choice:disabled { color: #6e6e6e; }
+.choice.is-pressed
+{
+	color: #adc4df;
+	box-shadow: inset #adc4df 3px 0px 0px 0px;
+}
+.dialog-back
+{
+	margin-top: 24px;
+	border-top: 1.5px solid #666666;
+}
+.limit-row
+{
+	width: 100%;
+	margin-top: 18px;
+	margin-bottom: 18px;
+	flow-children: right;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 30px;
+	line-height: 43.5px;
+}
+.limit-row Label { vertical-align: center; }
+.limit-label { width: fill-parent-flow( 1 ); }
+.limit-input
+{
+	width: 120px;
+	height: 46.5px;
+	padding: 7.5px;
+	border: 1.5px solid #898989;
+	background-color: #333333;
+	color: #ffffff;
+	font-family: "Inter";
+	font-size: 24px;
+	line-height: 30px;
+}
+.limit-input:disabled { color: #888888; }
+.limit-unit
+{
+	width: 97.5px;
+	padding-left: 15px;
+	font-family: "Inter";
+	font-size: 19.5px;
+	line-height: 30px;
+}

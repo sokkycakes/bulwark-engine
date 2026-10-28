@@ -2,6 +2,7 @@
  * the bone maths the skeleton builtins and the renderer share. ISC licence,
  * see LICENSE. */
 #include "skel.h"
+#include "studio.h"
 #include "fs.h"
 
 #include <math.h>
@@ -255,6 +256,59 @@ static void free_skelmodel(skelmodel_t *m)
 	Mem_Free(m);
 }
 
+/* --- GoldSrc studio skeletons ----------------------------------------------- */
+
+/* a studio model's bones, with each sequence's first blend as an animation */
+static bool from_studio(skelmodel_t *m, const studio_model_t *st)
+{
+	int total = 0;
+	if (!st || !st->numbones)
+		return false;
+	m->numjoints = st->numbones;
+	m->joints = Mem_Alloc(sizeof(skeljoint_t) * m->numjoints);
+	m->base = Mem_Alloc(sizeof(float) * 10 * m->numjoints);
+	m->invbind = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
+	for (int j = 0; j < m->numjoints; j++) {
+		Str_Copy(m->joints[j].name, st->bones[j].name, sizeof(m->joints[j].name));
+		m->joints[j].parent = st->bones[j].parent;
+	}
+	Studio_RestPose(st, m->base);
+	{
+		bonemat_t *rel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
+		for (int j = 0; j < m->numjoints; j++)
+			Bone_FromTRS(rel[j], m->base + j * 10);
+		Skel_ToAbsolute(m, rel, m->invbind);
+		for (int j = 0; j < m->numjoints; j++)
+			Bone_Invert(m->invbind[j], m->invbind[j]);
+		Mem_Free(rel);
+	}
+	for (int i = 0; i < st->numseqs; i++)
+		total += BW_MAX(1, st->seqs[i].numframes);
+	m->numframes = total;
+	m->frames = Mem_Alloc(sizeof(float) * 10 * m->numjoints * (size_t)BW_MAX(1, total));
+	m->numanims = st->numseqs;
+	m->anims = Mem_Alloc(sizeof(framegroup_t) * (m->numanims + 1));
+	total = 0;
+	for (int i = 0; i < st->numseqs; i++) {
+		const studio_seq_t *sq = &st->seqs[i];
+		framegroup_t *g = &m->anims[i];
+		int n = BW_MAX(1, sq->numframes);
+		Str_Copy(g->name, sq->label, sizeof(g->name));
+		g->first = total;
+		g->count = n;
+		g->fps = sq->fps > 0 ? sq->fps : 10;
+		g->loop = (sq->flags & STUDIO_LOOPING) != 0;
+		for (int f = 0; f < n; f++) {
+			float *out = m->frames + ((size_t)(total + f) * m->numjoints) * 10;
+			/* a sequence kept in another file stands in its rest pose */
+			if (!Studio_DecodeFrame(st, i, 0, f, out))
+				Studio_RestPose(st, out);
+		}
+		total += n;
+	}
+	return true;
+}
+
 skelmodel_t *Skel_LoadModel(const char *name)
 {
 	skelmodel_t *m;
@@ -272,6 +326,8 @@ skelmodel_t *Skel_LoadModel(const char *name)
 	skelmodels = m;
 	d = (uint8_t *)FS_LoadFile(name, &size);
 	ok = d && parse_iqm(m, d, size);
+	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
+		ok = from_studio(m, Studio_Cached(name));
 	Mem_Free(d);
 	if (!ok) {
 		/* remembered as having no skeleton */

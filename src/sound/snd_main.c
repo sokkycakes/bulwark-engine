@@ -37,14 +37,35 @@ typedef struct {
 } channel_t;
 
 static channel_t channels[MAX_CHANNELS];
+static bool media_playing; /* a playlist track is on, so its end moves on */
 static bool snd_active;  /* a device is open */
 static bool snd_started; /* S_Init ran */
 static int snd_rate = 44100;
 static float listener_origin[3], listener_right[3] = {0, -1, 0};
-static float master_volume = 0.7f, music_volume = 0.5f; /* copies the mixer reads */
-static cvar_t *s_volume, *s_bgmvolume, *s_nominaldist, *s_show;
+static float master_volume = 0.7f, music_volume = 0.5f, dsp_level = 1; /* copies the mixer reads */
+static cvar_t *s_volume, *s_bgmvolume, *s_nominaldist, *s_show, *s_refdb, *s_refdist;
+/* below this a sound is dropped (about -54 dB) */
+#define SND_CULL_GAIN 0.002f
 static float *mixbuf;
 static int mixbuf_frames;
+static float listener_forward[3] = {1, 0, 0};
+static bool capturing;           /* the capture mixes; the device plays silence */
+static int speaker_mode;         /* soundcontrol: 0 stereo, 1 mono */
+static bool speakers_back;       /* soundcontrol cardN back: the speakers face the listener's back */
+static bool sound_off;           /* soundcontrol off */
+
+/* raw streams: video soundtracks (0) and voices; each a ring of stereo
+ * frames at its own rate */
+#define RAW_FRAMES (1 << 17)
+typedef struct {
+	int16_t *ring;
+	unsigned head, tail; /* in frames, wrapping */
+	int rate;
+	float volume;
+	double frac;
+} rawstream_t;
+static rawstream_t rawstreams[S_MAX_STREAMS];
+static float duck = 1; /* game sound scale while a voice talks */
 
 /* --- channels ----------------------------------------------------------------- */
 
@@ -75,30 +96,60 @@ static bool entity_origin(const channel_t *ch, float *out)
 	return true;
 }
 
-/* gains from distance and direction. Attenuation 1 fades a sound out over
- * s_nominaldist units; 0 plays it everywhere at full volume. */
+/* gains from distance and direction, as docs/spec/sound.md describes:
+ * the attenuation names a sound level in dB, the level falls 6 dB for each
+ * doubling of distance past a reference point, and the far ear keeps part
+ * of the sound. Attenuation 0 plays everywhere at full volume. */
 static void spatialise(channel_t *ch)
 {
 	float vol = ch->volume * ((ch->flags & SNDF_ABSVOLUME) ? 1.0f : master_volume);
 	float d[3], dist, gain, pan;
 	if ((ch->flags & SNDF_FOLLOW) && !ch->ambient)
 		entity_origin(ch, ch->origin);
-	if (is_listener(ch) || ch->attenuation <= 0) {
+	if (is_listener(ch)) {
 		ch->left = ch->right = vol;
 		return;
 	}
 	for (int i = 0; i < 3; i++)
 		d[i] = ch->origin[i] - listener_origin[i];
 	dist = sqrtf(DotProduct(d, d));
-	gain = vol * BW_MAX(0.0f, 1.0f - dist * ch->attenuation / BW_MAX(1.0f, s_nominaldist->value));
+	gain = vol * S_DistanceGain(ch->attenuation, dist);
+	if (gain < SND_CULL_GAIN)
+		gain = 0;
 	if (gain <= 0 || (ch->flags & SNDF_NOSPATIALISE) || dist < 1) {
 		ch->left = ch->right = gain;
 		return;
 	}
-	/* the far ear loses up to 70% for a sound fully to one side */
+	/* the far ear keeps 30% for a sound fully to one side; inside the
+	 * reference distance the sound centres, so one at your feet isn't
+	 * hard to one side */
 	pan = DotProduct(d, listener_right) / dist * 0.7f;
+	pan *= BW_MIN(1.0f, dist / BW_MAX(1.0f, s_refdist->value));
+	if (speakers_back) {
+		/* rear speakers: sides swap, and what's in front is quieter */
+		float front = DotProduct(d, listener_forward) / dist;
+		pan = -pan;
+		gain *= BW_CLAMP(0.65f - 0.35f * front, 0.3f, 1.0f);
+	}
 	ch->left = gain * (1 - BW_MAX(0.0f, pan));
 	ch->right = gain * (1 - BW_MAX(0.0f, -pan));
+	if (speaker_mode == 1)
+		ch->left = ch->right = (ch->left + ch->right) * 0.5f;
+}
+
+float S_SoundLevel(float attenuation)
+{
+	/* scaled so s_nominaldistance stretches every sound's reach alike */
+	float a = attenuation * 1000.0f / BW_MAX(1.0f, s_nominaldist->value);
+	return a > 0 ? 50.0f + 20.0f / a : 0;
+}
+
+float S_DistanceGain(float attenuation, float dist)
+{
+	float level = S_SoundLevel(attenuation);
+	if (level <= 0)
+		return 1;
+	return BW_MIN(1.0f, powf(10, (level - s_refdb->value) / 20) * s_refdist->value / BW_MAX(1.0f, dist));
 }
 
 static channel_t *pick_channel(int ent, int entchannel, int flags)
@@ -224,10 +275,12 @@ bool S_PrecacheSound(const char *name)
 	return s && !s->failed;
 }
 
+static void media_frame(void);
+
 void S_Update(const float *origin, const float *forward, const float *right, const float *up)
 {
-	(void)forward;
 	(void)up;
+	media_frame();
 	if (!snd_started)
 		return;
 	SNDDMA_Lock();
@@ -235,12 +288,16 @@ void S_Update(const float *origin, const float *forward, const float *right, con
 		memcpy(listener_origin, origin, sizeof(listener_origin));
 	if (right)
 		memcpy(listener_right, right, sizeof(listener_right));
+	if (forward)
+		memcpy(listener_forward, forward, sizeof(listener_forward));
 	master_volume = BW_MAX(0.0f, s_volume->value);
+	dsp_level = S_DSPVolume();
 	music_volume = BW_MAX(0.0f, s_bgmvolume->value);
 	for (int i = 0; i < MAX_CHANNELS; i++)
 		if (channel_live(&channels[i]))
 			spatialise(&channels[i]);
 	SNDDMA_Unlock();
+	S_UpdateDSP(listener_origin);
 	if (s_show->ivalue) {
 		int n = 0;
 		for (int i = 0; i < MAX_CHANNELS; i++)
@@ -291,7 +348,109 @@ static void mix_channel(channel_t *ch, float *out, int frames)
 	}
 }
 
+static void mix_raw(rawstream_t *r, float *out, int frames)
+{
+	double step = (double)r->rate / snd_rate;
+	for (int i = 0; i < frames && r->tail != r->head; i++) {
+		const int16_t *a = r->ring + (r->tail % RAW_FRAMES) * 2;
+		const int16_t *b = r->tail + 1 != r->head ? r->ring + ((r->tail + 1) % RAW_FRAMES) * 2 : a;
+		float t = (float)r->frac;
+		out[i * 2] += (a[0] + (b[0] - a[0]) * t) * r->volume;
+		out[i * 2 + 1] += (a[1] + (b[1] - a[1]) * t) * r->volume;
+		r->frac += step;
+		while (r->frac >= 1 && r->tail != r->head) {
+			r->frac -= 1;
+			r->tail++;
+		}
+	}
+}
+
+static void paint(int16_t *out, int frames);
+
 void S_PaintAudio(int16_t *out, int frames)
+{
+	/* while capturing, the capture paints; the device hears nothing */
+	if (capturing || sound_off) {
+		memset(out, 0, (size_t)frames * 4);
+		return;
+	}
+	paint(out, frames);
+}
+
+void S_CaptureMix(int16_t *out, int frames)
+{
+	if (!snd_started || !mixbuf) {
+		memset(out, 0, (size_t)frames * 4);
+		return;
+	}
+	SNDDMA_Lock();
+	for (int done = 0; done < frames;) {
+		int n = BW_MIN(frames - done, mixbuf_frames);
+		paint(out + done * 2, n);
+		done += n;
+	}
+	SNDDMA_Unlock();
+}
+
+void S_SetCapture(bool on)
+{
+	SNDDMA_Lock();
+	capturing = on;
+	SNDDMA_Unlock();
+}
+
+int S_Rate(void) { return snd_rate; }
+
+void S_StreamSamples(int stream, const int16_t *frames, int count, int rate, float volume)
+{
+	if (!snd_started || !mixbuf || stream < 0 || stream >= S_MAX_STREAMS)
+		return;
+	rawstream_t *r = &rawstreams[stream];
+	SNDDMA_Lock();
+	if (!r->ring)
+		r->ring = Mem_Alloc(sizeof(int16_t) * 2 * RAW_FRAMES);
+	if (r->rate != rate || r->head == r->tail)
+		r->frac = 0;
+	r->rate = rate;
+	r->volume = volume;
+	for (int i = 0; i < count && r->head - r->tail < RAW_FRAMES - 1; i++, r->head++) {
+		r->ring[(r->head % RAW_FRAMES) * 2] = frames[i * 2];
+		r->ring[(r->head % RAW_FRAMES) * 2 + 1] = frames[i * 2 + 1];
+	}
+	SNDDMA_Unlock();
+}
+
+void S_StreamClear(int stream)
+{
+	if (stream < 0 || stream >= S_MAX_STREAMS)
+		return;
+	SNDDMA_Lock();
+	rawstreams[stream].head = rawstreams[stream].tail = 0;
+	SNDDMA_Unlock();
+}
+
+int S_StreamQueued(int stream)
+{
+	if (stream < 0 || stream >= S_MAX_STREAMS || !rawstreams[stream].rate || !snd_rate)
+		return 0;
+	const rawstream_t *r = &rawstreams[stream];
+	return (int)((double)(r->head - r->tail) * snd_rate / r->rate);
+}
+
+void S_RawSamples(const int16_t *frames, int count, int rate, float volume)
+{
+	S_StreamSamples(0, frames, count, rate, volume);
+}
+
+void S_RawClear(void) { S_StreamClear(0); }
+int S_RawQueued(void) { return S_StreamQueued(0); }
+
+void S_SetDucking(float scale)
+{
+	duck = scale < 0 ? 0 : scale > 1 ? 1 : scale;
+}
+
+static void paint(int16_t *out, int frames)
 {
 	if (frames > mixbuf_frames) {
 		memset(out, 0, (size_t)frames * 4);
@@ -305,7 +464,14 @@ void S_PaintAudio(int16_t *out, int frames)
 		else if (channel_live(ch) && ch->sfx->loaded)
 			ch->pos += (double)ch->sfx->rate / snd_rate * ch->pitch * frames; /* silent, keep time */
 	}
+	S_ApplyDSP(mixbuf, frames, dsp_level); /* music stays out of the room */
 	S_MixMusic(mixbuf, frames, snd_rate, music_volume);
+	if (duck < 1)
+		for (int i = 0; i < frames * 2; i++)
+			mixbuf[i] *= duck;
+	for (int i = 0; i < S_MAX_STREAMS; i++)
+		if (rawstreams[i].ring && rawstreams[i].head != rawstreams[i].tail)
+			mix_raw(&rawstreams[i], mixbuf, frames);
 	for (int i = 0; i < frames * 2; i++) {
 		float v = mixbuf[i];
 		out[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
@@ -327,6 +493,7 @@ static void Music_f(int argc, const char **argv)
 		Con_Printf("usage: music <file or track number> [-]\n");
 		return;
 	}
+	media_playing = false; /* this replaces the playlist's track */
 	if (atoi(argv[1]) > 0 && strspn(argv[1], "0123456789") == strlen(argv[1]))
 		snprintf(base, sizeof(base), "music/track%02d", atoi(argv[1]));
 	else
@@ -347,10 +514,76 @@ static void Music_f(int argc, const char **argv)
 	Con_DPrintf("music: can't play %s\n", argv[1]);
 }
 
+bool S_PlayMusic(const char *name, bool loop)
+{
+	char base[160], path[192];
+	static const char *exts[] = {"", ".ogg", ".wav"};
+	char *dot;
+	media_playing = false;
+	if (!snd_started)
+		return false;
+	Str_Copy(base, name, sizeof(base));
+	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
+		bool ok;
+		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
+		if (i > 0 && !FS_FileExists(path))
+			continue;
+		SNDDMA_Lock();
+		ok = S_OpenMusic(path, loop);
+		SNDDMA_Unlock();
+		if (ok)
+			return true;
+		if (i == 0 && (dot = strrchr(base, '.')) && !strchr(dot, '/'))
+			*dot = 0;
+	}
+	return false;
+}
+
+void S_StopMusic(void)
+{
+	media_playing = false;
+	if (!snd_started)
+		return;
+	SNDDMA_Lock();
+	S_CloseMusic();
+	SNDDMA_Unlock();
+}
+
+bool S_MusicPlaying(void)
+{
+	bool on;
+	if (!snd_started)
+		return false;
+	SNDDMA_Lock();
+	on = S_MusicActive();
+	SNDDMA_Unlock();
+	return on;
+}
+
+void S_LocalSound(const char *name)
+{
+	if (snd_started)
+		start_sound(0, 0, S_FindSfx(name, true), NULL, 1, 0, 100, SNDF_CSQCENT, 0);
+}
+
+bool S_LocalSoundPlaying(const char *name)
+{
+	bool playing = false;
+	sfx_t *sfx;
+	if (!snd_started || !(sfx = S_FindSfx(name, false)))
+		return false;
+	SNDDMA_Lock();
+	for (int i = NUM_AMBIENT; i < MAX_CHANNELS && !playing; i++)
+		playing = channels[i].sfx == sfx && channels[i].ent == 0 && (channels[i].flags & SNDF_CSQCENT);
+	SNDDMA_Unlock();
+	return playing;
+}
+
 static void StopMusic_f(int argc, const char **argv)
 {
 	(void)argc;
 	(void)argv;
+	media_playing = false;
 	if (!snd_started)
 		return;
 	SNDDMA_Lock();
@@ -362,6 +595,53 @@ static void Play_f(int argc, const char **argv)
 {
 	for (int i = 1; i < argc; i++)
 		start_sound(0, 0, S_FindSfx(argv[i], true), NULL, 1, 0, 100, 0, 0);
+}
+
+/* playvol <sound> <volume> [<sound> <volume>...] */
+static void PlayVol_f(int argc, const char **argv)
+{
+	for (int i = 1; i + 1 < argc; i += 2)
+		start_sound(0, 0, S_FindSfx(argv[i], true), NULL, (float)atof(argv[i + 1]), 0, 100, 0, 0);
+}
+
+typedef struct {
+	int count;
+	size_t bytes;
+} sfxstats_t;
+
+static void list_sfx(const sfx_t *sfx, void *ctx)
+{
+	sfxstats_t *st = ctx;
+	size_t bytes = sfx->loaded ? (size_t)sfx->frames * sfx->channels * 2 : 0;
+	if (sfx->loaded)
+		Con_Printf("%c %6dHz %s %7.2fs %8zu %s\n", sfx->loopstart >= 0 ? 'L' : ' ', sfx->rate,
+		           sfx->channels == 2 ? "stereo" : "mono  ", sfx->rate ? (double)sfx->frames / sfx->rate : 0, bytes,
+		           sfx->name);
+	else
+		Con_Printf("  %s %s\n", sfx->failed ? "missing" : "not loaded", sfx->name);
+	st->count++;
+	st->bytes += bytes;
+}
+
+static void SoundList_f(int argc, const char **argv)
+{
+	sfxstats_t st = {0};
+	S_ForEachSfx(list_sfx, &st);
+	Con_Printf("%d sounds, %zu bytes of samples\n", st.count, st.bytes);
+}
+
+static void SoundInfo_f(int argc, const char **argv)
+{
+	int live = 0;
+	if (!snd_active) {
+		Con_Printf("sound is off\n");
+		return;
+	}
+	for (int i = 0; i < MAX_CHANNELS; i++)
+		if (channel_live(&channels[i]))
+			live++;
+	Con_Printf("%d Hz stereo, 16 bit; %d of %d channels playing; volume %g, music %g\n", snd_rate, live, MAX_CHANNELS,
+	           s_volume->value, s_bgmvolume->value);
 }
 
 static void StopSound_f(int argc, const char **argv)
@@ -382,19 +662,199 @@ static void SndRestart_f(int argc, const char **argv)
 	SNDDMA_Unlock();
 }
 
+/* --- the media player: a playlist of music tracks ------------------------------------ */
+
+static char *playlist[256];
+static int numtracks, curtrack = -1;
+
+static bool play_track(int i)
+{
+	bool ok;
+	if (i < 0 || i >= numtracks || !snd_started)
+		return false;
+	curtrack = i;
+	SNDDMA_Lock();
+	ok = S_OpenMusic(playlist[i], false);
+	SNDDMA_Unlock();
+	media_playing = ok;
+	Con_Printf(ok ? "playing %s\n" : "^3can't play %s\n", playlist[i]);
+	return ok;
+}
+
+const char *S_MediaTrack(int i) { return i >= 0 && i < numtracks ? playlist[i] : NULL; }
+int S_MediaCurrent(void) { return media_playing ? curtrack : -1; }
+
+static void next_track(void)
+{
+	for (int tries = 0; tries < numtracks; tries++)
+		if (play_track((curtrack + 1) % numtracks))
+			return;
+	media_playing = false;
+}
+
+/* the playlist lives in sound/media.m3u */
+static void save_playlist(void)
+{
+	char path[1024];
+	FILE *f;
+	if (!FS_WritePath("sound/media.m3u", path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "w")))
+		return;
+	fprintf(f, "#EXTM3U\n");
+	for (int i = 0; i < numtracks; i++)
+		fprintf(f, "%s\n", playlist[i]);
+	fclose(f);
+}
+
+static void load_playlist(void)
+{
+	char *text = FS_LoadFile("sound/media.m3u", NULL);
+	for (char *l = text; l && *l && numtracks < (int)BW_ARRAY_COUNT(playlist);) {
+		char *e = strchr(l, '\n');
+		if (e)
+			*e = 0;
+		size_t n = strlen(l);
+		while (n && (l[n - 1] == '\r' || l[n - 1] == ' '))
+			l[--n] = 0;
+		if (*l && *l != '#')
+			playlist[numtracks++] = Mem_Strdup(l);
+		l = e ? e + 1 : NULL;
+	}
+	Mem_Free(text);
+}
+
+static void media_frame(void)
+{
+	static bool loaded;
+	if (!loaded) {
+		loaded = true;
+		load_playlist();
+	}
+	if (media_playing && snd_started && !S_MusicActive())
+		next_track();
+}
+
+/* media_add <track>: adds a music file to the playlist */
+static void MediaAdd_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("media_add <track>\n");
+		for (int i = 0; i < numtracks; i++)
+			Con_Printf("%s%d: %s\n", i == curtrack ? "^2" : "", i + 1, playlist[i]);
+		return;
+	}
+	for (int i = 1; i < argc && numtracks < (int)BW_ARRAY_COUNT(playlist); i++)
+		playlist[numtracks++] = Mem_Strdup(argv[i]);
+	save_playlist();
+	if (!media_playing && !S_MusicActive())
+		play_track(numtracks - 1);
+}
+
+/* media_remove <track>: by name or number */
+static void MediaRemove_f(int argc, const char **argv)
+{
+	if (argc < 2) {
+		Con_Printf("media_remove <track>\n");
+		return;
+	}
+	for (int i = 0; i < numtracks; i++) {
+		if (strcmp(playlist[i], argv[1]) && atoi(argv[1]) != i + 1)
+			continue;
+		Mem_Free(playlist[i]);
+		memmove(playlist + i, playlist + i + 1, (size_t)(numtracks - i - 1) * sizeof(playlist[0]));
+		numtracks--;
+		save_playlist();
+		if (curtrack == i) {
+			media_playing = false;
+			SNDDMA_Lock();
+			S_CloseMusic();
+			SNDDMA_Unlock();
+			curtrack = i - 1;
+		} else if (curtrack > i)
+			curtrack--;
+		return;
+	}
+	Con_Printf("no track %s\n", argv[1]);
+}
+
+/* media_next, music_next: the next track */
+static void MediaNext_f(int argc, const char **argv)
+{
+	if (numtracks)
+		next_track();
+	else
+		Con_Printf("the playlist is empty (media_add <track>)\n");
+}
+
+/* music_fforward / music_rewind [seconds]: moves through the playing track */
+static void MusicSeek_f(int argc, const char **argv)
+{
+	double secs = argc > 1 ? atof(argv[1]) : 10;
+	if (!snd_started)
+		return;
+	if (strstr(argv[0], "rewind"))
+		secs = -secs;
+	SNDDMA_Lock();
+	S_SeekMusic(secs);
+	SNDDMA_Unlock();
+}
+
+/* soundcontrol off|single|multi|cardN mono|stereo|front|back */
+static void SoundControl_f(int argc, const char **argv)
+{
+	const char *a = argc > 1 ? argv[1] : "";
+	if (!strcmp(a, "off")) {
+		sound_off = true;
+	} else if (!strcmp(a, "single")) {
+		sound_off = false;
+	} else if (!strcmp(a, "multi")) {
+		Con_Printf("only one sound device is supported\n");
+	} else if (!strncmp(a, "card", 4) && argc > 2) {
+		if (atoi(a + 4) != 0) {
+			Con_Printf("there is only card0\n");
+			return;
+		}
+		SNDDMA_Lock();
+		if (!strcmp(argv[2], "mono"))
+			speaker_mode = 1;
+		else if (!strcmp(argv[2], "stereo"))
+			speaker_mode = 0;
+		else if (!strcmp(argv[2], "front"))
+			speakers_back = false;
+		else if (!strcmp(argv[2], "back"))
+			speakers_back = true;
+		SNDDMA_Unlock();
+	} else {
+		Con_Printf("valid commands are: off, single, multi, cardX mono, cardX stereo, cardX front, cardX back\n");
+	}
+}
+
 /* --- setup -------------------------------------------------------------------------- */
 
 void S_Init(bool headless)
 {
 	s_volume = Cvar_Get("volume", "0.7", CVAR_ARCHIVE, "Sound effect volume");
 	s_bgmvolume = Cvar_Get("bgmvolume", "0.5", CVAR_ARCHIVE, "Music volume");
-	s_nominaldist = Cvar_Get("snd_nominaldistance", "1000", 0, "Distance over which an attenuation 1 sound fades out");
+	s_nominaldist = Cvar_Get("s_nominaldistance", "1000", CVAR_ARCHIVE, "Scales every sound's reach: attenuations are taken relative to 1000 units");
+	s_refdb = Cvar_Get("snd_refdb", "60", 0, "Sound level heard at full volume at snd_refdist units");
+	s_refdist = Cvar_Get("snd_refdist", "36", 0, "Reference distance for snd_refdb");
 	s_show = Cvar_Get("snd_show", "0", 0, "Print how many sounds are playing");
 	Cmd_Add("music", Music_f);
 	Cmd_Add("stopmusic", StopMusic_f);
 	Cmd_Add("play", Play_f);
+	Cmd_AddD("play2", Play_f, "play2 <sound>...: play sounds without position");
+	Cmd_AddD("playvol", PlayVol_f, "playvol <sound> <volume>: play a sound at a volume");
+	Cmd_AddD("soundlist", SoundList_f, "List the loaded sounds");
+	Cmd_AddD("soundinfo", SoundInfo_f, "Sound device and mixer state");
 	Cmd_Add("stopsound", StopSound_f);
 	Cmd_Add("snd_restart", SndRestart_f);
+	Cmd_AddD("media_add", MediaAdd_f, "media_add <track>: add music to the playlist (lists it without one)");
+	Cmd_AddD("media_remove", MediaRemove_f, "media_remove <track>: take music off the playlist");
+	Cmd_AddD("media_next", MediaNext_f, "Play the next track of the playlist");
+	Cmd_AddD("music_next", MediaNext_f, "Play the next track of the playlist");
+	Cmd_AddD("music_fforward", MusicSeek_f, "music_fforward [seconds]: skip ahead in the music (10 seconds)");
+	Cmd_AddD("music_rewind", MusicSeek_f, "music_rewind [seconds]: go back in the music (10 seconds)");
+	Cmd_AddD("soundcontrol", SoundControl_f, "soundcontrol off|single|multi|card0 mono|stereo|front|back");
+	S_InitDSPCvars();
 	if (headless)
 		return;
 	mixbuf_frames = 8192;
@@ -404,13 +864,18 @@ void S_Init(bool headless)
 	if (!snd_active) {
 		Con_Printf("no sound device: sound is off\n");
 		snd_started = false;
+		return;
 	}
+	SNDDMA_Lock();
+	S_InitDSP(snd_rate);
+	SNDDMA_Unlock();
 }
 
 void S_Shutdown(void)
 {
 	if (snd_active)
 		SNDDMA_Shutdown();
+	S_ShutdownDSP();
 	snd_active = snd_started = false;
 	S_CloseMusic();
 	S_FreeAllSfx();
@@ -492,8 +957,10 @@ static void bi_ambientsound(qcvm_t *vm)
 	start_ambient(QC_PVEC(vm, 0), S_FindSfx(QC_PSTR(vm, 1), true), QC_PFLOAT(vm, 2), QC_PFLOAT(vm, 3));
 }
 
+/* SetListener(origin, forward, right, up, reverbslot) */
 static void bi_setlistener(qcvm_t *vm)
 {
+	S_SetReverbSlot(vm->argc > 4 ? (int)QC_PFLOAT(vm, 4) : 0);
 	S_Update(QC_PVEC(vm, 0), QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3));
 }
 
@@ -509,6 +976,37 @@ static void bi_getsoundtime(qcvm_t *vm)
 	QC_ReturnFloat(vm, t);
 }
 
+/* getchannellevel(e, channel): how loud the channel's sample is where it is
+ * playing now, 0 to 1 (an RMS over the next 1/30 s), for mouths that move
+ * with speech. A client game entity's own channel is tried first, then the
+ * server entity it stands for (its entnum field). */
+static void bi_getchannellevel(qcvm_t *vm)
+{
+	int e = QC_PENT(vm, 0), chan = (int)QC_PFLOAT(vm, 1);
+	int entnum = QC_FieldOfs(vm, "entnum");
+	channel_t *ch;
+	float level = 0;
+	SNDDMA_Lock();
+	ch = find_channel(e, chan, SNDF_CSQCENT);
+	if (!ch && entnum >= 0 && e > 0)
+		ch = find_channel((int)QC_EFloat(vm, e, entnum), chan, 0);
+	if (ch && ch->sfx->loaded && ch->sfx->data && ch->pos >= 0 && ch->sfx->rate > 0) {
+		const sfx_t *s = ch->sfx;
+		int start = (int)ch->pos, n = BW_MAX(1, s->rate / 30);
+		double sum = 0;
+		int count = 0;
+		for (int f = start; f < start + n && f < s->frames; f++)
+			for (int c = 0; c < s->channels; c++, count++) {
+				double v = s->data[f * s->channels + c] / 32768.0;
+				sum += v * v;
+			}
+		if (count)
+			level = (float)sqrt(sum / count);
+	}
+	SNDDMA_Unlock();
+	QC_ReturnFloat(vm, BW_MIN(level * 2, 1));
+}
+
 static void bi_soundlength(qcvm_t *vm)
 {
 	sfx_t *s = S_FindSfx(QC_PSTR(vm, 0), true);
@@ -522,4 +1020,5 @@ const qc_builtin_t s_builtins[] = {
 	{"soundupdate", bi_soundupdate}, {"stopsound", bi_stopsound}, {"pointsound", bi_pointsound},
 	{"pointsound_proper", bi_pointsound}, {"localsound", bi_localsound}, {"ambientsound", bi_ambientsound},
 	{"SetListener", bi_setlistener}, {"getsoundtime", bi_getsoundtime}, {"soundlength", bi_soundlength},
-	{NULL, NULL}};
+	{"getchannellevel", bi_getchannellevel},
+	{"setup_reverb", S_BI_SetupReverb}, {NULL, NULL}};

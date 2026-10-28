@@ -13,6 +13,28 @@ lines). `notmenu` is 1 while no menu progs is drawing over the game. Nuclide
 renders 3D with `renderscene`, then draws its HUD; the console draws over
 everything in `R_EndFrame`.
 
+Before that call, every client game entity gets a physics frame
+(`csqc_physics` in cl_csqc.c), using the server's toss, bounce, fly and
+noclip movement through `W_RunEntityPhysics`:
+
+- Its `think` runs when `nextthink` has come, and `customphysics`, when set,
+  replaces the movement, as that field's doc comment in fteextensions.qc
+  describes.
+- Entities the game spawned itself (`entnum` 0) then move by their
+  movetype, with gravity from the server's `sv_gravity` serverinfo key.
+- Entities that mirror a server entity (`entnum` above 0) only think. Their
+  position comes from snapshots and the engine's interpolation. Nuclide
+  gives other players MOVETYPE_FLY "for interpolation purposes", which
+  suggests FTE moves them between updates too; Bulwark doesn't.
+- The step is the client time since the last frame, at most 0.1 s.
+
+Found from Nuclide's client QC: `BreakModel_SpawnID` (propdata.qc) spawns
+gibs and debris as client-only MOVETYPE_BOUNCE entities that keep a think
+scheduled and remove themselves with `ScheduleThink(Disappear, fadetime)`.
+Without this frame they hung in the air where they spawned and never went
+away (until the 33-entry pool reused them). Other client-only entities
+that time out the same way, such as `EV_TraceDebug`'s, depend on it too.
+
 ## Things that have to hold
 
 - **`self` survives builtins.** `addentities` runs each entity's `predraw`
@@ -47,6 +69,33 @@ Entity sounds from the server use server entity numbers. The client game's
 follows an entity through its csprogs copy when a sound has
 `SOUNDFLAG_FOLLOW`. Channel 0 mixes any number of samples, other channels of
 an entity replace each other, and `SOUNDFLAG_NOREPLACE` leaves a playing
-channel alone, as `fteextensions.qc` describes. Attenuation 1 fades a sound
-out over `snd_nominaldistance` (1000) units; 0 plays it everywhere. A WAV
+channel alone, as `fteextensions.qc` describes. Attenuation names a sound
+level in dB that falls off with distance as in Source (see "Distance and
+direction" in sound.md); 0 plays it everywhere. A WAV
 `cue ` chunk marks the frame a sample loops back to.
+
+## The camera and view models
+
+- `view_angles` is set from the player's aim before `CSQC_UpdateView`. It
+  is the game's working copy for that view: Nuclide adds bob and strafe
+  roll to it and hands it to the camera. Changes to it are not fed back
+  into the aim. The game turns the player with `setproperty(VF_CL_VIEWANGLES)`
+  or `input_angles`. Feeding the bobbed angles back used to make the pitch
+  run into the ±89° clamp and the roll build up to 76° within a second of
+  walking.
+- Models are drawn with their pitch inverted, as in Quake, while
+  `r_meshpitch` is -1 (the default). Nuclide sets `r_meshpitch 1` when its
+  server game starts, and then models use their pitch as a view does. The
+  server publishes `r_meshpitch` in serverinfo and clients copy it. View models
+  (RF_VIEWMODEL or RF_DEPTHHACK) are the exception: Nuclide gives them the
+  camera's own angles, so drawing them with the camera's convention keeps
+  the gun pointing where the camera does. FTE, run as a black box, inverts
+  them too, so its gun swings up when the player looks down.
+  `r_viewmodel_quakepitch 1` restores that behaviour.
+- View models are drawn with a near plane of 1 unit, so the gun doesn't
+  clip, and with `r_viewmodel_fov` as their field of view when it is set
+  (0 uses the view's). RF_DEPTHHACK squeezes them into the front 30% of the
+  depth range.
+- When the command line starts a game, the menu progs load only once that
+  game is running. Their init then sees `clientstate()` as 2 and doesn't
+  queue the background map in front of the game.

@@ -1,0 +1,35 @@
+{
+"classname" "worldspawn"
+"skyname" "dune"
+}
+{
+"classname" "info_player_start"
+"origin" "1568 -96 36"
+}
+{
+"classname" "logic_relay"
+"targetname" "lua_ent"
+"origin" "16 0 0"
+"vscripts" "test_lua"
+"thinkfunction" "Think"
+"OnUser1" "lua_ent,RunScriptCode,printl('FAIL lua swallowed input'),0,-1"
+"OnUser2" "lua_ent,RunScriptCode,printl('ok lua input passthrough'),0,-1"
+}
+{
+"classname" "logic_relay"
+"targetname" "js_ent"
+"origin" "32 0 0"
+"vscripts" "test_js.js"
+}
+{
+"classname" "logic_relay"
+"targetname" "qc_ent"
+"origin" "48 0 0"
+"vscripts" "test_qc.dat"
+"thinkfunction" "QCThink"
+}
+{
+"classname" "logic_relay"
+"targetname" "relay"
+"OnTrigger" "js_ent,RunScriptCode,OnRelay(),0,-1"
+}

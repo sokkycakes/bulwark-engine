@@ -306,6 +306,9 @@ static void bi_particleeffectnum(qcvm_t *vm)
 
 static void bi_dropped(qcvm_t *vm) { (void)vm; }
 
+/* logfrag(killer, victim): a line in the frag log (fraglogfile) */
+static void bi_logfrag(qcvm_t *vm) { SV_LogFrag(QC_PENT(vm, 0), QC_PENT(vm, 1)); }
+
 static void bi_localsound(qcvm_t *vm) { (void)vm; }
 
 
@@ -385,12 +388,14 @@ static void bi_getentitytoken(qcvm_t *vm)
 	QC_ReturnString(vm, tok);
 }
 
-/* frame queries: skeletal models only so far (alias models need their
- * frame names read on the server too) */
+/* frame queries: skeletal and studio models only so far (alias models
+ * need their frame names read on the server too) */
 static skelmodel_t *skel_arg(qcvm_t *vm)
 {
 	int i = (int)QC_PFLOAT(vm, 0);
-	return i > 0 && i < sv.nummodels ? Skel_LoadModel(sv.models[i]) : NULL;
+	if (i <= 0 || i >= sv.nummodels || Studio_Cached(sv.models[i]))
+		return NULL; /* studio models answer from their sequences (studio_arg) */
+	return Skel_LoadModel(sv.models[i]);
 }
 
 static framegroup_t *group_arg(qcvm_t *vm, int n)
@@ -461,9 +466,16 @@ const char *SV_ModelName(qcvm_t *vm, int index)
 
 /* no rigid-body physics yet; Nuclide falls back to its own movement */
 static void bi_physics_supported(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
+static void bi_nop(qcvm_t *vm) { (void)vm; }
 
 const qc_builtin_t sv_builtins[] = {
 	{"physics_supported", bi_physics_supported},
+	/* MOVETYPE_PHYSICS is not simulated, so these have nothing to act on */
+	{"physics_enable", bi_nop}, {"physics_addforce", bi_nop}, {"physics_addtorque", bi_nop},
+	/* the server game's debug polygons (bone and path overlays) draw nowhere */
+	{"R_BeginPolygon", bi_nop}, {"R_PolygonVertex", bi_nop}, {"R_EndPolygon", bi_nop},
+	{"R_EndPolygonRibbon", bi_nop},
+	{"getsurfacenearpoint", W_bi_getsurfacenearpoint}, {"getsurfacetexture", W_bi_getsurfacetexture},
 	{"spawn", bi_spawn}, {"remove", bi_remove}, {"removeinstant", bi_remove},
 	{"setorigin", W_bi_setorigin}, {"setsize", W_bi_setsize}, {"setmodel", bi_setmodel},
 	{"setmodelindex", bi_setmodelindex}, {"precache_model", bi_precache_model},
@@ -485,6 +497,6 @@ const qc_builtin_t sv_builtins[] = {
 	{"makestatic", bi_makestatic}, {"registercommand", bi_registercommand}, {"getentitytoken", bi_getentitytoken},
 	{"frameforname", bi_frameforname}, {"frameduration", bi_frameduration}, {"frametoname", bi_frametoname},
 	{"modelframecount", bi_modelframecount},
-	{"setattachment", bi_dropped}, {"logfrag", bi_dropped},
-	{"openportal", bi_dropped}, {"route_calculate", bi_route_calculate},
+	{"setattachment", bi_dropped}, {"logfrag", bi_logfrag},
+	{"openportal", bi_dropped},
 	{NULL, NULL}};

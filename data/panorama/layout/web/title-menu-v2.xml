@@ -1,0 +1,109 @@
+<!--
+	Panorama port of Stiletto's data/web/title-menu-v2/index.html: the shipped
+	title page (Figma flash-pixel look, 1024 x 768 artboard). Positions are
+	percentages of the view, as the page's own calc(100% * n / 1024|768) are;
+	pixel sizes are the artboard's scaled to the 1080-line design height.
+	The Create / Join Lobby dialog is shared with title-menu.xml.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/title-menu-v2.css" />
+		<include src="file://{resources}/styles/web/title-join-dialog.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/title-menu-v2.js" />
+	</scripts>
+
+	<Panel id="Stage" class="stage">
+		<Panel id="TitleChrome" class="title-chrome is-hidden">
+			<!-- backdrop: red wash, then the masked #333 frame with the tiled
+			     logotile pattern (both built by the script) -->
+			<Panel class="bg" hittest="false">
+				<Panel class="bg-red" hittest="false" />
+				<Panel id="BgFrame" class="bg-frame" hittest="false" />
+			</Panel>
+
+			<Panel id="FocusBar" class="focus-bar" hittest="false" />
+
+			<Button id="Item0" class="menu-item item-0 is-selected" onactivate="TitleMenu.Click(0)" onmouseover="TitleMenu.Hover(0)">
+				<Label text="Create Lobby" hittest="false" />
+			</Button>
+			<Button id="Item1" class="menu-item item-1" onactivate="TitleMenu.Click(1)" onmouseover="TitleMenu.Hover(1)">
+				<Label text="Join Lobby" hittest="false" />
+			</Button>
+			<Button id="Item2" class="menu-item item-2" onactivate="TitleMenu.Click(2)" onmouseover="TitleMenu.Hover(2)">
+				<Label text="Settings" hittest="false" />
+			</Button>
+			<Button id="Item3" class="menu-item item-3" onactivate="TitleMenu.Click(3)" onmouseover="TitleMenu.Hover(3)">
+				<Label text="Quit" hittest="false" />
+			</Button>
+
+			<!-- 2px #404040 ring around the copyright: eight offset copies -->
+			<Panel class="copyright" hittest="false">
+				<Label class="copy-ring ring-tl" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-t" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-tr" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-l" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-r" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-bl" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-b" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-ring ring-br" text="copyright 2025-2026 tomboy princess" hittest="false" />
+				<Label class="copy-text" text="copyright 2025-2026 tomboy princess" hittest="false" />
+			</Panel>
+			<Panel class="tp-logo" hittest="false" />
+		</Panel>
+
+		<Panel id="JoinDialog" class="join-dialog hidden is-hidden">
+			<Panel class="join-backdrop" onactivate="TitleMenu.CloseJoin()" />
+			<Panel class="join-panel">
+				<Label id="JoinTitle" class="join-head" text="Join Lobby" />
+				<Panel class="join-body">
+					<Panel id="CreateOptions" class="join-section create-options">
+						<Label class="join-text" text="Choose how friends will join your lobby." />
+						<Button class="btn" onactivate="TitleMenu.CreateLobby(true)">
+							<Label text="Online — share a room code" />
+						</Button>
+						<Button class="btn" onactivate="TitleMenu.CreateLobby(false)">
+							<Label text="LAN — same local network" />
+						</Button>
+					</Panel>
+					<Panel id="JoinLan" class="join-section join-lan">
+						<Panel class="join-row">
+							<Label class="join-label" text="Local LAN" />
+							<Button id="JoinRefresh" class="btn btn-right" onactivate="TitleMenu.Refresh()">
+								<Label text="Refresh" />
+							</Button>
+						</Panel>
+						<Panel id="JoinList" class="join-list">
+							<Label class="join-empty" text="Press Refresh to find LAN lobbies" />
+						</Panel>
+						<Button id="JoinConnect" class="btn" onactivate="TitleMenu.JoinSelected()">
+							<Label text="Join Selected" />
+						</Button>
+					</Panel>
+					<Panel id="JoinAddrSection" class="join-section join-addr">
+						<Label class="join-label" text="Address / IP" />
+						<Panel class="join-row">
+							<TextEntry id="JoinAddr" class="join-input" text="127.0.0.1:27501" maxchars="64" />
+							<Button class="btn" onactivate="TitleMenu.JoinAddress()">
+								<Label text="Join" />
+							</Button>
+						</Panel>
+					</Panel>
+					<Panel id="JoinCodeSection" class="join-section join-code">
+						<Label class="join-label" text="Room Code (online)" />
+						<Panel class="join-row">
+							<TextEntry id="JoinCode" class="join-input" placeholder="ABCD12" maxchars="32" oninputsubmit="TitleMenu.JoinCodeSubmit()" />
+							<Button class="btn" onactivate="TitleMenu.JoinCode()">
+								<Label text="Join" />
+							</Button>
+						</Panel>
+					</Panel>
+					<Button class="btn btn-ghost" onactivate="TitleMenu.CloseJoin()">
+						<Label text="Back" />
+					</Button>
+				</Panel>
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

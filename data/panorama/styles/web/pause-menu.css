@@ -1,0 +1,100 @@
+/* Pause menu. Percentages are of the 1280 x 720 frame, stretched over the
+   view like the page's calc(100% * n / 1280) positions; sizes the page gives
+   in 100vh / 720 are at the 1080-line design height (x 1.5). The page asks
+   for "Bahnschrift Condensed" bold; Trade Gothic Next Bold Condensed, which
+   the game ships, stands in. */
+
+.stage
+{
+	width: 100%;
+	height: 100%;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	color: #ffffff;
+}
+
+/* the main panel: a grey gradient (to 90%, then flat) with 1px light edges */
+.panel
+{
+	x: 11.6406%;
+	y: 7.3611%;
+	width: 88.3594%;
+	height: 92.5%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #272727c9 ), color-stop( 0.9, #494949c9 ), to( #494949c9 ) );
+}
+.panel-edge
+{
+	width: 100%;
+	height: 1.5px;
+	background-color: #c9c9c9;
+}
+.panel-edge-bottom { vertical-align: bottom; }
+
+/* the dark strip on the left with the rotated "PAUSE" */
+.banner
+{
+	y: 7.3611%;
+	width: 11.4063%;
+	height: 92.6389%;
+	background-color: #1a1a1a;
+	overflow: clip;
+}
+.banner-label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 72px;
+	font-weight: bold;
+	letter-spacing: 14.4px;
+	color: #b70043;
+	transform: rotateZ( -90deg );
+}
+
+/* the focus bar slides to the selected item */
+.focus-bar
+{
+	x: 12.1094%;
+	y: 9.3056%;
+	width: 35.3125%;
+	height: 4.4444%;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #b70043 ), color-stop( 0.32, #b70043 ), to( #34343400 ) );
+	transition-property: position;
+	transition-duration: 0.12s;
+	transition-timing-function: cubic-bezier( 0.2, 0.8, 0.2, 1 );
+}
+.sel-1 .focus-bar { y: 13.6111%; }
+.sel-2 .focus-bar { y: 18.0556%; }
+.sel-3 .focus-bar { y: 22.5%; }
+.sel-4 .focus-bar { y: 26.8056%; }
+.sel-5 .focus-bar { y: 31.25%; }
+
+.focus-edge
+{
+	width: 100%;
+	height: 3px;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #ff8c8c ), color-stop( 0.32, #ff8c8c ), to( #ff8c8c00 ) );
+}
+.focus-edge-bottom { vertical-align: bottom; }
+
+.menu-item
+{
+	x: 12.1094%;
+	width: 35.3125%;
+	height: 4.4444%;
+}
+.item-0 { y: 9.3056%; }
+.item-1 { y: 13.6111%; }
+.item-2 { y: 18.0556%; }
+.item-3 { y: 22.5%; }
+.item-4 { y: 26.8056%; }
+.item-5 { y: 31.25%; }
+
+.menu-item Label
+{
+	x: 1.9912%;
+	y: 6px;
+	font-size: 34.5px;
+	font-weight: bold;
+	letter-spacing: -0.75px;
+	text-transform: uppercase;
+	color: #ffffff;
+}

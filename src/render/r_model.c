@@ -3,13 +3,17 @@
  * docs/spec/models.md. ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 #include "../common/skel.h"
+#include "../common/studio.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 static int32_t rd32(const uint8_t *p) { return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
+static int16_t rd16(const uint8_t *p) { return (int16_t)(p[0] | (p[1] << 8)); }
+static uint16_t rdu16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static float rdf(const uint8_t *p)
 {
 	float f;
@@ -320,6 +324,11 @@ bad:
 typedef struct {
 	material_t *material;
 	int firstindex, numindexes;
+	int skinref; /* a studio model's skin slot, for skin families */
+	/* a studio model's body part and which of its sub-models this is (the
+	 * geomset a custom skin selects), -1 for meshes always drawn */
+	int geomgroup, geomvalue;
+	char name[64]; /* the surface a custom skin's "replace" names */
 } iqmmesh_t;
 
 typedef struct iqm_s {
@@ -336,10 +345,15 @@ typedef struct iqm_s {
 	skelmodel_t *skel;
 	uint8_t (*blendidx)[4];
 	float (*blendw)[4];
+	/* studio models: numfamilies x numskinref materials, picked by .skin */
+	material_t **famskins;
+	int numfamilies, numskinref;
 } iqm_t;
 
 enum { IQM_POSITION = 0, IQM_TEXCOORD = 1, IQM_NORMAL = 2, IQM_BLENDINDEXES = 4, IQM_BLENDWEIGHTS = 5, IQM_COLOR = 6 };
 enum { IQM_UBYTE = 1, IQM_FLOAT = 7 };
+
+static void finish_iqm(rmodel_t *mod, iqm_t *q);
 
 static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 {
@@ -419,8 +433,11 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	for (uint32_t m = 0; m < num_meshes; m++) {
 		const uint8_t *me = d + ofs_meshes + m * 24;
 		uint32_t mat = (uint32_t)rd32(me + 4), ft = (uint32_t)rd32(me + 16), nt = (uint32_t)rd32(me + 20);
+		uint32_t mname = (uint32_t)rd32(me);
 		const char *matname = mat < num_text ? text + mat : "";
 		char path[192];
+		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
+		Str_Copy(q->meshes[m].name, mname < num_text ? text + mname : "", sizeof(q->meshes[m].name));
 		/* a bare material name is looked up next to the model */
 		if (!strchr(matname, '/')) {
 			const char *slash = strrchr(mod->name, '/');
@@ -435,6 +452,14 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		q->meshes[m].firstindex = (int)ft * 3;
 		q->meshes[m].numindexes = (int)nt * 3;
 	}
+	finish_iqm(mod, q);
+	return true;
+}
+
+/* bounds, the GL buffers and the animations of a mesh that is filled in */
+static void finish_iqm(rmodel_t *mod, iqm_t *q)
+{
+	int num_verts = q->numverts;
 	/* animations, as framegroups for frameforname and friends; a
 	 * .framegroups file next to the model was already applied */
 	if (q->skel) {
@@ -445,7 +470,7 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		mod->mins[k] = 1e30f;
 		mod->maxs[k] = -1e30f;
 	}
-	for (uint32_t i = 0; i < num_verts; i++)
+	for (int i = 0; i < num_verts; i++)
 		for (int k = 0; k < 3; k++) {
 			if (q->verts[i].xyz[k] < mod->mins[k])
 				mod->mins[k] = q->verts[i].xyz[k];
@@ -474,6 +499,360 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		q->anims = Skel_LoadFramegroups(mod->name, &q->numanims);
 	}
 	mod->numframes = q->numanims;
+}
+
+/* --- GoldSrc studio models ---------------------------------------------------- */
+
+/* "#WWWHHHname.bmp": a stand-in for the image models/texture/name.bmp
+ * (with the '#WWWHHH' kept in the file name), which is WWW x HHH pixels.
+ * Counter-Strike Online models carry a tiny placeholder under such names,
+ * and their texture coordinates are in the external image's pixels */
+static bool studio_extsize(const studio_texture_t *t, int *w, int *h)
+{
+	const char *n = t->name;
+	if (n[0] != '#')
+		return false;
+	for (int i = 1; i <= 6; i++)
+		if (n[i] < '0' || n[i] > '9')
+			return false;
+	*w = (n[1] - '0') * 100 + (n[2] - '0') * 10 + (n[3] - '0');
+	*h = (n[4] - '0') * 100 + (n[5] - '0') * 10 + (n[6] - '0');
+	return *w > 0 && *h > 0;
+}
+
+/* a studio texture: 8-bit pixels with their own palette. Flag 0x40
+ * (masked) makes the last palette entry see-through, 0x20 is additive and
+ * 0x04 fullbright (docs/spec/studio-mdl.md) */
+static material_t *studio_skin(const char *model, const studio_texture_t *t)
+{
+	char name[256], tex[72];
+	uint8_t *rgba;
+	material_t *m;
+	bool masked = (t->flags & 0x40) != 0;
+	Str_Copy(tex, t->name, sizeof(tex));
+	if (strrchr(tex, '.'))
+		*strrchr(tex, '.') = 0;
+	snprintf(name, sizeof(name), "%s_%s", model, tex);
+	/* a replacement image or material by that name wins */
+	if (R_ImageExists(name) || FS_FileExists(va("%s.mat", name)))
+		return R_FindMaterial(name, MATF_MODEL);
+	{
+		int ew, eh;
+		char ext[96];
+		snprintf(ext, sizeof(ext), "models/texture/%s", tex);
+		if (studio_extsize(t, &ew, &eh) && R_ImageExists(ext))
+			return R_FindMaterial(ext, MATF_MODEL);
+	}
+	rgba = Mem_Alloc((size_t)t->width * t->height * 4);
+	for (int i = 0; i < t->width * t->height; i++) {
+		uint8_t c = t->pixels[i];
+		memcpy(rgba + i * 4, t->palette + c * 3, 3);
+		rgba[i * 4 + 3] = masked && c == 255 ? 0 : 255;
+	}
+	m = R_MaterialForImage(name, R_ImageFromPixels(name, rgba, t->width, t->height, 0), MATF_MODEL);
+	Mem_Free(rgba);
+	if (masked)
+		m->alphatest = true;
+	if (t->flags & 0x20)
+		m->blend = BLEND_ADD, m->src = GL_ONE, m->dst = GL_ONE;
+	if (t->flags & 0x04)
+		m->program = MP_UNLIT;
+	return m;
+}
+
+/* one vertex of a triangle command, placed in the rest pose */
+static void studio_vert(const studio_submodel_t *sm, const bonemat_t *rest, const studio_texture_t *t,
+                        const uint8_t *cmd, rvert_t *v, uint8_t *bone)
+{
+	int vi = (int16_t)(cmd[0] | cmd[1] << 8), ni = (int16_t)(cmd[2] | cmd[3] << 8);
+	int s = (int16_t)(cmd[4] | cmd[5] << 8), tt = (int16_t)(cmd[6] | cmd[7] << 8);
+	float in[3];
+	int b = sm->vertbone[vi], nb = sm->normbone[ni];
+	for (int k = 0; k < 3; k++)
+		in[k] = rdf(sm->verts + vi * 12 + k * 4);
+	Bone_Transform(rest[b], in, v->xyz);
+	for (int k = 0; k < 3; k++)
+		in[k] = rdf(sm->norms + ni * 12 + k * 4);
+	for (int r = 0; r < 3; r++)
+		v->normal[r] = rest[nb][r * 4] * in[0] + rest[nb][r * 4 + 1] * in[1] + rest[nb][r * 4 + 2] * in[2];
+	/* texture coordinates are in pixels */
+	int tw = t ? t->width : 1, th = t ? t->height : 1;
+	if (t)
+		studio_extsize(t, &tw, &th);
+	v->st[0] = t ? (float)s / tw : 0;
+	v->st[1] = t ? (float)tt / th : 0;
+	memset(v->color, 255, 4);
+	*bone = (uint8_t)b;
+}
+
+/* every sub-model of every body part, in the rest pose and skinned to the
+ * bones, with the sequences as animations (Skel_LoadModel). Each mesh knows
+ * its body part and sub-model: the first sub-model draws unless a custom
+ * skin's geomset picks another. */
+static bool load_studio(rmodel_t *mod)
+{
+	const studio_model_t *st = Studio_Cached(mod->name);
+	iqm_t *q;
+	bonemat_t *rest;
+	float *trs;
+	int maxverts = 0, nv = 0, ni = 0, nm = 0, nskins;
+	if (!st)
+		return false;
+	for (int b = 0; b < st->numbodyparts; b++)
+		for (int s = 0; s < st->bodyparts[b].nummodels; s++) {
+			const studio_submodel_t *sm = &st->bodyparts[b].models[s];
+			for (int k = 0; k < sm->nummeshes; k++) {
+				maxverts += Studio_CountTris(st, &sm->meshes[k], sm->numverts, sm->numnorms) * 3;
+				nm++;
+			}
+		}
+	q = Mem_Alloc(sizeof(*q));
+	q->skel = Skel_LoadModel(mod->name);
+	q->verts = Mem_Alloc(sizeof(rvert_t) * (maxverts + 1));
+	q->indices = Mem_Alloc(sizeof(uint32_t) * (maxverts + 1));
+	q->meshes = Mem_Alloc(sizeof(iqmmesh_t) * (nm + 1));
+	if (q->skel) {
+		q->blendidx = Mem_Alloc(sizeof(*q->blendidx) * (maxverts + 1));
+		q->blendw = Mem_Alloc(sizeof(*q->blendw) * (maxverts + 1));
+	}
+	/* the rest pose, in model space */
+	trs = Mem_Alloc(sizeof(float) * 10 * st->numbones);
+	rest = Mem_Alloc(sizeof(bonemat_t) * st->numbones);
+	Studio_RestPose(st, trs);
+	for (int j = 0; j < st->numbones; j++) {
+		bonemat_t rel;
+		Bone_FromTRS(rel, trs + j * 10);
+		if (st->bones[j].parent >= 0)
+			Bone_Multiply(rest[j], rest[st->bones[j].parent], rel);
+		else
+			memcpy(rest[j], rel, sizeof(bonemat_t));
+	}
+	/* skins: family x slot */
+	nskins = st->numskinref * BW_MAX(1, st->numskinfamilies);
+	q->numskinref = st->numskinref;
+	q->numfamilies = BW_MAX(1, st->numskinfamilies);
+	q->famskins = Mem_Alloc(sizeof(material_t *) * (nskins + 1));
+	{
+		material_t **bytex = Mem_Alloc(sizeof(material_t *) * (st->numtextures + 1));
+		for (int i = 0; i < st->numtextures; i++)
+			bytex[i] = studio_skin(mod->name, &st->textures[i]);
+		for (int i = 0; i < nskins; i++) {
+			int t = st->skins ? st->skins[i] : i;
+			q->famskins[i] = t >= 0 && t < st->numtextures ? bytex[t] : R_FindMaterial("$default", MATF_MODEL);
+		}
+		Mem_Free(bytex);
+	}
+	for (int b = 0; b < st->numbodyparts; b++)
+	for (int s = 0; s < st->bodyparts[b].nummodels; s++) {
+		const studio_submodel_t *sm = &st->bodyparts[b].models[s];
+		for (int k = 0; k < sm->nummeshes; k++) {
+			const studio_mesh_t *me = &sm->meshes[k];
+			int slot = me->skinref, tex = st->skins && slot >= 0 && slot < st->numskinref ? st->skins[slot] : slot;
+			const studio_texture_t *t = tex >= 0 && tex < st->numtextures ? &st->textures[tex] : NULL;
+			const uint8_t *p = me->cmds;
+			iqmmesh_t *out = &q->meshes[q->nummeshes++];
+			out->skinref = slot;
+			/* single sub-model parts always draw */
+			out->geomgroup = st->bodyparts[b].nummodels > 1 ? b : -1;
+			out->geomvalue = s;
+			Str_Copy(out->name, t ? t->name : "", sizeof(out->name));
+			out->material = slot >= 0 && slot < q->numskinref ? q->famskins[slot] : R_FindMaterial("$default", MATF_MODEL);
+			out->firstindex = ni;
+			/* strips (n > 0) and fans (n < 0) of n vertices, until 0 */
+			for (;;) {
+				int n = (int16_t)(p[0] | p[1] << 8), first = nv, fan = n < 0;
+				p += 2;
+				if (!n)
+					break;
+				n = abs(n);
+				for (int i = 0; i < n; i++, p += 8) {
+					uint8_t bone;
+					studio_vert(sm, rest, t, p, &q->verts[nv], &bone);
+					if (q->skel) {
+						q->blendidx[nv][0] = bone;
+						q->blendw[nv][0] = 1;
+					}
+					nv++;
+				}
+				for (int i = 2; i < n; i++) {
+					uint32_t a, b2, c = (uint32_t)(first + i);
+					if (fan)
+						a = (uint32_t)first, b2 = (uint32_t)(first + i - 1);
+					else if (i & 1)
+						a = (uint32_t)(first + i - 1), b2 = (uint32_t)(first + i - 2);
+					else
+						a = (uint32_t)(first + i - 2), b2 = (uint32_t)(first + i - 1);
+					q->indices[ni++] = a, q->indices[ni++] = b2, q->indices[ni++] = c;
+				}
+			}
+			out->numindexes = ni - out->firstindex;
+		}
+	}
+	q->numverts = nv;
+	q->numindexes = ni;
+	{
+		/* face the triangles the way the IQM loader leaves its own: wound
+		 * with their vertex normals, GL's front. Counted, so one odd mesh
+		 * doesn't decide it */
+		int with = 0, against = 0;
+		for (int i = 0; i + 2 < ni; i += 3) {
+			const rvert_t *a = &q->verts[q->indices[i]], *b = &q->verts[q->indices[i + 1]], *c = &q->verts[q->indices[i + 2]];
+			float e1[3], e2[3], n[3];
+			VectorSubtract(b->xyz, a->xyz, e1);
+			VectorSubtract(c->xyz, a->xyz, e2);
+			CrossProduct(e1, e2, n);
+			if (DotProduct(n, a->normal) + DotProduct(n, b->normal) + DotProduct(n, c->normal) > 0)
+				with++;
+			else
+				against++;
+		}
+		if (against > with)
+			for (int i = 0; i + 2 < ni; i += 3) {
+				uint32_t tmp = q->indices[i + 1];
+				q->indices[i + 1] = q->indices[i + 2];
+				q->indices[i + 2] = tmp;
+			}
+		Con_DPrintf("%s: studio model, %d triangles, %d bones, %d sequences\n", mod->name, ni / 3, st->numbones,
+		            st->numseqs);
+	}
+	Mem_Free(trs);
+	Mem_Free(rest);
+	finish_iqm(mod, q);
+	return true;
+}
+
+/* --- BSP files drawn as models ------------------------------------------------ */
+
+/* Quake's item boxes (maps/b_bh25.bsp and the like) are small BSP maps used
+ * as models. The first model's faces become one static mesh per texture,
+ * lit like any model; their lightmaps aren't used. Q1 BSP29, BSP2 and
+ * GoldSrc BSP30; record layouts as in docs/spec/bsp.md. */
+static bool load_bspmodel(rmodel_t *mod, const uint8_t *d, size_t size)
+{
+	enum { L_TEXTURES = 2, L_VERTEXES = 3, L_TEXINFO = 6, L_FACES = 7, L_EDGES = 12, L_SURFEDGES = 13,
+	       L_MODELS = 14, L_COUNT = 15 };
+	struct {
+		int32_t ofs, len;
+	} l[L_COUNT];
+	bool b2 = !memcmp(d, "BSP2", 4), hl = rd32(d) == 30;
+	int facesize = b2 ? 28 : 20, edgesize = b2 ? 8 : 4;
+	int numtex = 0, firstface, numfaces, numverts, numedges, numsurfedges, numtexinfo, nv = 0, ni = 0;
+	material_t **mats = NULL;
+	int (*sizes)[2] = NULL;
+	iqm_t *q;
+	if (size < 4 + L_COUNT * 8)
+		return false;
+	for (int i = 0; i < L_COUNT; i++) {
+		l[i].ofs = rd32(d + 4 + i * 8);
+		l[i].len = rd32(d + 8 + i * 8);
+		if (l[i].ofs < 0 || l[i].len < 0 || (size_t)l[i].ofs + l[i].len > size)
+			return false;
+	}
+	if (l[L_MODELS].len < 64)
+		return false;
+	firstface = rd32(d + l[L_MODELS].ofs + 56);
+	numfaces = rd32(d + l[L_MODELS].ofs + 60);
+	numverts = l[L_VERTEXES].len / 12;
+	numedges = l[L_EDGES].len / edgesize;
+	numsurfedges = l[L_SURFEDGES].len / 4;
+	numtexinfo = l[L_TEXINFO].len / 40;
+	if (firstface < 0 || numfaces < 0 || (int64_t)firstface + numfaces > l[L_FACES].len / facesize)
+		return false;
+	if (l[L_TEXTURES].len >= 4) {
+		const uint8_t *tl = d + l[L_TEXTURES].ofs;
+		numtex = rd32(tl);
+		if (numtex < 0 || 4 + (int64_t)numtex * 4 > l[L_TEXTURES].len)
+			numtex = 0;
+		mats = Mem_Alloc(sizeof(*mats) * (numtex + 1));
+		sizes = Mem_Alloc(sizeof(*sizes) * (numtex + 1));
+		for (int i = 0; i < numtex; i++) {
+			int32_t o = rd32(tl + 4 + i * 4);
+			sizes[i][0] = sizes[i][1] = 64;
+			mats[i] = o < 0 || o + 40 > l[L_TEXTURES].len
+			              ? R_FindMaterial("$default", MATF_MODEL)
+			              : R_Q1TextureMaterial(tl + o, (size_t)(l[L_TEXTURES].len - o), &sizes[i][0], &sizes[i][1], hl);
+		}
+	}
+	q = Mem_Alloc(sizeof(*q));
+	/* a face of n edges is a fan of n - 2 triangles */
+	for (int f = 0; f < numfaces; f++) {
+		const uint8_t *fp = d + l[L_FACES].ofs + (firstface + f) * facesize;
+		int n = b2 ? rd32(fp + 12) : rd16(fp + 8);
+		if (n >= 3 && n <= 256) {
+			nv += n;
+			ni += (n - 2) * 3;
+		}
+	}
+	q->verts = Mem_Alloc(sizeof(rvert_t) * (nv + 1));
+	q->indices = Mem_Alloc(sizeof(uint32_t) * (ni + 1));
+	q->meshes = Mem_Alloc(sizeof(iqmmesh_t) * (numtex + 1));
+	/* one mesh per texture, faces in texture order */
+	for (int t = -1; t < numtex; t++) {
+		int first = q->numindexes;
+		for (int f = 0; f < numfaces; f++) {
+			const uint8_t *fp = d + l[L_FACES].ofs + (firstface + f) * facesize;
+			int firstedge = b2 ? rd32(fp + 8) : rd32(fp + 4), n = b2 ? rd32(fp + 12) : rd16(fp + 8);
+			int ti = b2 ? rd32(fp + 16) : rd16(fp + 10), side = b2 ? rd32(fp + 4) : rd16(fp + 2);
+			int plane = b2 ? rd32(fp) : rdu16(fp);
+			const uint8_t *tip;
+			float vecs[2][4], normal[3] = {0, 0, 1};
+			int miptex, base = q->numverts;
+			if (n < 3 || n > 256 || ti < 0 || ti >= numtexinfo || firstedge < 0 || firstedge + n > numsurfedges)
+				continue;
+			tip = d + l[L_TEXINFO].ofs + ti * 40;
+			miptex = rd32(tip + 32);
+			if (miptex < 0 || miptex >= numtex)
+				miptex = -1;
+			if (miptex != t)
+				continue;
+			for (int k = 0; k < 8; k++)
+				vecs[k / 4][k % 4] = rdf(tip + k * 4);
+			if (plane >= 0 && (int64_t)(plane + 1) * 20 <= rd32(d + 4 + 1 * 8 + 4)) {
+				const uint8_t *pp = d + rd32(d + 4 + 1 * 8) + plane * 20;
+				for (int k = 0; k < 3; k++)
+					normal[k] = rdf(pp + k * 4) * (side ? -1.0f : 1.0f);
+			}
+			for (int e = 0; e < n; e++) {
+				int se = rd32(d + l[L_SURFEDGES].ofs + (firstedge + e) * 4), edge = se < 0 ? -se : se, v;
+				rvert_t *out = &q->verts[q->numverts];
+				const uint8_t *ep;
+				if (edge >= numedges)
+					break;
+				ep = d + l[L_EDGES].ofs + edge * edgesize;
+				v = b2 ? rd32(ep + (se < 0 ? 4 : 0)) : rdu16(ep + (se < 0 ? 2 : 0));
+				if (v < 0 || v >= numverts)
+					break;
+				for (int k = 0; k < 3; k++) {
+					out->xyz[k] = rdf(d + l[L_VERTEXES].ofs + v * 12 + k * 4);
+					out->normal[k] = normal[k];
+				}
+				out->st[0] = (DotProduct(out->xyz, vecs[0]) + vecs[0][3]) / (t >= 0 ? sizes[t][0] : 64);
+				out->st[1] = (DotProduct(out->xyz, vecs[1]) + vecs[1][3]) / (t >= 0 ? sizes[t][1] : 64);
+				memset(out->color, 255, 4);
+				q->numverts++;
+			}
+			/* a fan, wound for GL's counter-clockwise fronts as the world is */
+			for (int k = 2; k < q->numverts - base; k++) {
+				q->indices[q->numindexes++] = (uint32_t)base;
+				q->indices[q->numindexes++] = (uint32_t)(base + k);
+				q->indices[q->numindexes++] = (uint32_t)(base + k - 1);
+			}
+		}
+		if (q->numindexes > first) {
+			iqmmesh_t *m = &q->meshes[q->nummeshes++];
+			m->material = t >= 0 ? mats[t] : R_FindMaterial("$default", MATF_MODEL);
+			m->firstindex = first;
+			m->numindexes = q->numindexes - first;
+			m->skinref = -1;
+			m->geomgroup = m->geomvalue = -1;
+			if (t >= 0)
+				Str_Copy(m->name, m->material->name, sizeof(m->name));
+		}
+	}
+	Mem_Free(mats);
+	Mem_Free(sizes);
+	finish_iqm(mod, q);
+	Con_DPrintf("%s: BSP model, %d triangles\n", mod->name, q->numindexes / 3);
 	return true;
 }
 
@@ -483,8 +862,196 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 static rmodel_t *models[MAX_RMODELS];
 static int nummodels;
 
+/* --- sprites (.spr) ----------------------------------------------------------- */
+
+/* GoldSrc sprites (IDSP version 2; the header is described in r_image.c).
+ * Each frame becomes its own material, named "model:N" as spriteframe names
+ * them, with frame groups counting each member. The frame's origin is the
+ * offset of its top left corner from the sprite's centre. Orientation types:
+ * 0 parallel upright, 1 facing upright, 2 parallel, 3 oriented, 4 parallel
+ * oriented (DESIGN: the usual meanings of these Quake sprite types). */
+typedef struct {
+	float left, right, top, bottom;
+	material_t *material;
+} spriteframe_t;
+
+typedef struct sprite_s {
+	int type, format, numframes;
+	spriteframe_t *frames;
+} sprite_t;
+
+static bool sprite_frame(rmodel_t *mod, sprite_t *s, const uint8_t *d, size_t size, size_t *ofs)
+{
+	spriteframe_t *f;
+	int32_t ox, oy, w, h;
+	if (*ofs + 16 > size)
+		return false;
+	ox = rd32(d + *ofs), oy = rd32(d + *ofs + 4), w = rd32(d + *ofs + 8), h = rd32(d + *ofs + 12);
+	if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || *ofs + 16 + (size_t)w * h > size)
+		return false;
+	*ofs += 16 + (size_t)w * h;
+	f = &s->frames[s->numframes];
+	f->left = (float)ox;
+	f->right = (float)(ox + w);
+	f->top = (float)oy;
+	f->bottom = (float)(oy - h);
+	f->material = R_FindMaterial(s->numframes ? va("%s:%d", mod->name, s->numframes) : mod->name, MATF_MODEL);
+	s->numframes++;
+	return true;
+}
+
+static bool load_sprite(rmodel_t *mod, const uint8_t *d, size_t size)
+{
+	sprite_t *s;
+	size_t ofs;
+	int npal, count, total = 0;
+	if (size < 42 || rd32(d + 4) != 2)
+		return false;
+	count = rd32(d + 28);
+	npal = d[40] | (d[41] << 8);
+	if (count <= 0 || count > 4096 || npal <= 0 || npal > 256 || 42 + (size_t)npal * 3 > size)
+		return false;
+	/* count the frames, groups included, before making them */
+	ofs = 42 + (size_t)npal * 3;
+	for (int i = 0; i < count; i++) {
+		int n = 1;
+		if (ofs + 4 > size)
+			return false;
+		if (rd32(d + ofs) != 0) {
+			if (ofs + 8 > size)
+				return false;
+			n = rd32(d + ofs + 4);
+			if (n <= 0 || n > 1024)
+				return false;
+			ofs += 4 + (size_t)n * 4;
+		}
+		ofs += 4;
+		for (int g = 0; g < n; g++) {
+			int32_t w, h;
+			if (ofs + 16 > size)
+				return false;
+			w = rd32(d + ofs + 8), h = rd32(d + ofs + 12);
+			if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
+				return false;
+			ofs += 16 + (size_t)w * h;
+		}
+		total += n;
+	}
+	s = Mem_Alloc(sizeof(*s));
+	s->type = rd32(d + 8);
+	s->format = rd32(d + 12);
+	s->frames = Mem_Alloc(sizeof(spriteframe_t) * total);
+	ofs = 42 + (size_t)npal * 3;
+	for (int i = 0; i < count; i++) {
+		int n = 1;
+		if (rd32(d + ofs) != 0) {
+			n = rd32(d + ofs + 4);
+			ofs += 4 + (size_t)n * 4;
+		}
+		ofs += 4;
+		for (int g = 0; g < n; g++)
+			if (!sprite_frame(mod, s, d, size, &ofs)) {
+				Mem_Free(s->frames);
+				Mem_Free(s);
+				return false;
+			}
+	}
+	for (int i = 0; i < s->numframes; i++) {
+		const spriteframe_t *f = &s->frames[i];
+		float r = BW_MAX(BW_MAX(fabsf(f->left), fabsf(f->right)), BW_MAX(fabsf(f->top), fabsf(f->bottom)));
+		for (int k = 0; k < 3; k++)
+			mod->mins[k] = BW_MIN(mod->mins[k], -r), mod->maxs[k] = BW_MAX(mod->maxs[k], r);
+	}
+	mod->sprite = s;
+	mod->numframes = s->numframes;
+	mod->type = MOD_SPRITE;
+	return true;
+}
+
+/* sprites face the camera, always in the translucent pass. Additive sprites
+ * (texture format 1, EF_ADDITIVE or RF_ADDITIVE) add onto the scene */
+static void draw_sprite(rentity_t *e, const float *viewproj)
+{
+	const glprog_t *p = &r_progs[PROG_UNLIT];
+	const sprite_t *s = e->model->sprite;
+	const spriteframe_t *f = &s->frames[e->frame >= 0 && e->frame < s->numframes ? e->frame : 0];
+	material_t *mat = e->forceshader ? e->forceshader : f->material;
+	float right[3], up[3], c[4], rgba[4], sc = e->scale;
+	bool additive = s->format == 1 || (e->effects & 32) || (e->renderflags & 8);
+	GLenum src = GL_SRC_ALPHA, dst = additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA;
+	rvert_t v[4];
+	static const uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
+	if (!mat->diffuse)
+		return;
+	switch (s->type) {
+	case 0: /* parallel upright: turns about the vertical, square to the view */
+	case 1: /* facing upright: turns about the vertical towards the viewer */
+		up[0] = up[1] = 0, up[2] = 1;
+		if (s->type == 0)
+			right[0] = r_scene.right[0], right[1] = r_scene.right[1];
+		else
+			right[0] = e->origin[1] - r_scene.origin[1], right[1] = r_scene.origin[0] - e->origin[0];
+		right[2] = 0;
+		if (VectorNormalize(right) < 1e-6f)
+			VectorCopy(r_scene.right, right);
+		break;
+	case 3: /* oriented: the entity's own axes */
+		for (int k = 0; k < 3; k++)
+			right[k] = -e->axis[1][k], up[k] = e->axis[2][k];
+		break;
+	case 4: { /* parallel, turned by the entity's roll */
+		float a = e->angles[2] * (float)M_PI / 180, cs = cosf(a), sn = sinf(a);
+		for (int k = 0; k < 3; k++) {
+			right[k] = r_scene.right[k] * cs + r_scene.up[k] * sn;
+			up[k] = r_scene.up[k] * cs - r_scene.right[k] * sn;
+		}
+		break;
+	}
+	default:
+		VectorCopy(r_scene.right, right);
+		VectorCopy(r_scene.up, up);
+	}
+	for (int k = 0; k < 3; k++) {
+		float l = f->left * sc, r = f->right * sc, t = f->top * sc, b = f->bottom * sc;
+		v[0].xyz[k] = e->origin[k] + right[k] * l + up[k] * b;
+		v[1].xyz[k] = e->origin[k] + right[k] * l + up[k] * t;
+		v[2].xyz[k] = e->origin[k] + right[k] * r + up[k] * t;
+		v[3].xyz[k] = e->origin[k] + right[k] * r + up[k] * b;
+	}
+	for (int i = 0; i < 4; i++) {
+		v[i].st[0] = i < 2 ? 0.0f : 1.0f;
+		v[i].st[1] = (i == 1 || i == 2) ? 0.0f : 1.0f;
+		memset(v[i].normal, 0, sizeof(v[i].normal));
+		memset(v[i].color, 255, 4);
+	}
+	rgba[0] = e->colormod[0], rgba[1] = e->colormod[1], rgba[2] = e->colormod[2], rgba[3] = e->alpha;
+	if (!rgba[0] && !rgba[1] && !rgba[2])
+		rgba[0] = rgba[1] = rgba[2] = 1;
+	if (e->forceshader && mat->fromfile && mat->blend != BLEND_OPAQUE) {
+		int b;
+		R_PickBlend(mat, BLEND_ALPHA, src, dst, &b, &src, &dst);
+	}
+	R_BlendColor(src, rgba, c);
+	R_UseProgram(PROG_UNLIT);
+	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, viewproj);
+	qglUniform4f(p->u_color, c[0], c[1], c[2], c[3]);
+	qglUniform4f(p->u_tcmod, 0, 0, 1, 1);
+	qglUniform1f(p->u_alphatest, s->format == 3 ? 0.5f : 0.0f);
+	GL_BindTexture(0, GL_TEXTURE_2D, mat->diffuse->tex);
+	GL_SetBlend(BLEND_CUSTOM, src, dst);
+	GL_SetDepth(true, false);
+	GL_SetCull(false);
+	R_StreamDraw(GL_TRIANGLES, v, 4, idx, 6);
+	GL_SetCull(true);
+	GL_SetDepth(true, true);
+}
+
 static void free_model(rmodel_t *m)
 {
+	if (m->sprite) {
+		Mem_Free(m->sprite->frames);
+		Mem_Free(m->sprite);
+	}
 	if (m->alias) {
 		alias_t *a = m->alias;
 		Mem_Free(a->poses);
@@ -511,6 +1078,7 @@ static void free_model(rmodel_t *m)
 			Mem_Free(q->anims);
 		Mem_Free(q->blendidx);
 		Mem_Free(q->blendw);
+		Mem_Free(q->famskins);
 		Mem_Free(q);
 	}
 	Mem_Free(m);
@@ -534,6 +1102,9 @@ rmodel_t *R_LoadModel(const char *name)
 		int n = atoi(name + 1);
 		return r_world.loaded && n >= 0 && n < r_world.numsubmodels ? &r_world.submodels[n] : NULL;
 	}
+	/* the map itself, named by its file (a game asking for world.model) */
+	if (r_world.loaded && r_world.numsubmodels && !Str_ICmp(name, r_world.name))
+		return &r_world.submodels[0];
 	for (int i = 0; i < nummodels; i++)
 		if (!Str_ICmp(models[i]->name, name))
 			return models[i];
@@ -552,8 +1123,22 @@ rmodel_t *R_LoadModel(const char *name)
 		m->loaded = load_alias(m, d, size);
 	else if (size >= 16 && !memcmp(d, "INTERQUAKEMODEL", 16))
 		m->loaded = load_iqm(m, d, size);
-	else
-		Con_DPrintf("model %s: format not supported yet\n", name);
+	else if (size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
+		m->loaded = load_studio(m);
+	else if (size >= 4 && !memcmp(d, "IDSP", 4))
+		m->loaded = load_sprite(m, d, size);
+	else if (size >= 4 && (rd32(d) == 29 || rd32(d) == 30 || !memcmp(d, "BSP2", 4)))
+		m->loaded = load_bspmodel(m, d, size);
+	else {
+		/* a plugin may turn it into an IQM (Source .mdl) */
+		size_t qlen;
+		uint8_t *q = Plug_ConvertModel(name, d, size, &qlen);
+		if (q && qlen >= 16 && !memcmp(q, "INTERQUAKEMODEL", 16))
+			m->loaded = load_iqm(m, q, qlen);
+		else
+			Con_DPrintf("model %s: format not supported yet\n", name);
+		Mem_Free(q);
+	}
 	m->failed = !m->loaded;
 	{
 		float r = 0;
@@ -765,27 +1350,45 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	float model[16], mvp[16];
 	const glprog_t *p = &r_progs[PROG_MODEL];
 	bool depthhack = (e->renderflags & 4) != 0; /* RF_DEPTHHACK */
+	bool viewmodel = (e->renderflags & (1 | 4)) != 0; /* RF_VIEWMODEL or RF_DEPTHHACK */
 	if (!m || !m->loaded)
 		return;
 	Mat4_FromAxis(model, e->axis, e->origin, e->scale);
-	Mat4_Multiply(mvp, r_scene.viewproj, model);
+	Mat4_Multiply(mvp, viewmodel ? r_scene.vmviewproj : r_scene.viewproj, model);
 
 	if (m->type == MOD_BRUSH) {
 		bool trans = e->alpha < 1 || (e->renderflags & 8);
+		/* an entity wearing the map itself (modelindex 1): the scene draws the
+		 * world once; drawing it again here would also redo its visibility
+		 * with this entity's transform */
+		if (m == &r_world.submodels[0])
+			return;
 		if (trans == translucentpass || translucentpass)
 			R_DrawWorldModel(m, mvp, model, e->alpha, translucentpass);
+		return;
+	}
+	if (m->type == MOD_SPRITE) {
+		if (translucentpass) {
+			if (depthhack)
+				qglDepthRange(0, 0.3);
+			draw_sprite(e, viewmodel ? r_scene.vmviewproj : r_scene.viewproj);
+			if (depthhack)
+				qglDepthRange(0, 1);
+		}
 		return;
 	}
 	if ((e->alpha < 1 || (e->renderflags & 8)) != translucentpass)
 		return;
 	if (depthhack)
 		qglDepthRange(0, 0.3);
+	if (e->mirrored)
+		qglCullFace(GL_FRONT);
 	R_UseProgram(PROG_MODEL);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
 	qglUniform4f(p->u_color, 1, 1, 1, e->alpha);
 	qglUniform3f(p->u_vieworg, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2]);
-	qglUniform4f(p->u_fog, r_world.fog[0], r_world.fog[1], r_world.fog[2], r_world.hasfog ? r_world.fog[3] : 0);
+	qglUniform4f(p->u_fog, r_viewfog[0], r_viewfog[1], r_viewfog[2], r_viewfog[3]);
 	set_model_lighting(p, e);
 
 	if (m->type == MOD_ALIAS) {
@@ -825,6 +1428,17 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
+			if (q->meshes[i].geomgroup >= 0 &&
+			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
+				continue; /* another sub-model of this body part */
+			if (!e->forceshader && q->famskins && e->skin > 0 && e->skin < q->numfamilies &&
+			    q->meshes[i].skinref >= 0 && q->meshes[i].skinref < q->numskinref)
+				mat = q->famskins[e->skin * q->numskinref + q->meshes[i].skinref]; /* a skin family */
+			if (!e->forceshader && e->customskin) {
+				material_t *r = R_SkinReplace(e->customskin, q->meshes[i].name);
+				if (r)
+					mat = r;
+			}
 			if (!q->meshes[i].numindexes || mat->nodraw)
 				continue;
 			bind_material(p, mat, e->alpha, translucentpass);
@@ -835,5 +1449,30 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	}
 	if (depthhack)
 		qglDepthRange(0, 1);
+	if (e->mirrored)
+		qglCullFace(GL_BACK);
 	GL_SetCull(true);
+}
+
+int R_NumModels(void) { return nummodels; }
+rmodel_t *R_ModelAt(int i) { return i >= 0 && i < nummodels ? models[i] : NULL; }
+
+/* roughly what a model holds in memory, and its vertex and triangle counts */
+size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris)
+{
+	size_t bytes = sizeof(*m);
+	*verts = *tris = 0;
+	if (m->alias) {
+		const alias_t *a = m->alias;
+		bytes += (size_t)a->numposes * (size_t)a->numverts * 6 * sizeof(float) + (size_t)a->numoutverts * (2 * sizeof(float) + sizeof(int)) +
+		         (size_t)a->numtris * 3 * sizeof(uint16_t) + (size_t)a->numframes * sizeof(aliasframe_t);
+		*verts = a->numverts;
+		*tris = a->numtris;
+	}
+	if (m->type == MOD_BRUSH || (!m->alias && !m->iqm && m->numsurfaces)) {
+		for (int i = 0; i < m->numsurfaces; i++)
+			*tris += r_world.surfaces[m->firstsurface + i].numindexes / 3;
+		bytes += (size_t)*tris * 3 * sizeof(uint32_t) + (size_t)m->numsurfaces * sizeof(rsurface_t);
+	}
+	return bytes;
 }

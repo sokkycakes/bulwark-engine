@@ -11,9 +11,34 @@
 
 typedef float vec3_t[3];
 
+#define BULWARK_VERSION "0.1"
 #define BW_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 #define BW_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define BW_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define BW_CLAMP(v, lo, hi) BW_MIN(BW_MAX((v), (lo)), (hi))
+
+/* Memory the QuakeC VMs reserve up front: entity slots and memalloc heap
+ * (megabytes). The 3DS has 64-124 MB for everything, so it reserves a
+ * fraction of what desktops do; the server's pr_maxedicts and pr_heapsize
+ * cvars default to these. */
+#if defined(__3DS__) || defined(__NDS__)
+#define BW_LOWMEM 1
+#define BW_SV_MAXEDICTS "1024"
+#define BW_SV_HEAP_MB "4"
+#define BW_CSQC_MAXEDICTS 1024
+#define BW_CSQC_HEAP_MB 4
+#define BW_MENU_MAXEDICTS 1024
+#define BW_MENU_HEAP_MB 2
+#define BW_CL_MAXENTS 4096 /* network entity numbers the client game can track */
+#else
+#define BW_SV_MAXEDICTS "4096"
+#define BW_SV_HEAP_MB "32"
+#define BW_CSQC_MAXEDICTS 8192
+#define BW_CSQC_HEAP_MB 32
+#define BW_MENU_MAXEDICTS 4096
+#define BW_MENU_HEAP_MB 16
+#define BW_CL_MAXENTS 65536
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define BW_PRINTF(f, a) __attribute__((format(printf, f, a)))
@@ -34,6 +59,8 @@ void Con_SetHook(con_hook_fn fn);
 typedef void (*loading_hook_fn)(const char *stage, const char *map, float frac);
 void Host_SetLoadingHook(loading_hook_fn fn);
 void Host_Loading(const char *stage, const char *map, float frac);
+/* a second receiver of all output, for the console log file */
+void Con_SetLogHook(con_hook_fn fn);
 void Con_Printf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_DPrintf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_Print(const char *text);
@@ -60,6 +87,13 @@ int Str_ICmp(const char *a, const char *b);
 const char *va(const char *fmt, ...) BW_PRINTF(1, 2);
 int Str_NICmp(const char *a, const char *b, size_t n);
 bool Str_WildMatch(const char *pattern, const char *s, bool nocase);
+/* Escaped strings: \"text" with \n \t \r \" and \\ inside, the form
+ * sprintf's %S uses for text that a plain quoted string can't hold.
+ * Str_NeedsEscape says whether s needs it; Str_ParseEscaped reads one at *p
+ * (which points at the backslash) into out, returns its length and moves *p
+ * past the closing quote. */
+bool Str_NeedsEscape(const char *s);
+size_t Str_ParseEscaped(const char **p, char *out, size_t outsize);
 
 /* growable byte buffer */
 typedef struct {
@@ -71,6 +105,8 @@ void SB_Append(strbuf_t *sb, const char *s, size_t n);
 void SB_AppendStr(strbuf_t *sb, const char *s);
 void SB_Printf(strbuf_t *sb, const char *fmt, ...) BW_PRINTF(2, 3);
 void SB_Free(strbuf_t *sb);
+/* while set, console output is also collected into sb (rcon replies) */
+void Con_Redirect(strbuf_t *sb);
 
 /* tokeniser shared by the console and the entity parser: handles quotes and
  * // comments, and returns the next token or NULL at end of input. */
@@ -80,6 +116,25 @@ static inline void VectorCopy(const float *a, float *b) { b[0] = a[0]; b[1] = a[
 static inline void VectorClear(float *a) { a[0] = a[1] = a[2] = 0; }
 static inline float DotProduct(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 static inline float VectorLength(const float *a) { return sqrtf(DotProduct(a, a)); }
+static inline void VectorSubtract(const float *a, const float *b, float *c)
+{
+	c[0] = a[0] - b[0];
+	c[1] = a[1] - b[1];
+	c[2] = a[2] - b[2];
+}
+static inline void VectorScale(const float *a, float s, float *b)
+{
+	b[0] = a[0] * s;
+	b[1] = a[1] * s;
+	b[2] = a[2] * s;
+}
+/* c = a + b * s */
+static inline void VectorMA(const float *a, float s, const float *b, float *c)
+{
+	c[0] = a[0] + b[0] * s;
+	c[1] = a[1] + b[1] * s;
+	c[2] = a[2] + b[2] * s;
+}
 static inline void CrossProduct(const float *a, const float *b, float *c)
 {
 	c[0] = a[1] * b[2] - a[2] * b[1];

@@ -118,6 +118,11 @@ bool Studio_Parse(studio_model_t *m, const uint8_t *buf, size_t len, char *err, 
 /* appends the sequences of a CSO .seq file; the model's earlier sequences
  * are kept and the new ones follow them in file order */
 bool Studio_AppendSeq(studio_model_t *m, const uint8_t *buf, size_t len, char *err, size_t errlen);
+/* the texture and skin tables of a model's companion file (nameT.mdl),
+ * in place of the model's own; the buffer must outlive the model */
+bool Studio_ParseTextures(studio_model_t *m, const uint8_t *buf, size_t len, char *err, size_t errlen);
+/* the bones' rest positions, as Studio_DecodeFrame writes a frame */
+void Studio_RestPose(const studio_model_t *m, float *out);
 /* walks every run of every channel of a sequence for all its frames */
 bool Studio_ValidateSeq(const studio_model_t *m, int seq, char *err, size_t errlen);
 /* bone transforms of one frame of one blend: out is numbones x 10 floats

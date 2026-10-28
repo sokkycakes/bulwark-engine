@@ -28,6 +28,7 @@ typedef struct ptype_s {
 	struct ptype_s *chain; /* the next "+name" part */
 	struct ptype_s *next;  /* every type, for lookups */
 	bool head;
+	char *source;          /* the body as written, one property a line (r_partinfo, exports) */
 
 	char texname[128];
 	material_t *mat;
@@ -79,7 +80,11 @@ typedef struct {
 	float radius, fade, die;
 } plight_t;
 
+#ifdef BW_LOWMEM
+#define MAX_PARTICLES 8192
+#else
 #define MAX_PARTICLES 32768
+#endif
 #define MAX_PLIGHTS 64
 #define MAX_EFFECT_INDEX 1024
 
@@ -507,30 +512,15 @@ static void parse_property(ptype_t *t, const ptok_t *a, int n)
 #undef IS
 }
 
-static void load_file(const char *file)
+static const char *builtin_set(const char *name);
+
+/* "r_part name { ... }" blocks; names get "prefix." when there is a prefix */
+static void parse_scripts(const char *file, const char *text)
 {
-	char path[128];
-	char *text;
-	size_t len;
 	ptok_t *tok;
 	int n, i = 0;
-	pfile_t *pf;
 	ptype_t *last = NULL;
-	for (pf = files; pf; pf = pf->next)
-		if (!Str_ICmp(pf->name, file))
-			return;
-	pf = Mem_Alloc(sizeof(*pf));
-	Str_Copy(pf->name, file, sizeof(pf->name));
-	pf->next = files;
-	files = pf;
-	snprintf(path, sizeof(path), "particles/%s.cfg", file);
-	text = FS_LoadFile(path, &len);
-	if (!text) {
-		Con_DPrintf("no particle file %s\n", path);
-		return;
-	}
 	n = tokenize(text, &tok);
-	Mem_Free(text);
 	while (i < n) {
 		ptype_t *t;
 		char full[320];
@@ -544,7 +534,7 @@ static void load_file(const char *file)
 		plus = name[0] == '+';
 		if (plus)
 			name++;
-		snprintf(full, sizeof(full), "%s.%s", file, name);
+		snprintf(full, sizeof(full), "%s%s%s", file ? file : "", file ? "." : "", name);
 		i += 2;
 		if (i >= n || strcmp(tok[i].text, "{")) {
 			continue;
@@ -575,6 +565,17 @@ static void load_file(const char *file)
 				i++;
 			cnt = i - start;
 			parse_property(t, tok + start, cnt);
+			{
+				strbuf_t sb = {0};
+				if (t->source)
+					SB_AppendStr(&sb, t->source);
+				for (int k = start; k < i; k++)
+					SB_Printf(&sb, strpbrk(tok[k].text, " \t;{}") || !tok[k].text[0] ? "%s\"%s\"" : "%s%s", k > start ? " " : "\t", tok[k].text);
+				SB_AppendStr(&sb, "\n");
+				Mem_Free(t->source);
+				t->source = Mem_Strdup(sb.data);
+				SB_Free(&sb);
+			}
 			/* a shader's body: skip it */
 			if (i < n && !strcmp(tok[i].text, "{")) {
 				int depth = 0;
@@ -592,13 +593,54 @@ static void load_file(const char *file)
 	Mem_Free(tok);
 }
 
+static void load_file(const char *file)
+{
+	char path[128];
+	char *text;
+	size_t len;
+	pfile_t *pf;
+	for (pf = files; pf; pf = pf->next)
+		if (!Str_ICmp(pf->name, file))
+			return;
+	pf = Mem_Alloc(sizeof(*pf));
+	Str_Copy(pf->name, file, sizeof(pf->name));
+	pf->next = files;
+	files = pf;
+	snprintf(path, sizeof(path), "particles/%s.cfg", file);
+	text = FS_LoadFile(path, &len);
+	if (!text) {
+		/* the engine's own sets stand in when there is no file */
+		const char *b = builtin_set(file);
+		if (b)
+			parse_scripts(file, b);
+		else
+			Con_DPrintf("no particle file %s\n", path);
+		return;
+	}
+	parse_scripts(file, text);
+	Mem_Free(text);
+}
+
+/* r_partredirect: one effect name used in place of another */
+typedef struct {
+	char from[NAMELEN], to[NAMELEN];
+} redirect_t;
+static redirect_t redirects[64];
+static int numredirects;
+
 /* "file.effect": the file is read the first time it is named */
 static ptype_t *effect_by_name(const char *name)
 {
-	const char *dot = strchr(name, '.');
+	const char *dot;
 	ptype_t *t;
 	if (!name || !*name)
 		return NULL;
+	for (int i = 0; i < numredirects; i++)
+		if (!Str_ICmp(redirects[i].from, name)) {
+			name = redirects[i].to;
+			break;
+		}
+	dot = strchr(name, '.');
 	if (dot && dot > name) {
 		char file[64];
 		snprintf(file, sizeof(file), "%.*s", (int)BW_MIN((size_t)(dot - name), sizeof(file) - 1), name);
@@ -624,7 +666,7 @@ static ptype_t *effect_by_index(int index)
 	if (!resolved[index]) {
 		resolved[index] = true;
 		byindex[index] = effect_by_name(cl.particles[index]);
-		if (!byindex[index])
+		if (!byindex[index] && !R_PCF_Exists(cl.particles[index]))
 			Con_DPrintf("unknown particle effect %s\n", cl.particles[index]);
 	}
 	return byindex[index];
@@ -789,7 +831,7 @@ static void spawn_point(ptype_t *t, const float *org, const float *dir, float co
 	if (t->spawnchance < 1 && frand() > t->spawnchance)
 		return;
 	if (t->sound[0] && depth == 0)
-		S_StartSound(0, 0, t->sound, org, t->soundvol, t->soundattn, t->soundpitch / 100.0f, 0);
+		S_StartSound(0, 0, t->sound, org, t->soundvol, t->soundattn, t->soundpitch, 0); /* percent, as S_StartSound takes it */
 	spawn_light(t, org);
 	if (t->kind == PT_DECAL || t->kind == PT_UDECAL) {
 		if (t->count[0] > 0 || t->count[1] > 0)
@@ -926,8 +968,12 @@ void R_PointParticles(int index, const float *org, const float *dir, float count
 {
 	ptype_t *t = effect_by_index(index);
 	float zero[3] = {0, 0, 0};
-	if (!t)
+	if (!t) {
+		/* not an r_part effect: perhaps a Source particle system */
+		if (index > 0 && index < CL_MAX_PARTICLES && cl.particles[index])
+			R_PCF_Spawn(cl.particles[index], org, dir);
 		return;
+	}
 	spawn_effect(t, org, dir ? dir : zero, count > 0 ? count : 1, 0);
 }
 
@@ -1070,7 +1116,25 @@ void R_UpdateParticles(void)
 	if (dt > 0.1f)
 		dt = 0.1f;
 	update(dt);
+	R_PCF_Update(dt);
 	R_UpdateDecals();
+}
+
+/* te_customflash: a light that shrinks to nothing over its lifetime */
+void R_SpawnFlash(const float *org, float radius, float lifetime, const float *rgb)
+{
+	plight_t *l;
+	if (radius <= 0 || numplights >= MAX_PLIGHTS)
+		return;
+	if (lifetime <= 0)
+		lifetime = 0.1f;
+	l = &plights[numplights++];
+	VectorCopy(org, l->org);
+	VectorCopy(rgb, l->rgb);
+	VectorClear(l->rgbfade);
+	l->radius = radius;
+	l->fade = radius / lifetime;
+	l->die = (float)r_time + lifetime;
 }
 
 void R_AddParticleLights(void)
@@ -1081,6 +1145,7 @@ void R_AddParticleLights(void)
 
 void R_ClearParticles(void)
 {
+	R_PCF_Clear();
 	numparts = 0;
 	numplights = 0;
 	/* effect numbers belong to the map's precache list */
@@ -1216,7 +1281,10 @@ void R_DrawParticles(void)
 {
 	const glprog_t *pr = &r_progs[PROG_UNLIT];
 	const ptype_t *cur = NULL;
-	if (!numparts || !r_drawparticles->ivalue)
+	if (!r_drawparticles->ivalue)
+		return;
+	R_PCF_Draw();
+	if (!numparts)
 		return;
 	qsort(parts, numparts, sizeof(particle_t), part_cmp);
 	R_UseProgram(PROG_UNLIT);
@@ -1250,6 +1318,7 @@ static void free_scripts(void)
 {
 	while (types) {
 		ptype_t *n = types->next;
+		Mem_Free(types->source);
 		Mem_Free(types);
 		types = n;
 	}
@@ -1282,7 +1351,7 @@ static void effect_f(int argc, const char **argv)
 		return;
 	}
 	t = effect_by_name(argv[1]);
-	if (!t) {
+	if (!t && !R_PCF_Exists(argv[1])) {
 		Con_Printf("no effect %s\n", argv[1]);
 		return;
 	}
@@ -1298,7 +1367,10 @@ static void effect_f(int argc, const char **argv)
 		if (tr.fraction < 1)
 			VectorCopy(tr.normal, dir);
 	}
-	spawn_effect(t, org, dir, 1, 0);
+	if (t)
+		spawn_effect(t, org, dir, 1, 0);
+	else
+		R_PCF_Spawn(argv[1], org, dir);
 }
 
 static void list_f(int argc, const char **argv)
@@ -1314,6 +1386,305 @@ static void list_f(int argc, const char **argv)
 	Con_Printf("%d effects, %d particles alive\n", n, numparts);
 }
 
+
+/* --- the engine's own effect sets ------------------------------------------------- */
+
+/* "classic": Quake's stock effects, written for this engine in the r_part
+ * format, used for "classic.<effect>" when there is no particles/classic.cfg */
+static const char builtin_classic[] =
+	"r_part te_explosion\n{\n\ttexture \"\"\n\tcount 256\n\tscale 6\n\tdie 0.6 1.2\n\trandomvel 256\n\tspawnmode ball\n"
+	"\tspawnorg 16\n\tfriction 1\n\tgravity 40\n\tramp 255 243 27 1\n\tramp 255 171 7 1\n\tramp 239 127 0 1\n"
+	"\tramp 191 75 0 0.8\n\tramp 107 47 0 0.4\n\trampmode lerp\n\tblend add\n\tlightradius 350\n"
+	"\tlightradiusfade 700\n\tlightrgb 1 0.6 0.2\n}\n"
+	"r_part te_spike\n{\n\ttexture \"\"\n\tcount 10\n\tscale 3\n\tdie 0.2 0.4\n\trandomvel 40\n\tgravity 200\n"
+	"\trgb 160 140 120\n\talphadelta -2\n}\n"
+	"r_part te_superspike\n{\n\ttexture \"\"\n\tcount 20\n\tscale 3\n\tdie 0.2 0.4\n\trandomvel 50\n\tgravity 200\n"
+	"\trgb 160 140 120\n\talphadelta -2\n}\n"
+	"r_part te_gunshot\n{\n\ttexture \"\"\n\tcount 20\n\tscale 2\n\tdie 0.3 0.5\n\trandomvel 30\n\tgravity 150\n"
+	"\trgb 120 110 100\n\talphadelta -2\n}\n"
+	"r_part te_wizspike\n{\n\ttexture \"\"\n\tcount 30\n\tscale 4\n\tdie 0.4 0.7\n\trandomvel 60\n\trgb 60 220 40\n"
+	"\tblend add\n\talphadelta -1.5\n}\n"
+	"r_part te_knightspike\n{\n\ttexture \"\"\n\tcount 20\n\tscale 4\n\tdie 0.4 0.7\n\trandomvel 60\n\trgb 240 150 40\n"
+	"\tblend add\n\talphadelta -1.5\n}\n"
+	"r_part te_lavasplash\n{\n\ttexture \"\"\n\tcount 1024\n\tscale 5\n\tdie 2 2.6\n\tspawnmode lavasplash\n"
+	"\tspawnorg 128 64\n\tspawnvel 50 80\n\tgravity 50\n\trgb 230 80 20\n\trgbrand 25 60 20\n}\n"
+	"r_part te_teleport\n{\n\ttexture \"\"\n\tcount 896\n\tscale 4\n\tdie 0.2 0.34\n\tspawnmode telebox\n"
+	"\tspawnorg 16 28\n\tspawnvel 50 120\n\trgb 200 200 200\n\trgbrand 55 55 55\n}\n"
+	"r_part te_blood\n{\n\ttexture \"\"\n\tcount 20\n\tscale 4\n\tdie 0.4 0.9\n\trandomvel 60\n\tgravity 400\n"
+	"\trgb 110 0 0\n\trgbrand 40 0 0\n}\n"
+	"r_part trail_rocket\n{\n\ttexture \"\"\n\tstep 3\n\tscale 6\n\tdie 0.4 0.7\n\tramp 255 243 27 1\n"
+	"\tramp 255 171 7 0.8\n\tramp 120 120 120 0.4\n\tramp 60 60 60 0\n\trampmode lerp\n\trandomvel 6\n"
+	"\tgravity -20\n\tblend add\n\tlightradius 200\n\tlightrgb 1 0.6 0.2\n}\n"
+	"r_part trail_grenade\n{\n\ttexture \"\"\n\tstep 3\n\tscale 5\n\tdie 0.5 0.9\n\trgb 100 100 100\n\trgbrand 40 40 40\n"
+	"\trandomvel 4\n\tgravity -20\n\talphadelta -1.2\n}\n"
+	"r_part trail_blood\n{\n\ttexture \"\"\n\tstep 4\n\tscale 4\n\tdie 0.6 1\n\trgb 110 0 0\n\trandomvel 6\n\tgravity 150\n}\n"
+	"r_part trail_tracer\n{\n\ttexture \"\"\n\tstep 4\n\tscale 4\n\tdie 0.4\n\trgb 240 150 40\n\tblend add\n"
+	"\talphadelta -2\n}\n";
+
+static const struct {
+	const char *name, *text;
+} builtin_sets[] = {{"classic", builtin_classic}};
+
+static const char *builtin_set(const char *name)
+{
+	for (size_t i = 0; i < BW_ARRAY_COUNT(builtin_sets); i++)
+		if (!Str_ICmp(name, builtin_sets[i].name))
+			return builtin_sets[i].text;
+	return NULL;
+}
+
+/* --- console ---------------------------------------------------------------------- */
+
+/* r_part <name> { properties }: an effect defined at the console or in a config */
+static void part_f(int argc, const char **argv)
+{
+	strbuf_t sb = {0};
+	ptype_t *old;
+	if (argc < 2 || argv[1][0] == '{') {
+		Con_Printf("No name for particle effect\n");
+		return;
+	}
+	if (!strchr(Cmd_Args(), '{')) {
+		Con_Printf("r_part %s: the properties go in braces after the name\n", argv[1]);
+		return;
+	}
+	old = find_type(argv[1][0] == '+' ? argv[1] + 1 : argv[1]);
+	SB_Printf(&sb, "r_part %s", Cmd_Args());
+	parse_scripts(NULL, sb.data);
+	SB_Free(&sb);
+	/* the cached index lookups may now find something else */
+	memset(resolved, 0, sizeof(resolved));
+	(void)old;
+}
+
+static void write_type(strbuf_t *sb, const ptype_t *head)
+{
+	const char *dot = strchr(head->name, '.');
+	const char *short_name = dot ? dot + 1 : head->name;
+	for (const ptype_t *t = head; t; t = t->chain)
+		SB_Printf(sb, "r_part %s%s\n{\n%s}\n", t == head ? "" : "+", short_name, t->source ? t->source : "");
+}
+
+static void partinfo_f(int argc, const char **argv)
+{
+	if (argc > 1) {
+		ptype_t *t = effect_by_name(argv[1]);
+		strbuf_t sb = {0};
+		if (!t) {
+			Con_Printf("no effect %s\n", argv[1]);
+			return;
+		}
+		write_type(&sb, t);
+		Con_Printf("// %s\n%s", t->name, sb.data);
+		SB_Free(&sb);
+		return;
+	}
+	Con_Printf("Running effects:\n");
+	for (ptype_t *t = types; t; t = t->next) {
+		int n = 0;
+		for (int i = 0; i < numparts; i++)
+			n += parts[i].t == t;
+		if (n)
+			Con_Printf("  %s: %d\n", t->name, n);
+	}
+	Con_Printf("End of list\n%d particles, %d free.\n", numparts, BW_MAX(0, BW_MIN(MAX_PARTICLES, r_particles_max->ivalue) - numparts));
+}
+
+static void beaminfo_f(int argc, const char **argv)
+{
+	int beams = 0;
+	for (int i = 0; i < numparts; i++)
+		beams += parts[i].t->kind == PT_BEAM;
+	Con_Printf("%d beam segments alive, %d free\n", beams, BW_MAX(0, BW_MIN(MAX_PARTICLES, r_particles_max->ivalue) - numparts));
+}
+
+static void partredirect_f(int argc, const char **argv)
+{
+	int i;
+	if (argc < 2) {
+		for (i = 0; i < numredirects; i++)
+			Con_Printf("%s -> %s\n", redirects[i].from, redirects[i].to);
+		if (!numredirects)
+			Con_Printf("r_partredirect <effect> [replacement]: no redirects\n");
+		return;
+	}
+	for (i = 0; i < numredirects && Str_ICmp(redirects[i].from, argv[1]); i++)
+		;
+	if (argc < 3) {
+		if (i < numredirects)
+			redirects[i] = redirects[--numredirects];
+	} else if (i < (int)BW_ARRAY_COUNT(redirects)) {
+		if (i == numredirects)
+			numredirects++;
+		Str_Copy(redirects[i].from, argv[1], sizeof(redirects[i].from));
+		Str_Copy(redirects[i].to, argv[2], sizeof(redirects[i].to));
+		Con_Printf("%s -> %s\n", argv[1], argv[2]);
+	}
+	memset(resolved, 0, sizeof(resolved));
+}
+
+/* r_trail <effect> [length]: the effect as a trail from the view outwards */
+static void trail_f(int argc, const char **argv)
+{
+	ptype_t *t;
+	float start[3], end[3];
+	if (argc < 2) {
+		Con_Printf("r_trail <effect> [length]: draw an effect as a trail along the view\n");
+		return;
+	}
+	if (!(t = effect_by_name(argv[1]))) {
+		Con_Printf("no effect %s\n", argv[1]);
+		return;
+	}
+	for (int k = 0; k < 3; k++) {
+		start[k] = r_scene.mainorigin[k] + r_scene.mainforward[k] * 16;
+		end[k] = r_scene.mainorigin[k] + r_scene.mainforward[k] * (argc > 2 ? (float)atof(argv[2]) : 256);
+	}
+	spawn_trail(t, start, end);
+}
+
+static bool write_text(const char *rel, const char *text, size_t len)
+{
+	char path[1024];
+	FILE *f;
+	if (!FS_WritePath(rel, path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "wb"))) {
+		Con_Printf("can't write %s\n", rel);
+		return false;
+	}
+	fwrite(text, 1, len, f);
+	fclose(f);
+	Con_Printf("Written %s/%s\n", FS_GameDir(), rel);
+	return true;
+}
+
+static void exportall_f(int argc, const char **argv)
+{
+	strbuf_t sb = {0};
+	SB_AppendStr(&sb, "// every effect read so far, from r_exportalleffects\n");
+	for (ptype_t *t = types; t; t = t->next)
+		if (t->head) {
+			SB_Printf(&sb, "// %s\n", t->name);
+			write_type(&sb, t);
+		}
+	write_text("particles/export.cfg", sb.data, sb.len);
+	SB_Free(&sb);
+}
+
+static void exportbuiltin_f(int argc, const char **argv)
+{
+	const char *text = argc > 1 ? builtin_set(argv[1]) : NULL;
+	if (!text) {
+		Con_Printf("Please name the built in effect (");
+		for (size_t i = 0; i < BW_ARRAY_COUNT(builtin_sets); i++)
+			Con_Printf("%s%s", i ? ", " : "", builtin_sets[i].name);
+		Con_Printf(")\n");
+		return;
+	}
+	write_text(va("particles/%s.cfg", argv[1]), text, strlen(text));
+}
+
+/* r_converteffectinfo [file]: DarkPlaces' effectinfo.txt as r_part scripts.
+ * Its keys are documented in the file DarkPlaces ships; the mapping keeps the
+ * look roughly, not exactly. */
+static void converteffectinfo_f(int argc, const char **argv)
+{
+	const char *src = argc > 1 ? argv[1] : "effectinfo.txt";
+	size_t len;
+	char *text = FS_LoadFile(src, &len);
+	strbuf_t out = {0};
+	char last[NAMELEN] = "";
+	bool open = false;
+	int effects = 0;
+	if (!text) {
+		Con_Printf("effectinfo not found\n");
+		return;
+	}
+	SB_Printf(&out, "// converted from %s by r_converteffectinfo\n", src);
+	for (char *line = text; line && *line;) {
+		char *next = strchr(line, '\n');
+		cmd_tokens_t *t = Mem_Alloc(sizeof(*t));
+		if (next)
+			*next++ = 0;
+		Cmd_TokenizeInto(t, line);
+		if (t->argc) {
+			const char *k = t->argv[0];
+			const char *a1 = t->argc > 1 ? t->argv[1] : "0", *a2 = t->argc > 2 ? t->argv[2] : a1;
+#define K(x) (!Str_ICmp(k, x))
+			if (K("effect") && t->argc > 1) {
+				if (open)
+					SB_AppendStr(&out, "}\n");
+				SB_Printf(&out, "r_part %s%s\n{\n", !Str_ICmp(last, a1) ? "+" : "", a1);
+				Str_Copy(last, a1, sizeof(last));
+				open = true;
+				effects++;
+			} else if (!open) {
+				/* nothing before the first effect */
+			} else if (K("count") || K("countabsolute"))
+				SB_Printf(&out, "\tcount %s\n", a1);
+			else if (K("type")) {
+				const char *ty = !Str_ICmp(a1, "spark") ? "spark" : !Str_ICmp(a1, "beam") ? "beam" : !Str_ICmp(a1, "decal") ? "decal" : "normal";
+				SB_Printf(&out, "\ttype %s\n", ty);
+			} else if (K("color") && t->argc > 1) {
+				unsigned c1 = (unsigned)strtoul(a1, NULL, 0), c2 = (unsigned)strtoul(a2, NULL, 0);
+				int r1 = c1 >> 16 & 255, g1 = c1 >> 8 & 255, b1 = c1 & 255;
+				SB_Printf(&out, "\trgb %d %d %d\n\trgbrand %d %d %d\n", r1, g1, b1, (int)(c2 >> 16 & 255) - r1,
+				          (int)(c2 >> 8 & 255) - g1, (int)(c2 & 255) - b1);
+			} else if (K("size"))
+				SB_Printf(&out, "\tscale %g %g\n", atof(a1) * 2, atof(a2) * 2);
+			else if (K("sizeincrease"))
+				SB_Printf(&out, "\tscaledelta %g\n", atof(a1) * 2);
+			else if (K("alpha") && t->argc > 3)
+				SB_Printf(&out, "\talpha %g\n\talpharand %g\n\talphadelta %g\n", atof(a1) / 256, (atof(a2) - atof(a1)) / 256,
+				          -atof(t->argv[3]) / 256);
+			else if (K("time"))
+				SB_Printf(&out, "\tdie %s %s\n", a1, a2);
+			else if (K("gravity"))
+				SB_Printf(&out, "\tgravity %g\n", atof(a1) * 800);
+			else if (K("bounce"))
+				SB_Printf(&out, "\tclipbounce %s\n", a1);
+			else if (K("airfriction"))
+				SB_Printf(&out, "\tfriction %s\n", a1);
+			else if (K("originoffset") && t->argc > 3)
+				SB_Printf(&out, "\torgbias %s %s %s\n", a1, a2, t->argv[3]);
+			else if (K("velocityoffset") && t->argc > 3)
+				SB_Printf(&out, "\tvelbias %s %s %s\n", a1, a2, t->argv[3]);
+			else if (K("originjitter") && t->argc > 3)
+				SB_Printf(&out, "\torgwrand %s %s %s\n", a1, a2, t->argv[3]);
+			else if (K("velocityjitter") && t->argc > 3)
+				SB_Printf(&out, "\tvelwrand %s %s %s\n", a1, a2, t->argv[3]);
+			else if (K("velocitymultiplier"))
+				SB_Printf(&out, "\tveladd %s\n", a1);
+			else if (K("trailspacing"))
+				SB_Printf(&out, "\tstep %s\n", a1);
+			else if (K("tex"))
+				SB_Printf(&out, "\ttexture particles/particlefont\n\tatlas 8 %s %s\n", a1, t->argc > 2 ? a2 : a1);
+			else if (K("blend"))
+				SB_Printf(&out, "\tblend %s\n", !Str_ICmp(a1, "add") ? "add" : !Str_ICmp(a1, "invmod") ? "invmoda" : "blendalpha");
+			else if (K("stretchfactor"))
+				SB_Printf(&out, "\tstretchfactor %s\n", a1);
+			else if (K("lightradius"))
+				SB_Printf(&out, "\tlightradius %s\n", a1);
+			else if (K("lightradiusfade"))
+				SB_Printf(&out, "\tlightradiusfade %s\n", a1);
+			else if (K("lighttime"))
+				SB_Printf(&out, "\tlighttime %s\n", a1);
+			else if (K("lightcolor") && t->argc > 3)
+				SB_Printf(&out, "\tlightrgb %s %s %s\n", a1, a2, t->argv[3]);
+			else
+				SB_Printf(&out, "\t// %s\n", line);
+#undef K
+		}
+		Mem_Free(t);
+		line = next;
+	}
+	if (open)
+		SB_AppendStr(&out, "}\n");
+	Mem_Free(text);
+	write_text("particles/effectinfo.cfg", out.data, out.len);
+	Con_Printf("%d effects converted\n", effects);
+	SB_Free(&out);
+}
+
 void R_InitParticles(void)
 {
 	r_drawparticles = Cvar_Get("r_drawparticles", "1", CVAR_ARCHIVE, "Draw particle effects");
@@ -1322,10 +1693,20 @@ void R_InitParticles(void)
 	Cmd_Add("r_partreload", reload_f);
 	Cmd_Add("r_effect", effect_f);
 	Cmd_Add("r_partlist", list_f);
+	Cmd_AddD("r_part", part_f, "r_part <name> { properties }: define a particle effect");
+	Cmd_AddD("r_partinfo", partinfo_f, "r_partinfo [effect]: an effect's definition, or the running effects");
+	Cmd_AddD("r_partredirect", partredirect_f, "r_partredirect <effect> [replacement]: use one effect in place of another");
+	Cmd_AddD("r_trail", trail_f, "r_trail <effect> [length]: draw an effect as a trail along the view");
+	Cmd_AddD("r_beaminfo", beaminfo_f, "How many beam segments are alive");
+	Cmd_AddD("r_exportalleffects", exportall_f, "Write every effect read so far to particles/export.cfg");
+	Cmd_AddD("r_exportbuiltinparticles", exportbuiltin_f, "r_exportbuiltinparticles <set>: write one of the engine's effect sets to particles/");
+	R_PCF_Init();
+	Cmd_AddD("r_converteffectinfo", converteffectinfo_f, "r_converteffectinfo [file]: turn DarkPlaces' effectinfo.txt into particles/effectinfo.cfg");
 }
 
 void R_ShutdownParticles(void)
 {
+	R_PCF_Shutdown();
 	free_scripts();
 	dotmat = NULL;
 }

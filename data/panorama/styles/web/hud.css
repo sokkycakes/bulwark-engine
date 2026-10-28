@@ -1,0 +1,293 @@
+/* Stiletto's in-game HUD. The original draws on a canvas authored for a
+   1440 x 1080 (4:3) frame and scales it by view height / 1080; positions
+   here are the canvas coordinates. Centred clusters sit in a 1440-wide stage
+   centred in the view, the resource panel is anchored to the left edge (as
+   the canvas anchors them); hud.js scales both when the view is not 1080
+   design pixels tall. Images are the page's own (assets-data.js). */
+
+.hud
+{
+	width: 100%;
+	height: 100%;
+	overflow: clip;
+}
+
+.stage
+{
+	width: 1440px;
+	height: 1080px;
+	horizontal-align: center;
+	vertical-align: center;
+	overflow: noclip;
+	transform-origin: 50% 50%;
+}
+
+.left
+{
+	width: 600px;
+	height: 1080px;
+	vertical-align: center;
+	overflow: noclip;
+	transform-origin: 0% 50%;
+}
+
+Label
+{
+	color: #ffffff;
+	font-size: 16px;
+}
+
+/* decorative ring, 1386 px across, centred, half opacity */
+.ring
+{
+	x: 27px;
+	y: -153px;
+	width: 1386px;
+	height: 1386px;
+	opacity: 0.5;
+}
+
+/* speedometer: zero-padded speed under the crosshair, faint with a dark rim */
+.speed
+{
+	x: 620px;
+	y: 906px;
+	width: 200px;
+	height: 44px;
+	text-align: center;
+	font-weight: 500;
+	font-size: 32px;
+	color: #d9e0e5;
+	opacity: 0.54;
+	text-shadow: 0px 0px 3px 2 #00000080;
+}
+
+/* match header: time plate, clock, scores, nameplates */
+.time-plate
+{
+	x: 596px;
+	y: 17px;
+	width: 248px;
+	height: 164px;
+}
+
+.timer
+{
+	x: 620px;
+	y: 97px;
+	width: 200px;
+	height: 40px;
+	text-align: center;
+	font-size: 28px;
+}
+
+.score
+{
+	y: 78px;
+	width: 200px;
+	height: 96px;
+	font-size: 76px;
+	color: #c7c7c7;
+	text-shadow: 0px 0px 4px 3 #00000080;
+}
+.score-left { x: 442px; text-align: right; }
+.score-right { x: 803px; text-align: left; }
+
+.nameplate
+{
+	y: 152px;
+	height: 34.8px;
+}
+/* the canvas paints a flat pink over the left plate's gradient */
+.nameplate-left
+{
+	x: 482px;
+	width: 159.8px;
+	background-color: #f88282;
+}
+.nameplate-right
+{
+	x: 803px;
+	width: 160.6px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #3698e2f2 ), to( #14568ff2 ) );
+}
+.name
+{
+	y: 4.5px;
+	height: 24px;
+	font-size: 14.8px;
+}
+.nameplate-left .name { x: 12.7px; width: 140px; text-align: left; }
+.nameplate-right .name { x: 8.6px; width: 140px; text-align: right; }
+
+/* opponent's mini EX pips under the right nameplate */
+.mini-pip
+{
+	y: 192px;
+	width: 20.6px;
+	height: 20.6px;
+}
+.mini-pip-0 { x: 803px; }
+.mini-pip-1 { x: 825.2px; }
+.mini-pip-2 { x: 846.5px; }
+
+/* centre status: health icon, ammo, ability charges, reload */
+.hp
+{
+	x: 702px;
+	y: 600px;
+	width: 35px;
+	height: 35px;
+}
+.hp Image
+{
+	width: 35px;
+	height: 35px;
+	visibility: collapse;
+}
+.hp-normal .hp-full { visibility: visible; }
+.hp-low .hp-low-img { visibility: visible; }
+.hp-dead .hp-dead-img
+{
+	visibility: visible;
+	x: -7.4px;
+	y: -8.9px;
+	width: 50.9px;
+	height: 50.9px;
+}
+/* fill tints: the outline stays black under a multiplying wash */
+.hp-blue Image { wash-color: #4d99ff; }
+.hp-red Image { wash-color: #ff0000; }
+
+.clip
+{
+	x: 694.5px;
+	y: 570px;
+	width: 160px;
+	height: 40px;
+	text-align: center;
+	font-size: 33px;
+}
+.reserve
+{
+	x: 763px;
+	y: 575px;
+	width: 80px;
+	height: 20px;
+	text-align: center;
+	font-size: 16px;
+}
+.reload
+{
+	x: 747px;
+	y: 588px;
+	width: 80px;
+	height: 26px;
+	text-align: center;
+	font-weight: 700;
+	font-size: 20px;
+	color: #e5e5eb;
+	visibility: collapse;
+}
+.reloading .reload { visibility: visible; }
+
+.pip
+{
+	width: 17.4px;
+	height: 17.4px;
+	transform: rotate( -45deg );
+	opacity: 0.2;
+}
+.pip.on { opacity: 0.7; }
+.pip-0 { x: 661px; y: 574.8px; }
+.pip-1 { x: 656px; y: 594.3px; }
+.pip-2 { x: 674.6px; y: 587.5px; }
+
+/* cooldown icons above the bottom edge */
+.cooldown
+{
+	y: 937px;
+	width: 20px;
+	height: 20px;
+	visibility: collapse;
+}
+.cooldown.shown { visibility: visible; }
+.cooldown-0 { x: 649.5px; }
+.cooldown-1 { x: 709.5px; }
+.cooldown-2 { x: 769.5px; }
+.cd-icon
+{
+	width: 100%;
+	height: 100%;
+	opacity: 0.5;
+}
+.cooldown.ready .cd-icon { opacity: 1; }
+.cd-ring
+{
+	width: 100%;
+	height: 100%;
+	border-radius: 50%;
+	border: 1px solid #ffffff33;
+}
+.cd-time
+{
+	x: -20px;
+	y: 945px;
+	width: 60px;
+	height: 16px;
+	text-align: center;
+	font-size: 11px;
+	color: #e5e5eb;
+	visibility: collapse;
+}
+.cd-time.shown { visibility: visible; }
+.cd-time-0 { x: 629.5px; }
+.cd-time-1 { x: 689.5px; }
+.cd-time-2 { x: 749.5px; }
+
+/* resource panel (left): EX plate, the Drive gauge bar, EX count, MAX */
+.ex-plate
+{
+	x: 71px;
+	y: 954px;
+	width: 86px;
+	height: 33px;
+}
+
+.gauge
+{
+	x: 63px;
+	y: 921.7px;
+	width: 482px;
+	height: 31.6px;
+}
+
+.ex-count
+{
+	x: 224px;
+	y: 883px;
+	width: 160px;
+	height: 120px;
+	text-align: center;
+	font-size: 96px;
+	text-shadow: 0px 0px 4px 3 #00000080;
+}
+.ex-max
+{
+	x: 407px;
+	y: 897px;
+	width: 120px;
+	height: 46px;
+	text-align: center;
+	font-size: 36px;
+	text-shadow: 0px 0px 4px 3 #00000080;
+	visibility: collapse;
+}
+.drive-max .ex-max { visibility: visible; }
+
+/* font families, one class per face the canvas used */
+.f-trade { font-family: "Trade Gothic Next LT Pro BdCn"; }
+.f-helv { font-family: "Helvetica Neue 97 Black Condensed"; }
+.f-helv-ob { font-family: "Helvetica Neue 97 Black Condensed Oblique"; }
+.f-iosevka { font-family: "Iosevka Charon Mono"; }
+.f-pixel { font-family: "04b09"; }

@@ -1,0 +1,18 @@
+{
+  "RootObject": {
+    "__guid": "33333333-0000-4000-8000-000000000001",
+    "Flags": 0,
+    "Name": "loop",
+    "Enabled": true,
+    "Components": [],
+    "Children": [
+      {
+        "__guid": "33333333-0000-4000-8000-000000000002",
+        "__Prefab": "prefabs/loop.prefab",
+        "__PrefabInstancePatch": { "AddedObjects": [], "RemovedObjects": [], "PropertyOverrides": [], "MovedObjects": [] },
+        "__PrefabIdToInstanceId": {}
+      }
+    ]
+  },
+  "__version": 2
+}

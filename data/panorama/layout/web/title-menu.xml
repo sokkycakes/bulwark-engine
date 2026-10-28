@@ -1,0 +1,103 @@
+<!--
+	Panorama port of Stiletto's data/web/title-menu/index.html: the first
+	title page (the engine's default webcore_menu_url). Figma 16:9 frame
+	1365 x 768: positions are percentages of the view, as the page's own
+	calc(100% * n / 1365|768) are, and sizes the page gives in 100vh / 768
+	are at the 1080-line design height. The Create / Join Lobby dialog is
+	shared with title-menu-v2.xml.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/title-menu.css" />
+		<include src="file://{resources}/styles/web/title-join-dialog.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/title-menu.js" />
+	</scripts>
+
+	<Panel id="Stage" class="stage title-v1">
+		<Panel class="band" hittest="false">
+			<Panel class="band-red" hittest="false" />
+			<Panel class="band-edge band-edge-top" hittest="false" />
+			<Panel class="band-edge band-edge-bottom" hittest="false" />
+		</Panel>
+
+		<Panel id="FocusBar" class="focus-bar" hittest="false">
+			<Panel class="focus-edge focus-edge-top" hittest="false" />
+			<Panel class="focus-edge focus-edge-bottom" hittest="false" />
+		</Panel>
+
+		<Button id="Item0" class="menu-item item-0" onactivate="TitleMenu.Click(0)" onmouseover="TitleMenu.Hover(0)">
+			<Label text="Create Lobby" hittest="false" />
+		</Button>
+		<Button id="Item1" class="menu-item item-1" onactivate="TitleMenu.Click(1)" onmouseover="TitleMenu.Hover(1)">
+			<Label text="Join Lobby" hittest="false" />
+		</Button>
+		<Button id="Item2" class="menu-item item-2" onactivate="TitleMenu.Click(2)" onmouseover="TitleMenu.Hover(2)">
+			<Label text="Settings" hittest="false" />
+		</Button>
+		<Button id="Item3" class="menu-item item-3" onactivate="TitleMenu.Click(3)" onmouseover="TitleMenu.Hover(3)">
+			<Label text="Quit" hittest="false" />
+		</Button>
+
+		<!-- the page inlines these as data: URLs; the same files are in its
+		     assets/ folder -->
+		<Panel class="logo" hittest="false" />
+		<Panel class="hint-glyph" hittest="false" />
+		<Label class="hint-label" text="Settings" hittest="false" />
+		<Panel class="tp-logo" hittest="false" />
+
+		<Panel id="JoinDialog" class="join-dialog hidden">
+			<Panel class="join-backdrop" onactivate="TitleMenu.CloseJoin()" />
+			<Panel class="join-panel">
+				<Label id="JoinTitle" class="join-head" text="Join Lobby" />
+				<Panel class="join-body">
+					<Panel id="CreateOptions" class="join-section create-options">
+						<Label class="join-text" text="Choose how friends will join your lobby." />
+						<Button class="btn" onactivate="TitleMenu.CreateLobby(true)">
+							<Label text="Online — share a room code" />
+						</Button>
+						<Button class="btn" onactivate="TitleMenu.CreateLobby(false)">
+							<Label text="LAN — same local network" />
+						</Button>
+					</Panel>
+					<Panel id="JoinLan" class="join-section join-lan">
+						<Panel class="join-row">
+							<Label class="join-label" text="Local LAN" />
+							<Button id="JoinRefresh" class="btn btn-right" onactivate="TitleMenu.Refresh()">
+								<Label text="Refresh" />
+							</Button>
+						</Panel>
+						<Panel id="JoinList" class="join-list">
+							<Label class="join-empty" text="Press Refresh to find LAN lobbies" />
+						</Panel>
+						<Button id="JoinConnect" class="btn" onactivate="TitleMenu.JoinSelected()">
+							<Label text="Join Selected" />
+						</Button>
+					</Panel>
+					<Panel id="JoinAddrSection" class="join-section join-addr">
+						<Label class="join-label" text="Address / IP" />
+						<Panel class="join-row">
+							<TextEntry id="JoinAddr" class="join-input" text="127.0.0.1:27501" maxchars="64" />
+							<Button class="btn" onactivate="TitleMenu.JoinAddress()">
+								<Label text="Join" />
+							</Button>
+						</Panel>
+					</Panel>
+					<Panel id="JoinCodeSection" class="join-section join-code">
+						<Label class="join-label" text="Room Code (online)" />
+						<Panel class="join-row">
+							<TextEntry id="JoinCode" class="join-input" placeholder="ABCD12" maxchars="32" oninputsubmit="TitleMenu.JoinCode()" />
+							<Button class="btn" onactivate="TitleMenu.JoinCode()">
+								<Label text="Join" />
+							</Button>
+						</Panel>
+					</Panel>
+					<Button class="btn btn-ghost" onactivate="TitleMenu.CloseJoin()">
+						<Label text="Back" />
+					</Button>
+				</Panel>
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

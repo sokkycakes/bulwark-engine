@@ -13,6 +13,8 @@
 #include "../common/common.h"
 #include "progs.h"
 
+#include <stdio.h>
+
 typedef int32_t string_t;
 typedef int32_t func_t;
 
@@ -37,6 +39,9 @@ typedef struct {
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
 	uint64_t profile; /* statements run in this function while qc_profiling */
+	/* profile_ssqc and friends */
+	uint64_t prof_statements, prof_calls;
+	double prof_time; /* builtins only */
 } qcfunc_t;
 
 typedef struct {
@@ -103,13 +108,6 @@ typedef struct {
 
 /* the parts of a VM that belong to one progs; the VM's own copies of these
  * fields are those of the progs that is running now */
-/* a global named autocvar_<name>, kept equal to cvar <name> */
-typedef struct {
-	struct cvar_s *var;
-	int ofs;
-	int type;
-} qcautocvar_t;
-
 typedef struct {
 	char name[64];
 	uint8_t *progsdata;
@@ -135,8 +133,6 @@ typedef struct {
 	int extparm_ofs[QC_MAX_EXTPARMS];
 	uint8_t *missing_reported;
 	qc_namehash_t globalhash, fieldhash, funchash;
-	qcautocvar_t *autocvars;
-	int numautocvars;
 } qcprogs_t;
 
 
@@ -207,6 +203,10 @@ struct qcvm_s {
 	/* per-module helper tables (files, hash tables, json) */
 	struct qc_extra_s *extra;
 
+	/* autocvar_ globals, see qc_autocvar.c */
+	struct qc_autocvar_s *autocvars;
+	int numautocvars, autocvar_gen;
+
 	/* random */
 	uint64_t rng;
 
@@ -217,11 +217,20 @@ struct qcvm_s {
 	qcprogs_t progs[QC_MAX_PROGS];
 	int numprogs;
 	int curprogs;
-	int autocvar_gen; /* Cvar_Generation() when the autocvars were last copied */
 	const qc_builtin_t *const *tables;
 
 	/* the model name behind a modelindex, for skeletons and tags */
 	const char *(*modelname)(qcvm_t *vm, int modelindex);
+
+	/* debugging (qc_debug.c): any of these makes the interpreter call in */
+	bool debug_hooks;
+	bool profiling;
+	double profile_start;
+	char breakpoint[64];
+	struct qc_watch_s *watch;
+
+	/* called as an entity slot is freed, before its fields are cleared */
+	void (*free_hook)(qcvm_t *vm, int e);
 };
 
 /* string handles: 0 is the empty/null string, small values index the progs
@@ -232,6 +241,9 @@ struct qcvm_s {
 qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kind,
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize);
 void QC_Free(qcvm_t *vm);
+/* every loaded VM (server, client game, menu) */
+int QC_VMCount(void);
+qcvm_t *QC_VMAt(int i);
 
 /* multiprogs: adds a progs to the VM and runs its init(); returns its number or -1 */
 int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size);
@@ -289,6 +301,12 @@ const char *QC_ParseEdict(qcvm_t *vm, int e, const char *data, bool *ok);
 bool QC_SetFieldFromString(qcvm_t *vm, int e, qcdef_t *field, const char *value);
 void QC_FieldToString(qcvm_t *vm, int e, qcdef_t *field, char *out, size_t outsize);
 
+/* file handles opened by the engine for the game (qc_extra.c); the game
+ * normally closes them with fclose, QC_CloseHandle covers when it doesn't */
+int QC_OpenWriteHandle(qcvm_t *vm, FILE *fp);
+int QC_OpenReadHandle(qcvm_t *vm, const char *data, size_t len);
+void QC_CloseHandle(qcvm_t *vm, int h);
+
 /* memory */
 void *QC_Pointer(qcvm_t *vm, uint32_t addr, size_t bytes); /* errors if out of range */
 uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes);
@@ -297,6 +315,10 @@ uint32_t QC_HeapRealloc(qcvm_t *vm, uint32_t addr, size_t bytes);
 
 /* random numbers in [0,1) */
 float QC_Random(qcvm_t *vm);
+
+/* sprintf's formatting: the format string in parameter fmtparm, its
+ * arguments after it; the caller frees out with SB_Free */
+void QC_Format(qcvm_t *vm, int fmtparm, strbuf_t *out);
 
 /* parameter and return helpers for builtins */
 qcval_t *QC_Parm(qcvm_t *vm, int n);
@@ -351,6 +373,21 @@ static inline void QC_SetEInt(qcvm_t *vm, int e, int ofs, int32_t v)
 	if (ofs >= 0)
 		QC_EdictFields(vm, e)[ofs].i = v;
 }
+
+/* r_meshpitch: the sign that mesh models' pitch carries, -1 for Quake (a
+ * model's angles pitch up where a view's pitch down) and 1 for games that
+ * use one convention for both, as Nuclide does (it sets r_meshpitch 1).
+ * vectoangles, mesh model drawing and tag matrices follow it. */
+float QC_MeshPitch(void);
+
+/* qc_debug.c: profile_*, coredump_*, extensionlist_*, breakpoint, watchpoint,
+ * poke and pr_dumpplatform for each VM */
+void QC_InitDebugCommands(void);
+void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f);
+void QC_DebugStatement(qcvm_t *vm, int s);
+void QC_DebugUpdateHooks(qcvm_t *vm);
+void QC_CoreDump(qcvm_t *vm, const char *why);
+extern const char *const qc_supported_extensions[];
 
 /* builtin tables shared by every module */
 extern const qc_builtin_t qc_builtins_core[];

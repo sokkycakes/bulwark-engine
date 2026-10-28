@@ -6,11 +6,18 @@
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
+#ifdef __3DS__
+void CTR_PrintMemory(const char *when);
+#endif
 
 int developer = 0;
-static con_hook_fn con_hook;
+static con_hook_fn con_hook, con_log_hook;
+static strbuf_t *con_redirect;
+
+void Con_Redirect(strbuf_t *sb) { con_redirect = sb; }
 
 void Con_SetHook(con_hook_fn fn) { con_hook = fn; }
+void Con_SetLogHook(con_hook_fn fn) { con_log_hook = fn; }
 
 static loading_hook_fn loading_hook;
 
@@ -26,6 +33,10 @@ void Con_Print(const char *text)
 {
 	if (con_hook)
 		con_hook(text);
+	if (con_log_hook)
+		con_log_hook(text);
+	if (con_redirect)
+		SB_AppendStr(con_redirect, text);
 	fputs(text, stdout);
 	fflush(stdout);
 }
@@ -60,6 +71,9 @@ void Sys_Error(const char *fmt, ...)
 	vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 	fprintf(stderr, "FATAL: %s\n", buf);
+#ifdef __3DS__
+	CTR_PrintMemory("at the error");
+#endif
 	exit(1);
 }
 
@@ -88,7 +102,7 @@ void *Mem_Alloc(size_t size)
 {
 	void *p = calloc(1, size ? size : 1);
 	if (!p)
-		Sys_Error("out of memory allocating %zu bytes", size);
+		Sys_Error("out of memory allocating %zu bytes (from %p)", size, __builtin_return_address(0));
 	return p;
 }
 
@@ -146,6 +160,37 @@ int Str_NICmp(const char *a, const char *b, size_t n)
 			return ca - cb;
 	}
 	return 0;
+}
+
+bool Str_NeedsEscape(const char *s)
+{
+	return strpbrk(s, "\"\\\n\r\t") != NULL;
+}
+
+size_t Str_ParseEscaped(const char **pp, char *out, size_t outsize)
+{
+	const char *p = *pp + 2; /* past \" */
+	size_t n = 0;
+	while (*p && *p != '"') {
+		char c = *p++;
+		if (c == '\\' && *p) {
+			c = *p++;
+			if (c == 'n')
+				c = '\n';
+			else if (c == 't')
+				c = '\t';
+			else if (c == 'r')
+				c = '\r';
+		}
+		if (n + 1 < outsize)
+			out[n++] = c;
+	}
+	if (*p == '"')
+		p++;
+	if (outsize)
+		out[n] = 0;
+	*pp = p;
+	return n;
 }
 
 bool Str_WildMatch(const char *p, const char *s, bool nocase)

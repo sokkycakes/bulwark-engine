@@ -303,6 +303,44 @@ static void close_file(qc_file_t *f)
 	memset(f, 0, sizeof(*f));
 }
 
+/* handles the engine opens for the game, as savegames hand a file to
+ * SV_PerformSave and SV_PerformLoad: a file being written, or a copy of the
+ * text to read */
+int QC_OpenWriteHandle(qcvm_t *vm, FILE *fp)
+{
+	int h = alloc_file(vm);
+	if (h < 0)
+		return -1;
+	memset(&vm->extra->files[h], 0, sizeof(qc_file_t));
+	vm->extra->files[h].fp = fp;
+	vm->extra->files[h].write = true;
+	vm->extra->files[h].inuse = true;
+	return h;
+}
+
+int QC_OpenReadHandle(qcvm_t *vm, const char *data, size_t len)
+{
+	int h = alloc_file(vm);
+	qc_file_t *f;
+	if (h < 0)
+		return -1;
+	f = &vm->extra->files[h];
+	memset(f, 0, sizeof(*f));
+	f->data = Mem_Alloc(len + 1);
+	memcpy(f->data, data, len);
+	f->data[len] = 0;
+	f->len = len;
+	f->inuse = true;
+	return h;
+}
+
+/* closes a handle the game was meant to close but didn't */
+void QC_CloseHandle(qcvm_t *vm, int h)
+{
+	if (h >= 0 && h < QC_MAX_FILES && vm->extra->files[h].inuse)
+		close_file(&vm->extra->files[h]);
+}
+
 static void bi_fclose(qcvm_t *vm)
 {
 	int h = (int)QC_PFLOAT(vm, 0);
@@ -468,8 +506,32 @@ static void bi_search_begin(qcvm_t *vm)
 	ctx.s = &vm->extra->searches[h];
 	memset(ctx.s, 0, sizeof(*ctx.s));
 	ctx.s->inuse = true;
-	FS_List(pattern, (flags & 1) != 0, search_add, &ctx);
+	if (flags & 16) {
+		/* SB_MULTISEARCH: patterns separated by colons */
+		char one[1024];
+		for (const char *p = pattern; *p;) {
+			const char *e = strchr(p, ':');
+			size_t n = e ? (size_t)(e - p) : strlen(p);
+			if (n && n < sizeof(one)) {
+				memcpy(one, p, n);
+				one[n] = 0;
+				FS_List(one, (flags & 1) != 0, search_add, &ctx);
+			}
+			p += n + (e ? 1 : 0);
+		}
+	} else {
+		FS_List(pattern, (flags & 1) != 0, search_add, &ctx);
+	}
 	qsort(ctx.s->names, (size_t)ctx.s->count, sizeof(char *), cmp_names);
+	/* a file several patterns found is listed once */
+	int kept = 0;
+	for (int i = 0; i < ctx.s->count; i++) {
+		if (kept && !strcmp(ctx.s->names[kept - 1], ctx.s->names[i]))
+			Mem_Free(ctx.s->names[i]);
+		else
+			ctx.s->names[kept++] = ctx.s->names[i];
+	}
+	ctx.s->count = kept;
 	QC_ReturnFloat(vm, (float)h);
 }
 

@@ -6,7 +6,10 @@
 #include "common/cmd.h"
 #include "common/cvar.h"
 #include "common/fs.h"
+#include "common/manifest.h"
+#include "common/worker.h"
 #include "net/net.h"
+#include "net/pkg.h"
 #include "server/sv_local.h"
 
 static bool quit_requested;
@@ -19,7 +22,7 @@ static bool ServerFallback(const char *line, int argc, const char **argv) { retu
 
 static void usage(void)
 {
-	Con_Printf("usage: bulwark-ded [-basedir dir] [-game dir]... [-frames n] [+command args]...\n");
+	Con_Printf("usage: bulwark-ded [-basedir dir] [-game dir]... [-enginedata dir] [-frames n] [+command args]...\n");
 }
 
 int main(int argc, char **argv)
@@ -35,6 +38,8 @@ int main(int argc, char **argv)
 			basedir = argv[++i];
 		else if (!strcmp(argv[i], "-game") && i + 1 < argc && numgames < 16)
 			games[numgames++] = argv[++i];
+		else if (!strcmp(argv[i], "-enginedata") && i + 1 < argc)
+			FS_SetEngineDir(argv[++i]);
 		else if (!strcmp(argv[i], "-frames") && i + 1 < argc)
 			maxframes = strtol(argv[++i], NULL, 10);
 		else if (!strcmp(argv[i], "-developer"))
@@ -61,14 +66,16 @@ int main(int argc, char **argv)
 	Cvar_Init();
 	Cmd_Init();
 	FS_Init(basedir);
-	if (!numgames)
-		games[numgames++] = "base";
-	for (int i = 0; i < numgames; i++)
-		FS_AddGameDir(games[i]);
+	Mf_Startup(games, numgames);
 	NET_Init();
+	PKG_Init();
 	SV_Init();
+	QC_InitDebugCommands();
 	Cmd_Add("quit", Quit_f);
 	Cmd_Add("path", Path_f);
+	Cmd_DescribeAll();
+	Cmd_ProtectLocal();
+	Plug_AutoLoad();
 	Cmd_SetPreHook(ServerFallback);
 
 	if (FS_FileExists("server.cfg"))
@@ -96,10 +103,15 @@ int main(int argc, char **argv)
 		}
 		host_time += dt;
 		NET_RunDelayed();
+		PKG_Frame();
+		Worker_Frame();
+		Plug_Frame();
+		QC_URIFrame();
 		SV_Frame(dt);
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("status");
+	Plug_Shutdown();
 	SV_Shutdown();
 	return 0;
 }

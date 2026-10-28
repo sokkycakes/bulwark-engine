@@ -1,9 +1,11 @@
 /* Bulwark engine - server: progs lifecycle, map loading, entity spawning,
  * think and movement physics. ISC licence, see LICENSE. */
 #include "sv_local.h"
+#include "../script/script.h"
 #include "../common/cvar.h"
 #include "../common/cmd.h"
 #include "../common/fs.h"
+#include "../scene/scene.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -167,13 +169,26 @@ int SV_Spawn(void)
  * fields named by its keys are filled in, __fullspawndata is set to the
  * entity's raw text, and the progs' CheckSpawn(spawnfunc) is called if it
  * has one; otherwise the function named by the classname is called. */
+static int spawn_entities(const char *data, bool world, int *first);
+
 static void spawn_map_entities(const char *data)
+{
+	spawn_entities(data, true, NULL);
+}
+
+/* entity text spawned into the running map, as ent_create does; returns
+ * how many blocks were spawned and the first one's number */
+int SV_SpawnEntitiesFromText(const char *data, int *first) { return spawn_entities(data, false, first); }
+
+static int spawn_entities(const char *data, bool world, int *first)
 {
 	qcvm_t *vm = sv.vm;
 	int checkspawn = QC_FindFunction(vm, "CheckSpawn");
 	int fullspawn = QC_GlobalOfs(vm, "__fullspawndata");
 	int count = 0, failed = 0;
-	bool world = true;
+	bool map = world;
+	if (first)
+		*first = 0;
 
 	for (;;) {
 		char token[64];
@@ -192,6 +207,8 @@ static void spawn_map_entities(const char *data)
 		e = world ? 0 : SV_Spawn();
 		if (world)
 			init_edict_defaults(0);
+		if (first && !*first)
+			*first = e;
 		next = QC_ParseEdict(vm, e, data, &ok);
 		if (!ok || !next) {
 			Con_Printf("^3entity lump: parse error\n");
@@ -234,20 +251,25 @@ static void spawn_map_entities(const char *data)
 		count++;
 		world = false;
 	}
-	Con_Printf("%d map entities parsed, %d with no QC function for their classname\n", count, failed);
+	if (map)
+		Con_Printf("%d map entities parsed, %d with no QC function for their classname\n", count, failed);
+	return count;
 }
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, sv_stat_builtins, sv_link_builtins, sv_sql_builtins, qc_uri_builtins, script_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
-	SV_ClearRoutes();
+	SV_MVDMapChanged();
 	if (sv.vm) {
 		if (QC_FindFunction(sv.vm, "SV_Shutdown"))
 			QC_ExecuteByName(sv.vm, "SV_Shutdown");
+		SV_SQLShutdown();
+		Script_LevelShutdown();
 		QC_Free(sv.vm);
+		SV_FreeRoutes();
 	}
 	for (int i = 1; i < sv.nummodels; i++) {
 		if (sv.modelinfo[i].bsp && sv.modelinfo[i].bsp != sv.world)
@@ -263,6 +285,7 @@ void SV_Shutdown(void)
 	for (int i = 0; i < sv.numcommands; i++)
 		Mem_Free(sv.commands[i]);
 	BSP_Free(sv.world);
+	SV_VoxelShutdown();
 	memset(&sv, 0, sizeof(sv));
 }
 
@@ -273,6 +296,8 @@ bool SV_SpawnServer(const char *mapname)
 	char *progs;
 	qcvm_t *vm;
 	char keep_serverinfo[8192], keep_localinfo[8192];
+	scenefile_t *scene = NULL;
+	scene_entinfo_t sceneinfo;
 
 	Str_Copy(keep_serverinfo, sv.serverinfo, sizeof(keep_serverinfo));
 	Str_Copy(keep_localinfo, sv.localinfo, sizeof(keep_localinfo));
@@ -280,11 +305,48 @@ bool SV_SpawnServer(const char *mapname)
 	Str_Copy(sv.serverinfo, keep_serverinfo, sizeof(sv.serverinfo));
 	Str_Copy(sv.localinfo, keep_localinfo, sizeof(sv.localinfo));
 
-	snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
+	Terrain_PrepareMap(mapname);
 	Host_Loading("server_world", mapname, 0.0f);
+	/* maps/<name>.scene wins over maps/<name>.bsp; its MapInstance names the world */
+	snprintf(path, sizeof(path), "maps/%s.scene", mapname);
+	if (FS_FileExists(path)) {
+		scenefile_t *sf = Scene_Load(path);
+		scene_prefabcache_t *prefabs = Scene_NewPrefabCache();
+		if (!sf) {
+			Scene_FreePrefabCache(prefabs);
+			Host_Loading(NULL, NULL, 0);
+			return false;
+		}
+		scene = Scene_Resolve(sf, Scene_PrefabCacheLoad, prefabs);
+		Scene_Free(sf);
+		Scene_FreePrefabCache(prefabs);
+		Scene_MapInfo(scene, &sceneinfo);
+		if (!sceneinfo.mapname[0]) {
+			Con_Printf("%s has no MapInstance naming a BSP\n", path);
+			Scene_Free(scene);
+			Host_Loading(NULL, NULL, 0);
+			return false;
+		}
+		Str_Copy(path, sceneinfo.mapname, sizeof(path));
+	} else {
+		/* then a BSP, then a void voxel map, then an FTEW world */
+		snprintf(path, sizeof(path), "maps/%s.bsp", mapname);
+		if (!FS_FileExists(path)) {
+			char alt[160];
+			snprintf(alt, sizeof(alt), "maps/%s.vxmap", mapname);
+			if (FS_FileExists(alt))
+				Str_Copy(path, alt, sizeof(path));
+			else {
+				snprintf(alt, sizeof(alt), "maps/%s.ftew", mapname);
+				if (FS_FileExists(alt))
+					Str_Copy(path, alt, sizeof(path));
+			}
+		}
+	}
 	sv.world = BSP_Load(path);
 	if (!sv.world) {
 		Con_Printf("couldn't load map %s\n", path);
+		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
@@ -298,6 +360,7 @@ bool SV_SpawnServer(const char *mapname)
 	progs = FS_LoadFile(sv_progs->string, &len);
 	if (!progs) {
 		Con_Printf("couldn't load %s\n", sv_progs->string);
+		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
@@ -305,12 +368,14 @@ bool SV_SpawnServer(const char *mapname)
 	             (size_t)BW_MAX(1, pr_heapsize->ivalue) * 1024 * 1024);
 	Mem_Free(progs);
 	if (!vm) {
+		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
 	vm->host = &sv;
 	vm->modelname = SV_ModelName;
 	sv.vm = vm;
+	Script_LevelInit(vm);
 	SV_SetupClientSlots();
 	vm->reserved_edicts = svs.maxclients;
 	vm->num_edicts = svs.maxclients + 1;
@@ -365,10 +430,36 @@ bool SV_SpawnServer(const char *mapname)
 		QC_ExecuteByName(vm, "initents");
 	}
 
+	/* maps/<name>.ent, when present, replaces the map's own entity lump */
+	{
+		char entpath[160];
+		size_t entlen;
+		char *ents;
+		snprintf(entpath, sizeof(entpath), "maps/%s.ent", mapname);
+		if ((ents = FS_LoadFile(entpath, &entlen))) {
+			Con_Printf("using entities from %s\n", entpath);
+			Mem_Free(sv.world->entities);
+			sv.world->entities = ents;
+		}
+	}
+	Script_LevelPreSpawn();
 	Host_Loading("server_entities", mapname, 0.15f);
-	spawn_map_entities(sv.world->entities);
+	if (scene) {
+		strbuf_t ents = {0};
+		Scene_BuildEntities(scene, sv.world->entities, &ents, &sceneinfo);
+		Scene_Free(scene);
+		Con_Printf("scene %s: %d entities from the scene, %d components with no entity\n", mapname,
+		           sceneinfo.numentities, sceneinfo.numskipped);
+		spawn_map_entities(ents.data ? ents.data : "");
+		SB_Free(&ents);
+	} else {
+		spawn_map_entities(sv.world->entities);
+	}
 	sv.spawning = false;
+	Script_LevelSpawned();
 	SV_ClientsMapChanged();
+	SV_MVDMapSpawned();
+	SV_MasterMapSpawned();
 	QC_CollectGarbage(vm, true);
 	Con_Printf("map %s: %d entities in use, %d models, %d sounds precached\n", mapname,
 	           vm->num_edicts, sv.nummodels - 1, sv.numsounds - 1);
@@ -377,24 +468,34 @@ bool SV_SpawnServer(const char *mapname)
 
 /* --- physics --------------------------------------------------------- */
 
-static float *ev(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(sv.vm, e)[ofs].f; }
+/* The movement below runs for whichever module's entities are current: the
+ * server's from SV_Physics, or the client game's from W_RunEntityPhysics
+ * (with SV_SetWorldContext pointing traces at the client's world). */
+static qcvm_t *pv;
+static double ptime;
+static float pdt, pgrav;
+static bool pmove_ents;
+#define PF pv->fofs
+#define PG pv->gofs
+
+static float *ev(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(pv, e)[ofs].f; }
 
 static bool run_think(int e, float thinktime_limit)
 {
-	qcvm_t *vm = sv.vm;
-	float thinktime = QC_EFloat(vm, e, F.nextthink);
+	qcvm_t *vm = pv;
+	float thinktime = QC_EFloat(vm, e, PF.nextthink);
 	func_t think;
 	if (thinktime <= 0 || thinktime > thinktime_limit)
 		return true;
-	if (thinktime < sv.time)
-		thinktime = (float)sv.time;
-	QC_SetEFloat(vm, e, F.nextthink, 0);
-	think = QC_EInt(vm, e, F.think);
+	if (thinktime < ptime)
+		thinktime = (float)ptime;
+	QC_SetEFloat(vm, e, PF.nextthink, 0);
+	think = QC_EInt(vm, e, PF.think);
 	if (!think)
 		return true;
-	QC_SetGFloat(vm, G.time, thinktime);
-	QC_SetGInt(vm, G.self, e);
-	QC_SetGInt(vm, G.other, 0);
+	QC_SetGFloat(vm, PG.time, thinktime);
+	QC_SetGInt(vm, PG.self, e);
+	QC_SetGInt(vm, PG.other, 0);
 	QC_Execute(vm, think);
 	return !vm->edicts[e].free;
 }
@@ -412,24 +513,24 @@ static void clamp_velocity(float *vel)
 
 static void impact(int e, int other)
 {
-	qcvm_t *vm = sv.vm;
-	int oldself = QC_GInt(vm, G.self), oldother = QC_GInt(vm, G.other);
-	func_t t = QC_EInt(vm, e, F.touch);
-	if (t && QC_EFloat(vm, e, F.solid) != SOLID_NOT) {
-		QC_SetGInt(vm, G.self, e);
-		QC_SetGInt(vm, G.other, other);
+	qcvm_t *vm = pv;
+	int oldself = QC_GInt(vm, PG.self), oldother = QC_GInt(vm, PG.other);
+	func_t t = QC_EInt(vm, e, PF.touch);
+	if (t && QC_EFloat(vm, e, PF.solid) != SOLID_NOT) {
+		QC_SetGInt(vm, PG.self, e);
+		QC_SetGInt(vm, PG.other, other);
 		QC_Execute(vm, t);
 	}
 	if (other > 0 && !vm->edicts[other].free) {
-		t = QC_EInt(vm, other, F.touch);
-		if (t && QC_EFloat(vm, other, F.solid) != SOLID_NOT) {
-			QC_SetGInt(vm, G.self, other);
-			QC_SetGInt(vm, G.other, e);
+		t = QC_EInt(vm, other, PF.touch);
+		if (t && QC_EFloat(vm, other, PF.solid) != SOLID_NOT) {
+			QC_SetGInt(vm, PG.self, other);
+			QC_SetGInt(vm, PG.other, e);
 			QC_Execute(vm, t);
 		}
 	}
-	QC_SetGInt(vm, G.self, oldself);
-	QC_SetGInt(vm, G.other, oldother);
+	QC_SetGInt(vm, PG.self, oldself);
+	QC_SetGInt(vm, PG.other, oldother);
 }
 
 static void clip_velocity(const float *in, const float *normal, float *out, float overbounce)
@@ -445,31 +546,31 @@ static void clip_velocity(const float *in, const float *normal, float *out, floa
 /* toss, bounce and fly-missile movement */
 static void physics_toss(int e, int movetype)
 {
-	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
-	float end[3], dt = sv.frametime;
-	int flags = (int)QC_EFloat(sv.vm, e, F.flags);
+	float *org = ev(e, PF.origin), *vel = ev(e, PF.velocity), *ang = ev(e, PF.angles), *avel = ev(e, PF.avelocity);
+	float end[3], dt = pdt;
+	int flags = (int)QC_EFloat(pv, e, PF.flags);
 	svtrace_t tr;
 	if (!org || !vel)
 		return;
 	if ((flags & FL_ONGROUND) && movetype != MOVETYPE_FLY && movetype != MOVETYPE_FLYMISSILE) {
 		if (vel[0] == 0 && vel[1] == 0 && vel[2] == 0)
 			return;
-		QC_SetEFloat(sv.vm, e, F.flags, (float)(flags & ~FL_ONGROUND));
+		QC_SetEFloat(pv, e, PF.flags, (float)(flags & ~FL_ONGROUND));
 	}
 	clamp_velocity(vel);
 	if (movetype == MOVETYPE_TOSS || movetype == MOVETYPE_BOUNCE || movetype == MOVETYPE_PHYSICS) {
-		float grav = F.gravity >= 0 && QC_EFloat(sv.vm, e, F.gravity) ? QC_EFloat(sv.vm, e, F.gravity) : 1;
-		vel[2] -= grav * sv_gravity->value * dt;
+		float grav = PF.gravity >= 0 && QC_EFloat(pv, e, PF.gravity) ? QC_EFloat(pv, e, PF.gravity) : 1;
+		vel[2] -= grav * pgrav * dt;
 	}
 	if (ang && avel)
 		for (int i = 0; i < 3; i++)
 			ang[i] += avel[i] * dt;
 	for (int i = 0; i < 3; i++)
 		end[i] = org[i] + vel[i] * dt;
-	SV_Move(org, ev(e, F.mins), ev(e, F.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
+	SV_Move(org, ev(e, PF.mins), ev(e, PF.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
 	VectorCopy(tr.endpos, org);
 	SV_LinkEdict(e, true);
-	if (sv.vm->edicts[e].free || tr.fraction == 1)
+	if (pv->edicts[e].free || tr.fraction == 1)
 		return;
 	if (tr.allsolid) {
 		/* stuck: stop rather than tunnel */
@@ -479,75 +580,179 @@ static void physics_toss(int e, int movetype)
 	clip_velocity(vel, tr.normal, vel, (movetype == MOVETYPE_BOUNCE) ? 1.5f : 1.0f);
 	if (tr.normal[2] > 0.7f && movetype != MOVETYPE_FLY && movetype != MOVETYPE_FLYMISSILE) {
 		if (vel[2] < 60 || movetype != MOVETYPE_BOUNCE) {
-			QC_SetEFloat(sv.vm, e, F.flags, (float)((int)QC_EFloat(sv.vm, e, F.flags) | FL_ONGROUND));
-			QC_SetEInt(sv.vm, e, F.groundentity, tr.ent);
+			QC_SetEFloat(pv, e, PF.flags, (float)((int)QC_EFloat(pv, e, PF.flags) | FL_ONGROUND));
+			QC_SetEInt(pv, e, PF.groundentity, tr.ent);
 			VectorClear(vel);
 			if (avel)
 				VectorClear(avel);
 		}
 	}
+	/* touch functions read the hit from the trace globals: Nuclide's
+	 * projectiles take trace_endpos and trace_plane_normal as the impact */
+	SV_SetTraceGlobals(&tr);
 	impact(e, tr.ent);
 }
 
-/* brush movers: move without collision for now and advance ltime */
+/* Moves what rides on or stands in the way of a brush mover by the same
+ * amount. Riders are entities on the ground of the pusher; anything else is
+ * pushed when the moved brushes now overlap it. If a pushed entity would
+ * end up inside something, everything goes back and the pusher's blocked
+ * function runs. Only translation pushes; turning movers carry nothing. */
+static bool push_entities(int pusher, const float *move)
+{
+	qcvm_t *vm = pv;
+	int moved[512], nmoved = 0;
+	float saved[512][3];
+	float *porg = ev(pusher, PF.origin), *pmin = ev(pusher, PF.absmin), *pmax = ev(pusher, PF.absmax);
+	float lo[3], hi[3];
+	for (int i = 0; i < 3; i++) {
+		lo[i] = pmin[i] + BW_MIN(move[i], 0);
+		hi[i] = pmax[i] + BW_MAX(move[i], 0);
+	}
+	for (int i = 0; i < 3; i++)
+		porg[i] += move[i];
+	SV_LinkEdict(pusher, false);
+	for (int e = 1; e < vm->num_edicts; e++) {
+		int mt, solid, flags;
+		float *org, *amin, *amax;
+		bool riding;
+		svtrace_t tr;
+		if (vm->edicts[e].free || e == pusher)
+			continue;
+		mt = (int)QC_EFloat(vm, e, PF.movetype);
+		solid = (int)QC_EFloat(vm, e, PF.solid);
+		if (mt == MOVETYPE_PUSH || mt == MOVETYPE_NONE || mt == MOVETYPE_NOCLIP || mt == MOVETYPE_FOLLOW)
+			continue;
+		if (solid == SOLID_NOT || solid == SOLID_TRIGGER || solid == SOLID_BSP || solid == SOLID_BSPTRIGGER)
+			continue;
+		org = ev(e, PF.origin);
+		amin = ev(e, PF.absmin);
+		amax = ev(e, PF.absmax);
+		if (!org || !amin || !amax)
+			continue;
+		if (amin[0] > hi[0] || amin[1] > hi[1] || amin[2] > hi[2] || amax[0] < lo[0] || amax[1] < lo[1] ||
+		    amax[2] < lo[2])
+			continue;
+		flags = (int)QC_EFloat(vm, e, PF.flags);
+		riding = (flags & FL_ONGROUND) && QC_EInt(vm, e, PF.groundentity) == pusher;
+		if (!riding && !SV_InsideBrushEntity(pusher, e))
+			continue;
+		if (nmoved < 512) {
+			moved[nmoved] = e;
+			VectorCopy(org, saved[nmoved]);
+			nmoved++;
+		}
+		for (int i = 0; i < 3; i++)
+			org[i] += move[i];
+		if (!riding)
+			QC_SetEFloat(vm, e, PF.flags, (float)(flags & ~FL_ONGROUND));
+		SV_LinkEdict(e, false);
+		SV_Move(org, ev(e, PF.mins), ev(e, PF.maxs), org, MOVE_NORMAL, e, &tr);
+		if (!tr.startsolid)
+			continue;
+		/* a rider pressed against something only stays behind */
+		if (riding && !SV_InsideBrushEntity(pusher, e)) {
+			VectorCopy(saved[nmoved - 1], org);
+			SV_LinkEdict(e, false);
+			continue;
+		}
+		/* blocked: put everything back */
+		for (int k = 0; k < nmoved; k++) {
+			VectorCopy(saved[k], ev(moved[k], PF.origin));
+			SV_LinkEdict(moved[k], false);
+		}
+		for (int i = 0; i < 3; i++)
+			porg[i] -= move[i];
+		SV_LinkEdict(pusher, false);
+		{
+			func_t b = QC_EInt(vm, pusher, PF.blocked);
+			if (b) {
+				int oldself = QC_GInt(vm, PG.self), oldother = QC_GInt(vm, PG.other);
+				QC_SetGInt(vm, PG.self, pusher);
+				QC_SetGInt(vm, PG.other, e);
+				QC_Execute(vm, b);
+				QC_SetGInt(vm, PG.self, oldself);
+				QC_SetGInt(vm, PG.other, oldother);
+			}
+		}
+		return false;
+	}
+	for (int k = 0; k < nmoved; k++)
+		SV_LinkEdict(moved[k], true);
+	return true;
+}
+
+/* brush movers: move, pushing what is in the way, and advance ltime */
 static void physics_pusher(int e)
 {
-	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
-	float ltime = QC_EFloat(sv.vm, e, F.ltime), oldltime = ltime;
-	float thinktime = QC_EFloat(sv.vm, e, F.nextthink);
-	float movetime = sv.frametime;
-	if (thinktime < ltime + sv.frametime) {
+	float *org = ev(e, PF.origin), *vel = ev(e, PF.velocity), *ang = ev(e, PF.angles), *avel = ev(e, PF.avelocity);
+	float ltime = QC_EFloat(pv, e, PF.ltime), oldltime = ltime;
+	float thinktime = QC_EFloat(pv, e, PF.nextthink);
+	float movetime = pdt;
+	if (thinktime < ltime + pdt) {
 		movetime = thinktime - ltime;
 		if (movetime < 0)
 			movetime = 0;
 	}
 	if (movetime > 0 && org && vel) {
-		/* TODO: push and block entities that are in the way */
-		for (int i = 0; i < 3; i++) {
-			org[i] += vel[i] * movetime;
+		float move[3];
+		bool pushed = true;
+		for (int i = 0; i < 3; i++)
+			move[i] = vel[i] * movetime;
+		if ((move[0] || move[1] || move[2]) && QC_EFloat(pv, e, PF.solid) == SOLID_BSP)
+			pushed = push_entities(e, move);
+		else
+			for (int i = 0; i < 3; i++)
+				org[i] += move[i];
+		if (pushed) {
 			if (ang && avel)
-				ang[i] += avel[i] * movetime;
+				for (int i = 0; i < 3; i++)
+					ang[i] += avel[i] * movetime;
+			QC_SetEFloat(pv, e, PF.ltime, ltime + movetime);
+			SV_LinkEdict(e, false);
 		}
-		QC_SetEFloat(sv.vm, e, F.ltime, ltime + movetime);
-		SV_LinkEdict(e, false);
 	}
-	thinktime = QC_EFloat(sv.vm, e, F.nextthink);
-	if (thinktime > oldltime && thinktime <= QC_EFloat(sv.vm, e, F.ltime)) {
-		func_t think = QC_EInt(sv.vm, e, F.think);
-		QC_SetEFloat(sv.vm, e, F.nextthink, 0);
-		QC_SetGFloat(sv.vm, G.time, (float)sv.time);
-		QC_SetGInt(sv.vm, G.self, e);
-		QC_SetGInt(sv.vm, G.other, 0);
+	thinktime = QC_EFloat(pv, e, PF.nextthink);
+	if (thinktime > oldltime && thinktime <= QC_EFloat(pv, e, PF.ltime)) {
+		func_t think = QC_EInt(pv, e, PF.think);
+		QC_SetEFloat(pv, e, PF.nextthink, 0);
+		QC_SetGFloat(pv, PG.time, (float)ptime);
+		QC_SetGInt(pv, PG.self, e);
+		QC_SetGInt(pv, PG.other, 0);
 		if (think)
-			QC_Execute(sv.vm, think);
+			QC_Execute(pv, think);
 	}
 }
 
 static void physics_noclip(int e)
 {
-	float *org = ev(e, F.origin), *vel = ev(e, F.velocity), *ang = ev(e, F.angles), *avel = ev(e, F.avelocity);
+	float *org = ev(e, PF.origin), *vel = ev(e, PF.velocity), *ang = ev(e, PF.angles), *avel = ev(e, PF.avelocity);
 	if (!org || !vel)
 		return;
 	for (int i = 0; i < 3; i++) {
-		org[i] += vel[i] * sv.frametime;
+		org[i] += vel[i] * pdt;
 		if (ang && avel)
-			ang[i] += avel[i] * sv.frametime;
+			ang[i] += avel[i] * pdt;
 	}
 	SV_LinkEdict(e, false);
 }
 
 static void run_entity(int e)
 {
-	qcvm_t *vm = sv.vm;
-	int movetype = (int)QC_EFloat(vm, e, F.movetype);
-	func_t custom = QC_EInt(vm, e, F.customphysics);
-	float limit = (float)(sv.time + sv.frametime * 0.5);
+	qcvm_t *vm = pv;
+	int movetype = (int)QC_EFloat(vm, e, PF.movetype);
+	func_t custom = QC_EInt(vm, e, PF.customphysics);
+	float limit = (float)(ptime + pdt * 0.5);
 
+	if (!pmove_ents && !custom) {
+		run_think(e, limit);
+		return;
+	}
 	if (custom) {
 		/* the progs replaces engine movement for this entity */
-		QC_SetGInt(vm, G.self, e);
-		QC_SetGInt(vm, G.other, 0);
-		QC_SetGFloat(vm, G.time, (float)sv.time);
+		QC_SetGInt(vm, PG.self, e);
+		QC_SetGInt(vm, PG.other, 0);
+		QC_SetGFloat(vm, PG.time, (float)ptime);
 		QC_Execute(vm, custom);
 		if (!vm->edicts[e].free)
 			run_think(e, limit);
@@ -572,7 +777,7 @@ static void run_entity(int e)
 		return;
 	case MOVETYPE_STEP:
 		/* monsters fall when not on ground; walking is done by the progs */
-		if (!((int)QC_EFloat(vm, e, F.flags) & FL_ONGROUND))
+		if (!((int)QC_EFloat(vm, e, PF.flags) & FL_ONGROUND))
 			physics_toss(e, MOVETYPE_TOSS);
 		run_think(e, limit);
 		return;
@@ -583,19 +788,42 @@ static void run_entity(int e)
 	}
 }
 
+void W_RunEntityPhysics(qcvm_t *vm, int e, double time, float frametime, float gravity, bool move)
+{
+	qcvm_t *oldpv = pv;
+	double oldtime = ptime;
+	float olddt = pdt, oldgrav = pgrav;
+	bool oldmove = pmove_ents;
+	pv = vm;
+	ptime = time;
+	pdt = frametime;
+	pgrav = gravity;
+	pmove_ents = move;
+	run_entity(e);
+	pv = oldpv;
+	ptime = oldtime;
+	pdt = olddt;
+	pgrav = oldgrav;
+	pmove_ents = oldmove;
+}
+
 void SV_Physics(void)
 {
 	qcvm_t *vm = sv.vm;
+	pv = sv.vm;
+	ptime = sv.time;
+	pdt = sv.frametime;
+	pgrav = sv_gravity->value;
+	pmove_ents = true;
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGFloat(vm, G.frametime, sv.frametime);
-	SV_RunRoutes();
 	if (QC_FindFunction(vm, "StartFrame")) {
 		QC_SetGInt(vm, G.self, 0);
 		QC_SetGInt(vm, G.other, 0);
 		QC_ExecuteByName(vm, "StartFrame");
 	}
+	SV_RunRoutes();
 	SV_ClientsPreThink();
-	SV_RunBotCommands();
 	for (int e = 1; e < vm->num_edicts; e++) {
 		if (vm->edicts[e].free)
 			continue;
@@ -611,6 +839,7 @@ void SV_Physics(void)
 		run_entity(e);
 	}
 	SV_ClientsPostThink();
+	Script_Frame(sv.time);
 	if (QC_GFloat(vm, G.force_retouch) > 0)
 		QC_SetGFloat(vm, G.force_retouch, QC_GFloat(vm, G.force_retouch) - 1);
 	if (QC_FindFunction(vm, "EndFrame")) {
@@ -625,6 +854,7 @@ void SV_Frame(double dt)
 	if (!sv.active)
 		return;
 	SV_ReadPackets();
+	SV_LinkReadPackets();
 	if (!sv.active)
 		return;
 	accum += dt;
@@ -633,6 +863,7 @@ void SV_Frame(double dt)
 	while (accum >= sv.frametime) {
 		accum -= sv.frametime;
 		if (!sv.paused) {
+			SV_CompatFrame();
 			SV_Physics();
 			sv.time += sv.frametime;
 			sv.frames++;
@@ -641,6 +872,7 @@ void SV_Frame(double dt)
 		QC_CollectGarbage(sv.vm, false);
 	}
 	SV_SendClientMessages();
+	SV_LinkSend();
 }
 
 /* commands registered with registercommand go to the progs' ConsoleCmd */
@@ -705,7 +937,8 @@ static void SV_Changelevel_f(int argc, const char **argv)
 		return;
 	}
 	SV_SaveSpawnParms();
-	SV_SpawnServer(argv[1]);
+	if (SV_SpawnServer(argv[1]))
+		SV_SaveLevelChanged();
 }
 
 static void SV_Status_f(int argc, const char **argv)
@@ -806,17 +1039,30 @@ void SV_Init(void)
 	Cmd_Add("pr_trace", PrTrace_f);
 	Cmd_Add("pr_profile", PrProfile_f);
 	Cmd_Add("sv", SV_Cmd_f);
+	Script_Init();
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
-	pr_maxedicts = Cvar_Get("pr_maxedicts", "4096", 0, "Entity slots in the server game");
-	pr_heapsize = Cvar_Get("pr_heapsize", "32", 0, "memalloc heap size in megabytes");
+	pr_maxedicts = Cvar_Get("pr_maxedicts", BW_SV_MAXEDICTS, 0, "Entity slots in the server game");
+	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
 	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);
 	SV_InitClients();
+	SV_LinkInit();
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);
+	SV_InitCommands();
+	SV_InitSaves();
+	SV_InitCompat();
+	SV_InitAdmin();
+	SV_InitRoutes();
+	SV_InitMVD();
+	SV_InitMaster();
+	SV_InitDownloads();
+	SV_InitVoip();
+	SV_InitSQL();
+	SV_InitCompile();
 }

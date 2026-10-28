@@ -1,0 +1,25 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/index.html: the bridge
+	smoke test. Query asks the engine for the player's stats.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/webcore-test.js" />
+	</scripts>
+	<Panel class="page">
+		<Panel class="main">
+			<Label class="title" text="WebCore CPU renderer" />
+			<Label id="Status" class="status" text="Panorama port; the page's own stylesheet is inline." />
+			<Button id="Query" class="query" onactivate="WebcoreTest.Query()">
+				<Label text="Query FTE stats" />
+			</Button>
+			<Label id="Result" class="result" text="" />
+			<Panel class="alpha-card">
+				<Label text="Premultiplied alpha and rounded clipping" />
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

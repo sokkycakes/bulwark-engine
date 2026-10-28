@@ -1,0 +1,21 @@
+<!--
+	Panorama port of Stiletto's data/web/ql-menu/menu-demo.html: the QL menu
+	canvas (the same app.js as index.html, so the same script here) under a
+	small heading. The page sizes the canvas to the whole view and stacks it
+	below the heading, so it starts 57px down and runs past the bottom edge;
+	the help text and toast line under it are below the fold and not drawn.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/ql-menu.css" />
+		<include src="file://{resources}/styles/web/ql-menu/menu-demo.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/ql-menu.js" />
+	</scripts>
+	<Panel class="demo-page" hittest="false">
+		<Label class="demo-title" text="Quake Live · Arena selector" hittest="false" />
+		<Panel id="QlPage" class="page demo-canvas" hittest="false">
+		</Panel>
+	</Panel>
+</root>

@@ -18,6 +18,12 @@ writing engine code here reads those engines' source.
   plus inspection of real content (Nuclide's progs, maps and decls).
 - **Game code.** Nuclide's QC source is read to learn what it expects from the
   engine. It is a client of the engine, not part of it.
+- **Permissively licensed engines.** Code under MIT, BSD, ISC or zlib terms
+  may be read, and may be reused if its copyright notice and licence travel
+  with it. So far this is s&box ([Facepunch/sbox-public](https://github.com/Facepunch/sbox-public),
+  MIT), whose scene format Bulwark follows; see `docs/spec/scene-format.md`.
+  Nothing from it has been copied into `src/` yet. Its sample files in
+  `tests/scene/sbox/` carry its licence.
 
 ## Not allowed
 
@@ -31,6 +37,17 @@ Whenever behaviour was learned from a probe or from content rather than a
 written spec, write it down in `docs/spec/` with how it was established. Code
 comments point at those files. If something is a guess, say so.
 
+## GDI text emulation (src/client/gdifont.c)
+
+The GDI-compatible TrueType rasterizer was built only from black-box
+measurements of Windows GDI: `tools/gdiref/gdiref.c` calls the public GDI
+API on a GitHub Windows runner and dumps what it returns, and CI compares
+that with the module's output (`.github/workflows/gdiref.yml`). Besides
+those captures, the inputs were the FreeType documentation, the
+OpenType/TrueType specs and Microsoft's public GDI API docs. No Source
+Engine, Wine or ReactOS code, or notes derived from them, were read.
+`docs/spec/gdi-text.md` records each rule and the run it came from.
+
 ## Third-party code
 
 Only public domain (or equally permissive) libraries go in `src/thirdparty/`,
@@ -40,3 +57,10 @@ unmodified, with their licence text kept at the end of each file:
   Sean Barrett and contributors: public domain (or MIT, at your choice).
 - `font8x8_basic.h` by Daniel Hepper, from Marcel Sondaar's and IBM's 8x8
   fonts: public domain.
+- `lzma/` (LzmaDec.c, LzmaDec.h, 7zTypes.h, Compiler.h, Precomp.h) by Igor
+  Pavlov, from the LZMA SDK: public domain. Used to decode compressed Source
+  BSP lumps.
+## Third-party libraries
+
+Libraries under `third_party/` are used as they are and listed with their
+licences in `third_party/README.md`. Only permissive licences are allowed.

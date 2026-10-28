@@ -334,6 +334,31 @@ static void walk_move(pm_t *pm, float maxspeed)
 	}
 }
 
+/* a box that starts partly inside the world (a spawn point set into the
+ * floor, say) would slide through it, since traces leave a starting solid
+ * behind: lift it out, or shift it a little sideways, when that frees it */
+static void unstick(pm_t *pm)
+{
+	static const float side[9][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
+	pmtrace_t tr;
+	float p[3];
+	trace(pm, pm->s->origin, pm->s->origin, &tr);
+	if (!tr.startsolid)
+		return;
+	for (int up = 0; up <= 18; up++)
+		for (int sd = 0; sd < 9; sd++)
+			for (int dist = 1; dist <= (sd ? 4 : 1); dist *= 2) {
+				p[0] = pm->s->origin[0] + side[sd][0] * dist;
+				p[1] = pm->s->origin[1] + side[sd][1] * dist;
+				p[2] = pm->s->origin[2] + up;
+				trace(pm, p, p, &tr);
+				if (!tr.startsolid) {
+					VectorCopy(p, pm->s->origin);
+					return;
+				}
+			}
+}
+
 void PM_Move(pmstate_t *s, const pmcmd_t *cmd, const pmvars_t *vars, const pmworld_t *world)
 {
 	pm_t pm;
@@ -361,6 +386,7 @@ void PM_Move(pmstate_t *s, const pmcmd_t *cmd, const pmvars_t *vars, const pmwor
 		return;
 	}
 
+	unstick(&pm);
 	categorize(&pm);
 	if (s->waterjumptime > 0) {
 		s->waterjumptime -= pm.dt;

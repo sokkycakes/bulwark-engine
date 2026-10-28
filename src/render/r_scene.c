@@ -9,7 +9,7 @@
 
 rscene_t r_scene;
 rstats_t r_stats;
-static cvar_t *fov, *r_nearclip;
+static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch, *r_viewmodel_mirror;
 
 /* entity fields addentity reads, looked up once per client game */
 static struct {
@@ -40,8 +40,13 @@ typedef struct {
 	int firstvert, numverts;
 } rpoly_t;
 
+#ifdef BW_LOWMEM
+#define MAX_POLY_VERTS 8192
+#define MAX_POLYS 2048
+#else
 #define MAX_POLY_VERTS 32768
 #define MAX_POLYS 8192
+#endif
 static rvert_t polyverts[MAX_POLY_VERTS];
 static int numpolyverts;
 static rpoly_t polys[MAX_POLYS];
@@ -80,7 +85,7 @@ static void draw_polys_2d(int first, int count, material_t *mat, int flags)
 	static uint16_t idx[MAX_POLY_VERTS * 3];
 	int n = 0;
 	float m[16];
-	if (!R_Active() || count < 3 || !mat)
+	if (!R_Active() || count < 3 || !mat || !r_draw2d->ivalue)
 		return;
 	R_Flush2D();
 	for (int i = 1; i + 1 < count && n + 3 <= (int)BW_ARRAY_COUNT(idx); i++) {
@@ -119,6 +124,55 @@ void R_EndPolygon(void)
 		p->flags = poly_flags;
 		p->firstvert = poly_start;
 		p->numverts = count;
+	}
+	poly_start = numpolyverts;
+}
+
+/* R_EndPolygonRibbon(radius, texcoordbias): the vertices given are a line;
+ * each segment becomes a quad of that half-width facing the view, the
+ * second edge's texture coordinates offset by texcoordbias */
+void R_EndPolygonRibbon(float radius, const float *tcbias)
+{
+	enum { MAX_RIBBON = 256 };
+	rvert_t line[MAX_RIBBON];
+	int count = BW_MIN(numpolyverts - poly_start, MAX_RIBBON);
+	float side[MAX_RIBBON][3];
+	if (count < 2) {
+		numpolyverts = poly_start;
+		return;
+	}
+	memcpy(line, polyverts + poly_start, sizeof(rvert_t) * (size_t)count);
+	numpolyverts = poly_start;
+	/* per vertex: the sideways direction, across the line and the view */
+	for (int i = 0; i < count; i++) {
+		const float *a = line[i > 0 ? i - 1 : 0].xyz, *b = line[i + 1 < count ? i + 1 : count - 1].xyz;
+		float dir[3], toview[3], len;
+		VectorSubtract(b, a, dir);
+		VectorSubtract(r_scene.origin, line[i].xyz, toview);
+		CrossProduct(dir, toview, side[i]);
+		len = sqrtf(DotProduct(side[i], side[i]));
+		VectorScale(side[i], len > 0 ? radius / len : 0, side[i]);
+	}
+	for (int i = 0; i + 1 < count && numpolyverts + 4 <= MAX_POLY_VERTS && numpolys < MAX_POLYS; i++) {
+		const int order[4][2] = {{0, 1}, {1, 1}, {1, -1}, {0, -1}};
+		rpoly_t *p;
+		poly_start = numpolyverts;
+		for (int k = 0; k < 4; k++) {
+			const rvert_t *src = &line[i + order[k][0]];
+			rvert_t *v = &polyverts[numpolyverts++];
+			*v = *src;
+			for (int c = 0; c < 3; c++)
+				v->xyz[c] += side[i + order[k][0]][c] * (float)order[k][1];
+			if (order[k][1] < 0) {
+				v->st[0] += tcbias[0];
+				v->st[1] += tcbias[1];
+			}
+		}
+		p = &polys[numpolys++];
+		p->mat = poly_mat;
+		p->flags = poly_flags;
+		p->firstvert = poly_start;
+		p->numverts = 4;
 	}
 	poly_start = numpolyverts;
 }
@@ -177,6 +231,7 @@ void R_ClearScene(void)
 	r_scene.farclip = 0;
 	r_scene.drawworld = true;
 	r_scene.perspective = true;
+	r_scene.skyroom = false;
 	r_scene.viewentity = cl.playerent;
 	memset(r_scene.origin, 0, sizeof(r_scene.origin));
 	memset(r_scene.angles, 0, sizeof(r_scene.angles));
@@ -227,6 +282,7 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	e->frame2time = efloat(vm, ent, EF.frame2time, 0);
 	e->skin = (int)efloat(vm, ent, EF.skin, 0);
 	e->skeletonindex = (int)efloat(vm, ent, EF.skeletonindex, 0);
+	e->customskin = R_EntitySkin(vm, ent);
 	e->scale = efloat(vm, ent, EF.scale, 1);
 	if (e->scale == 0)
 		e->scale = 1;
@@ -243,12 +299,16 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	e->entnum = (int)efloat(vm, ent, EF.entnum, 0);
 	if (EF.forceshader >= 0 && f[EF.forceshader].f > 0)
 		e->forceshader = R_MaterialForHandle((int)f[EF.forceshader].f);
-	/* models face their angles with pitch inverted, as in Quake; brush
-	 * models use the angles as given */
+	/* models face their angles with pitch inverted, as in Quake, unless
+	 * r_meshpitch is 1 (Nuclide); brush models use the angles as given. View models (RF_VIEWMODEL or
+	 * RF_DEPTHHACK) are given the camera's angles by games such as Nuclide,
+	 * so they keep the camera's convention and point where the camera does;
+	 * r_viewmodel_quakepitch 1 inverts them like other models, as FTE does */
 	{
 		float a[3] = {e->angles[0], e->angles[1], e->angles[2]};
-		if (e->model && e->model->type != MOD_BRUSH)
-			a[0] = -a[0];
+		bool vm = (e->renderflags & (1 | 4)) && !(r_viewmodel_quakepitch && r_viewmodel_quakepitch->ivalue);
+		if (e->model && e->model->type != MOD_BRUSH && !vm)
+			a[0] *= QC_MeshPitch();
 		AnglesToAxis(a, e->axis);
 	}
 	if (e->renderflags & 1) {
@@ -260,7 +320,41 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 		memcpy(e->origin, o, sizeof(o));
 		memcpy(e->axis, axis, sizeof(axis));
 	}
+	/* view models mirrored left to right: Counter-Strike's view models are
+	 * built for the left hand and the game shows them mirrored */
+	e->mirrored = false;
+	if ((e->renderflags & (1 | 4)) && r_viewmodel_mirror && r_viewmodel_mirror->ivalue) {
+		for (int k = 0; k < 3; k++)
+			e->axis[1][k] = -e->axis[1][k];
+		e->mirrored = true;
+	}
 }
+
+/* client game entities given to makestatic: they stay where they were put
+ * and join every scene that adds engine entities, until the map changes */
+#define MAX_STATIC_ENTS 1024
+static struct {
+	qcvm_t *vm;
+	int ent;
+} static_ents[MAX_STATIC_ENTS];
+static int num_static_ents;
+
+void R_MakeStatic(qcvm_t *vm, int e)
+{
+	lookup_fields(vm);
+	if (e <= 0 || num_static_ents >= MAX_STATIC_ENTS)
+		return;
+	for (int i = 0; i < num_static_ents; i++)
+		if (static_ents[i].vm == vm && static_ents[i].ent == e)
+			return;
+	static_ents[num_static_ents].vm = vm;
+	static_ents[num_static_ents++].ent = e;
+	/* addentities would add it again */
+	if (EF.drawmask >= 0)
+		QC_EdictFields(vm, e)[EF.drawmask].f = 0;
+}
+
+void R_ClearStatics(void) { num_static_ents = 0; }
 
 void R_AddEntities(qcvm_t *vm, int mask)
 {
@@ -287,6 +381,10 @@ void R_AddEntities(qcvm_t *vm, int mask)
 		}
 		R_AddEntityFromQC(vm, e);
 	}
+	if (mask & 1) /* MASK_ENGINE */
+		for (int i = 0; i < num_static_ents; i++)
+			if (static_ents[i].vm == vm && static_ents[i].ent < vm->num_edicts && !vm->edicts[static_ents[i].ent].free)
+				R_AddEntityFromQC(vm, static_ents[i].ent);
 	QC_SetGInt(vm, vm->gofs.self, oldself);
 }
 
@@ -333,8 +431,48 @@ void R_SetupView(void)
 		Mat4_Ortho(r_scene.proj, -fx, fx, -fy, fy, -65536, 65536);
 	}
 	Mat4_Multiply(r_scene.viewproj, r_scene.proj, r_scene.view);
+	/* view models (RF_VIEWMODEL, RF_DEPTHHACK) get their own projection: a
+	 * near plane close enough that the gun never clips, and optionally their
+	 * own field of view, as Source's viewmodel_fov */
+	{
+		float vproj[16], vfx = fx, vfy = fy;
+		if (r_viewmodel_fov && r_viewmodel_fov->value > 0 && r_scene.perspective) {
+			float saved = r_scene.afov, sx = r_scene.fov_x, sy = r_scene.fov_y;
+			r_scene.afov = r_viewmodel_fov->value;
+			r_scene.fov_x = r_scene.fov_y = 0;
+			compute_fov(&vfx, &vfy);
+			r_scene.afov = saved, r_scene.fov_x = sx, r_scene.fov_y = sy;
+		}
+		if (r_scene.perspective)
+			Mat4_Perspective(vproj, vfx, vfy, 1, r_scene.farclip);
+		else
+			memcpy(vproj, r_scene.proj, sizeof(vproj));
+		Mat4_Multiply(r_scene.vmviewproj, vproj, r_scene.view);
+	}
 	AngleVectors(r_scene.angles, r_scene.forward, r_scene.right, r_scene.up);
+	/* the map's fog, waterfog when the eye is under water, skyroomfog in the skyroom */
+	{
+		static const float zero[3];
+		const float *f = NULL;
+		r_viewfog[3] = 0;
+		if (r_scene.noskyroom && r_world.skyroomfog[0] > 0)
+			f = r_world.skyroomfog;
+		else if (!r_scene.noskyroom && r_world.waterfog[0] > 0 && cl.world &&
+		         (BSP_PointContents(cl.world, 0, zero, r_scene.origin) & (CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA)))
+			f = r_world.waterfog;
+		if (f) {
+			r_viewfog[0] = f[1], r_viewfog[1] = f[2], r_viewfog[2] = f[3], r_viewfog[3] = f[0];
+		} else if (r_world.hasfog) {
+			memcpy(r_viewfog, r_world.fog, sizeof(r_viewfog));
+		}
+		/* densities are as Quake maps give them ("fog" "0.05 r g b"): squared
+		 * exponential fog at a 64th of the density per unit, the convention
+		 * Quake mappers' tools and documentation use */
+		r_viewfog[3] /= 64;
+	}
 }
+
+float r_viewfog[4];
 
 /* world point to virtual screen point; z is the distance in front of the view */
 void R_Project(const float *in, float *out)
@@ -383,6 +521,7 @@ void R_RenderScene(void)
 	if (!R_Active())
 		return;
 	R_Flush2D();
+	R_DebugView();
 	R_SetupView();
 	/* the viewport is given in virtual pixels; GL wants physical ones, from the bottom */
 	sx = (float)r_pwidth / r_vwidth;
@@ -403,27 +542,63 @@ void R_RenderScene(void)
 		qglClear(GL_COLOR_BUFFER_BIT);
 	}
 
-	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight) {
+	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight && !R_ToolsRedrawing()) {
+		float fx, fy;
+		compute_fov(&fx, &fy);
 		VectorCopy(r_scene.origin, r_scene.mainorigin);
 		VectorCopy(r_scene.forward, r_scene.mainforward);
+		VectorCopy(r_scene.angles, r_scene.mainangles);
+		r_scene.mainfov[0] = fx, r_scene.mainfov[1] = fy;
+		r_scene.maindrawworld = r_scene.drawworld;
+		memcpy(r_scene.mainviewproj, r_scene.viewproj, sizeof(r_scene.mainviewproj));
+		r_scene.mainvp[0] = r_scene.vx, r_scene.mainvp[1] = r_scene.vy;
+		r_scene.mainvp[2] = r_scene.vw, r_scene.mainvp[3] = r_scene.vh;
+		r_scene.havemain = true;
 	}
 	R_UpdateParticles();
+	R_AddRTLights();
+	R_AddQCLights();
 	R_AddParticleLights();
 	Mat4_Identity(model);
+	/* the skyroom first, seen through the sky: then the sky itself isn't drawn */
+	if (r_scene.skyroom && r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels) {
+		float saved[3];
+		VectorCopy(r_scene.origin, saved);
+		VectorCopy(r_scene.skyroom_origin, r_scene.origin);
+		r_scene.noskyroom = true;
+		R_SetupView();
+		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
+		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, true);
+		r_scene.noskyroom = false;
+		VectorCopy(saved, r_scene.origin);
+		R_SetupView();
+		qglClear(GL_DEPTH_BUFFER_BIT);
+	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
-	if (r_drawentities->ivalue)
+	if (r_scene.drawworld && r_drawworld->ivalue)
+		R_DrawVoxels(false);
+	if (r_drawentities->ivalue) {
+		if (r_scene.drawworld && r_world.loaded)
+			R_DrawStaticProps(false);
 		for (int i = 0; i < r_scene.numents; i++)
 			R_DrawModelEntity(&r_scene.ents[i], false);
+	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue) {
-		R_DrawSky(r_scene.viewproj);
+		if (!r_scene.skyroom)
+			R_DrawSky(r_scene.viewproj);
 		R_DrawDecals();
+		R_DrawToolsWorld();
 	}
 
 	/* translucent: world water and glass, then entities back to front, then polygons */
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, true);
+	if (r_scene.drawworld && r_drawworld->ivalue)
+		R_DrawVoxels(true);
 	if (r_drawentities->ivalue) {
+		if (r_scene.drawworld && r_world.loaded)
+			R_DrawStaticProps(true);
 		for (int i = 0; i < r_scene.numents; i++)
 			sorted[nsorted++] = &r_scene.ents[i];
 		qsort(sorted, nsorted, sizeof(sorted[0]), dist_cmp);
@@ -431,6 +606,7 @@ void R_RenderScene(void)
 			R_DrawModelEntity(sorted[i], true);
 	}
 	R_DrawParticles();
+	R_DrawClipBrushes();
 	r_stats.polys = numpolys;
 	R_DrawPolygons(false);
 	numpolys = 0;
@@ -460,6 +636,12 @@ void R_RenderScene(void)
 void R_InitScene(void)
 {
 	fov = Cvar_Get("fov", "90", CVAR_ARCHIVE, "Horizontal field of view at 4:3, widened for wider screens");
+	r_viewmodel_quakepitch = Cvar_Get("r_viewmodel_quakepitch", "0", CVAR_ARCHIVE,
+	                                  "1 inverts view model pitch like other models (FTE's behaviour); 0 makes them follow the camera");
+	r_viewmodel_mirror = Cvar_Get("r_viewmodel_mirror", "0", CVAR_ARCHIVE,
+	                              "1 mirrors view models left to right (for models built for the other hand)");
+	r_viewmodel_fov = Cvar_Get("r_viewmodel_fov", "0", CVAR_ARCHIVE,
+	                           "Field of view for view models (like Source's viewmodel_fov); 0 uses the view's");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");
 	R_InitDecals();
 	R_InitParticles();

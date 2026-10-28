@@ -121,3 +121,21 @@ sequences report the durations their schedules wait for, and the events in
 the attack and death sequences reach the monsters' event handler at the
 frames the model lists (`? event 2 in "attack1"` is logged by Nuclide for
 the codes it does not handle, at 1.27 s into the sequence).
+
+## Sprites
+
+GoldSrc sprites (`IDSP` version 2) load as models of their own, so an entity
+whose model is a `.spr` draws a camera-facing quad. Every frame is a
+material named the way `spriteframe` names it (`model:N`, frame groups
+counting each member), and the entity's `frame` picks one. The quad spans
+the frame's origin offset and size times `scale`, takes `colormod` and
+`alpha`, and is drawn in the translucent pass without writing depth.
+Texture format 1, `EF_ADDITIVE` (32) or `RF_ADDITIVE` (8) add it onto the
+scene; format 3 is alpha-tested. Orientation types follow the header:
+0 and 1 stay upright, 2 faces the view, 3 uses the entity's angles and 4
+faces the view turned by the roll angle. A sprite with `RF_DEPTHHACK` or
+`RF_VIEWMODEL` uses the view model's projection and depth range, which is
+how muzzle flashes on view models stay in front of the gun.
+
+`r_viewmodel_mirror` also mirrors the tags `gettaginfo` returns for view
+models, so attachments such as the muzzle stay on the drawn barrel.

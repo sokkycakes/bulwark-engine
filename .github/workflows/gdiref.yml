@@ -1,0 +1,109 @@
+name: GDI text reference
+
+# Captures what Windows GDI renders for a grid of fonts and sizes
+# (tools/gdiref), renders the same grid with the gdifont module
+# (tools/gdidump) from the very same font files, and scores the two with
+# tools/gdiref/compare.py. Runs only when started by hand or when the font
+# module or these tools change.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/client/gdifont.*'
+      - 'tools/gdiref/**'
+      - 'tools/gdidump/**'
+      - 'tests/gdifont/**'
+      - '.github/workflows/gdiref.yml'
+
+jobs:
+  build-gdiref:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/gdiref
+      - run: sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64
+      - run: x86_64-w64-mingw32-gcc -O2 -Wall -municode -o gdiref.exe tools/gdiref/gdiref.c -lgdi32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdiref-exe
+          path: gdiref.exe
+
+  windows:
+    needs: build-gdiref
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gdiref-exe
+      - run: .\gdiref.exe windows-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdiref-windows
+          path: windows-out
+          retention-days: 14
+
+  gdifont:
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libfreetype-dev
+      - name: Build gdidump and the gdifont unit test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target gdidump gdifonttest -j4
+          ./build/gdifonttest
+      - uses: actions/download-artifact@v4
+        with:
+          name: gdiref-windows
+          path: out/windows
+      - name: Render the grid with gdifont
+        run: |
+          ./build/gdidump out/windows/fonts out/gdifont
+          ./build/gdidump --ppem-offset -1 out/windows/fonts out/gdifont-m1
+          ./build/gdidump --ppem-offset 1 out/windows/fonts out/gdifont-p1
+      - name: Render tuning variants
+        # Each line is label and gdifont_tuning_t overrides (see gdifont.h);
+        # score.py ranks them against Windows below. The experiments behind
+        # the defaults are listed in docs/spec/gdi-text.md; these two keep
+        # the previous rules as controls.
+        run: |
+          while read -r label tune; do
+            [ -n "$label" ] || continue
+            ./build/gdidump --tune "$tune" out/windows/fonts "out/var-$label"
+            echo "$label=out/var-$label" >> out/variants.txt
+          done <<'VARIANTS'
+          area-grey-control gray_method=0
+          abc-q0rule-control aa_measure=0
+          v40-all v40_below=1000
+          VARIANTS
+      - name: Compare with Windows
+        run: |
+          python3 -I tools/gdiref/compare.py out/windows out/gdifont --md out/summary.md > /dev/null
+          cat out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "===== GDIFONT VS WINDOWS ====="
+          sed -n '/identical fraction/,$p' out/summary.md | grep -v "^- ("
+          echo "===== BEST PPEM ====="
+          python3 -I tools/gdiref/best_ppem.py out/windows m1=out/gdifont-m1 0=out/gdifont p1=out/gdifont-p1
+          echo "===== VARIANTS ====="
+          python3 -I tools/gdiref/score.py out/windows default=out/gdifont $(cat out/variants.txt)
+          echo "===== DIAGNOSTICS ====="
+          python3 -I tools/gdiref/diagnose.py out/windows out/gdifont
+          echo "===== TEXT LINES ====="
+          for q in 1 0; do
+            for side in out/gdifont out/var-v40-all; do
+              echo "## Calibri 12 q$q, $side"
+              python3 -I tools/gdiref/textline.py out/windows $side Calibri 12 400 $q "Time Remaining for Zombie Selection: 36 Sec player"
+            done
+          done
+          echo "===== SHEETS ====="
+          python3 -I tools/gdiref/sheets.py out/windows out/gdifont
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdifont-out
+          path: |
+            out/gdifont/*.jsonl
+            out/summary.md
+          retention-days: 14

@@ -1,0 +1,151 @@
+<!--
+	Panorama port of Stiletto's data/web/lobby-menu/index.html: the pre-game
+	lobby (Figma frame 72:2). The page is authored at 960 x 720; here every
+	design pixel is 1.5 layout pixels so the frame fills the 1080-line view,
+	centred. Players and chat lines are created from script, keyed by seat and
+	message id. Every control has tabindex -1: the script moves focus itself,
+	the way the original's navigation.js does.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/lobby-menu.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/lobby-menu.js" />
+	</scripts>
+	<Panel id="LobbyRoot" class="lobby-root">
+		<Panel id="LobbyStage" class="stage">
+			<Panel id="BgPanel" class="bg-panel" hittest="false" />
+
+			<Panel id="MapPreview" class="map-preview" hittest="false">
+				<Panel class="map-summary">
+					<Label id="LblSummaryLine0" class="summary-line" text="Waiting for settings" />
+					<Label id="LblSummaryLine1" class="summary-line" text="" />
+					<Label id="LblSummaryLine2" class="summary-line" text="" />
+				</Panel>
+				<Label id="ImgLevelImage" class="map-title" text="Waiting…" />
+			</Panel>
+
+			<Panel id="LobbyMenuNav" class="lobby-menu" onmouseover="LobbyMenu.MenuHover(true)" onmouseout="LobbyMenu.MenuHover(false)">
+				<Panel id="LobbyFocusBar" class="lobby-focus-bar" hittest="false" />
+				<Button id="BtnLobbyOptions" class="ui-button setting-row row-0" tabindex="-1">
+					<Label class="setting-label" text="Lobby options" />
+				</Button>
+				<Button id="BtnChangeRuleset" class="ui-button setting-row row-1" tabindex="-1">
+					<Label class="setting-label" text="Ruleset:" />
+					<Label id="RulesetValue" class="setting-value" text="—" />
+				</Button>
+				<Button id="BtnChangeMap" class="ui-button setting-row row-2" tabindex="-1">
+					<Label class="setting-label" text="Map:" />
+					<Label id="MapValue" class="setting-value" text="Waiting…" />
+				</Button>
+				<Button id="BtnServerType" class="ui-button setting-row row-3" tabindex="-1">
+					<Label class="setting-label" text="Server type:" />
+					<Label id="ServerTypeValue" class="setting-value" text="LISTEN SERVER" />
+				</Button>
+				<!-- Figma guestLock (109:10): covers the four host rows for guests -->
+				<Panel id="GuestLock" class="guest-lock">
+					<Image class="lock-art" src="file://{game}/data/web/lobby-menu/assets/guest-lock.svg" hittest="false" />
+					<Label class="guest-lock-text" text="Lobby settings locked to Host." />
+				</Panel>
+				<Button id="BtnStart" class="ui-button start-button row-4" tabindex="-1">
+					<Label id="StartLabel" class="start-label" text="Start game" />
+				</Button>
+			</Panel>
+
+			<Panel id="Roster" class="roster">
+				<Panel class="roster-info">
+					<Button id="BtnCopyRoomCode" class="ui-button room-code" tabindex="-1">
+						<Panel class="room-label">
+							<Label text="room" />
+							<Label text="code" />
+						</Panel>
+						<Label id="RoomCodeValue" class="room-value" text="—" />
+					</Button>
+					<Panel class="player-count">
+						<Label id="PlayerCount" class="count-num" text="0" />
+						<Label class="count-slash" text="/" />
+						<Label id="PlayerMax" class="count-max" text="16" />
+					</Panel>
+				</Panel>
+				<Panel id="PlayersList" class="player-list" />
+			</Panel>
+
+			<Panel id="Chat" class="chat">
+				<Panel id="ChatMessages" class="chat-messages" />
+				<Panel class="chat-compose">
+					<TextEntry id="ChatInput" class="chat-input" tabindex="-1" maxchars="240"
+						oninputsubmit="LobbyMenu.SendChat()" ontextentrychange="LobbyMenu.DraftChanged()" />
+					<Button id="BtnSendChat" class="ui-button chat-send" tabindex="-1">
+						<Label text="send" />
+					</Button>
+				</Panel>
+			</Panel>
+
+			<Panel class="footer-hint">
+				<Button id="BtnLeaveLobby" class="ui-button leave-hint" tabindex="-1">
+					<Image class="esc-key" src="file://{game}/data/web/lobby-menu/assets/key-esc.png" />
+					<Label class="leave-text" text="Leave" />
+				</Button>
+			</Panel>
+
+			<Label id="StatusLine" class="status-line" text="" hittest="false" />
+
+			<!-- settings dialogs (host): map, ruleset, server type, lobby options -->
+			<Panel id="SettingsDialog" class="dialog-backdrop">
+				<Button class="ui-button dismiss-overlay" tabindex="-1" onactivate="LobbyMenu.CloseDialog(true)" />
+				<Panel class="dialog-panel">
+					<Label id="SettingsTitle" class="dialog-title" text="Lobby options" />
+					<Panel id="MapChoices" class="choice-list" />
+					<Panel id="RulesetChoices" class="choice-list" />
+					<Panel id="ServerChoices" class="choice-list">
+						<Button id="BtnListenServer" class="ui-button choice is-pressed" tabindex="-1">
+							<Label text="Listen server" />
+						</Button>
+						<Button id="BtnDedicatedServer" class="ui-button choice" tabindex="-1" enabled="false">
+							<Label text="Dedicated server" />
+						</Button>
+						<Label class="dialog-text" text="A player hosts this match. Dedicated server hosting is not available in this lobby." />
+					</Panel>
+					<Panel id="OptionsContent" class="options-content">
+						<Label id="SessionDetails" class="dialog-text" text="" />
+						<Button id="BtnOptionsReady" class="ui-button choice" tabindex="-1">
+							<Label id="OptionsReadyLabel" text="Ready" />
+						</Button>
+						<Panel class="limit-row">
+							<Label class="limit-label" text="Time limit" />
+							<TextEntry id="TimeLimit" class="limit-input" tabindex="-1" maxchars="3" ontextentrychange="LobbyMenu.LimitsChanged()" />
+							<Label class="limit-unit" text="minutes" />
+						</Panel>
+						<Panel class="limit-row">
+							<Label class="limit-label" text="Frag limit" />
+							<TextEntry id="FragLimit" class="limit-input" tabindex="-1" maxchars="3" ontextentrychange="LobbyMenu.LimitsChanged()" />
+							<Label class="limit-unit" text="" />
+						</Panel>
+						<Label class="dialog-text" text="Set a limit to 0 for unlimited." />
+						<Button id="BtnApplyLimits" class="ui-button choice" tabindex="-1">
+							<Label text="Apply limits" />
+						</Button>
+					</Panel>
+					<Button id="BtnSettingsBack" class="ui-button dialog-back" tabindex="-1">
+						<Label text="Back" />
+					</Button>
+				</Panel>
+			</Panel>
+
+			<Panel id="LeaveConfirm" class="dialog-backdrop">
+				<Button class="ui-button dismiss-overlay" tabindex="-1" onactivate="LobbyMenu.CloseDialog(true)" />
+				<Panel class="dialog-panel leave-dialog">
+					<Label id="LeaveConfirmTitle" class="dialog-title" text="Leave lobby?" />
+					<Label id="LeaveText" class="dialog-text" text="You will return to the title menu." />
+					<Button id="BtnConfirmLeave" class="ui-button choice" tabindex="-1">
+						<Label text="Leave lobby" />
+					</Button>
+					<Button id="BtnCancelLeave" class="ui-button choice" tabindex="-1">
+						<Label text="Stay" />
+					</Button>
+				</Panel>
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

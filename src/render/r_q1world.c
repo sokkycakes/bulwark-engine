@@ -273,6 +273,12 @@ static material_t *texture_material(const uint8_t *mt, size_t avail, int *w, int
 	return m;
 }
 
+/* a map's texture for a BSP drawn as a model (r_model.c) */
+material_t *R_Q1TextureMaterial(const uint8_t *mt, size_t avail, int *w, int *h, bool hl)
+{
+	return texture_material(mt, avail, w, h, hl);
+}
+
 /* --- the world ------------------------------------------------------------------- */
 
 typedef struct {
@@ -635,3 +641,20 @@ bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 	dir[0] = 0.3f, dir[1] = 0.2f, dir[2] = 0.93f;
 	return true;
 }
+
+/* the textures in the WAD files the map named */
+void R_ForEachWadTexture(void (*fn)(const char *wad, const char *name, int type, int size, void *ctx), void *ctx)
+{
+	for (int i = 0; i < numwads; i++) {
+		const wad_t *w = &wads[i];
+		for (int k = 0; k < w->numlumps; k++) {
+			const uint8_t *e = w->data + w->dir + k * 32;
+			char name[17];
+			memcpy(name, e + 16, 16);
+			name[16] = 0;
+			fn(va("wad %d", i + 1), name, e[12], rd32(e + 8), ctx);
+		}
+	}
+}
+
+int R_NumWads(void) { return numwads; }

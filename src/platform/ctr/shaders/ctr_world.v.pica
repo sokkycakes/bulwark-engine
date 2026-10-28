@@ -1,0 +1,40 @@
+; Bulwark engine - PICA200 vertex shader for world surfaces: the 2D one
+; plus the lightmap coordinates. The fragment stage multiplies the
+; diffuse texture by the lightmap and this colour (see gl_ctr.c).
+; ISC licence, see LICENSE.
+.fvec mvp[4]
+.fvec tcmod
+.fvec colmul
+.fvec coladd
+
+.constf k(0.0, 1.0, 0.003921568627, 0.5)
+
+.out opos position
+.out otc0 texcoord0
+.out otc1 texcoord1
+.out oclr color
+
+.alias apos v0
+.alias atc v1
+.alias alm v2
+.alias acol v4
+
+.entry main_world
+.proc main_world
+	mov r0.xyz, apos
+	mov r0.w, k.yyyy
+	dp4 opos.x, mvp[0], r0
+	dp4 opos.y, mvp[1], r0
+	dp4 opos.z, mvp[2], r0
+	dp4 opos.w, mvp[3], r0
+
+	mov r1, atc
+	mul r1.xy, tcmod.zwzw, r1.xyxy
+	add otc0.xy, tcmod.xyxy, r1.xyxy
+	mov otc1.xy, alm.xyxy
+
+	mul r2, k.zzzz, acol
+	mul r2, colmul, r2
+	add oclr, coladd, r2
+	end
+.end

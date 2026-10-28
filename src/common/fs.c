@@ -8,13 +8,19 @@
 #include <stdlib.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <ctype.h>
 #include <errno.h>
+#include <unistd.h>
 
 #define FS_MAX_PATHS 16
 
 static char fs_basedir[1024] = ".";
+/* Bulwark's own files (UI layouts and the like), searched after every game
+ * directory: loose files only, see FS_SetEngineDir */
+static char fs_enginedir[1024];
 static char fs_gamedirs[FS_MAX_PATHS][64];
 static int fs_numgamedirs;
+static int fs_generation; /* bumped whenever the search path changes */
 
 /* --- packages ---------------------------------------------------------------- */
 
@@ -293,16 +299,60 @@ void FS_PrintPath(void)
 			if (packs[k]->gamedir == i)
 				Con_Printf("  %s (%d files)\n", packs[k]->name, packs[k]->numfiles);
 	}
+	if (fs_enginedir[0])
+		Con_Printf("%s (engine data)\n", fs_enginedir);
 }
 
 void FS_Init(const char *basedir)
 {
 	Str_Copy(fs_basedir, basedir && *basedir ? basedir : ".", sizeof(fs_basedir));
 	fs_numgamedirs = 0;
+	if (!fs_enginedir[0])
+		FS_SetEngineDir(NULL);
 	free_packs();
+	fs_generation++;
 }
 
 const char *FS_BaseDir(void) { return fs_basedir; }
+
+static bool is_dir(const char *path)
+{
+	struct stat st;
+	return !stat(path, &st) && S_ISDIR(st.st_mode);
+}
+
+/* an explicit directory, or the data directory beside the executable, or
+ * the source tree's when running from a build directory inside it */
+void FS_SetEngineDir(const char *path)
+{
+	char exe[1024], try[1100];
+	ssize_t n;
+	fs_enginedir[0] = 0;
+	if (path && *path) {
+		if (is_dir(path))
+			Str_Copy(fs_enginedir, path, sizeof(fs_enginedir));
+		else
+			Con_Printf("engine data directory %s doesn't exist\n", path);
+		return;
+	}
+	n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	exe[n > 0 ? n : 0] = 0;
+	if (strrchr(exe, '/'))
+		*strrchr(exe, '/') = 0;
+	else
+		Str_Copy(exe, ".", sizeof(exe));
+	snprintf(try, sizeof(try), "%s/data", exe);
+	if (!is_dir(try))
+		snprintf(try, sizeof(try), "%s/../data", exe);
+#ifdef BW_SOURCE_DATADIR
+	if (!is_dir(try))
+		Str_Copy(try, BW_SOURCE_DATADIR, sizeof(try));
+#endif
+	if (is_dir(try))
+		Str_Copy(fs_enginedir, try, sizeof(fs_enginedir));
+}
+
+const char *FS_EngineDir(void) { return fs_enginedir; }
 
 void FS_AddGameDir(const char *gamedir)
 {
@@ -313,6 +363,31 @@ void FS_AddGameDir(const char *gamedir)
 		return;
 	Str_Copy(fs_gamedirs[fs_numgamedirs++], gamedir, sizeof(fs_gamedirs[0]));
 	add_packs(fs_numgamedirs - 1);
+	fs_generation++;
+}
+
+/* rescans the packages of every game directory, for files added while running */
+void FS_Restart(void)
+{
+	free_packs();
+	for (int i = 0; i < fs_numgamedirs; i++)
+		add_packs(i);
+	fs_generation++;
+}
+
+int FS_Generation(void) { return fs_generation; }
+
+int FS_NumGameDirs(void) { return fs_numgamedirs; }
+const char *FS_GameDirAt(int i) { return i >= 0 && i < fs_numgamedirs ? fs_gamedirs[i] : NULL; }
+
+/* replaces the game directories (first is searched last) and rescans */
+void FS_SetGameDirs(const char *const *dirs, int count)
+{
+	free_packs();
+	fs_numgamedirs = 0;
+	fs_generation++;
+	for (int i = 0; i < count; i++)
+		FS_AddGameDir(dirs[i]);
 }
 
 const char *FS_GameDir(void) { return fs_numgamedirs ? fs_gamedirs[fs_numgamedirs - 1] : ""; }
@@ -409,6 +484,11 @@ char *FS_LoadFile(const char *path, size_t *len)
 				return buf;
 		}
 	}
+	if (fs_enginedir[0]) {
+		int n = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
+		if (n > 0 && (size_t)n < sizeof(ospath))
+			return load_os_file(ospath, len);
+	}
 	return NULL;
 }
 
@@ -426,6 +506,11 @@ const char *FS_WhichPath(const char *path)
 			return fs_gamedirs[i];
 		if (find_in_packs(i, path, &pk))
 			return pk->name;
+	}
+	if (fs_enginedir[0]) {
+		int n = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
+		if (n > 0 && (size_t)n < sizeof(ospath) && !stat(ospath, &st) && S_ISREG(st.st_mode))
+			return "(engine)";
 	}
 	return NULL;
 }
@@ -459,6 +544,46 @@ typedef struct {
 	int count, cap;
 } namelist_t;
 
+/* a file name against a search pattern: '*' and '?' stay within one path
+ * component. Nuclide lists subfolders with patterns of their own (maps in
+ * "maps/" and one level below), and Stiletto's decls/def/heroes.def
+ * includes its subfolder because the decls/def search doesn't reach it. */
+static bool path_match(const char *p, const char *s, bool nocase)
+{
+	for (; *p; p++, s++) {
+		if (*p == '*') {
+			while (*p == '*')
+				p++;
+			for (;; s++) {
+				if (path_match(p, s, nocase))
+					return true;
+				if (!*s || *s == '/')
+					return false;
+			}
+		}
+		if (!*s || (*p == '?' && *s == '/'))
+			return false;
+		if (*p != '?') {
+			int a = *p, b = *s;
+			if (nocase) {
+				a = tolower((unsigned char)a);
+				b = tolower((unsigned char)b);
+			}
+			if (a != b)
+				return false;
+		}
+	}
+	return !*s;
+}
+
+static int count_slashes(const char *s)
+{
+	int n = 0;
+	for (; *s; s++)
+		n += *s == '/';
+	return n;
+}
+
 static bool namelist_has(namelist_t *l, const char *n)
 {
 	for (int i = 0; i < l->count; i++)
@@ -489,11 +614,10 @@ static void walk(const char *root, const char *rel, const char *pattern, bool no
 		if (stat(full, &st))
 			continue;
 		if (S_ISDIR(st.st_mode)) {
-			/* '*' also matches '/', so any subdirectory may hold matches
-			 * once the pattern names a directory */
-			if (strchr(pattern, '/'))
+			/* only as deep as the pattern has components */
+			if (count_slashes(relname) < count_slashes(pattern))
 				walk(root, relname, pattern, nocase, seen, searchpath, fn, ctx, depth + 1);
-		} else if (Str_WildMatch(pattern, relname, nocase) && !namelist_has(seen, relname)) {
+		} else if (path_match(pattern, relname, nocase) && !namelist_has(seen, relname)) {
 			if (seen->count >= seen->cap) {
 				seen->cap = seen->cap ? seen->cap * 2 : 64;
 				seen->names = Mem_Realloc(seen->names, sizeof(char *) * seen->cap);
@@ -533,7 +657,7 @@ void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx)
 				continue;
 			for (int f = 0; f < pk->numfiles; f++) {
 				const char *n = pk->files[f].name;
-				if (!Str_WildMatch(pattern, n, nocase) || namelist_has(&seen, n))
+				if (!path_match(pattern, n, nocase) || namelist_has(&seen, n))
 					continue;
 				if (seen.count >= seen.cap) {
 					seen.cap = seen.cap ? seen.cap * 2 : 64;
@@ -544,6 +668,8 @@ void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx)
 			}
 		}
 	}
+	if (fs_enginedir[0])
+		walk(fs_enginedir, base, pattern, nocase, &seen, "(engine)", fn, ctx, 0);
 	for (int i = 0; i < seen.count; i++)
 		Mem_Free(seen.names[i]);
 	Mem_Free(seen.names);

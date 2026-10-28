@@ -39,6 +39,9 @@ extern image_t *r_whiteimage, *r_blackimage, *r_checkerimage, *r_flatnormal, *r_
 /* decodes an image file into RGBA (Mem_Free the result) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h);
 uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h);
+/* r_svg.c */
+bool R_LooksLikeSVG(const uint8_t *data, size_t len);
+uint8_t *R_DecodeSVG(const uint8_t *data, size_t len, int *w, int *h);
 
 /* --- materials ----------------------------------------------------------- */
 
@@ -130,6 +133,7 @@ int R_SpriteFormat(const char *name);
 void GL_SetDepth(bool test, bool write);
 void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);
+void GL_DeleteTextures(int n, const GLuint *tex);
 
 /* --- models -------------------------------------------------------------- */
 
@@ -143,6 +147,7 @@ typedef struct {
 	int type;         /* BSP surface type */
 	int orig;         /* index in the file, before sorting */
 	int visframe;     /* marked visible in this frame */
+	bool novis;       /* in no leaf's face list (Source displacements): always drawn */
 } rsurface_t;
 
 struct alias_s;
@@ -190,6 +195,8 @@ typedef struct {
 	image_t *skybox;
 	float fog[4];
 	bool hasfog;
+	/* density r g b alpha depthbias, from worldspawn or waterfog/skyroomfog */
+	float waterfog[6], skyroomfog[6];
 	/* visibility: the collision map's tree and leafs, and each file surface's
 	 * place in the sorted list */
 	bspmap_t *bsp;
@@ -204,6 +211,7 @@ void R_FreeWorld(void);
 void R_WorldUpload(const rvert_t *v, int numverts, const uint32_t *idx, int numidx);
 bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size);
 void R_FreeQ1World(void);
+bool R_LoadSourceWorld(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size);
 bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
 
 /* --- decals and surface queries (r_decal.c) -------------------------------- */
@@ -235,9 +243,22 @@ void R_AddParticleLights(void);
 void R_DrawParticles(void);
 void R_ClearParticles(void);
 void R_InitParticles(void);
+/* r_pcf.c: Source particle systems, run beside the r_part effects */
+bool R_PCF_Spawn(const char *name, const float *org, const float *dir);
+bool R_PCF_Exists(const char *name);
+void R_PCF_Update(float dt);
+void R_PCF_Draw(void);
+void R_PCF_Clear(void);
+int R_PCF_Count(void);
+void R_PCF_Init(void);
+void R_PCF_Shutdown(void);
 void R_ShutdownParticles(void);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);
+/* voxel worlds (r_voxel.c) */
+extern cvar_t *r_drawvoxels;
+void R_DrawVoxels(bool translucentpass);
+void R_FreeVoxels(void);
 void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
 
 /* --- scene --------------------------------------------------------------- */
@@ -260,11 +281,24 @@ typedef struct {
 	int renderflags;
 	int effects;
 	int drawflags;
+	bool mirrored; /* axis has a negative determinant: cull the other face */
 	material_t *forceshader;
 	struct qcvm_s *vm;
 	int qcent;        /* entity in that vm */
 	int skeletonindex; /* a skeleton object of that vm posing the model, 0 for none */
+	const struct rskin_s *customskin; /* setcustomskin: geomsets and surface replacements */
 } rentity_t;
+
+/* custom skins (r_skin.c) */
+typedef struct rskin_s rskin_t;
+int R_SkinGeomset(const rskin_t *s, int group); /* the sub-model to draw, 0 by default */
+material_t *R_SkinReplace(const rskin_t *s, const char *surface);
+const rskin_t *R_EntitySkin(struct qcvm_s *vm, int ent);
+void R_ClearSkins(void);
+material_t *R_Q1TextureMaterial(const uint8_t *mt, size_t avail, int *w, int *h, bool hl);
+void R_ClearRemaps(void);
+/* QC dynamic lights (dynamiclight_spawnstatic), r_rtlights.c */
+void R_AddQCLights(void);
 
 typedef struct {
 	float origin[3];
@@ -290,10 +324,21 @@ typedef struct {
 	int numdlights;
 	/* matrices for the frame being drawn */
 	float view[16], proj[16], viewproj[16];
+	float vmviewproj[16]; /* the projection view models use */
 	float forward[3], right[3], up[3];
-	/* the last view that filled most of the screen, for console tests */
-	float mainorigin[3], mainforward[3];
+	/* the last view that filled most of the screen, for console tests and
+	 * the screenshots that redraw it */
+	float mainorigin[3], mainforward[3], mainangles[3], mainfov[2];
+	float mainviewproj[16], mainvp[4]; /* its matrix and viewport (virtual pixels) */
+	bool havemain, maindrawworld;
+	/* VF_SKYROOM_CAMERA: where the skyroom is seen from, through the sky */
+	bool skyroom;
+	float skyroom_origin[3];
+	bool noskyroom; /* set while drawing the skyroom itself */
 } rscene_t;
+
+/* the fog for the view being drawn: rgb and density */
+extern float r_viewfog[4];
 
 extern rscene_t r_scene;
 
@@ -308,12 +353,17 @@ void R_ClearScene(void);
 rentity_t *R_AllocEntity(void);
 void R_RenderScene(void);
 void R_DrawModelEntity(rentity_t *e, bool translucentpass);
+/* r_srcworld.c: a Source map's prop_static models */
+void R_DrawStaticProps(bool translucentpass);
+void R_FreeStaticProps(void);
 void R_DrawPolygons(bool twod);
 void R_BeginPolygon(const char *shader, int flags, bool twod);
 void R_PolygonVertex(const float *org, const float *tc, const float *rgb, float alpha);
 void R_EndPolygon(void);
+void R_EndPolygonRibbon(float radius, const float *tcbias);
 void R_AddEntityFromQC(struct qcvm_s *vm, int ent);
 void R_AddEntities(struct qcvm_s *vm, int mask);
+void R_ClearStatics(void);
 int R_AddDynamicLight(const float *org, float radius, const float *color);
 void R_SetupView(void);
 void R_Project(const float *in, float *out);
@@ -330,6 +380,7 @@ void R_End2D(void);
 void R_Flush2D(void);
 void R_DrawPic(float x, float y, float w, float h, material_t *mat, float s1, float t1, float s2, float t2,
                const float *rgb, float alpha, int flags);
+void R_DrawOverlays(int w, int h);
 void R_DrawFill(float x, float y, float w, float h, const float *rgb, float alpha, int flags);
 float R_DrawString(float x, float y, const char *text, float sx, float sy, const float *rgb, float alpha,
                    int flags, bool markup);
@@ -341,7 +392,31 @@ void R_InitDraw(void);
 int R_LoadFont(const char *name, const char *path, const char *sizes, int slot);
 int R_FindFont(const char *name);
 void R_SetDrawFont(int slot);
+float R_DrawFontScale(void);
+const char *R_FontRenderer(int slot);
+const char *R_FontEntry(int slot);
 void R_ShutdownDraw(void);
+
+/* --- GDI-compatible TrueType text (r_gdifont.c) --------------------------- */
+
+typedef struct rgfont_s rgfont_t;
+typedef struct rgsize_s rgsize_t;
+typedef struct {
+	int x, y, w, h; /* atlas rectangle of the glyph's ink */
+	int left, top;  /* ink offset from the pen and the cell top, in pixels */
+	int adv;        /* advance in pixels (A+B+C) */
+} rgglyph_t;
+
+void RG_Init(void);
+bool RG_Enabled(void);
+rgfont_t *RG_Load(const char *spec);
+void RG_Free(rgfont_t *f);
+rgsize_t *RG_Size(rgfont_t *f, int tall);
+int RG_Ascent(const rgsize_t *s);
+image_t *RG_Atlas(const rgsize_t *s);
+const rgglyph_t *RG_Glyph(rgsize_t *s, int cp);
+void RG_Upload(rgsize_t *s);
+int RG_AtlasSize(void);
 extern int r_vwidth, r_vheight; /* virtual 2D screen size */
 extern int r_pwidth, r_pheight; /* physical framebuffer size */
 extern float r_2dscale;
@@ -358,7 +433,38 @@ void Mat4_Transform(const float *m, const float *in, float *out4);
 bool Mat4_Invert(float *out, const float *m);
 void AnglesToAxis(const float *angles, float axis[3][3]);
 
+/* --- tools (r_tools.c) and the accessors they use ------------------------ */
+
+void R_ForEachImage(void (*fn)(image_t *img, void *ctx), void *ctx);
+void R_ForEachMaterial(void (*fn)(material_t *m, void *ctx), void *ctx);
+int R_NumModels(void);
+rmodel_t *R_ModelAt(int i);
+size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris);
+void R_ForEachWadTexture(void (*fn)(const char *wad, const char *name, int type, int size, void *ctx), void *ctx);
+int R_NumWads(void);
+bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs);
+const char *R_GLSLHeader(void);
+bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *numsizes);
+bool R_ToolsRedrawing(void);   /* a screenshot tool is drawing the scene again */
+void R_DrawToolsWorld(void);   /* pointfile and route lines, in the 3D pass */
+void R_DrawToolsOverlay(int w, int h); /* showpic pictures */
+void R_ToolsEndFrame(void);    /* the cubemap, 360, stereo and mega screenshots */
+void R_InitTools(void);
+
+/* r_rtlights.c */
+void R_InitRTLights(void);
+void R_LoadRTLights(void);
+void R_ClearRTLights(void);
+void R_AddRTLights(void);
+void R_DrawRTLightsOverlay(int w, int h);
+void R_DrawHud(int w, int h); /* r_hud.c */
+void R_ReloadImage(const char *name);
+void R_ToolsMapLoaded(void);  /* skygroup overrides */
+
 extern cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 extern cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
+extern cvar_t *r_showclip, *r_debugview, *r_draw2d;
+void R_DrawClipBrushes(void);
+void R_DebugView(void);
 
 #endif

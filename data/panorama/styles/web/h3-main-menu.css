@@ -1,0 +1,696 @@
+/* Panorama port of Stiletto's data/web/h3-main-menu (style.css): the Halo 3
+   style main menu mock-up. The page draws a 16:9 canvas sized in cqh/cqw;
+   here the canvas is a 1920 x 1080 stage, so 1cqh = 10.8px and 1cqw = 19.2px.
+   The page's flex boxes are laid out at the positions Chromium gives them at
+   1920 x 1080. The page names "Conduit ITC Medium" first, but both of its
+   @font-face rules load the regular Conduit ITC, so everything here is
+   weight 400 (Chromium fakes the bold of the overlay title and the button
+   glyphs). Consolas is IBM Plex Mono, which the game ships, as wide as the
+   DejaVu Sans Mono that Chromium falls back to here. */
+
+/* noclip: the default overflow (squish) would shrink the 1920px stage to
+   fit a view narrower than 16:9 instead of letting the script scale it */
+.page {
+	width: 100%;
+	height: 100%;
+	background-color: #000000;
+	overflow: noclip;
+}
+
+#Stage {
+	width: 1920px;
+	height: 1080px;
+	horizontal-align: center;
+	vertical-align: center;
+	overflow: clip;
+	font-family: "Conduit ITC";
+	font-weight: normal;
+	color: #f6f6f6;
+}
+
+.fill {
+	width: 100%;
+	height: 100%;
+}
+
+.img {
+	background-size: 100% 100%;
+	background-repeat: no-repeat;
+}
+
+.t {
+	font-family: "Conduit ITC";
+	font-weight: normal;
+	white-space: nowrap;
+	text-overflow: noclip;
+}
+
+.mono {
+	font-family: "IBM Plex Mono";
+	font-weight: normal;
+}
+
+.hidden {
+	visibility: collapse;
+}
+
+/* --- the screen: the stand-in for the missing 3D scene ------------------------- */
+
+.bg-base {
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #0a131b ), color-stop( 0.22, #101820 ), color-stop( 0.55, #1a1108 ), color-stop( 0.78, #20140a ), to( #261004 ) );
+}
+/* ellipse at 30% 30%, farthest-corner: radii 70% x sqrt 2 */
+.bg-blue {
+	background-color: gradient( radial, 30% 30%, 0% 0%, 98.99% 98.99%, from( #14233766 ), color-stop( 0.32, #1423372e ), color-stop( 0.6, #14233700 ), to( #14233700 ) );
+}
+/* ellipse at 70% 90%: radii 70% and 90% x sqrt 2 */
+.bg-orange {
+	background-color: gradient( radial, 70% 90%, 0% 0%, 98.99% 127.28%, from( #78461e80 ), color-stop( 0.28, #78461e38 ), color-stop( 0.55, #78461e00 ), to( #78461e00 ) );
+}
+
+/* --- pages and their transitions ------------------------------------------------- */
+
+/* Each move is a 666 ms beat of a 333 ms hold and a 333 ms motion. A page
+   that enters waits out the hold (transition-delay); a page that leaves moves
+   in the first half. Opacity is the page fade, transform the panel slide. */
+.h3page {
+	width: 100%;
+	height: 100%;
+	opacity: 1;
+}
+.h3page.off {
+	opacity: 0;
+}
+.h3page.entering {
+	transition-property: opacity;
+	transition-duration: 0.333s;
+	transition-delay: 0.333s;
+	transition-timing-function: ease-out;
+}
+.h3page.leaving {
+	transition-property: opacity;
+	transition-duration: 0.333s;
+	transition-delay: 0s;
+	transition-timing-function: ease-in;
+}
+
+/* the resting state names the same function: Panorama interpolates only
+   matching transform lists, and jumps half way from none */
+.page-main #MenuPanel { transform: translateY( 0px ); }
+.page-main.off #MenuPanel { transform: translateY( 420px ); }
+.page-main.entering #MenuPanel {
+	transition-property: transform;
+	transition-duration: 0.333s;
+	transition-delay: 0.333s;
+	transition-timing-function: cubic-bezier( 0.16, 0.84, 0.44, 1 );
+}
+.page-main.leaving #MenuPanel {
+	transition-property: transform;
+	transition-duration: 0.333s;
+	transition-delay: 0s;
+	transition-timing-function: cubic-bezier( 0.55, 0, 0.85, 0.16 );
+}
+
+.page-lobby #LobbyPanel { transform: translateX( 0px ); }
+.page-lobby.off #LobbyPanel { transform: translateX( -810px ); }
+.page-lobby.entering #LobbyPanel {
+	transition-property: transform;
+	transition-duration: 0.333s;
+	transition-delay: 0.333s;
+	transition-timing-function: cubic-bezier( 0.16, 0.84, 0.44, 1 );
+}
+.page-lobby.leaving #LobbyPanel {
+	transition-property: transform;
+	transition-duration: 0.333s;
+	transition-delay: 0s;
+	transition-timing-function: cubic-bezier( 0.55, 0, 0.85, 0.16 );
+}
+
+/* delayd-fade-in: 200 ms delay, then the 666 ms companion fade (hold, fade) */
+.delayd-fade-in {
+	opacity: 1;
+	transition-property: opacity;
+	transition-duration: 0.333s;
+	transition-delay: 0.533s;
+	transition-timing-function: ease-out;
+}
+.intro .delayd-fade-in {
+	opacity: 0;
+}
+
+/* the intro black fade: 800 ms, opaque for the first 60% */
+.black-fade {
+	width: 100%;
+	height: 100%;
+	background-color: #000000;
+	opacity: 1;
+	transition-property: opacity;
+	transition-duration: 0.32s;
+	transition-delay: 0.48s;
+	transition-timing-function: ease-out;
+}
+.black-fade.done {
+	opacity: 0;
+}
+
+/* --- main menu: right group -------------------------------------------------------- */
+
+#TitleLogo {
+	x: 979.2px;
+	y: 669.6px;
+	width: 844.8px;
+	height: 105.6px;
+}
+#BungieLogo {
+	x: 1620.5px;
+	y: 934px;
+	width: 184.3px;
+	height: 70.4px;
+}
+.bungie-dim {
+	opacity: 0.85;
+}
+#BuildText {
+	x: 869.9px;
+	y: 715px;
+	width: 683.9px;
+	height: 19px;
+	font-size: 16.2px;
+	text-align: center;
+	color: #ffffff38;
+}
+
+/* --- main menu: the panel ------------------------------------------------------------- */
+
+#MenuPanel {
+	x: 134.4px;
+	y: 561.6px;
+	width: 537.6px;
+	height: 518.4px;
+	overflow: clip;
+}
+
+.mm-header {
+	width: 100%;
+	height: 64.4px;
+	background-color: #121921d9;
+	border-top: 2px solid #40454ed9;
+	border-bottom: 2px solid #40454ed9;
+}
+.mm-body {
+	y: 64.4px;
+	width: 100%;
+	height: 313px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #0d254ad9 ), to( #061023d9 ) );
+}
+.mm-footer {
+	y: 377.4px;
+	width: 100%;
+	height: 54.6px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #050c1ad9 ), to( #030811e6 ) );
+	border-top: 1px solid #40454e99;
+}
+.skirt {
+	width: 100%;
+	height: 86.4px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #030811e6 ), color-stop( 0.35, #02060db3 ), color-stop( 0.7, #02040959 ), to( #00000000 ) );
+}
+.mm-skirt {
+	y: 432px;
+}
+
+#MenuPrimary {
+	y: 7.4px;
+	width: 100%;
+	height: 49.7px;
+}
+#MainList {
+	y: 69.8px;
+	width: 100%;
+	height: 300px;
+	flow-children: down;
+}
+
+/* a row: 4.6cqh tall, 3.4cqh text, ice when idle and hilite with focus */
+.mm-row {
+	width: 100%;
+	height: 49.7px;
+	overflow: clip;
+}
+.mm-row-label {
+	x: 13.5px;
+	y: 8px;
+	width: 520px;
+	height: 36.72px;
+	font-size: 36.72px;
+	line-height: 36.72px;
+	text-align: left;
+	color: #adc4df;
+	transition-property: color;
+	transition-duration: 0.1s;
+	transition-timing-function: linear;
+}
+.focused .mm-row-label,
+.focused .lb-row-label {
+	color: #eaeef8;
+}
+.disabled .mm-row-label {
+	color: #77879a;
+	font-style: italic;
+}
+
+/* the focus bar: buttonhover.svg over a black square (its unstyled first
+   path), masked by a grey ramp, and pulsing 1 -> 0.8 -> 1 every 2 s. It
+   shows at once and fades out over 120 ms. */
+.hover-bar {
+	width: 100%;
+	height: 100%;
+	opacity: 0;
+	transition-property: opacity;
+	transition-duration: 0.12s;
+	transition-timing-function: linear;
+}
+.focused .hover-bar {
+	opacity: 1;
+	transition-duration: 0s;
+}
+.hover-fill {
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #895f3c ), color-stop( 0.7, #7b5636 ), to( #544234 ) );
+	animation-name: h3-button-pulse;
+	animation-duration: 2s;
+	animation-timing-function: cubic-bezier( 0.385, 0, 0.68, 1 );
+	animation-iteration-count: infinite;
+}
+/* the glow: white at 10% along the top and bottom 15%, under the same ramp */
+.hover-glow {
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #ffffff0f ), color-stop( 0.15, #ffffff00 ), color-stop( 0.85, #ffffff00 ), to( #ffffff0f ) );
+}
+@keyframes h3-button-pulse {
+	0% { opacity: 1; }
+	50% { opacity: 0.8; }
+	100% { opacity: 1; }
+}
+
+/* a disabled row shakes when confirmed */
+.shake {
+	animation-name: h3-shake;
+	animation-duration: 0.2s;
+	animation-timing-function: ease-out;
+}
+@keyframes h3-shake {
+	0% { transform: translateX( 0px ); }
+	33% { transform: translateX( -6px ); }
+	66% { transform: translateX( 6px ); }
+	100% { transform: translateX( 0px ); }
+}
+
+/* QUIT TO XBOX DASHBOARD: the page fades out for a moment */
+#Stage {
+	opacity: 1;
+	transition-property: opacity;
+	transition-duration: 0.6s;
+	transition-timing-function: ease;
+}
+#Stage.quitting {
+	opacity: 0;
+}
+
+/* --- button keys ------------------------------------------------------------------------ */
+
+.button-keys {
+	flow-children: right;
+	height: 32px;
+}
+.button-key {
+	flow-children: right;
+	height: 32px;
+	margin-right: 17.28px;
+}
+.button-key-glyph {
+	width: 29.16px;
+	height: 29.16px;
+	margin-top: 1.4px;
+	margin-right: 5.4px;
+	border-radius: 50%;
+	background-color: #cfd8e6;
+	box-shadow: 0px 0px 0px 1.5px #00000080;
+}
+.button-key-glyph Label {
+	width: 100%;
+	height: 100%;
+	font-size: 20.52px;
+	font-weight: bold;
+	text-align: center;
+	vertical-align: center;
+	line-height: 29.16px;
+	color: #000000;
+}
+.glyph-A { background-color: #2eba3c; }
+.glyph-B { background-color: #e44b4b; }
+.glyph-X { background-color: #2e7ad4; }
+.glyph-Y { background-color: #e2b324; }
+.glyph-A Label, .glyph-B Label, .glyph-X Label { color: #ffffff; }
+.button-key-label {
+	height: 32px;
+	font-size: 35.208px;
+	line-height: 32px;
+	color: #adc4df;
+}
+
+#ButtonKeys {
+	x: 13.5px;
+	y: 389.2px;
+}
+#VersionText {
+	x: 444.3px;
+	y: 396.7px;
+	width: 79.7px;
+	height: 17px;
+	font-size: 19.44px;
+	line-height: 17px;
+	text-align: right;
+	color: #77879a;
+}
+
+/* --- pregame lobby ------------------------------------------------------------------- */
+
+.lobby-tint-base {
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #08111a8c ), color-stop( 0.65, #14160c8c ), to( #1f0c048c ) );
+}
+/* ellipse at 30% 80%: radii 70% and 80% x sqrt 2 */
+.lobby-tint-blue {
+	background-color: gradient( radial, 30% 80%, 0% 0%, 98.99% 113.14%, from( #14233766 ), color-stop( 0.6, #14233700 ), to( #14233700 ) );
+}
+/* ellipse at 70% 40%: radii 70% and 60% x sqrt 2 */
+.lobby-tint-orange {
+	background-color: gradient( radial, 70% 40%, 0% 0%, 98.99% 84.85%, from( #78461e4d ), color-stop( 0.55, #78461e00 ), to( #78461e00 ) );
+}
+
+#LobbyPanel {
+	x: 118.5px;
+	width: 804.6px;
+	height: 1080px;
+	overflow: clip;
+}
+.lb-header {
+	width: 100%;
+	height: 129.6px;
+	background-color: #121921d9;
+	border-bottom: 1px solid #40454ed9;
+}
+#LobbyTitle {
+	x: 13.5px;
+	y: 62.5px;
+	height: 71.28px;
+	font-size: 71.28px;
+	line-height: 71.28px;
+	color: #eaeef8;
+	text-shadow: 0px 1px 4px 1 #00000099;
+}
+.lb-body {
+	y: 129.6px;
+	width: 100%;
+	height: 809.4px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #0d254ad9 ), to( #061023d9 ) );
+}
+#LobbyFlow {
+	y: 129.6px;
+	width: 100%;
+	flow-children: down;
+}
+/* the list bleeds 2.25cqh out of the body's padding and carries its own ramp */
+#LobbyList {
+	margin-left: -10.8px;
+	width: 826.2px;
+	padding-top: 10.8px;
+	padding-left: 10.8px;
+	flow-children: down;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #2f4260 ), color-stop( 0.62, #1f2d48 ), to( #1d2e4c ) );
+}
+.lb-row {
+	width: 815.4px;
+	height: 47.52px;
+}
+.lb-row-label {
+	x: 13.5px;
+	y: 1px;
+	width: 780px;
+	height: 43.2px;
+	font-size: 35.208px;
+	line-height: 43.2px;
+	color: #adc4df;
+	transition-property: color;
+	transition-duration: 0.1s;
+	transition-timing-function: linear;
+}
+.lb-row.separated {
+	margin-top: 4.32px;
+	height: 68.84px;
+	border-top: 2px solid #40454ed9;
+	border-bottom: 2px solid #40454ed9;
+}
+.lb-row.separated .lb-row-label {
+	y: 11.8px;
+}
+.lb-row.separated .hover-bar {
+	y: 5.4px;
+	height: 54.04px;
+}
+
+/* the status block: a "Ready" heading over the lobby_status paragraph (the
+   paragraph sits in the flow itself, so the preview below sees its lines) */
+#LobbyStatusHeading {
+	margin-top: 8.64px;
+	margin-left: 13.5px;
+	height: 34.1px;
+	font-size: 35.208px;
+	line-height: 32px;
+	color: #eaeef8;
+}
+#LobbyStatus {
+	margin-left: 13.5px;
+	width: 777.6px;
+	font-size: 35.208px;
+	line-height: 35.208px;
+	white-space: normal;
+	color: #adc4df;
+}
+
+#LobbyPreview {
+	margin-top: 8.64px;
+	width: 804.6px;
+	height: 264.1px;
+	overflow: clip;
+}
+.preview-map {
+	background-color: gradient( linear, 16.8% -51.2%, 83.2% 151.2%, from( #234d70 ), color-stop( 0.4, #1a2c43 ), to( #4a3320 ) );
+}
+/* ellipse at 70% 30%: radii 70% x sqrt 2 */
+.preview-glow {
+	background-color: gradient( radial, 70% 30%, 0% 0%, 98.99% 98.99%, from( #b4dcff2e ), color-stop( 0.6, #b4dcff00 ), to( #b4dcff00 ) );
+}
+.preview-gametype {
+	x: 19.1px;
+	y: 17.4px;
+	width: 225.8px;
+	height: 225.9px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #0000008c ), to( #000000bf ) );
+	border: 1px solid #a0b4dc73;
+	box-shadow: 0px 1.5px 15.1px #00000080;
+}
+#LobbyGametype {
+	y: 99.9px;
+	width: 100%;
+	height: 24px;
+	font-size: 25.92px;
+	line-height: 24px;
+	letter-spacing: 2.07px;
+	text-align: center;
+	color: #eaeef8;
+}
+.preview-shade {
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #00000000 ), to( #0000008c ) );
+}
+.no-preview #LobbyPreview,
+.no-preview #LobbyGameName {
+	visibility: collapse;
+}
+
+#LobbyGameName {
+	margin-top: 6.48px;
+	margin-left: 13.5px;
+	width: 777.6px;
+	height: 32px;
+	font-size: 35.208px;
+	line-height: 32px;
+	color: #adc4df;
+	text-shadow: 0px 1px 4px 1 #00000080;
+}
+
+.lb-footer {
+	y: 939px;
+	width: 100%;
+	height: 54.6px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #050c1a99 ), to( #030811e6 ) );
+	border-top: 1px solid #40454e99;
+}
+#LobbyButtonKeys {
+	x: 16.2px;
+	y: 950.8px;
+}
+.lb-skirt {
+	y: 993.6px;
+}
+
+/* players_in_game: "1 / 16" above the roster */
+#LobbyPlayers {
+	x: 1408.1px;
+	y: 45.2px;
+	height: 55.5px;
+	flow-children: right;
+}
+#LobbyPlayers Label {
+	height: 55.5px;
+	font-size: 32.4px;
+	line-height: 55.5px;
+	letter-spacing: 1.62px;
+	color: #adc4df;
+}
+#LobbyPlayers #LobbyPlayersCount {
+	color: #eaeef8;
+	margin-right: 3.24px;
+}
+#LobbyPlayers #LobbyPlayersSep {
+	opacity: 0.6;
+	margin-left: 2.16px;
+	margin-right: 5.4px;
+}
+#LobbyPlayers #LobbyPlayersMax {
+	opacity: 0.85;
+}
+
+/* roster.skn3 slot: the base strip is the white roster_unfocused_ui mask
+   under a blue ramp; the focused strip grows 1.67cqh upward */
+#LobbyRoster {
+	x: 1296px;
+	y: 117.7px;
+	width: 470.4px;
+	height: 875.9px;
+	overflow: noclip;
+}
+.roster-slot {
+	width: 470.4px;
+	height: 47.95px;
+	overflow: noclip;
+}
+.roster-base-band {
+	x: 40.6px;
+	width: 426.8px;
+	overflow: clip;
+	opacity: 0.95;
+}
+.roster-base {
+	width: 426.8px;
+	height: 66px;
+}
+.roster-name {
+	x: 105.2px;
+	y: -10.5px;
+	width: 303.6px;
+	height: 44.9px;
+	font-size: 28.08px;
+	line-height: 44.9px;
+	color: #eaeef8;
+}
+.roster-tag {
+	x: 105.2px;
+	y: 22.5px;
+	width: 303.6px;
+	height: 17.28px;
+	font-size: 17.28px;
+	line-height: 17.28px;
+	letter-spacing: 1.38px;
+	text-transform: uppercase;
+	color: #a5bedb;
+}
+
+/* --- the submenu stub overlay --------------------------------------------------------- */
+
+#Overlay {
+	width: 100%;
+	height: 100%;
+	background-color: #000000b8;
+}
+.overlay-card {
+	horizontal-align: center;
+	vertical-align: center;
+	width: 768px;
+	height: 168.6px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #0d254aeb ), to( #061023eb ) );
+	border-top: 1.5px solid #40454ed9;
+	border-bottom: 1.5px solid #40454ed9;
+	box-shadow: 0px 8px 32px #00000099;
+}
+/* the bold face is ConduitITC-Bold.otf, whose ascent FreeType reads 15px
+   taller than the regular face's at this size */
+#OverlayTitle {
+	y: 14px;
+	width: 100%;
+	height: 49px;
+	font-size: 54px;
+	line-height: 49px;
+	font-weight: bold;
+	text-align: center;
+	text-transform: uppercase;
+	color: #eaeef8;
+}
+#OverlayTag {
+	y: 81px;
+	width: 100%;
+	height: 20px;
+	font-size: 17.28px;
+	line-height: 20px;
+	text-align: center;
+	color: #ffffff80;
+}
+.overlay-hint {
+	y: 118.6px;
+	width: 100%;
+	height: 22px;
+	font-size: 23.76px;
+	line-height: 22px;
+	text-align: center;
+	color: #adc4df;
+}
+
+/* --- debug HUD and the controls hint ----------------------------------------------------- */
+
+#Debug {
+	x: 16px;
+	y: 16px;
+	flow-children: down;
+	padding: 7.2px 10.8px;
+	background-color: #000000b3;
+	border: 1px solid #78dcff66;
+}
+#Debug Label {
+	font-size: 12px;
+	color: #cfeefb;
+}
+#DebugOnline {
+	margin-top: 2px;
+}
+
+#ControlsHint {
+	horizontal-align: center;
+	vertical-align: bottom;
+	margin-bottom: 8.6px;
+	height: 13px;
+	font-size: 11px;
+	line-height: 13px;
+	color: #ffffff66;
+}

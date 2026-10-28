@@ -7,6 +7,7 @@
 #include "../common/cmd.h"
 #include "../common/fs.h"
 #include "../common/studio.h"
+#include "../ui/ui.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -16,9 +17,12 @@ static bool r_active;
 double r_time;
 cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
-static cvar_t *scr_scale, *r_screenshot_format;
+static cvar_t *scr_scale, *r_screenshot_format, *jpeg_quality;
 static bool cursor_mode;
 static char screenshot_pending[256];
+static r_capture_fn capture_fn; /* wants the next frame as a JPEG */
+static r_grab_fn grab_fn;       /* wants every frame (video capture) */
+static void capture_jpeg(r_capture_fn fn);
 
 bool R_Active(void) { return r_active; }
 
@@ -65,7 +69,12 @@ void R_ClearMap(void)
 {
 	R_ClearParticles();
 	R_FreeWorld();
+	R_FreeVoxels();
 	R_FreeModels();
+	R_ClearRTLights();
+	R_ClearStatics();
+	R_ClearSkins();
+	R_ClearRemaps();
 	for (int i = 0; i < cl.nummodels; i++)
 		cl.models[i].render = NULL;
 }
@@ -75,6 +84,7 @@ void R_NewMap(void)
 	Host_Loading("world_render", cl.mapname, 0.40f);
 	if (cl.world && cl.worldpath[0])
 		R_LoadWorld(cl.world, cl.worldpath);
+	R_LoadRTLights();
 	for (int i = 1; i < cl.nummodels; i++) {
 		if ((i & 3) == 1)
 			Host_Loading("models", cl.mapname, 0.60f + 0.25f * (float)i / (float)cl.nummodels);
@@ -132,18 +142,55 @@ void R_EndFrame(void)
 	bool game = cl.state == ca_active && cl.csqc;
 	if (!r_active)
 		return;
-	if (!game && !Con_IsActive() && !MQC_Active() && !MQC_Loading()) {
+	V_Draw(r_vwidth, r_vheight);
+	if (!game && !Con_IsActive() && !MQC_Active() && !MQC_Loading() && !UI_WantsInput() && !V_Active() && !ED_Active()) {
 		/* nothing else on screen: show the console */
 		static const float black[3] = {0, 0, 0};
 		R_DrawFill(0, 0, (float)r_vwidth, (float)r_vheight, black, 1, 0);
 		Con_SetActive(true);
 	}
+	R_DrawOverlays(r_vwidth, r_vheight);
+	R_DrawRTLightsOverlay(r_vwidth, r_vheight);
+	R_DrawToolsOverlay(r_vwidth, r_vheight);
+	CL_DrawCinematic(r_vwidth, r_vheight);
+	if (CL_Capturing() && Cvar_String("capturemessage")[0]) {
+		static const float white[3] = {1, 1, 1};
+		R_DrawString(8, (float)r_vheight - 16, Cvar_String("capturemessage"), 8, 8, white, 1, 0, true);
+	}
+	{
+		float level = CL_VoipMeter();
+		if (level >= 0) {
+			/* the microphone's loudness, above the hud */
+			static const float back[3] = {0, 0, 0}, bar[3] = {0.2f, 0.9f, 0.3f};
+			float w = 128, x = (r_vwidth - w) / 2, y = (float)r_vheight - 64;
+			R_DrawFill(x - 1, y - 1, w + 2, 6, back, 0.6f, 0);
+			R_DrawFill(x, y, w * level, 4, bar, 0.9f, 0);
+		}
+	}
+	EM_Draw(r_vwidth, r_vheight);
+	ED_Draw(r_vwidth, r_vheight);
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
-	VID_SetMouseGrab(game && !Con_IsActive() && !cursor_mode);
+	R_ToolsEndFrame();
+	VID_SetMouseGrab(((game && !cursor_mode) || V_Active()) && !Con_IsActive() && !EM_Active() && !ED_Active() && !UI_WantsInput());
 	if (screenshot_pending[0]) {
 		take_screenshot(screenshot_pending);
 		screenshot_pending[0] = 0;
+	}
+	if (capture_fn) {
+		r_capture_fn fn = capture_fn;
+		capture_fn = NULL;
+		capture_jpeg(fn);
+	}
+	if (grab_fn) {
+		static uint8_t *px;
+		static size_t pxsize;
+		size_t need = (size_t)r_pwidth * r_pheight * 3;
+		if (need > pxsize)
+			px = Mem_Realloc(px, pxsize = need);
+		qglPixelStorei(GL_PACK_ALIGNMENT, 1);
+		qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+		grab_fn(px, r_pwidth, r_pheight);
 	}
 	VID_Swap();
 }
@@ -168,19 +215,25 @@ static void write_func(void *ctx, void *data, int size) { fwrite(data, 1, (size_
 
 static void take_screenshot(const char *name)
 {
-	char rel[300], path[1024];
+	char rel[600], path[1024];
 	uint8_t *px = Mem_Alloc((size_t)r_pwidth * r_pheight * 3);
 	FILE *f;
 	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
 	qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+	/* "*" numbers the shot; "*jpg" and the like pick the format too */
+	const char *ext = name[0] == '*' && name[1] ? name + 1 : r_screenshot_format->string;
+	if (!Str_ICmp(ext, "jpeg"))
+		ext = "jpg";
+	if (Str_ICmp(ext, "jpg") && Str_ICmp(ext, "tga") && Str_ICmp(ext, "bmp"))
+		ext = "png";
 	if (name[0] == '*') {
 		for (int i = 0; i < 10000; i++) {
-			snprintf(rel, sizeof(rel), "screenshots/shot%04d.png", i);
+			snprintf(rel, sizeof(rel), "screenshots/shot%04d.%s", i, ext);
 			if (!FS_FileExists(rel))
 				break;
 		}
 	} else {
-		snprintf(rel, sizeof(rel), "screenshots/%s%s", name, strchr(name, '.') ? "" : ".png");
+		snprintf(rel, sizeof(rel), "screenshots/%s%s%s", name, strchr(name, '.') ? "" : ".", strchr(name, '.') ? "" : ext);
 	}
 	if (!FS_WritePath(rel, path, sizeof(path)) || !FS_CreatePath(path) || !(f = fopen(path, "wb"))) {
 		Con_Printf("screenshot: can't write %s\n", rel);
@@ -189,7 +242,11 @@ static void take_screenshot(const char *name)
 	}
 	stbi_flip_vertically_on_write(1);
 	if (strstr(rel, ".jpg"))
-		stbi_write_jpg_to_func(write_func, f, r_pwidth, r_pheight, 3, px, 90);
+		stbi_write_jpg_to_func(write_func, f, r_pwidth, r_pheight, 3, px, BW_CLAMP(jpeg_quality->ivalue, 1, 100));
+	else if (strstr(rel, ".tga"))
+		stbi_write_tga_to_func(write_func, f, r_pwidth, r_pheight, 3, px);
+	else if (strstr(rel, ".bmp"))
+		stbi_write_bmp_to_func(write_func, f, r_pwidth, r_pheight, 3, px);
 	else
 		stbi_write_png_to_func(write_func, f, r_pwidth, r_pheight, 3, px, r_pwidth * 3);
 	fclose(f);
@@ -197,9 +254,61 @@ static void take_screenshot(const char *name)
 	Mem_Free(px);
 }
 
+static void sb_write(void *ctx, void *data, int size) { SB_Append((strbuf_t *)ctx, data, (size_t)size); }
+
+/* the frame as a JPEG in memory, for screenshots sent to the server */
+static void capture_jpeg(r_capture_fn fn)
+{
+	strbuf_t sb = {0};
+	uint8_t *px = Mem_Alloc((size_t)r_pwidth * r_pheight * 3);
+	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
+	qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+	stbi_flip_vertically_on_write(1);
+	stbi_write_jpg_to_func(sb_write, &sb, r_pwidth, r_pheight, 3, px, 70);
+	Mem_Free(px);
+	fn(sb.data, sb.len);
+	SB_Free(&sb);
+}
+
+void R_SetFrameGrab(r_grab_fn fn) { grab_fn = fn; }
+
+/* rgb rows bottom up, as read from the screen; ext picks the format */
+bool R_EncodeImage(const char *ext, const uint8_t *rgb, int w, int h, int quality, strbuf_t *out)
+{
+	stbi_flip_vertically_on_write(1);
+	if (!Str_ICmp(ext, "jpg") || !Str_ICmp(ext, "jpeg"))
+		return stbi_write_jpg_to_func(sb_write, out, w, h, 3, rgb, BW_CLAMP(quality, 1, 100)) != 0;
+	if (!Str_ICmp(ext, "tga"))
+		return stbi_write_tga_to_func(sb_write, out, w, h, 3, rgb) != 0;
+	if (!Str_ICmp(ext, "bmp"))
+		return stbi_write_bmp_to_func(sb_write, out, w, h, 3, rgb) != 0;
+	if (!Str_ICmp(ext, "png"))
+		return stbi_write_png_to_func(sb_write, out, w, h, 3, rgb, w * 3) != 0;
+	return false;
+}
+
+bool R_CaptureScreen(r_capture_fn fn)
+{
+	if (!r_active)
+		return false;
+	capture_fn = fn;
+	return true;
+}
+
 static void Screenshot_f(int argc, const char **argv)
 {
 	Str_Copy(screenshot_pending, argc > 1 ? argv[1] : "*", sizeof(screenshot_pending));
+}
+
+/* jpeg/screenshot_jpeg [name], screenshot_tga [name] */
+static void ScreenshotFormat_f(int argc, const char **argv)
+{
+	const char *ext = strstr(argv[0], "tga") ? "tga" : "jpg";
+	if (argc > 1)
+		snprintf(screenshot_pending, sizeof(screenshot_pending), "%s%s%s", argv[1], strchr(argv[1], '.') ? "" : ".",
+		         strchr(argv[1], '.') ? "" : ext);
+	else
+		snprintf(screenshot_pending, sizeof(screenshot_pending), "*%s", ext);
 }
 
 /* "sky <name>": a skybox from env/<name>_rt and friends, as sent by games */
@@ -214,21 +323,62 @@ static void Sky_f(int argc, const char **argv)
 	r_world.skybox = NULL;
 }
 
+/* "fog <density> [r g b] [alpha] [start]": overrides the map's fog, as
+ * games send it; "fog 0" turns it off. With r_fog_linear set the first
+ * number is instead the distance at which fog is complete. */
+static cvar_t *r_fog_linear;
+static void Fog_f(int argc, const char **argv)
+{
+	float d;
+	if (argc < 2) {
+		if (r_world.hasfog)
+			Con_Printf("fog %g %g %g %g\n", r_world.fog[3], r_world.fog[0], r_world.fog[1], r_world.fog[2]);
+		else
+			Con_Printf("no fog\n");
+		return;
+	}
+	d = (float)atof(argv[1]);
+	if (r_fog_linear->ivalue && d > 0)
+		d = 64 * 1.732f / d; /* about 95% fogged at that distance */
+	r_world.fog[3] = d;
+	if (argc > 4) {
+		r_world.fog[0] = (float)atof(argv[2]);
+		r_world.fog[1] = (float)atof(argv[3]);
+		r_world.fog[2] = (float)atof(argv[4]);
+	} else if (!r_world.hasfog) {
+		r_world.fog[0] = r_world.fog[1] = r_world.fog[2] = 0.3f;
+	}
+	r_world.hasfog = d > 0;
+}
+
 bool R_Init(bool headless)
 {
 	r_lightmapscale = Cvar_Get("r_lightmapscale", "2", CVAR_ARCHIVE, "Brightness multiplier for lightmaps (Q3 maps are stored at half brightness)");
 	r_fullbright = Cvar_Get("r_fullbright", "0", 0, "Draw everything without lighting");
 	r_drawentities = Cvar_Get("r_drawentities", "1", 0, "Draw models and brush entities");
 	r_drawworld = Cvar_Get("r_drawworld", "1", 0, "Draw the world");
+	r_drawvoxels = Cvar_Get("r_drawvoxels", "1", 0, "Draw the voxel world");
 	r_novis = Cvar_Get("r_novis", "0", 0, "Ignore visibility data");
 	r_clearcolor = Cvar_Get("r_clearcolor", "0 0 0", CVAR_ARCHIVE, "Colour behind everything");
 	gl_texturemode = Cvar_Get("gl_texturemode", "linear", CVAR_ARCHIVE, "Texture filtering: linear or nearest");
 	r_wireframe = Cvar_Get("r_wireframe", "0", 0, NULL);
 	r_speeds = Cvar_Get("r_speeds", "0", 0, NULL);
+	r_showclip = Cvar_Get("r_showclip", "0", 0, "Draw collision brushes: 1 the ones added for props and displacements, 2 all");
+	r_draw2d = Cvar_Get("r_draw2d", "1", 0, "Draw the HUD, menus and console (0 for clean screenshots)");
+	r_debugview = Cvar_Get("r_debugview", "", 0, "Put the camera at \"x y z pitch yaw\", whatever the game says");
 	scr_scale = Cvar_Get("scr_scale", "0", CVAR_ARCHIVE, "2D scale: virtual pixels per screen pixel, 0 for automatic");
-	r_screenshot_format = Cvar_Get("r_screenshot_format", "png", CVAR_ARCHIVE, NULL);
+	r_screenshot_format = Cvar_Get("r_screenshot_format", "png", CVAR_ARCHIVE, "Screenshot format: png, jpg, tga or bmp");
+	jpeg_quality = Cvar_Get("jpeg_quality", "90", CVAR_ARCHIVE, "JPEG screenshot quality, 1-100");
 	Cmd_Add("screenshot", Screenshot_f);
+	Cmd_AddD("jpeg", ScreenshotFormat_f, "jpeg [name]: a JPEG screenshot");
+	Cmd_AddD("screenshot_jpeg", ScreenshotFormat_f, "screenshot_jpeg [name]: a JPEG screenshot");
+	Cmd_AddD("screenshot_tga", ScreenshotFormat_f, "screenshot_tga [name]: a TGA screenshot");
 	Cmd_Add("sky", Sky_f);
+	r_fog_linear = Cvar_Get("r_fog_linear", "0", 0, "fog's first number is the full-fog distance instead of a density");
+	Cmd_AddD("fog", Fog_f, "fog <density> [r g b]: set the fog (0 turns it off)");
+	R_InitTools();
+	R_InitRTLights();
+	V_Init();
 	R_InitScene();
 	r_active = false;
 	if (!headless && VID_Active()) {
@@ -279,12 +429,20 @@ static void use_drawfont(qcvm_t *vm) { R_SetDrawFont((int)QC_GFloat(vm, drawfont
 
 static int argflags(qcvm_t *vm, int n) { return vm->argc > n ? (int)QC_PFLOAT(vm, n) : 0; }
 
+/* pictures drawn by another module (web views made with gecko_create) */
+static r_pichook_t pichook;
+void R_SetPicHook(r_pichook_t fn) { pichook = fn; }
+
 static void r_drawpic(qcvm_t *vm)
 {
 	float *pos = QC_PVEC(vm, 0), *size = QC_PVEC(vm, 2);
 	static const float white[3] = {1, 1, 1};
 	const float *rgb = vm->argc > 3 ? QC_PVEC(vm, 3) : white;
 	float alpha = vm->argc > 4 ? QC_PFLOAT(vm, 4) : 1;
+	if (pichook && pichook(QC_PSTR(vm, 1), pos[0], pos[1], size[0], size[1], rgb, alpha, NULL)) {
+		QC_ReturnFloat(vm, 1);
+		return;
+	}
 	R_DrawPic(pos[0], pos[1], size[0], size[1], R_FindMaterial(QC_PSTR(vm, 1), MATF_2D), 0, 0, 1, 1, rgb, alpha,
 	          argflags(vm, 5));
 	QC_ReturnFloat(vm, 1);
@@ -376,13 +534,14 @@ static void r_drawtextfield(qcvm_t *vm)
 	const char *text = QC_PSTR(vm, 3);
 	static const float white[3] = {1, 1, 1};
 	static char lines[MAX_LINES][1024];
-	float sx, sy, y;
+	float sx, sy, y, lineh;
 	int nlines = 0, shown;
 	size_t n = 0;
 	const char *p = text, *lastspace = NULL;
 	char line[1024];
 	text_scale(vm, &sx, &sy);
 	use_drawfont(vm);
+	lineh = sy * R_DrawFontScale(); /* text is drawn at that height */
 	while (*p || n) {
 		bool flush = !*p || *p == '\n';
 		if (!flush) {
@@ -413,14 +572,14 @@ static void r_drawtextfield(qcvm_t *vm)
 	}
 	shown = nlines < MAX_LINES ? nlines : MAX_LINES;
 	/* only whole lines that fit are drawn */
-	while (shown > 0 && shown * sy > size[1] + 0.5f)
+	while (shown > 0 && shown * lineh > size[1] + 0.5f)
 		shown--;
 	switch (align & (2 | 8)) {
 	case 2: y = pos[1]; break;
-	case 8: y = pos[1] + size[1] - shown * sy; break;
-	default: y = pos[1] + (size[1] - shown * sy) / 2; break;
+	case 8: y = pos[1] + size[1] - shown * lineh; break;
+	default: y = pos[1] + (size[1] - shown * lineh) / 2; break;
 	}
-	for (int i = 0; i < shown; i++, y += sy) {
+	for (int i = 0; i < shown; i++, y += lineh) {
 		float w = R_StringWidth(lines[i], sx, sy, true), x;
 		switch (align & (1 | 4)) {
 		case 1: x = pos[0]; break;
@@ -441,8 +600,13 @@ static void r_drawresetcliparea(qcvm_t *vm) { R_ResetClip(); }
 
 static void r_drawgetimagesize(qcvm_t *vm)
 {
-	material_t *m = R_FindMaterial(QC_PSTR(vm, 0), MATF_2D);
+	material_t *m;
 	float v[3] = {0, 0, 0};
+	if (pichook && pichook(QC_PSTR(vm, 0), 0, 0, 0, 0, NULL, 0, v)) {
+		QC_ReturnVector(vm, v);
+		return;
+	}
+	m = R_FindMaterial(QC_PSTR(vm, 0), MATF_2D);
 	if (m && !(m->diffuse && m->diffuse->missing && !m->fromfile)) {
 		v[0] = (float)m->width;
 		v[1] = (float)m->height;
@@ -558,7 +722,7 @@ enum {
 	VF_ORIGIN, VF_ORIGIN_X, VF_ORIGIN_Y, VF_ORIGIN_Z, VF_ANGLES, VF_ANGLES_X, VF_ANGLES_Y, VF_ANGLES_Z,
 	VF_DRAWWORLD, VF_DRAWENGINESBAR, VF_DRAWCROSSHAIR, VF_MINDIST = 23, VF_MAXDIST = 24,
 	VF_CL_VIEWANGLES = 33, VF_CL_VIEWANGLES_X, VF_CL_VIEWANGLES_Y, VF_CL_VIEWANGLES_Z,
-	VF_PERSPECTIVE = 200, VF_ACTIVESEAT = 202, VF_AFOV = 203, VF_SCREENVSIZE = 204, VF_SCREENPSIZE = 205,
+	VF_SKYROOM_CAMERA = 222, VF_PERSPECTIVE = 200, VF_ACTIVESEAT = 202, VF_AFOV = 203, VF_SCREENVSIZE = 204, VF_SCREENPSIZE = 205,
 	VF_VIEWENTITY = 206
 };
 
@@ -610,6 +774,7 @@ static void r_setproperty(qcvm_t *vm)
 		break;
 	case VF_PERSPECTIVE: r_scene.perspective = f != 0; break;
 	case VF_VIEWENTITY: r_scene.viewentity = (int)f; break;
+	case VF_SKYROOM_CAMERA: memcpy(r_scene.skyroom_origin, v, sizeof(float) * 3), r_scene.skyroom = true; break;
 	default: break;
 	}
 	QC_ReturnFloat(vm, 1);
@@ -680,6 +845,7 @@ static void r_polygonvertex(qcvm_t *vm)
 }
 
 static void r_endpolygon(qcvm_t *vm) { R_EndPolygon(); }
+static void r_endpolygonribbon(qcvm_t *vm) { R_EndPolygonRibbon(QC_PFLOAT(vm, 0), QC_PVEC(vm, 1)); }
 
 static void r_project(qcvm_t *vm)
 {
@@ -742,12 +908,9 @@ static void r_getlight(qcvm_t *vm)
 
 static rmodel_t *model_arg(qcvm_t *vm, int n) { return R_ModelForIndex((int)QC_PFLOAT(vm, n)); }
 
-/* GoldSrc studio models aren't drawn yet, but the game still asks about
-   their sequences: those answers come from the model file */
-static const studio_model_t *studio_arg(qcvm_t *vm)
-{
-	return R_ModelNumFrames(model_arg(vm, 0)) ? NULL : QC_StudioModel(vm, (int)QC_PFLOAT(vm, 0));
-}
+/* a GoldSrc studio model's sequences are answered from the model file, as
+   the server answers them, rather than from its skeleton's animations */
+static const studio_model_t *studio_arg(qcvm_t *vm) { return QC_StudioModel(vm, (int)QC_PFLOAT(vm, 0)); }
 
 static void r_modelframecount(qcvm_t *vm)
 {
@@ -982,6 +1145,7 @@ const qc_builtin_t r_builtins[] = {
 	{"addentity_lighting", r_addentity}, {"removeentity", r_removeentity}, {"setproperty", r_setproperty},
 	{"getproperty", r_getproperty}, {"renderscene", r_renderscene}, {"dynamiclight_add", r_dynamiclight_add},
 	{"R_BeginPolygon", r_beginpolygon}, {"R_PolygonVertex", r_polygonvertex}, {"R_EndPolygon", r_endpolygon},
+	{"R_EndPolygonRibbon", r_endpolygonribbon},
 	{"project", r_project}, {"unproject", r_unproject}, {"shaderforname", r_shaderforname},
 	{"getlight", r_getlight}, {"modelframecount", r_modelframecount}, {"frameforname", r_frameforname},
 	{"frametoname", r_frametoname}, {"frameduration", r_frameduration},
@@ -996,11 +1160,11 @@ const qc_builtin_t r_builtins[] = {
 	{"getsurfacenumtriangles", r_getsurfacenumtriangles}, {"getsurfacetriangle", r_getsurfacetriangle},
 	{"getsurfaceclippedpoint", r_getsurfaceclippedpoint},
 	/* not done yet: accepted so games carry on */
-	{"remapshader", r_nop}, {"setcustomskin", r_nop}, {"loadcustomskin", r_zero},
-	{"applycustomskin", r_nop}, {"releasecustomskin", r_nop}, {"dynamiclight_get", r_zero},
-	{"dynamiclight_set", r_nop}, {"dynamiclight_spawnstatic", r_zero}, {"boxparticles", r_nop},
+	{"boxparticles", r_nop},
 
 	{"skinforname", r_zero}, {"cin_open", r_zero}, {"cin_close", r_nop}, {"cin_setstate", r_nop},
 	{"cin_getstate", r_zero}, {"cin_restart", r_nop}, {"clipboard_set", r_nop}, {"setmousepos", r_nop},
-	{"r_uploadimage", r_uploadimage}, {"r_readimage", r_zero},
+	{"r_uploadimage", r_uploadimage},
 	{NULL, NULL}};
+
+uint8_t *R_DecodeImageFile(const uint8_t *data, size_t len, int *w, int *h) { return R_DecodeImage(data, len, w, h); }

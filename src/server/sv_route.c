@@ -1,305 +1,289 @@
-/* Bulwark engine - waypoint routes for the route_calculate builtin.
- * ISC licence, see LICENSE.
- *
- * The graph is the progs' own waypoint file, data/<map>.way:
- *   <node count>
- *   <x> <y> <z> <radius> <link count>      once per node
- *    <node> <cost> <flags>                 once per link
- * route_calculate(ent, dest, denyflags, callback) finds a path with A* and
- * calls callback(ent, dest, numnodes, nodelist) at the start of the next
- * server frame. nodelist is heap memory the progs frees with memfree; it is
- * ordered last to first (the first node to walk to is nodelist[numnodes-1])
- * and its element 0 is dest itself (the only element when there is no path). Each element is { vector dest; int
- * linkflags; float radius; }. */
+/* Bulwark engine - route_calculate: paths over the map's waypoint graph,
+ * data/<map>.way, in the text layout Nuclide's node editor reads and writes
+ * (src/nav/NodeEditor.qc): a node count, then per node "x y z radius
+ * links" and one " node cost flags" line per link. The builtin follows the
+ * fteextensions.qc description: the callback gets the route a frame later
+ * as a memalloc'd nodeslist_t array to be followed from the last entry
+ * back to the first (the destination). ISC licence, see LICENSE. */
 #include "sv_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 
-#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
-#define F vm->fofs
-#define G vm->gofs
 
 typedef struct {
-	int to;
+	int node, flags;
 	float cost;
-	int flags;
 } waylink_t;
 
 typedef struct {
-	float org[3];
-	float radius;
-	int firstlink, numlinks;
-} waynode_t;
-
-static struct {
-	char map[64];
-	int spawncount;
-	waynode_t *nodes;
-	int numnodes;
+	float origin[3], radius;
 	waylink_t *links;
 	int numlinks;
-} way;
+} waynode_t;
 
+/* one finished route waiting for its callback */
 typedef struct {
 	int ent;
 	float dest[3];
-	int deny;
 	func_t callback;
-	float start[3];
-} routereq_t;
-
-#define MAX_ROUTE_REQS 64
-static routereq_t reqs[MAX_ROUTE_REQS];
-static int numreqs;
-
-static void way_free(void)
-{
-	Mem_Free(way.nodes);
-	Mem_Free(way.links);
-	way.nodes = NULL;
-	way.links = NULL;
-	way.numnodes = way.numlinks = 0;
-}
-
-/* reads the next whitespace-separated number; false at the end of the text */
-static bool next_number(const char **p, float *out)
-{
-	char *end;
-	while (**p == ' ' || **p == '\t' || **p == '\r' || **p == '\n')
-		(*p)++;
-	if (!**p)
-		return false;
-	*out = strtof(*p, &end);
-	if (end == *p)
-		return false;
-	*p = end;
-	return true;
-}
-
-/* The progs may rewrite the file while the map runs (Nuclide saves the
- * graph it builds), so it is read again for each new batch of requests. */
-static void way_load(void)
-{
-	char path[128];
-	size_t len;
-	char *text;
-	const char *p;
-	float v;
+	uint32_t list;
 	int count;
+} pending_t;
 
-	way_free();
+static struct {
+	char map[64];
+	bool loaded;
+	waynode_t *nodes;
+	int numnodes;
+	pending_t *pending;
+	int numpending;
+} way;
+
+void SV_FreeRoutes(void)
+{
+	for (int i = 0; i < way.numnodes; i++)
+		Mem_Free(way.nodes[i].links);
+	Mem_Free(way.nodes);
+	Mem_Free(way.pending);
+	memset(&way, 0, sizeof(way));
+}
+
+static float dist(const float *a, const float *b)
+{
+	float d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+	return VectorLength(d);
+}
+
+static void load_graph(void)
+{
+	char path[128], *text, *p, *line;
+	size_t len;
+	int n = 0;
+	if (way.loaded && !strcmp(way.map, sv.mapname))
+		return;
+	SV_FreeRoutes();
 	Str_Copy(way.map, sv.mapname, sizeof(way.map));
+	way.loaded = true;
 	snprintf(path, sizeof(path), "data/%s.way", sv.mapname);
 	text = FS_LoadFile(path, &len);
 	if (!text)
 		return;
 	p = text;
-	if (!next_number(&p, &v) || v < 1 || v > 65536) {
+#define NEXT_LINE() (line = p, p = strchr(p, '\n'), p ? (*p++ = 0, line) : (p = line + strlen(line), line))
+	NEXT_LINE();
+	n = atoi(line);
+	if (n <= 0 || n > 65536) {
 		Mem_Free(text);
 		return;
 	}
-	count = (int)v;
-	way.nodes = Mem_Alloc(sizeof(waynode_t) * count);
-	for (int i = 0; i < count; i++) {
-		waynode_t *n = &way.nodes[i];
-		float nl;
-		if (!next_number(&p, &n->org[0]) || !next_number(&p, &n->org[1]) || !next_number(&p, &n->org[2]) ||
-		    !next_number(&p, &n->radius) || !next_number(&p, &nl) || nl < 0 || nl > 1024)
-			break;
-		n->firstlink = way.numlinks;
-		n->numlinks = 0;
-		for (int k = 0; k < (int)nl; k++) {
-			float to, cost, flags;
-			if (!next_number(&p, &to) || !next_number(&p, &cost) || !next_number(&p, &flags))
-				break;
-			if (to < 0 || to >= count)
-				continue;
-			way.links = Mem_Realloc(way.links, sizeof(waylink_t) * (way.numlinks + 1));
-			way.links[way.numlinks].to = (int)to;
-			way.links[way.numlinks].cost = cost > 0 ? cost : 1;
-			way.links[way.numlinks].flags = (int)flags;
-			way.numlinks++;
-			n->numlinks++;
+	way.nodes = Mem_Alloc(sizeof(waynode_t) * n);
+	for (int i = 0; i < n && *p; i++) {
+		waynode_t *w = &way.nodes[i];
+		NEXT_LINE();
+		if (sscanf(line, "%f %f %f %f %d", &w->origin[0], &w->origin[1], &w->origin[2], &w->radius, &w->numlinks) < 5 ||
+		    w->numlinks < 0 || w->numlinks > 1024)
+			w->numlinks = 0;
+		w->links = Mem_Alloc(sizeof(waylink_t) * (w->numlinks + 1));
+		for (int j = 0; j < w->numlinks; j++) {
+			NEXT_LINE();
+			sscanf(line, "%d %f %d", &w->links[j].node, &w->links[j].cost, &w->links[j].flags);
+			if (w->links[j].node < 0 || w->links[j].node >= n)
+				w->links[j].node = i;
 		}
 		way.numnodes = i + 1;
 	}
+#undef NEXT_LINE
 	Mem_Free(text);
-	Con_DPrintf("%s: %d waypoints, %d links\n", path, way.numnodes, way.numlinks);
+	Con_DPrintf("%s: %d waypoints\n", path, way.numnodes);
 }
 
-static float dist3(const float *a, const float *b)
+/* the nearest node the point can see, else the nearest */
+static int nearest_node(const float *p)
 {
-	float d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-	return sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-}
-
-/* the closest node that can be reached in a straight line, else the closest */
-static int nearest_node(const float *pos, int passent)
-{
-	int best = -1, bestclear = -1;
-	float bestd = FLT_MAX, bestcleard = FLT_MAX;
+	static const float zero[3];
+	int best = -1, bestseen = -1;
+	float bestd = 1e30f, bestseend = 1e30f;
+	const bspmap_t *world = SV_CurrentWorld();
 	for (int i = 0; i < way.numnodes; i++) {
-		float d = dist3(pos, way.nodes[i].org);
-		if (d < bestd) {
-			bestd = d;
-			best = i;
-		}
-		if (d < bestcleard && d < 1024) {
-			svtrace_t tr;
-			static const float zero[3] = {0, 0, 0};
-			SV_Move(pos, zero, zero, way.nodes[i].org, MOVE_NOMONSTERS, passent, &tr);
-			if (tr.fraction == 1.0f) {
-				bestcleard = d;
-				bestclear = i;
-			}
+		float d = dist(way.nodes[i].origin, p);
+		if (d < bestd)
+			bestd = d, best = i;
+		if (d < bestseend && world) {
+			bsptrace_t tr;
+			BSP_TraceModel(world, 0, zero, p, zero, zero, way.nodes[i].origin, CONTENTS_SOLID, &tr);
+			if (tr.fraction == 1 && !tr.startsolid)
+				bestseend = d, bestseen = i;
 		}
 	}
-	return bestclear >= 0 ? bestclear : best;
+	return bestseen >= 0 ? bestseen : best;
 }
 
-/* A* from start to goal over links not in deny; returns the node count of
- * the path written to out (goal first), 0 if there is none */
+/* A* over the links, skipping any whose flags meet deny; fills the path
+ * from goal back to start and returns its length */
 static int find_path(int start, int goal, int deny, int *out)
 {
-	int n = way.numnodes, count = 0;
-	float *g = Mem_Alloc(sizeof(float) * n);
-	float *f = Mem_Alloc(sizeof(float) * n);
-	int *from = Mem_Alloc(sizeof(int) * n);
-	uint8_t *state = Mem_Alloc(n); /* 0 unseen, 1 open, 2 closed */
-
-	for (int i = 0; i < n; i++) {
-		g[i] = FLT_MAX;
-		from[i] = -1;
-	}
+	int n = way.numnodes, count = 0, cap = n, *from = Mem_Alloc(sizeof(int) * n), *open;
+	for (int i = 0; i < n; i++)
+		cap += way.nodes[i].numlinks;
+	open = Mem_Alloc(sizeof(int) * cap); /* a node is queued again whenever its cost drops */
+	float *g = Mem_Alloc(sizeof(float) * n), *f = Mem_Alloc(sizeof(float) * n);
+	bool *closed = Mem_Alloc(sizeof(bool) * n);
+	int numopen = 0;
+	for (int i = 0; i < n; i++)
+		g[i] = 1e30f, from[i] = -1;
 	g[start] = 0;
-	f[start] = dist3(way.nodes[start].org, way.nodes[goal].org);
-	state[start] = 1;
-
-	for (;;) {
-		int cur = -1;
-		/* the graphs are small enough for a linear scan of the open set */
-		for (int i = 0; i < n; i++)
-			if (state[i] == 1 && (cur < 0 || f[i] < f[cur]))
-				cur = i;
-		if (cur < 0)
+	f[start] = dist(way.nodes[start].origin, way.nodes[goal].origin);
+	open[numopen++] = start;
+	while (numopen) {
+		int bi = 0, cur;
+		for (int i = 1; i < numopen; i++)
+			if (f[open[i]] < f[open[bi]])
+				bi = i;
+		cur = open[bi];
+		open[bi] = open[--numopen];
+		if (cur == goal)
 			break;
-		if (cur == goal) {
-			for (int at = goal; at >= 0; at = from[at])
-				out[count++] = at;
-			break;
-		}
-		state[cur] = 2;
-		for (int k = 0; k < way.nodes[cur].numlinks; k++) {
-			const waylink_t *l = &way.links[way.nodes[cur].firstlink + k];
-			float ng;
-			if ((l->flags & deny) || state[l->to] == 2)
+		if (closed[cur])
+			continue;
+		closed[cur] = true;
+		for (int l = 0; l < way.nodes[cur].numlinks; l++) {
+			const waylink_t *lk = &way.nodes[cur].links[l];
+			int nb = lk->node;
+			float cost;
+			if ((lk->flags & deny) || closed[nb])
 				continue;
-			ng = g[cur] + l->cost;
-			if (ng < g[l->to]) {
-				g[l->to] = ng;
-				f[l->to] = ng + dist3(way.nodes[l->to].org, way.nodes[goal].org);
-				from[l->to] = cur;
-				state[l->to] = 1;
+			cost = lk->cost > 0 ? lk->cost : dist(way.nodes[cur].origin, way.nodes[nb].origin);
+			if (g[cur] + cost < g[nb] && numopen < cap) {
+				g[nb] = g[cur] + cost;
+				f[nb] = g[nb] + dist(way.nodes[nb].origin, way.nodes[goal].origin);
+				from[nb] = cur;
+				open[numopen++] = nb;
 			}
 		}
 	}
+	if (g[goal] < 1e30f)
+		for (int i = goal; i >= 0 && count < n; i = i == start ? -1 : from[i])
+			out[count++] = i;
+	Mem_Free(from);
+	Mem_Free(open);
 	Mem_Free(g);
 	Mem_Free(f);
-	Mem_Free(from);
-	Mem_Free(state);
+	Mem_Free(closed);
 	return count;
 }
 
-static void run_request(qcvm_t *vm, const routereq_t *r)
+/* route_calculate(entity ent, vector dest, int denylinkflags, callback) */
+static void bi_route_calculate(qcvm_t *vm)
 {
-	int numnodes, count = 0;
-	int *path = NULL;
-	uint32_t addr;
-
-	if (way.numnodes > 0) {
-		int start = nearest_node(r->start, r->ent);
-		int goal = nearest_node(r->dest, r->ent);
+	int ent = QC_PENT(vm, 0), deny = QC_PINT(vm, 2), start, goal, count = 0, *path = NULL;
+	const float *dest = QC_PVEC(vm, 1);
+	pending_t *pd;
+	qcval_t *org;
+	load_graph();
+	way.pending = Mem_Realloc(way.pending, sizeof(pending_t) * (way.numpending + 1));
+	pd = &way.pending[way.numpending++];
+	memset(pd, 0, sizeof(*pd));
+	pd->ent = ent;
+	VectorCopy(dest, pd->dest);
+	pd->callback = QC_PINT(vm, 3);
+	org = QC_EField(vm, ent, vm->fofs.origin);
+	if (way.numnodes && org) {
+		start = nearest_node(&org->f);
+		goal = nearest_node(dest);
 		path = Mem_Alloc(sizeof(int) * way.numnodes);
-		count = (start >= 0 && goal >= 0) ? find_path(start, goal, r->deny, path) : 0;
-		Con_DPrintf("route for %d: node %d -> node %d, %d nodes\n", r->ent, start, goal, count);
+		if (start >= 0 && goal >= 0)
+			count = find_path(start, goal, deny, path);
 	}
-
-	/* element 0 is the destination, then the path from the goal node back.
-	 * Without a path the list still holds the destination: Nuclide's bots
-	 * index the list without checking it for NULL, and with only the
-	 * destination they try to walk straight there and give up if they can't. */
-	numnodes = count + 1;
-	addr = QC_HeapAlloc(vm, (size_t)numnodes * 5 * 4);
-	if (!addr) {
-		numnodes = 0;
-	} else {
-		qcval_t *list = QC_Pointer(vm, addr, (size_t)numnodes * 5 * 4);
-		for (int i = 0; i < numnodes; i++) {
-			qcval_t *e = list + i * 5;
-			const float *org = i == 0 ? r->dest : way.nodes[path[i - 1]].org;
-			e[0].f = org[0];
-			e[1].f = org[1];
-			e[2].f = org[2];
-			e[3].i = 0;
-			e[4].f = i == 0 ? 32.0f : way.nodes[path[i - 1]].radius;
+	/* entry 0 is the destination itself, the last the first node to reach */
+	if (count) {
+		uint8_t *mem;
+		pd->count = count + 1;
+		pd->list = QC_HeapAlloc(vm, (size_t)pd->count * 20);
+		mem = QC_Pointer(vm, pd->list, (size_t)pd->count * 20);
+		for (int i = 0; i < pd->count; i++) {
+			float o[3], r = 0;
+			int32_t flags = 0;
+			if (i == 0) {
+				VectorCopy(dest, o);
+			} else {
+				const waynode_t *w = &way.nodes[path[i - 1]];
+				VectorCopy(w->origin, o);
+				r = w->radius;
+				/* the flags of the link taken from this node toward the goal */
+				if (i > 1)
+					for (int l = 0; l < w->numlinks; l++)
+						if (w->links[l].node == path[i - 2])
+							flags = w->links[l].flags;
+			}
+			memcpy(mem + i * 20, o, 12);
+			memcpy(mem + i * 20 + 12, &flags, 4);
+			memcpy(mem + i * 20 + 16, &r, 4);
 		}
 	}
 	Mem_Free(path);
-
-	QC_SetGFloat(vm, G.time, (float)sv.time);
-	QC_PINT(vm, 0) = r->ent;
-	QC_Parm(vm, 1)->f = r->dest[0];
-	QC_Parm(vm, 1)[1].f = r->dest[1];
-	QC_Parm(vm, 1)[2].f = r->dest[2];
-	QC_PINT(vm, 2) = numnodes;
-	QC_PINT(vm, 3) = (int32_t)addr;
-	vm->argc = 4;
-	QC_Execute(vm, r->callback);
 }
 
-/* runs the requests made during the last frame */
+/* hands finished routes to their callbacks, once per server frame */
 void SV_RunRoutes(void)
 {
 	qcvm_t *vm = sv.vm;
-	routereq_t batch[MAX_ROUTE_REQS];
-	int count = numreqs;
-
-	if (!count || !vm)
+	int n = way.numpending;
+	pending_t *list;
+	if (!n || !vm)
 		return;
-	memcpy(batch, reqs, sizeof(routereq_t) * count);
-	numreqs = 0;
-	way_load();
-	for (int i = 0; i < count; i++) {
-		if (batch[i].ent > 0 && !QC_ValidEdict(vm, batch[i].ent))
+	list = way.pending;
+	way.pending = NULL;
+	way.numpending = 0;
+	for (int i = 0; i < n; i++) {
+		pending_t *pd = &list[i];
+		if (pd->ent < 0 || pd->ent >= vm->num_edicts || vm->edicts[pd->ent].free || !pd->callback) {
+			if (pd->list)
+				QC_HeapFree(vm, pd->list);
 			continue;
-		run_request(vm, &batch[i]);
+		}
+		QC_Parm(vm, 0)->i = pd->ent;
+		VectorCopy(pd->dest, &QC_Parm(vm, 1)->f);
+		QC_Parm(vm, 2)->i = pd->count;
+		QC_Parm(vm, 3)->i = (int32_t)pd->list;
+		vm->argc = 4;
+		QC_Execute(vm, pd->callback);
+	}
+	Mem_Free(list);
+}
+
+const qc_builtin_t sv_route_builtins[] = {{"route_calculate", bi_route_calculate}, {NULL, NULL}};
+
+/* the graph, for route_visualise on a listen server */
+int SV_RouteNumNodes(void)
+{
+	if (sv.active)
+		load_graph();
+	return way.numnodes;
+}
+
+bool SV_RouteNode(int i, float *origin, float *radius, int *numlinks)
+{
+	if (i < 0 || i >= way.numnodes)
+		return false;
+	VectorCopy(way.nodes[i].origin, origin);
+	*radius = way.nodes[i].radius;
+	*numlinks = way.nodes[i].numlinks;
+	return true;
+}
+
+int SV_RouteLink(int i, int k) { return i >= 0 && i < way.numnodes && k >= 0 && k < way.nodes[i].numlinks ? way.nodes[i].links[k].node : -1; }
+
+/* route_reload: read data/<map>.way again */
+static void RouteReload_f(int argc, const char **argv)
+{
+	SV_FreeRoutes();
+	if (sv.active) {
+		load_graph();
+		Con_Printf("%d waypoints in data/%s.way\n", way.numnodes, sv.mapname);
 	}
 }
 
-void SV_ClearRoutes(void)
-{
-	numreqs = 0;
-	way_free();
-}
-
-/* void(entity ent, vector dest, int denylinkflags, void(entity, vector, int, nodeslist_t *) callback) */
-void bi_route_calculate(qcvm_t *vm)
-{
-	routereq_t *r;
-	const float *org;
-	if (numreqs >= MAX_ROUTE_REQS) {
-		Con_DPrintf("route_calculate: too many requests this frame\n");
-		return;
-	}
-	r = &reqs[numreqs++];
-	r->ent = QC_PENT(vm, 0);
-	VectorCopy(QC_PVEC(vm, 1), r->dest);
-	r->deny = QC_PINT(vm, 2);
-	r->callback = QC_PINT(vm, 3);
-	org = &QC_EdictFields(vm, r->ent)[F.origin].f;
-	VectorCopy(org, r->start);
-}
+void SV_InitRoutes(void) { Cmd_AddD("route_reload", RouteReload_f, "Read the map's waypoint graph (data/<map>.way) again"); }

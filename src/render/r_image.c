@@ -2,6 +2,7 @@
  * Decoding uses stb_image (public domain). ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/cmd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,17 +76,17 @@ static uint8_t *decode_lmp(const uint8_t *d, size_t len, int *w, int *h)
  * additive flag. Layout checked on CSO's 640hud7.spr (66,366 bytes). */
 static const uint8_t *spr_frame(const uint8_t *d, size_t len, size_t *ofs, int *fw, int *fh)
 {
-	int32_t fr[5];
-	if (*ofs + 20 > len)
+	int32_t fr[4]; /* origin x, origin y, width, height */
+	if (*ofs + 16 > len)
 		return NULL;
-	memcpy(fr, d + *ofs, 20);
-	if (fr[3] <= 0 || fr[4] <= 0 || fr[3] > 4096 || fr[4] > 4096 ||
-	    *ofs + 20 + (size_t)fr[3] * fr[4] > len)
+	memcpy(fr, d + *ofs, 16);
+	if (fr[2] <= 0 || fr[3] <= 0 || fr[2] > 4096 || fr[3] > 4096 ||
+	    *ofs + 16 + (size_t)fr[2] * fr[3] > len)
 		return NULL;
-	*fw = fr[3];
-	*fh = fr[4];
-	*ofs += 20 + (size_t)fr[3] * fr[4];
-	return d + *ofs - (size_t)fr[3] * fr[4];
+	*fw = fr[2];
+	*fh = fr[3];
+	*ofs += 16 + (size_t)fr[2] * fr[3];
+	return d + *ofs - (size_t)fr[2] * fr[3];
 }
 
 static uint8_t *decode_spr(const uint8_t *d, size_t len, int frame, int *w, int *h)
@@ -210,7 +211,12 @@ static uint8_t *decode_file(const char *path, int *w, int *h)
 		return NULL;
 	if (strstr(path, ".lmp"))
 		out = decode_lmp(data, len, w, h);
-	else
+	else if (R_LooksLikeSVG(data, len))
+		out = R_DecodeSVG(data, len, w, h);
+	else if ((out = Plug_DecodeImage(path, data, len, w, h)) != NULL) {
+		Mem_Free(data);
+		return out;
+	} else
 		out = stbi_load_from_memory(data, (int)len, w, h, &comp, 4);
 	if (!out && !strstr(path, ".lmp"))
 		Con_DPrintf("couldn't decode %s: %s\n", path, stbi_failure_reason());
@@ -222,11 +228,27 @@ static uint8_t *decode_file(const char *path, int *w, int *h)
 uint8_t *R_DecodeImage(const uint8_t *data, size_t len, int *w, int *h)
 {
 	int comp;
+	if (len > 0 && R_LooksLikeSVG(data, len))
+		return R_DecodeSVG(data, len, w, h);
 	return len > 0 && len < (size_t)1 << 30 ? stbi_load_from_memory(data, (int)len, w, h, &comp, 4) : NULL;
 }
 
-/* tries the name as given, then with each known extension in turn */
+static uint8_t *load_pixels(const char *name, int *w, int *h);
+
+/* tries the name as given, then with each known extension in turn, then
+ * under textures/ (Nuclide's .mat files name images relative to it) */
 uint8_t *R_LoadPixels(const char *name, int *w, int *h)
+{
+	char tex[192];
+	/* .svg isn't one of the extensions tried: SVG files are named in full */
+	uint8_t *p = load_pixels(name, w, h);
+	if (p || !name || !*name || !Str_NICmp(name, "textures/", 9) || name[0] == '*' || strstr(name, ".spr"))
+		return p;
+	snprintf(tex, sizeof(tex), "textures/%s", name);
+	return load_pixels(tex, w, h);
+}
+
+static uint8_t *load_pixels(const char *name, int *w, int *h)
 {
 	static const char *exts[] = {".tga", ".png", ".jpg", ".jpeg", ".bmp", ".lmp"};
 	char base[160], path[180];
@@ -243,10 +265,29 @@ uint8_t *R_LoadPixels(const char *name, int *w, int *h)
 		if (FS_FileExists(path) && (p = decode_file(path, w, h)))
 			return p;
 	}
+	/* then the formats plugins add (.vtf) */
+	for (int i = 0; Plug_ImageExt(i); i++) {
+		snprintf(path, sizeof(path), "%s%s", base, Plug_ImageExt(i));
+		if (FS_FileExists(path) && (p = decode_file(path, w, h)))
+			return p;
+	}
 	return NULL;
 }
 
+static bool image_exists(const char *name);
+
 bool R_ImageExists(const char *name)
+{
+	char tex[192];
+	if (image_exists(name))
+		return true;
+	if (!name || !*name || !Str_NICmp(name, "textures/", 9) || strstr(name, ".spr"))
+		return false;
+	snprintf(tex, sizeof(tex), "textures/%s", name);
+	return image_exists(tex);
+}
+
+static bool image_exists(const char *name)
 {
 	static const char *exts[] = {".tga", ".png", ".jpg", ".jpeg", ".bmp", ".lmp"};
 	char base[160], path[180];
@@ -262,6 +303,11 @@ bool R_ImageExists(const char *name)
 	strip_ext(name, base, sizeof(base));
 	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
 		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
+		if (FS_FileExists(path))
+			return true;
+	}
+	for (int i = 0; Plug_ImageExt(i); i++) {
+		snprintf(path, sizeof(path), "%s%s", base, Plug_ImageExt(i));
 		if (FS_FileExists(path))
 			return true;
 	}
@@ -511,11 +557,42 @@ void R_ShutdownImages(void)
 		while (img) {
 			image_t *next = img->next;
 			if (img->tex && !img->missing && R_Active())
-				qglDeleteTextures(1, &img->tex);
+				GL_DeleteTextures(1, &img->tex);
 			Mem_Free(img);
 			img = next;
 		}
 		images[i] = NULL;
 	}
 	r_whiteimage = r_blackimage = r_checkerimage = r_flatnormal = NULL;
+}
+
+void R_ForEachImage(void (*fn)(image_t *img, void *ctx), void *ctx)
+{
+	for (int i = 0; i < IMAGE_HASH; i++)
+		for (image_t *img = images[i]; img; img = img->next)
+			fn(img, ctx);
+}
+
+/* loads an image's file again (skins after new ones were added); one that
+ * was missing gets a texture of its own */
+void R_ReloadImage(const char *name)
+{
+	image_t *img;
+	uint8_t *pix;
+	int w, h;
+	for (img = images[name_hash(name)]; img; img = img->next)
+		if (!Str_ICmp(img->name, name))
+			break;
+	if (!img) {
+		R_FindImage(name, 0);
+		return;
+	}
+	if (!(pix = R_LoadPixels(name, &w, &h)))
+		return;
+	if (img->missing) {
+		img->missing = false;
+		img->tex = 0;
+	}
+	upload(img, pix, w, h, 0);
+	Mem_Free(pix);
 }

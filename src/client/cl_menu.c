@@ -3,6 +3,10 @@
  * same 2D drawing builtins as the client game. Entry points and key/mouse
  * routing: docs/spec/menu.md. ISC licence, see LICENSE. */
 #include "client.h"
+#include "../common/manifest.h"
+#include "../net/pkg.h"
+#include "../server/sv_local.h"
+#include "lobby.h"
 
 #include "../common/cmd.h"
 #include "../common/cvar.h"
@@ -29,6 +33,8 @@ static struct {
 	double lasttime;
 } M;
 
+static bool cmd_forced; /* menu_cmd: pass the line on even if unregistered */
+
 static void m_setkeydest(qcvm_t *vm) { M.keydest = (int)QC_PFLOAT(vm, 0); }
 static void m_getkeydest(qcvm_t *vm) { QC_ReturnFloat(vm, (float)M.keydest); }
 static void m_setmousetarget(qcvm_t *vm) { M.mousetarget = (int)QC_PFLOAT(vm, 0); }
@@ -44,11 +50,24 @@ static void m_registercommand(qcvm_t *vm)
 		M.registered[M.numregistered++] = Mem_Strdup(n);
 }
 
+static void return_maybe(qcvm_t *vm, const char *s)
+{
+	if (s)
+		QC_ReturnString(vm, s);
+	else
+		vm->globals[OFS_RETURN].i = 0; /* the null string ends the caller's loop */
+}
+
+static void m_getgamedirinfo(qcvm_t *vm) { return_maybe(vm, Mf_GameDirInfo((int)QC_PFLOAT(vm, 0), (int)QC_PFLOAT(vm, 1))); }
+/* takes ints */
+static void m_getpackagemanagerinfo(qcvm_t *vm) { return_maybe(vm, PKG_Info(QC_PINT(vm, 0), QC_PINT(vm, 1))); }
+
 /* menu-only builtins; anything else comes from the shared tables */
 static const qc_builtin_t m_builtins[] = {
 	{"setkeydest", m_setkeydest}, {"getkeydest", m_getkeydest},
 	{"setmousetarget", m_setmousetarget}, {"getmousetarget", m_getmousetarget},
 	{"registercommand", m_registercommand},
+	{"getgamedirinfo", m_getgamedirinfo}, {"getpackagemanagerinfo", m_getpackagemanagerinfo},
 	{NULL, NULL}
 };
 
@@ -89,10 +108,12 @@ void MQC_Shutdown(void)
 
 bool MQC_Load(void)
 {
-	static const qc_builtin_t *tables[8];
+	static const qc_builtin_t *tables[16];
 	size_t len;
 	char *data;
 	MQC_Shutdown();
+	if (Cvar_Value("forceqmenu") != 0)
+		return false; /* the game asked for no menu module */
 	data = FS_LoadFile("menu.dat", &len);
 	if (!data)
 		return false;
@@ -102,8 +123,14 @@ bool MQC_Load(void)
 	tables[3] = qc_builtins_core;
 	tables[4] = qc_builtins_extra;
 	tables[5] = cl_builtins; /* clientstate, key bindings and the like */
-	tables[6] = NULL;
-	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, 4096, 16 * 1024 * 1024);
+	tables[6] = cl_hostcache_builtins;
+	tables[7] = qc_uri_builtins;
+	tables[8] = cl_altcon_builtins;
+	tables[9] = cl_webcore_builtins;
+	tables[10] = lobby_builtins;
+	tables[11] = r_skin_builtins;
+	tables[12] = NULL;
+	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, BW_MENU_MAXEDICTS, (size_t)BW_MENU_HEAP_MB * 1024 * 1024);
 	Mem_Free(data);
 	if (!M.vm)
 		return false;
@@ -129,11 +156,25 @@ bool MQC_Load(void)
 	return true;
 }
 
+void MQC_RendererRestarted(void)
+{
+	if (!M.vm || !M.restarted || !R_Active())
+		return;
+	M.vm->globals[OFS_PARM(0)].i = QC_NewString(M.vm, "");
+	call(M.restarted, 1);
+}
+
 /* mode 1 shows the menu, 0 hides it, -1 flips it */
 void MQC_Toggle(int mode)
 {
-	if (!M.vm || !M.toggle)
+	if (!M.vm || !M.toggle) {
+		/* no menu module: the engine's own menu */
+		if (mode != 0 && !EM_Active())
+			EM_OpenMain();
+		else if (mode != 1)
+			EM_Close();
 		return;
+	}
 	if (mode < 0)
 		mode = !MQC_Active();
 	set_time();
@@ -207,7 +248,7 @@ bool MQC_InputEvent(int type, float a, float b, int device)
 bool MQC_ConsoleCommand(const char *line)
 {
 	cmd_tokens_t *t;
-	bool known = false;
+	bool known = cmd_forced;
 	if (!M.vm || !M.consolecommand)
 		return false;
 	t = Mem_Alloc(sizeof(*t));
@@ -227,13 +268,37 @@ bool MQC_ConsoleCommand(const char *line)
 static void Menu_Toggle_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
+	if (!M.vm && WC_ToggleMenu())
+		return; /* the game's HTML menus */
 	MQC_Toggle(-1);
+}
+
+static bool load_pending;
+static double load_deadline;
+
+/* loads the menu once the game being started is in, so that its init sees
+ * clientstate() 2 and skips the background map and intro it would otherwise
+ * queue in front of the game */
+void MQC_LoadWhenActive(void)
+{
+	load_pending = true;
+	load_deadline = Sys_Seconds() + 30;
+}
+
+void MQC_PendingLoad(void)
+{
+	if (load_pending && (cl.state == ca_active || Sys_Seconds() > load_deadline)) {
+		load_pending = false;
+		MQC_Load();
+	}
 }
 
 static void Menu_Restart_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
-	if (!MQC_Load())
+	if (sv.active && cl.state != ca_active)
+		MQC_LoadWhenActive(); /* a map is starting */
+	else if (!MQC_Load() && Cvar_Value("forceqmenu") == 0)
 		Con_Printf("no menu.dat\n");
 }
 
@@ -245,4 +310,15 @@ void MQC_Init(void)
 	Host_SetLoadingHook(loading_hook);
 	Cmd_Add("togglemenu", Menu_Toggle_f);
 	Cmd_Add("menu_restart", Menu_Restart_f);
+	/* FTE's reloads a Quake 3 ui.qvm; the menu module here is menu.dat */
+	Cmd_AddD("ui_restart", Menu_Restart_f, "Reload the menu module (menu.dat; there is no Quake 3 ui.qvm)");
+}
+
+bool MQC_ForceCommand(const char *line)
+{
+	bool r;
+	cmd_forced = true;
+	r = MQC_ConsoleCommand(line);
+	cmd_forced = false;
+	return r;
 }

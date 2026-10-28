@@ -1,0 +1,12 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/inline.html: the inline-style paint smoke page.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<Panel class="page inline" hittest="false">
+		<Label class="h1" text="INLINE RED" />
+		<Label class="p" text="If you see red background and this text, HTML+paint work." />
+	</Panel>
+</root>

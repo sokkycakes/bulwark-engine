@@ -97,6 +97,18 @@ void GL_BindTexture(int unit, GLenum target, GLuint tex)
 	gs.target[unit] = target;
 }
 
+/* deleting a texture unbinds it, and the next glGenTextures can hand out
+ * the same name: forget it here too, or GL_BindTexture would skip binding
+ * the new texture and its upload would land in whatever is bound */
+void GL_DeleteTextures(int n, const GLuint *tex)
+{
+	for (int i = 0; i < n; i++)
+		for (int u = 0; u < (int)(sizeof(gs.tex) / sizeof(gs.tex[0])); u++)
+			if (gs.tex[u] == tex[i])
+				gs.tex[u] = 0;
+	qglDeleteTextures(n, tex);
+}
+
 /* --- programs -------------------------------------------------------------- */
 
 glprog_t r_progs[PROG_COUNT];
@@ -131,6 +143,10 @@ static const char *vs_world =
 	"  v_tc = a_tc * u_tcmod.zw + u_tcmod.xy; v_lmtc = a_lmtc;\n"
 	"  v_pos = (u_model * vec4(a_pos, 1.0)).xyz; v_normal = mat3(u_model) * a_normal; v_color = a_color;\n"
 	"}\n";
+/* Dynamic lights fall off as 1 - (d/r)^2 and peak at about a third of the
+ * colour, times N.L: the shape FTE gives dlights with its default
+ * r_shadow_realtime_dlight 1, measured from screenshots of it running. */
+#define DLIGHT_SCALE "0.31"
 static const char *fs_world =
 	"in vec2 v_tc; in vec2 v_lmtc; in vec3 v_pos; in vec3 v_normal; in vec4 v_color;\n"
 	"uniform sampler2D u_tex; uniform sampler2D u_lightmap; uniform sampler2D u_fullbright;\n"
@@ -146,12 +162,12 @@ static const char *fs_world =
 	"  vec3 n = normalize(v_normal);\n"
 	"  for (int i = 0; i < u_numdlights; i++) {\n"
 	"    vec3 l = u_dlights[i].xyz - v_pos; float dist = length(l);\n"
-	"    float a = max(0.0, 1.0 - dist / u_dlights[i].w);\n"
+	"    float x = dist / u_dlights[i].w; float a = max(0.0, 1.0 - x * x) * " DLIGHT_SCALE ";\n"
 	"    light += u_dlightcolors[i] * a * max(dot(n, l / max(dist, 0.001)), 0.0);\n"
 	"  }\n"
 	"  vec3 c = d.rgb * light;\n"
 	"  if (u_usefullbright > 0.0) c += texture(u_fullbright, v_tc).rgb;\n"
-	"  if (u_fog.w > 0.0) { float f = clamp(exp(-u_fog.w * length(v_pos - u_vieworg)), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
+	"  if (u_fog.w > 0.0) { float z = u_fog.w * length(v_pos - u_vieworg); float f = clamp(exp(-z * z), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
 	"  o_color = vec4(c, d.a) * u_color;\n"
 	"}\n";
 
@@ -181,12 +197,12 @@ static const char *fs_model =
 	"  vec3 light = u_light_ambient + u_light_diffuse * max(dot(n, u_light_dir), 0.0);\n"
 	"  for (int i = 0; i < u_numdlights; i++) {\n"
 	"    vec3 l = u_dlights[i].xyz - v_pos; float dist = length(l);\n"
-	"    float a = max(0.0, 1.0 - dist / u_dlights[i].w);\n"
+	"    float x = dist / u_dlights[i].w; float a = max(0.0, 1.0 - x * x) * " DLIGHT_SCALE ";\n"
 	"    light += u_dlightcolors[i] * a * max(dot(n, l / max(dist, 0.001)), 0.0);\n"
 	"  }\n"
 	"  vec3 c = d.rgb * light;\n"
 	"  if (u_usefullbright > 0.0) c += texture(u_fullbright, v_tc).rgb;\n"
-	"  if (u_fog.w > 0.0) { float f = clamp(exp(-u_fog.w * length(v_pos - u_vieworg)), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
+	"  if (u_fog.w > 0.0) { float z = u_fog.w * length(v_pos - u_vieworg); float f = clamp(exp(-z * z), 0.0, 1.0); c = mix(u_fog.rgb, c, f); }\n"
 	"  o_color = vec4(c, d.a) * u_color;\n"
 	"}\n";
 
@@ -468,3 +484,19 @@ bool Mat4_Invert(float *out, const float *m)
 		out[i] = inv[i] * det;
 	return true;
 }
+
+/* a program's GLSL, for r_dumpshaders */
+bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs)
+{
+	static const char *const names[PROG_COUNT] = {"2d", "world", "model", "unlit", "sky"};
+	const char *const v[PROG_COUNT] = {vs_2d, vs_world, vs_model, vs_unlit, vs_sky};
+	const char *const f[PROG_COUNT] = {fs_2d, fs_world, fs_model, fs_2d, fs_sky};
+	if (p < 0 || p >= PROG_COUNT)
+		return false;
+	*name = names[p];
+	*vs = v[p];
+	*fs = f[p];
+	return true;
+}
+
+const char *R_GLSLHeader(void) { return glsl_header; }

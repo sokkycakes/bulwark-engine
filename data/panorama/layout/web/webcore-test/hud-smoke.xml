@@ -1,0 +1,16 @@
+<!--
+	Panorama port of Stiletto's data/web/webcore-test/hud-smoke.html: a HUD chip that shows getstats every 250 ms.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/webcore-test/smoke.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/webcore-test/hud-smoke.js" />
+	</scripts>
+	<Panel class="page hud-smoke" hittest="false">
+		<Panel class="chip">
+			<Label id="Chip" text="HUD · world should show through" />
+		</Panel>
+	</Panel>
+</root>

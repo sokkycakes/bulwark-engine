@@ -1,0 +1,43 @@
+ok mapspawn root
+ok lua self
+ok lua classname
+ok lua postspawn
+ok lua sees root globals
+ok lua find js
+ok lua->js call
+ok lua->qc call
+ok lua handle equality
+ok lua vector
+ok lua qc builtin
+ok lua getfield
+ok lua setfield
+ok lua no such field
+ok lua create
+ok lua stale handle
+ok lua stale handle errors
+ok lua think
+ok lua entfire runscriptcode
+ok lua input passthrough
+ok lua entfire kill
+ok lua event js
+ok lua event console
+ok js self
+ok js->lua call
+ok js handle identity
+ok js vector
+ok js qc global
+ok js convars
+ok js origin type
+ok js setorigin
+ok js create
+ok js stale handle
+ok js stale handle throws
+ok js event js
+ok js event console
+ok js output caller
+ok js output activator
+ok qc self
+ok qc think
+ok console lua
+ok console js
+ok after timeout

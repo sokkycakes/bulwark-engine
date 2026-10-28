@@ -158,10 +158,43 @@ Inferred, not yet observed in a running client:
 No probed `.seq` descriptor has events. The loader rejects one that does,
 because where its event offset points is unknown.
 
+## Drawing
+
+The renderer (`load_studio` in `src/render/r_model.c`) draws the first
+sub-model of every body part:
+
+- Vertices and normals are bone-local. They're placed by each bone's rest
+  value (position, then rotation from the euler angles in the same order
+  as animation frames) chained through the parents, and skinned to that one
+  bone.
+- Triangle commands: a positive count is a strip, a negative one a fan,
+  zero ends the list; each vertex is four int16s (vertex, normal, s, t), with
+  s and t in texture pixels. The triangles are turned to face the way most
+  of them agree with their normals, so the file's winding convention
+  doesn't have to be assumed.
+- Textures are 8-bit with a 768-byte palette after the pixels. Flag 0x40
+  (masked) makes index 255 see-through, 0x20 draws additively and 0x04
+  unlit. Flag 0x02 (chrome) is drawn as a plain texture. A picture or
+  `.mat` named `<model>_<texture name without extension>` replaces one.
+- A model without textures reads them, and the skin table, from
+  `nameT.mdl` (or `namet.mdl`) next to it.
+- The skin table picks the material per family; an entity's `skin`
+  chooses the family.
+- `Skel_LoadModel` gives the model a skeleton: the bones, each sequence's
+  first blend as an animation named by its label, with its fps and
+  looping flag. An entity's `frame` is the sequence, as for IQM models,
+  and `frame1time` the time into it. Sequences kept in other files stand
+  in the rest pose.
+
+`tools/mkstudio_test.py` writes a two-bone model with a bending sequence,
+two skin families, a masked texture and a companion-file variant; these
+were checked in `modelviewer`. No game model was available here, so the
+texture row order and the face test haven't been compared against a
+shipped model yet.
+
 ## Not covered
 
 - Encrypted v20/v21 models
 - External `IDSQ` sequence groups
-- Texture companion files (`nameT.mdl`)
-- Rendering, blending between sequences
+- Blending between sequences, blend axes, other body part sub-models
 - Bone controllers and hitbox tracing

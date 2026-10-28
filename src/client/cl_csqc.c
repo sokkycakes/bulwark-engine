@@ -12,6 +12,7 @@
 #include "../common/pmove.h"
 #include "../render/render.h"
 #include "../server/sv_local.h"
+#include "../ui/ui.h"
 #include "../sound/sound.h"
 
 #include <math.h>
@@ -54,6 +55,7 @@ static worldctx_t *enter_world(void)
 	clw.vm = cl.csqc;
 	clw.world = cl.world;
 	clw.brushmodel = cl_brushmodel;
+	clw.voxel = vx_clientworld;
 	return SV_SetWorldContext(&clw);
 }
 
@@ -247,7 +249,7 @@ static const char *CL_ModelName(qcvm_t *vm, int index)
 
 bool CSQC_Load(void)
 {
-	static const qc_builtin_t *tables[8];
+	static const qc_builtin_t *tables[16];
 	size_t len;
 	char *data;
 	qcvm_t *vm;
@@ -268,8 +270,15 @@ bool CSQC_Load(void)
 	tables[2] = s_builtins;
 	tables[3] = qc_builtins_core;
 	tables[4] = qc_builtins_extra;
-	tables[5] = NULL;
-	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
+	tables[5] = ui_builtins;
+	tables[6] = cl_hostcache_builtins;
+	tables[7] = qc_uri_builtins;
+	tables[8] = cl_altcon_builtins;
+	tables[9] = cl_webcore_builtins;
+	tables[10] = r_skin_builtins;
+	tables[11] = r_qclight_builtins;
+	tables[12] = NULL;
+	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, BW_CSQC_MAXEDICTS, (size_t)BW_CSQC_HEAP_MB * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)
 		return false;
@@ -332,8 +341,8 @@ bool CSQC_Load(void)
 		vm->globals[G.mapname].i = QC_NewString(vm, cl.mapname);
 	set_frame_globals(vm);
 
-	cl.ents = Mem_Alloc(sizeof(clentity_t) * 65536);
-	cl.numents = 65536;
+	cl.ents = Mem_Alloc(sizeof(clentity_t) * BW_CL_MAXENTS);
+	cl.numents = BW_CL_MAXENTS;
 
 	{
 		func_t f = fn(vm, "init");
@@ -359,6 +368,18 @@ bool CSQC_Load(void)
 	return true;
 }
 
+/* the renderer was reset (vid_restart, vid_reload): the game reloads
+ * what it keeps of it, fonts and shaders */
+void CSQC_RendererRestarted(void)
+{
+	qcvm_t *vm = cl.csqc;
+	if (!vm || !CS.RendererRestarted || !R_Active())
+		return;
+	vm->globals[OFS_PARM(0)].i = QC_NewString(vm, "");
+	vm->argc = 1;
+	QC_Execute(vm, CS.RendererRestarted);
+}
+
 void CSQC_WorldLoaded(void)
 {
 	qcvm_t *vm = cl.csqc;
@@ -374,6 +395,7 @@ void CSQC_Shutdown(void)
 {
 	if (!cl.csqc)
 		return;
+	WC_ClientGameShutdown();
 	if (CS.Shutdown)
 		QC_Execute(cl.csqc, CS.Shutdown);
 	QC_Free(cl.csqc);
@@ -504,12 +526,46 @@ void CSQC_ParseEvent(msg_t *m, size_t len)
 	}
 }
 
+/* Client game entities get a physics frame before each view, as the
+ * customphysics doc comment in fteextensions.qc implies: their thinks run,
+ * and the ones the game spawned itself move by their movetype (Nuclide's
+ * gibs and debris are MOVETYPE_BOUNCE entities that only exist here and
+ * remove themselves from a think). Entities that mirror a server entity
+ * keep the snapshot positions and only think. See docs/spec/client-game.md. */
+static void csqc_physics(qcvm_t *vm)
+{
+	static double last;
+	double dt = cl.time - last;
+	float gravity;
+	worldctx_t *old;
+	if (dt < 0 || dt > 1) /* new map or a long stall */
+		dt = 0;
+	last = cl.time;
+	if (dt <= 0)
+		return;
+	if (dt > 0.1)
+		dt = 0.1;
+	gravity = info_float("sv_gravity", 800);
+	QC_SetGFloat(vm, G.frametime, (float)dt);
+	old = enter_world();
+	for (int e = 1; e < vm->num_edicts; e++) {
+		bool mirror;
+		if (vm->edicts[e].free)
+			continue;
+		mirror = CS.entnum >= 0 && QC_EFloat(vm, e, CS.entnum) > 0;
+		W_RunEntityPhysics(vm, e, cl.time, (float)dt, gravity, !mirror);
+	}
+	SV_SetWorldContext(old);
+}
+
 void CSQC_Frame(int width, int height)
 {
 	qcvm_t *vm = cl.csqc;
 	static double last;
 	if (!vm || !CS.UpdateView || cl.state != ca_active)
 		return;
+	set_frame_globals(vm);
+	csqc_physics(vm);
 	set_frame_globals(vm);
 	QC_SetGFloat(vm, G.frametime, (float)(cl.realtime - last));
 	QC_SetGFloat(vm, CS.clframetime, (float)(cl.realtime - last));
@@ -519,26 +575,20 @@ void CSQC_Frame(int width, int height)
 	vm->globals[OFS_PARM(1)].f = (float)height;
 	vm->globals[OFS_PARM(2)].f = MQC_Active() ? 0 : 1; /* "notmenu" */
 	vm->argc = 3;
-	{
-		float before[3];
-		VectorCopy(cl.viewangles, before);
-		QC_Execute(vm, CS.UpdateView);
-		/* the game turns the player by writing view_angles or through
-		 * setproperty(VF_CL_VIEWANGLES); the latter must not be undone */
-		if (CS.view_angles >= 0) {
-			const float *va = &vm->globals[CS.view_angles].f;
-			if (va[0] != before[0] || va[1] != before[1] || va[2] != before[2])
-				VectorCopy(va, cl.viewangles);
-		}
-	}
+	/* view_angles is the game's working copy for this view: bob and roll
+	 * written to it change the camera only. The game turns the player
+	 * through setproperty(VF_CL_VIEWANGLES) or input_angles instead. */
+	QC_Execute(vm, CS.UpdateView);
 	QC_CollectGarbage(vm, false);
 }
+
+static bool cmd_forced;
 
 bool CSQC_ConsoleCommand(const char *line)
 {
 	qcvm_t *vm = cl.csqc;
 	cmd_tokens_t *t;
-	bool known = false;
+	bool known = cmd_forced;
 	if (!vm || !CS.ConsoleCommand)
 		return false;
 	t = Mem_Alloc(sizeof(*t));
@@ -727,8 +777,15 @@ static void cl_serverkey(qcvm_t *vm)
 		QC_ReturnString(vm, cl.servername);
 	else if (!strcmp(k, "constate"))
 		QC_ReturnString(vm, cl.state == ca_active ? "active" : cl.state >= ca_loading ? "connected" : "disconnected");
-	else
-		QC_ReturnString(vm, CL_ServerKey(k, buf, sizeof(buf)));
+	else {
+		/* a missing key is the null string, as on the server, so that
+		   if (serverkey(k)) is false for it */
+		const char *v = CL_ServerKey(k, buf, sizeof(buf));
+		if (v && *v)
+			QC_ReturnString(vm, v);
+		else
+			QC_ReturnInt(vm, 0);
+	}
 }
 
 static void cl_serverkeyfloat(qcvm_t *vm)
@@ -823,10 +880,16 @@ static void cl_setlocaluserinfo(qcvm_t *vm)
 {
 	const char *k = QC_PSTR(vm, 1), *val = QC_PSTR(vm, 2);
 	cvar_t *v = Cvar_Find(k);
+	int saved;
+	/* only userinfo: turning some other cvar (rcon_password) into userinfo
+	 * would send it to the server */
+	if (v && !(v->flags & CVAR_USERINFO))
+		return;
 	if (!v)
 		v = Cvar_Get(k, "", CVAR_USERINFO | CVAR_USERCREATED, NULL);
-	v->flags |= CVAR_USERINFO;
+	saved = Cmd_LowerExecLevel((int)Cvar_Value("cmd_gamecodelevel"));
 	Cvar_Set(k, val);
+	Cmd_RestoreExecLevel(saved);
 }
 
 static void cl_registercommand(qcvm_t *vm)
@@ -839,8 +902,96 @@ static void cl_registercommand(qcvm_t *vm)
 		registered[numregistered++] = Mem_Strdup(n);
 }
 
+/* getentitytoken([resetstring]): the next token of the map's entity lump.
+ * An empty or null argument starts over from the map; any other text is
+ * tokenised instead of the map. Either way that call returns "" and the
+ * next one returns the first token: Nuclide's CSQC_WorldLoaded resets with
+ * getentitytoken(0) and expects the following call to give the "{".
+ * Returns "" at the end. */
+static char *enttok_text;
+static const char *enttok_pos;
+static void cl_getentitytoken(qcvm_t *vm)
+{
+	char tok[1024];
+	if (vm->argc > 0) {
+		const char *s = QC_GetString(vm, QC_Parm(vm, 0)->i);
+		Mem_Free(enttok_text);
+		enttok_text = Mem_Strdup(s && *s ? s : (cl.world && cl.world->entities ? cl.world->entities : ""));
+		enttok_pos = enttok_text;
+		QC_ReturnString(vm, "");
+		return;
+	}
+	if (!enttok_pos || !(enttok_pos = COM_Parse(enttok_pos, tok, sizeof(tok)))) {
+		QC_ReturnString(vm, "");
+		return;
+	}
+	QC_ReturnString(vm, tok);
+}
+
 static void cl_isserver(qcvm_t *vm) { QC_ReturnFloat(vm, cl.listen ? 1 : 0); }
-static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, 0); }
+/* 2 for a demo holding every player's view (a server demo or QTV stream) */
+static void cl_isdemo(qcvm_t *vm) { QC_ReturnFloat(vm, !cl.demoplayback ? 0 : CL_DemoMultiview() ? 2 : 1); }
+
+float CL_StatFloat(int i)
+{
+	float f;
+	if (i < 0 || i > 255)
+		return 0;
+	if (cl.stattype[i] == 8)
+		return (float)(int32_t)cl.statval[i];
+	if (cl.stattype[i] == 1)
+		return cl.statstr[i] ? (float)atof(cl.statstr[i]) : 0;
+	memcpy(&f, &cl.statval[i], 4);
+	return f;
+}
+
+int CL_StatInt(int i)
+{
+	if (i < 0 || i > 255)
+		return 0;
+	if (cl.stattype[i] == 2)
+		return (int)CL_StatFloat(i);
+	if (cl.stattype[i] == 1)
+		return cl.statstr[i] ? atoi(cl.statstr[i]) : 0;
+	return (int32_t)cl.statval[i];
+}
+
+const char *CL_StatString(int i) { return i >= 0 && i < 256 && cl.stattype[i] == 1 && cl.statstr[i] ? cl.statstr[i] : ""; }
+
+/* getstatf(num [, firstbit, bitcount]): with bits, part of the stat as a whole number */
+static void cl_getstatf(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	if (vm->argc > 1) {
+		int first = (int)QC_PFLOAT(vm, 1), count = vm->argc > 2 ? (int)QC_PFLOAT(vm, 2) : 1;
+		uint32_t v = (uint32_t)CL_StatInt(i);
+		if (first < 0 || first > 31 || count <= 0)
+			QC_ReturnFloat(vm, 0);
+		else
+			QC_ReturnFloat(vm, (float)((v >> first) & (count >= 32 ? 0xffffffffu : (1u << count) - 1)));
+		return;
+	}
+	QC_ReturnFloat(vm, CL_StatFloat(i));
+}
+
+static void cl_getstati(qcvm_t *vm) { QC_ReturnInt(vm, CL_StatInt((int)QC_PFLOAT(vm, 0))); }
+static void cl_getstats(qcvm_t *vm) { QC_ReturnString(vm, CL_StatString((int)QC_PFLOAT(vm, 0))); }
+
+/* getplayerstat(player, stat, type): only our own (or, in a demo, the tracked player's) */
+static void cl_getplayerstat(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 1), type = (int)QC_PFLOAT(vm, 2);
+	if ((int)QC_PFLOAT(vm, 0) != cl.playerslot) {
+		QC_ReturnInt(vm, 0);
+		return;
+	}
+	if (type == 1)
+		QC_ReturnString(vm, CL_StatString(i));
+	else if (type == 8 || type == 4)
+		QC_ReturnInt(vm, CL_StatInt(i));
+	else
+		QC_ReturnFloat(vm, CL_StatFloat(i));
+}
 static void cl_clientstate(qcvm_t *vm) { QC_ReturnFloat(vm, cl.state == ca_active ? 2 : cl.state >= ca_loading ? 1 : 0); }
 
 static void cl_getentity(qcvm_t *vm)
@@ -914,8 +1065,83 @@ static void cl_findkeysforcommandex(qcvm_t *vm)
 }
 
 static void cl_setsensitivityscaler(qcvm_t *vm) { (void)vm; }
-static void cl_zero(qcvm_t *vm) { QC_ReturnInt(vm, 0); }
 static void cl_nop(qcvm_t *vm) { (void)vm; }
+
+/* infokey(e, key): the serverinfo for the world, a player's userinfo for
+ * a player (by the server entity a client game entity stands for) */
+static void cl_infokey(qcvm_t *vm)
+{
+	char buf[1024];
+	int e = QC_PENT(vm, 0), entnum = QC_FieldOfs(vm, "entnum");
+	const char *key = QC_PSTR(vm, 1), *v;
+	if (e <= 0) {
+		v = CL_ServerKey(key, buf, sizeof(buf));
+		QC_ReturnString(vm, v ? v : "");
+		return;
+	}
+	if (entnum >= 0 && QC_EFloat(vm, e, entnum) > 0)
+		e = (int)QC_EFloat(vm, e, entnum);
+	QC_ReturnString(vm, player_key(e - 1, key, buf, sizeof(buf)));
+}
+
+/* sounds the client game precaches itself get negative indices so they
+ * never collide with the server's list */
+static char *local_sounds[256];
+static int num_local_sounds;
+
+static void cl_getsoundindex(qcvm_t *vm)
+{
+	const char *name = QC_PSTR(vm, 0);
+	bool queryonly = vm->argc > 1 && QC_PFLOAT(vm, 1) != 0;
+	if (!*name) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
+	for (int i = 1; i < cl.numsounds; i++)
+		if (cl.sounds[i] && !Str_ICmp(cl.sounds[i], name)) {
+			QC_ReturnFloat(vm, (float)i);
+			return;
+		}
+	for (int i = 0; i < num_local_sounds; i++)
+		if (!Str_ICmp(local_sounds[i], name)) {
+			QC_ReturnFloat(vm, (float)-(i + 1));
+			return;
+		}
+	if (queryonly || num_local_sounds >= (int)BW_ARRAY_COUNT(local_sounds)) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
+	S_PrecacheSound(name);
+	local_sounds[num_local_sounds++] = Mem_Strdup(name);
+	QC_ReturnFloat(vm, (float)-num_local_sounds);
+}
+
+static void cl_soundnameforindex(qcvm_t *vm)
+{
+	int i = (int)QC_PFLOAT(vm, 0);
+	if (i > 0 && i < cl.numsounds && cl.sounds[i])
+		QC_ReturnString(vm, cl.sounds[i]);
+	else if (i < 0 && -i <= num_local_sounds)
+		QC_ReturnString(vm, local_sounds[-i - 1]);
+	else
+		QC_ReturnString(vm, "");
+}
+
+static void cl_makestatic(qcvm_t *vm) { R_MakeStatic(vm, QC_PENT(vm, 0)); }
+
+/* getlightstylergb(style): the style's brightness now, as a colour */
+static void cl_getlightstylergb(qcvm_t *vm)
+{
+	int s = (int)QC_PFLOAT(vm, 0);
+	float v = 1, rgb[3];
+	const char *str = s >= 0 && s < 256 ? cl.lightstyles[s] : NULL;
+	if (str && *str) {
+		size_t n = strlen(str);
+		v = (float)(str[(size_t)(cl.time * 10) % n] - 'a') / ('m' - 'a');
+	}
+	rgb[0] = rgb[1] = rgb[2] = v;
+	QC_ReturnVector(vm, rgb);
+}
 
 static void cl_getlightstyle(qcvm_t *vm)
 {
@@ -969,7 +1195,7 @@ const qc_builtin_t cl_builtins[] = {
 	{"getplayerkeyblob", cl_getplayerkeyblob}, {"getlocaluserinfoblob", cl_getlocaluserinfoblob},
 	{"setlocaluserinfoblob", cl_setlocaluserinfoblob}, {"getlocaluserinfo", cl_getlocaluserinfo},
 	{"setlocaluserinfo", cl_setlocaluserinfo}, {"registercommand", cl_registercommand},
-	{"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
+	{"getentitytoken", cl_getentitytoken}, {"isserver", cl_isserver}, {"isdemo", cl_isdemo}, {"clientstate", cl_clientstate}, {"getentity", cl_getentity},
 	{"setpause", cl_setpause}, {"particleeffectnum", cl_particleeffectnum},
 	{"setorigin", cl_setorigin}, {"setsize", cl_setsize}, {"setmodel", cl_setmodel}, {"setmodelindex", cl_setmodelindex},
 	{"precache_model", cl_precache_model}, {"getmodelindex", cl_getmodelindex},
@@ -981,8 +1207,28 @@ const qc_builtin_t cl_builtins[] = {
 	{"stringtokeynum", cl_stringtokeynum}, {"stringtokeynum_csqc", cl_stringtokeynum},
 	{"findkeysforcommand", cl_findkeysforcommand}, {"findkeysforcommandex", cl_findkeysforcommandex},
 	{"setsensitivityscaler", cl_setsensitivityscaler}, {"getlightstyle", cl_getlightstyle},
+	{"getlightstylergb", cl_getlightstylergb}, {"infokey", cl_infokey}, {"getsoundindex", cl_getsoundindex},
+	{"soundnameforindex", cl_soundnameforindex}, {"makestatic", cl_makestatic},
+	/* MOVETYPE_PHYSICS is not simulated */
+	{"physics_enable", cl_nop}, {"physics_addforce", cl_nop}, {"physics_addtorque", cl_nop},
 	{"lightstyle", cl_lightstyle}, {"anglesub", cl_anglesub},
-	{"getstatf", cl_zero}, {"getstati", cl_zero}, {"getstats", cl_zero}, {"getplayerstat", cl_zero},
+	{"getstatf", cl_getstatf}, {"getstati", cl_getstati}, {"getstats", cl_getstats}, {"getplayerstat", cl_getplayerstat},
 	{"setwatchpoint", cl_nop}, {"gp_rumble", cl_nop}, {"gp_rumbletriggers", cl_nop}, {"gp_setledcolor", cl_nop},
 	{"gp_settriggerfx", cl_nop},
+	{"voxel_get", VX_bi_voxel_client_get}, {"voxel_getrot", VX_bi_voxel_client_getrot},
+	{"voxel_cellforpoint", VX_bi_voxel_cellforpoint}, {"voxel_cellorigin", VX_bi_voxel_cellorigin},
+	{"voxel_size", VX_bi_voxel_size}, {"voxel_blocksize", VX_bi_voxel_blocksize}, {"voxel_count", VX_bi_voxel_count},
+	{"voxel_typeforname", VX_bi_voxel_typeforname}, {"voxel_typename", VX_bi_voxel_typename},
+	{"voxel_tracecell", VX_bi_voxel_tracecell}, {"voxel_tracetype", VX_bi_voxel_tracetype},
 	{NULL, NULL}};
+
+/* cl_cmd: the line goes to CSQC_ConsoleCommand whether or not the client
+ * game registered the command */
+bool CSQC_ForceCommand(const char *line)
+{
+	bool r;
+	cmd_forced = true;
+	r = CSQC_ConsoleCommand(line);
+	cmd_forced = false;
+	return r;
+}

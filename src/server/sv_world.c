@@ -2,6 +2,7 @@
  * Entities are tested by brute force for now; an area grid can come later.
  * ISC licence, see LICENSE. */
 #include "sv_local.h"
+#include "../common/voxel.h"
 
 #include <math.h>
 
@@ -16,14 +17,18 @@ static bool sv_brushmodel(int mi, bspmap_t **bsp, int *sub)
 	return true;
 }
 
-static worldctx_t sv_worldctx = {NULL, NULL, sv_brushmodel};
+static worldctx_t sv_worldctx = {NULL, NULL, sv_brushmodel, NULL};
 static worldctx_t *W = &sv_worldctx;
+static int last_voxelcell[4] = {0, 0, 0, -1};
+
+const int *SV_LastVoxelCell(void) { return last_voxelcell; }
 
 static inline worldctx_t *cur(void)
 {
 	if (W == &sv_worldctx) {
 		sv_worldctx.vm = sv.vm;
 		sv_worldctx.world = sv.world;
+		sv_worldctx.voxel = sv.voxel;
 	}
 	return W;
 }
@@ -92,10 +97,25 @@ static bool ent_brush_model(int e, brushref_t *out)
 	return true;
 }
 
+/* e's box, where e is now, overlaps the brushes of the brush entity pusher */
+bool SV_InsideBrushEntity(int pusher, int e)
+{
+	brushref_t m;
+	bsptrace_t bt;
+	float *org = evec(e, F.origin), *mins = evec(e, F.mins), *maxs = evec(e, F.maxs);
+	if (!org || !mins || !maxs || !ent_brush_model(pusher, &m))
+		return false;
+	BSP_TraceModel(m.bsp, m.submodel, evec(pusher, F.origin), org, mins, maxs, org,
+	               CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_MONSTERCLIP, &bt);
+	return bt.startsolid;
+}
+
 int SV_PointContentsBits(const float *p)
 {
 	float zero[3] = {0, 0, 0};
 	int bits = cur()->world ? BSP_PointContents(cur()->world, 0, zero, p) : 0;
+	if (cur()->voxel)
+		bits |= (int)Vox_PointContents(cur()->voxel, p);
 	/* brush entities such as func_water add their contents too */
 	for (int e = 1; e < cur()->vm->num_edicts; e++) {
 		brushref_t m;
@@ -238,9 +258,34 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 		onlyent = G.other >= 0 ? QC_GInt(cur()->vm, G.other) : 0;
 	}
 
+	tr->voxelcell[3] = -1;
 	if (cur()->world && onlyent <= 0) {
 		BSP_TraceModel(cur()->world, 0, zero, start, mins, maxs, end, mask, &bt);
 		merge_bsp(tr, &bt, cur()->world, 0);
+	}
+	if (cur()->voxel && onlyent <= 0) {
+		vxtrace_t vt;
+		Vox_Trace(cur()->voxel, start, mins, maxs, end, (uint32_t)mask, &vt);
+		if (vt.startsolid && !tr->startsolid) {
+			tr->startsolid = true;
+			tr->ent = 0;
+			tr->contents = vt.contents;
+		}
+		if (vt.allsolid)
+			tr->allsolid = true;
+		if (vt.fraction < tr->fraction || (vt.startsolid && vt.fraction <= tr->fraction)) {
+			tr->fraction = vt.fraction;
+			VectorCopy(vt.normal, tr->normal);
+			tr->dist = vt.dist;
+			tr->ent = 0;
+			tr->contents = vt.contents;
+			tr->surfaceflags = 0;
+			tr->surfacename = "";
+			tr->brush = tr->brushside = -1;
+			for (int i = 0; i < 3; i++)
+				tr->voxelcell[i] = vt.cell[i];
+			tr->voxelcell[3] = vt.type;
+		}
 	}
 
 	for (int i = 0; i < 3; i++) {
@@ -290,8 +335,11 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 	}
 	for (int i = 0; i < 3; i++)
 		tr->endpos[i] = start[i] + (end[i] - start[i]) * tr->fraction;
+	if (tr->ent > 0)
+		tr->voxelcell[3] = -1;
 	if (tr->ent < 0)
 		tr->ent = 0;
+	memcpy(last_voxelcell, tr->voxelcell, sizeof(tr->voxelcell));
 	tr->inopen = !tr->startsolid;
 	tr->inwater = (SV_PointContentsBits(tr->endpos) & (CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA)) != 0;
 }
@@ -366,4 +414,46 @@ bool SV_DropToFloor(int e)
 	QC_SetEFloat(cur()->vm, e, F.flags, (float)((int)QC_EFloat(cur()->vm, e, F.flags) | FL_ONGROUND));
 	QC_SetEInt(cur()->vm, e, F.groundentity, tr.ent);
 	return true;
+}
+
+/* getsurfacenearpoint(ent, point) and getsurfacetexture(ent, surface) on the
+ * collision model, so the server game can tell what it hit or stands on
+ * (footsteps, impact effects) without a renderer. Entity 0 is the world. */
+static bool surface_model(int e, brushref_t *m, float *origin)
+{
+	VectorClear(origin);
+	if (e <= 0) {
+		m->bsp = cur()->world;
+		m->submodel = 0;
+		return m->bsp != NULL;
+	}
+	if (!ent_brush_model(e, m))
+		return false;
+	VectorCopy(evec(e, F.origin), origin);
+	return true;
+}
+
+void W_bi_getsurfacenearpoint(qcvm_t *vm)
+{
+	brushref_t m;
+	float o[3], p[3];
+	const float *in = QC_PVEC(vm, 1);
+	if (!surface_model(QC_PENT(vm, 0), &m, o)) {
+		QC_ReturnFloat(vm, -1);
+		return;
+	}
+	for (int k = 0; k < 3; k++)
+		p[k] = in[k] - o[k];
+	QC_ReturnFloat(vm, (float)BSP_SurfaceNearPoint(m.bsp, m.submodel, p));
+}
+
+void W_bi_getsurfacetexture(qcvm_t *vm)
+{
+	brushref_t m;
+	float o[3];
+	if (!surface_model(QC_PENT(vm, 0), &m, o)) {
+		QC_ReturnString(vm, "");
+		return;
+	}
+	QC_ReturnString(vm, BSP_SurfaceTexture(m.bsp, m.submodel, (int)QC_PFLOAT(vm, 1)));
 }

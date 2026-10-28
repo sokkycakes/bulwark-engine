@@ -1,0 +1,130 @@
+/* Title menu (v1). Percentages are of the 1365 x 768 Figma frame, stretched
+   over the view like the page's calc(100% * n / 1365) positions; sizes the
+   page gives in 100vh / 768 are at the 1080-line design height (x 1.40625).
+   The page asks for "Bahnschrift Condensed" bold (its @font-face rules sit
+   inside :root and never load); Trade Gothic Next Bold Condensed, which the
+   game ships, stands in. */
+
+.stage
+{
+	width: 100%;
+	height: 100%;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	color: #ffffff;
+}
+
+/* the bottom band: grey gradient, red wash and pink edges */
+.band
+{
+	y: 54.4271%;
+	width: 100%;
+	height: 24.6094%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #6d6d6dcc ), color-stop( 0.09, #424242cc ), color-stop( 0.42, #282828cc ), color-stop( 0.66, #2a2a2acc ), color-stop( 0.87, #323232cc ), to( #6d6d6dcc ) );
+}
+.band-red
+{
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #ff000047 ), color-stop( 0.24, #f6000009 ), color-stop( 0.51, #f5000000 ), color-stop( 0.88, #e500000b ), to( #ff000047 ) );
+}
+.band-edge
+{
+	width: 100%;
+	height: 2.8125px;
+	background-color: #ffb1b1;
+}
+.band-edge-bottom { vertical-align: bottom; }
+
+/* the focus bar slides to the selected item (ITEM_Y - 3) */
+.focus-bar
+{
+	y: 57.2917%;
+	width: 33.1136%;
+	height: 4.9479%;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #b70043 ), color-stop( 0.32, #b70043 ), to( #34343400 ) );
+	transition-property: position;
+	transition-duration: 0.12s;
+	transition-timing-function: cubic-bezier( 0.2, 0.8, 0.2, 1 );
+}
+.sel-1 .focus-bar { y: 62.5%; }
+.sel-2 .focus-bar { y: 66.5365%; }
+.sel-3 .focus-bar { y: 70.5729%; }
+
+.focus-edge
+{
+	width: 100%;
+	height: 2.8125px;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #ff8c8c ), color-stop( 0.32, #ff8c8c ), to( #ff8c8c00 ) );
+}
+.focus-edge-bottom { vertical-align: bottom; }
+
+.menu-item
+{
+	width: 33.1136%;
+	height: 5.2083%;
+}
+.item-0 { y: 57.6823%; }
+.item-1 { y: 62.8906%; }
+.item-2 { y: 66.9271%; }
+.item-3 { y: 70.9635%; }
+
+.menu-item Label
+{
+	x: 22.5664%;
+	y: 7.03px;
+	font-size: 33.75px;
+	font-weight: bold;
+	letter-spacing: -1.6875px;
+	color: #ffffff;
+}
+
+/* the page's own logo SVG; it has preserveAspectRatio="none", so it fills
+   its box */
+.logo
+{
+	x: 62.3443%;
+	y: 57.6823%;
+	width: 33.6996%;
+	height: 26.5625%;
+	background-image: url("file://{game}/data/web/title-menu/assets/logovectorframe.svg");
+	background-size: 100% 100%;
+	background-repeat: no-repeat;
+}
+
+/* object-fit: contain */
+.hint-glyph,
+.tp-logo
+{
+	background-size: contain;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.hint-glyph
+{
+	x: 6.8864%;
+	y: 86.0677%;
+	width: 2.3443%;
+	height: 4.1667%;
+	background-image: url("file://{game}/data/web/title-menu/assets/360_y.png");
+}
+
+.hint-label
+{
+	x: 9.5238%;
+	y: 85.9375%;
+	font-size: 33.75px;
+	font-weight: bold;
+	letter-spacing: -1.6875px;
+	color: #6d6d6d;
+}
+
+.tp-logo
+{
+	x: 87.9121%;
+	y: 81.25%;
+	width: 5.9341%;
+	height: 14.1927%;
+	opacity: 0.51;
+	background-image: url("file://{game}/data/web/title-menu/assets/tplogo.png");
+}

@@ -4,6 +4,7 @@
  * Record layouts are in docs/spec/bsp.md. ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/fs.h"
+#include "../common/ftew.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -232,6 +233,21 @@ static void finish_world(bspmap_t *bsp)
 			r_world.hasfog = f[3] > 0;
 		}
 	}
+	memset(r_world.waterfog, 0, sizeof(r_world.waterfog));
+	memset(r_world.skyroomfog, 0, sizeof(r_world.skyroomfog));
+	r_world.waterfog[1] = r_world.waterfog[2] = r_world.waterfog[3] = 0.3f;
+	r_world.waterfog[4] = 1;
+	memcpy(r_world.skyroomfog, r_world.waterfog, sizeof(r_world.skyroomfog));
+	/* "density r g b [alpha depthbias]", as FTE's and Nuclide's worldspawn keys */
+	{
+		static const char *const keys[][2] = {{"waterfog", "_waterfog"}, {"skyroomfog", "_skyroomfog"}};
+		for (int k = 0; k < 2; k++) {
+			float *dst = k ? r_world.skyroomfog : r_world.waterfog;
+			if (bsp && (entity_key(bsp->entities, keys[k][0], buf, sizeof(buf))[0] ||
+			            entity_key(bsp->entities, keys[k][1], buf, sizeof(buf))[0]))
+				sscanf(buf, "%f %f %f %f %f %f", &dst[0], &dst[1], &dst[2], &dst[3], &dst[4], &dst[5]);
+		}
+	}
 	if (bsp && (entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0] ||
 	            entity_key(bsp->entities, "sky", buf, sizeof(buf))[0]) &&
 	    Str_ICmp(buf, r_world.skyname)) {
@@ -239,6 +255,7 @@ static void finish_world(bspmap_t *bsp)
 		r_world.skybox = NULL;
 	}
 	r_world.bsp = bsp;
+	R_ToolsMapLoaded();
 	r_world.surfmap = Mem_Alloc(sizeof(int) * (r_world.numsurfaces + 1));
 	for (int i = 0; i < r_world.numsurfaces; i++)
 		r_world.surfmap[i] = -1;
@@ -248,6 +265,217 @@ static void finish_world(bspmap_t *bsp)
 			r_world.surfmap[o] = i;
 	}
 	r_world.loaded = true;
+}
+
+/* --- FTEW worlds ----------------------------------------------------- */
+
+/* FTEW (docs/spec/ftew.md) has shared meshes placed by instances, with
+ * vertex colours and no lightmaps or normals. Each model gets one surface per
+ * material; triangles get flat normals. A box around the world carries the
+ * sky, since FTEW has no sky faces. */
+
+static void ftew_upload(vertbuf_t *vb, idxbuf_t *ib)
+{
+	if (!R_Active() || !vb->num || !ib->num)
+		return;
+	qglGenVertexArrays(1, &r_world.vao);
+	qglGenBuffers(1, &r_world.vbo);
+	qglGenBuffers(1, &r_world.ebo);
+	qglBindVertexArray(r_world.vao);
+	qglBindBuffer(GL_ARRAY_BUFFER, r_world.vbo);
+	qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * vb->num), vb->v, GL_STATIC_DRAW);
+	qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, r_world.ebo);
+	qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * ib->num), ib->i, GL_STATIC_DRAW);
+	R_SetupVertexAttribs();
+	qglBindVertexArray(0);
+}
+
+static void surface_bounds(rsurface_t *rs, const vertbuf_t *vb, const idxbuf_t *ib)
+{
+	for (int k = 0; k < 3; k++) {
+		rs->mins[k] = 1e30f;
+		rs->maxs[k] = -1e30f;
+	}
+	for (int k = rs->firstindex; k < rs->firstindex + rs->numindexes; k++)
+		for (int a = 0; a < 3; a++) {
+			float v = vb->v[ib->i[k]].xyz[a];
+			rs->mins[a] = BW_MIN(rs->mins[a], v);
+			rs->maxs[a] = BW_MAX(rs->maxs[a], v);
+		}
+}
+
+static void ftew_triangle(vertbuf_t *vb, idxbuf_t *ib, const rvert_t *v0, const rvert_t *v1, const rvert_t *v2)
+{
+	rvert_t v[3] = {*v0, *v1, *v2};
+	float e1[3], e2[3], n[3];
+	for (int k = 0; k < 3; k++) {
+		e1[k] = v[1].xyz[k] - v[0].xyz[k];
+		e2[k] = v[2].xyz[k] - v[0].xyz[k];
+	}
+	/* counter-clockwise for GL, so the normal is e1 x e2 */
+	n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+	n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+	n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+	VectorNormalize(n);
+	for (int k = 0; k < 3; k++) {
+		VectorCopy(n, v[k].normal);
+		add_index(ib, (uint32_t)add_vert(vb, &v[k]));
+	}
+}
+
+static void ftew_sky_box(vertbuf_t *vb, idxbuf_t *ib, const float *mins, const float *maxs)
+{
+	/* inward-facing; drawn without culling, so winding does not matter */
+	static const int quads[6][4] = {{0, 1, 3, 2}, {4, 6, 7, 5}, {0, 4, 5, 1}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 5, 7, 3}};
+	rvert_t c[8];
+	int base;
+	memset(c, 0, sizeof(c));
+	for (int i = 0; i < 8; i++) {
+		for (int k = 0; k < 3; k++) {
+			float pad = (maxs[k] - mins[k]) * 0.5f + 1024;
+			c[i].xyz[k] = (i >> (2 - k)) & 1 ? maxs[k] + pad : mins[k] - pad;
+		}
+		memset(c[i].color, 255, 4);
+	}
+	base = vb->num;
+	for (int i = 0; i < 8; i++)
+		add_vert(vb, &c[i]);
+	for (int f = 0; f < 6; f++) {
+		add_index(ib, base + quads[f][0]);
+		add_index(ib, base + quads[f][1]);
+		add_index(ib, base + quads[f][2]);
+		add_index(ib, base + quads[f][0]);
+		add_index(ib, base + quads[f][2]);
+		add_index(ib, base + quads[f][3]);
+	}
+}
+
+static bool load_ftew_world(bspmap_t *bsp, const char *path, const uint8_t *d, size_t size)
+{
+	ftew_t w;
+	char err[128], buf[128];
+	vertbuf_t vb = {0};
+	idxbuf_t ib = {0};
+	material_t **mats;
+	int maxsurfs, ns = 0;
+
+	if (!FTEW_Parse(d, size, &w, err, sizeof(err))) {
+		Con_Printf("%s: %s\n", path, err);
+		return false;
+	}
+	mats = Mem_Alloc(sizeof(material_t *) * (size_t)(w.nummaterials + 1));
+	for (int i = 0; i < w.nummaterials; i++)
+		mats[i] = R_FindMaterial(w.materials[i], 0);
+	maxsurfs = (int)w.nummodels * (w.nummaterials + 1) + 1;
+	r_world.surfaces = Mem_Alloc(sizeof(rsurface_t) * (size_t)maxsurfs);
+	r_world.numsubmodels = (int)w.nummodels;
+	r_world.submodels = Mem_Alloc(sizeof(rmodel_t) * (w.nummodels + 1));
+
+	for (uint32_t mi = 0; mi < w.nummodels; mi++) {
+		rmodel_t *rm = &r_world.submodels[mi];
+		snprintf(rm->name, sizeof(rm->name), "*%u", mi);
+		rm->type = MOD_BRUSH;
+		rm->firstsurface = ns;
+		for (int mat = 0; mat < w.nummaterials; mat++) {
+			rsurface_t *rs = &r_world.surfaces[ns];
+			rs->material = mats[mat];
+			rs->lightmap = -1; /* vertex lit */
+			rs->type = ST_TRISOUP;
+			rs->firstindex = ib.num;
+			for (int i = 0; i < w.numinstances; i++) {
+				const ftew_instance_t *in = &w.instances[i];
+				const ftew_mesh_t *mesh = &w.meshes[in->mesh];
+				bool flip = FTEW_Mirrored(in);
+				if (in->model != mi || mesh->material != (uint32_t)mat || !(in->flags & FTEW_INST_VISIBLE))
+					continue;
+				for (uint32_t t = 0; t + 2 < mesh->numindexes; t += 3) {
+					rvert_t v[3];
+					memset(v, 0, sizeof(v));
+					for (int k = 0; k < 3; k++) {
+						float rgba[4];
+						FTEW_Vertex(mesh, FTEW_Index(mesh, t + k), v[k].xyz, v[k].st, rgba);
+						FTEW_Transform(in, v[k].xyz, v[k].xyz);
+						for (int c = 0; c < 4; c++) {
+							float f = rgba[c] < 0 ? 0 : rgba[c] > 1 ? 1 : rgba[c];
+							v[k].color[c] = (uint8_t)(f * 255 + 0.5f);
+						}
+					}
+					/* clockwise front faces, as in Q3 maps: swap for GL unless mirrored */
+					if (flip)
+						ftew_triangle(&vb, &ib, &v[0], &v[1], &v[2]);
+					else
+						ftew_triangle(&vb, &ib, &v[0], &v[2], &v[1]);
+				}
+			}
+			rs->numindexes = ib.num - rs->firstindex;
+			if (rs->numindexes) {
+				surface_bounds(rs, &vb, &ib);
+				ns++;
+			}
+		}
+		rm->numsurfaces = ns - rm->firstsurface;
+		if (bsp && (int)mi < bsp->nummodels) {
+			VectorCopy(bsp->models[mi].mins, rm->mins);
+			VectorCopy(bsp->models[mi].maxs, rm->maxs);
+		}
+		rm->loaded = true;
+	}
+
+	if (r_world.numsubmodels > 0) {
+		rmodel_t *world = &r_world.submodels[0];
+		rsurface_t *rs = &r_world.surfaces[ns];
+		float mins[3], maxs[3];
+		for (int k = 0; k < 3; k++) {
+			mins[k] = 1e30f;
+			maxs[k] = -1e30f;
+		}
+		for (int i = world->firstsurface; i < world->firstsurface + world->numsurfaces; i++)
+			for (int k = 0; k < 3; k++) {
+				mins[k] = BW_MIN(mins[k], r_world.surfaces[i].mins[k]);
+				maxs[k] = BW_MAX(maxs[k], r_world.surfaces[i].maxs[k]);
+			}
+		if (mins[0] <= maxs[0]) {
+			/* the world's last surface; nothing after it belongs to model 0 */
+			rs->material = R_FindMaterial("ftew/sky", 0);
+			rs->material->sky = true;
+			rs->lightmap = -1;
+			rs->firstindex = ib.num;
+			ftew_sky_box(&vb, &ib, mins, maxs);
+			rs->numindexes = ib.num - rs->firstindex;
+			surface_bounds(rs, &vb, &ib);
+			if (r_world.numsubmodels == 1) {
+				ns++;
+				world->numsurfaces++;
+			} else {
+				/* keep model ranges contiguous: move the sky in after model 0 */
+				rsurface_t sky = *rs;
+				memmove(&r_world.surfaces[world->numsurfaces + 1], &r_world.surfaces[world->numsurfaces],
+				        sizeof(rsurface_t) * (size_t)(ns - world->numsurfaces));
+				r_world.surfaces[world->numsurfaces] = sky;
+				ns++;
+				world->numsurfaces++;
+				for (int m = 1; m < r_world.numsubmodels; m++)
+					r_world.submodels[m].firstsurface++;
+			}
+		}
+	}
+	r_world.numsurfaces = ns;
+	for (int m = 0; m < r_world.numsubmodels; m++) {
+		rmodel_t *rm = &r_world.submodels[m];
+		qsort(r_world.surfaces + rm->firstsurface, rm->numsurfaces, sizeof(rsurface_t), surface_cmp);
+	}
+
+	if (bsp && entity_key(bsp->entities, "skyname", buf, sizeof(buf))[0] && Str_ICmp(buf, r_world.skyname)) {
+		Str_Copy(r_world.skyname, buf, sizeof(r_world.skyname));
+		r_world.skybox = NULL;
+	}
+	ftew_upload(&vb, &ib);
+	Con_DPrintf("%s: FTEW world, %d surfaces, %d triangles\n", path, ns, ib.num / 3);
+	Mem_Free(vb.v);
+	Mem_Free(ib.i);
+	Mem_Free(mats);
+	FTEW_Free(&w);
+	return true;
 }
 
 void R_LoadWorld(bspmap_t *bsp, const char *path)
@@ -267,10 +495,22 @@ void R_LoadWorld(bspmap_t *bsp, const char *path)
 	R_FreeWorld();
 	Str_Copy(r_world.name, path, sizeof(r_world.name));
 	d = (uint8_t *)FS_LoadFile(path, &size);
+	if (d && FTEW_IsFTEW(d, size)) {
+		r_world.loaded = load_ftew_world(bsp, path, d, size);
+		Mem_Free(d);
+		return;
+	}
 	if (!d || size < 8 + 17 * 8)
 		goto fail;
 	if (rd32(d) == 29 || rd32(d) == 30 || !memcmp(d, "BSP2", 4)) {
 		if (!R_LoadQ1World(bsp, path, d, size))
+			goto fail;
+		Mem_Free(d);
+		finish_world(bsp);
+		return;
+	}
+	if (!memcmp(d, "VBSP", 4)) {
+		if (!R_LoadSourceWorld(bsp, path, d, size))
 			goto fail;
 		Mem_Free(d);
 		finish_world(bsp);
@@ -455,6 +695,7 @@ fail:
 
 void R_FreeWorld(void)
 {
+	R_FreeStaticProps();
 	if (R_Active()) {
 		if (r_world.vao)
 			qglDeleteVertexArrays(1, &r_world.vao);
@@ -463,7 +704,7 @@ void R_FreeWorld(void)
 		if (r_world.ebo)
 			qglDeleteBuffers(1, &r_world.ebo);
 		if (r_world.numlightmaps && r_world.lightmaps)
-			qglDeleteTextures(r_world.numlightmaps, r_world.lightmaps);
+			GL_DeleteTextures(r_world.numlightmaps, r_world.lightmaps);
 	}
 	Mem_Free(r_world.surfaces);
 	Mem_Free(r_world.lightmaps);
@@ -616,7 +857,7 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
 	qglUniform3f(p->u_vieworg, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2]);
-	qglUniform4f(p->u_fog, r_world.fog[0], r_world.fog[1], r_world.fog[2], r_world.hasfog ? r_world.fog[3] : 0);
+	qglUniform4f(p->u_fog, r_viewfog[0], r_viewfog[1], r_viewfog[2], r_viewfog[3]);
 	qglUniform1f(p->u_usefullbright, 0);
 	set_lights(p, model);
 	qglBindVertexArray(r_world.vao);
@@ -627,7 +868,7 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 		bool trans = mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER;
 		if (!s->numindexes || mat->nodraw || mat->sky || trans != translucentpass)
 			continue;
-		if (usevis && s->visframe != r_world.visframe) {
+		if (usevis && !s->novis && s->visframe != r_world.visframe) {
 			r_stats.culled++;
 			continue;
 		}
@@ -685,7 +926,7 @@ void R_DrawSky(const float *mvp)
 		return;
 	if (!r_world.skybox && r_world.skyname[0]) {
 		/* worldspawn and the sky command name either a path or a set in
-		 * env/, or gfx/env/ where GoldSrc keeps them */
+		 * env/, gfx/env/ where GoldSrc keeps them, or Source's folder */
 		char env[96];
 		snprintf(env, sizeof(env), "env/%s", r_world.skyname);
 		r_world.skybox = R_LoadCubemap(r_world.skyname);
@@ -693,6 +934,12 @@ void R_DrawSky(const float *mvp)
 			r_world.skybox = R_LoadCubemap(env);
 		if (!r_world.skybox) {
 			snprintf(env, sizeof(env), "gfx/env/%s", r_world.skyname);
+			r_world.skybox = R_LoadCubemap(env);
+		}
+		if (!r_world.skybox) {
+			/* Source keeps its sets as textures under materials/skybox/,
+			 * faces named as GoldSrc's (sky_day01_01rt.vtf) */
+			snprintf(env, sizeof(env), "materials/skybox/%s", r_world.skyname);
 			r_world.skybox = R_LoadCubemap(env);
 		}
 	}
