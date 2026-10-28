@@ -30,6 +30,13 @@ entity vx_tester;
 float vx_playedMarked;
 bool sm_ownRules;		/* the plain Studio play rules run (not a regular mode) */
 
+/* vx_tools.qc */
+void VXT_Frame(void);
+bool VXT_Command(entity p, string cmd);
+void VXT_Equip(entity p);
+bool VXT_HoldsTool(entity p);
+void VXT_SendEnv(entity to);
+
 /* the rules the Studio map's mode would have had (vx_maps.qc VX_ModeId) */
 var void(void) SM_InnerStart;
 var void(void) SM_InnerRoundStart;
@@ -41,19 +48,85 @@ var float(void) SM_InnerCheck;
 vector vx_aimCell;		/* last eye trace: cell hit, '-1 -1 -1' if none */
 vector vx_aimFront;		/* the empty cell in front of the hit face */
 
+/* the first occupied cell along a ray, solid or not, closer than dist.
+   The engine trace only stops at solid contents, but every tool also
+   targets the non-solid blocks (gates, triggers, volumes). OBSERVED: CSNZ
+   tools hit gate blocks; DESIGN: a grid walk (DDA) over voxel_get. */
 bool
-VX_Aim(entity p)
+VX_GridWalk(vector src, vector dir, float dist)
+{
+	float bs = VX_BLOCK;
+	vector o = voxel_cellorigin([0, 0, 0]);
+	vector sz = voxel_size();
+	vector c = voxel_cellforpoint(src);
+	vector rel = src - o;
+	vector st = [0, 0, 0], tmax = [0, 0, 0], tdelta = [0, 0, 0];
+	vector prev = c;
+
+	for (float a = 0; a < 3; a++) {
+		float d = dir[a];
+		if (d > 0) {
+			st[a] = 1;
+			tmax[a] = ((c[a] + 1) * bs - rel[a]) / d;
+			tdelta[a] = bs / d;
+		} else if (d < 0) {
+			st[a] = -1;
+			tmax[a] = (c[a] * bs - rel[a]) / d;
+			tdelta[a] = -bs / d;
+		} else {
+			st[a] = 0;
+			tmax[a] = tdelta[a] = 999999;
+		}
+	}
+
+	for (float i = 0; i < 128; i++) {
+		float t;
+		prev = c;
+		if (tmax[0] <= tmax[1] && tmax[0] <= tmax[2]) {
+			t = tmax[0]; c[0] += st[0]; tmax[0] += tdelta[0];
+		} else if (tmax[1] <= tmax[2]) {
+			t = tmax[1]; c[1] += st[1]; tmax[1] += tdelta[1];
+		} else {
+			t = tmax[2]; c[2] += st[2]; tmax[2] += tdelta[2];
+		}
+		if (t > dist)
+			return false;
+		if (c[0] < 0 || c[1] < 0 || c[2] < 0 || c[0] >= sz[0] || c[1] >= sz[1] || c[2] >= sz[2])
+			continue;
+		if (voxel_get(c) > 0) {
+			vx_aimCell = c;
+			vx_aimFront = prev;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool
+VX_AimReach(entity p, float reach)
 {
 	makevectors(p.v_angle);
 	vector src = p.origin + p.view_ofs;
-	traceline(src, src + v_forward * autocvar_studio_reach, MOVE_NOMONSTERS, p);
-	vx_aimCell = voxel_tracecell();
-	if (vx_aimCell[0] < 0 || trace_fraction >= 1) {
+	traceline(src, src + v_forward * reach, MOVE_NOMONSTERS, p);
+	vector hit = voxel_tracecell();
+	vector end = trace_endpos, nrm = trace_plane_normal;
+	float frac = trace_fraction;
+
+	if (VX_GridWalk(src, v_forward, reach * frac))
+		return true;
+	vx_aimCell = hit;
+	if (vx_aimCell[0] < 0 || frac >= 1) {
 		vx_aimCell = vx_aimFront = [-1, -1, -1];
 		return false;
 	}
-	vx_aimFront = voxel_cellforpoint(trace_endpos + trace_plane_normal * (VX_BLOCK * 0.5));
+	vx_aimFront = voxel_cellforpoint(end + nrm * (VX_BLOCK * 0.5));
 	return true;
+}
+
+bool
+VX_Aim(entity p)
+{
+	return VX_AimReach(p, autocvar_studio_reach);
 }
 
 /* a cell from the arguments (x y z at first) or from where p looks */
@@ -538,6 +611,7 @@ void
 SM_CreateEquip(entity p)
 {
 	ents.ChangeToClass(p, "csm_builder");
+	VXT_Equip(p);
 	if (vx_owner == "" && clienttype(p) != CLIENTTYPE_BOT)
 		vx_owner = strzone(p.netname);
 }
@@ -551,6 +625,7 @@ SM_CreatePickTeam(entity p)
 void
 SM_CreateFrame(void)
 {
+	VXT_Frame();
 	VE_Frame();
 	if (vx_testing) {
 		if (vx_result)
@@ -745,6 +820,18 @@ CodeCallback_Precache(void)
 	precache_sound("misc/talk.wav");
 	precache_sound("events/lvup.wav");
 	precache_sound("studio/scenariotx/levelup.wav");
+	precache_sound("weapons/vxllonggun-1.wav");
+	precache_sound("weapons/vxllonggun-2.wav");
+	precache_sound("weapons/vxllonggun_changea.wav");
+	precache_sound("weapons/vxlconnector-1.wav");
+	precache_sound("weapons/vxleditor-shootleft.wav");
+	precache.Entity("weapon_vxllonggun");
+	precache.Entity("weapon_vxlshortgun");
+	precache.Entity("weapon_vxlconnector");
+	precache.Entity("weapon_vxleditor");
+	precache.Entity("weapon_vxlminigun");
+	precache.Entity("weapon_vxlscanner");
+	precache.Entity("weapon_vxlmarker");
 }
 
 string
@@ -769,7 +856,7 @@ CodeCallback_StartGameType(void)
 	vx_records = hash_createtab(4096, EV_FLOAT);
 	if (!VX_Boot([128, 128, 64])) {
 		/* any map can host the Studio: a floor in the middle (DESIGN) */
-		voxel_create([128, 128, 64], VX_BLOCK, [-64 * VX_BLOCK, -64 * VX_BLOCK, -64]);
+		voxel_create([128, 128, 64], VX_NEWBLOCK, [-64 * VX_NEWBLOCK, -64 * VX_NEWBLOCK, -64]);
 		VX_LoadCatalog();
 		voxel_fill([44, 44, 0], [83, 83, 0], vx_firstType, 0);
 	}
@@ -822,6 +909,7 @@ CodeCallback_PlayerSpawn(entity p)
 	}
 	CS_PutInGame(p);
 	VE_Respawned(p);
+	VXT_SendEnv(p);
 }
 
 bool
@@ -843,6 +931,9 @@ bool
 CodeCallback_PlayerCanAttack(entity p)
 {
 	if (studio_kind == 38 && !vx_testing)
+		return (false);
+	/* the build tools never shoot (INFERRED) */
+	if (studio_kind == 38 && VXT_HoldsTool(p))
 		return (false);
 	return (true);
 }
@@ -907,18 +998,13 @@ CodeCallback_ClientCommand(entity p, string cmd)
 	if (CSNZ_Command(p, cmd))
 		return (true);
 
+	if (VXT_Command(p, cmd))
+		return (true);
+
 	tokenize(cmd);
 	switch (argv(0)) {
 	case "vx":
 		VX_Command(p, substring(cmd, 3, -1));
-		return (true);
-	case "vxl_wpn":
-		/* "vxl_wpn <quick slot> <id>": client.dll sends it when a block is
-		   double-clicked in the browser (FUN_02b17290, slot 0) or a quick
-		   slot is picked (FUN_02b1a110), and mp.dll stuffs it back in mode
-		   38 (FUN_10a5b180). mp.dll's handler is UNRESOLVED; here it picks
-		   the block to build with (DESIGN), the slot is not kept. */
-		VX_Command(p, sprintf("select %s", argv(2)));
 		return (true);
 	case "buy":
 		CS_Buy(p, argv(1));

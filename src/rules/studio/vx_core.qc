@@ -374,10 +374,6 @@ VX_CheckPlace(float type, float rot, vector base, entity ignore)
 	if (type <= 0 || type >= VX_OPEN_BASE || voxel_typename(type) == "")
 		return "Unknown block.";
 	n = VX_GroupCount(type);
-	if (vx_blocks + n > autocvar_studio_maxblocks)
-		return "The block limit has been reached.";
-	if (vx_costTotal + vx_cost[type] > autocvar_studio_maxcost)
-		return "The cost limit has been reached.";
 
 	for (float i = 0; i < n; i++) {
 		vector c = VX_GroupCell(type, rot, base, i);
@@ -386,7 +382,7 @@ VX_CheckPlace(float type, float rot, vector base, entity ignore)
 		if (voxel_get(c) != 0) {
 			entity r = VX_RecordAt(c);
 			if (!ignore || r != ignore)
-				return "Something is in the way.";
+				return CS_Text("CSO_Voxel_CantPlaceVoxelSomethingOverlap", "Something is in the way.");
 		}
 		/* a solid block may not trap a player */
 		vector lo = voxel_cellorigin(c), hi = lo + [VX_BLOCK, VX_BLOCK, VX_BLOCK];
@@ -398,6 +394,12 @@ VX_CheckPlace(float type, float rot, vector base, entity ignore)
 				return "A player is in the way.";
 		}
 	}
+	/* SOURCE-CONFIRMED order (mp.dll FUN_11257d50): overlap, then the
+	   block count, then the cost */
+	if (vx_blocks + n > autocvar_studio_maxblocks)
+		return CS_Text("CSO_Voxel_BlockCountOver", "The block limit has been reached.");
+	if (vx_costTotal + vx_cost[type] > autocvar_studio_maxcost)
+		return CS_Text("CSO_Voxel_BlockCostOver", "The cost limit has been reached.");
 	return "";
 }
 
@@ -459,8 +461,9 @@ VX_Remove(entity p, vector c, bool record)
 }
 
 /* rotates the block in place; refused if the rotated block overlaps (OBSERVED) */
+/* d: +1 a quarter turn counter-clockwise (seen from above), -1 clockwise */
 bool
-VX_Rotate(entity p, vector c)
+VX_RotateBy(entity p, vector c, float d)
 {
 	entity r = VX_RecordAt(c);
 	float type, rot;
@@ -470,12 +473,12 @@ VX_Rotate(entity p, vector c)
 		return false;
 	if (!r) {
 		VX_BeginOp();
-		VX_SetCell(c, voxel_get(c), mod(voxel_getrot(c) + 1, 4));
+		VX_SetCell(c, voxel_get(c), mod(voxel_getrot(c) + d + 4, 4));
 		VX_EndOp(p);
 		return true;
 	}
 	type = r.vb_type;
-	rot = mod(r.vb_rot + 1, 4);
+	rot = mod(r.vb_rot + d + 4, 4);
 	base = r.vb_cell;
 	string why = VX_CheckPlace(type, rot, base, r);
 	if (why != "") {
@@ -495,6 +498,12 @@ VX_Rotate(entity p, vector c)
 	VX_IndexRecord(r, true);
 	VX_EndOp(p);
 	return true;
+}
+
+bool
+VX_Rotate(entity p, vector c)
+{
+	return VX_RotateBy(p, c, 1);
 }
 
 /* --- undo / redo ------------------------------------------------------------
