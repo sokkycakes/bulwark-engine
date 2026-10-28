@@ -662,7 +662,7 @@ static ptype_t *effect_by_index(int index)
 	if (!resolved[index]) {
 		resolved[index] = true;
 		byindex[index] = effect_by_name(cl.particles[index]);
-		if (!byindex[index])
+		if (!byindex[index] && !R_PCF_Exists(cl.particles[index]))
 			Con_DPrintf("unknown particle effect %s\n", cl.particles[index]);
 	}
 	return byindex[index];
@@ -964,8 +964,12 @@ void R_PointParticles(int index, const float *org, const float *dir, float count
 {
 	ptype_t *t = effect_by_index(index);
 	float zero[3] = {0, 0, 0};
-	if (!t)
+	if (!t) {
+		/* not an r_part effect: perhaps a Source particle system */
+		if (index > 0 && index < CL_MAX_PARTICLES && cl.particles[index])
+			R_PCF_Spawn(cl.particles[index], org, dir);
 		return;
+	}
 	spawn_effect(t, org, dir ? dir : zero, count > 0 ? count : 1, 0);
 }
 
@@ -1108,6 +1112,7 @@ void R_UpdateParticles(void)
 	if (dt > 0.1f)
 		dt = 0.1f;
 	update(dt);
+	R_PCF_Update(dt);
 	R_UpdateDecals();
 }
 
@@ -1136,6 +1141,7 @@ void R_AddParticleLights(void)
 
 void R_ClearParticles(void)
 {
+	R_PCF_Clear();
 	numparts = 0;
 	numplights = 0;
 	/* effect numbers belong to the map's precache list */
@@ -1271,7 +1277,10 @@ void R_DrawParticles(void)
 {
 	const glprog_t *pr = &r_progs[PROG_UNLIT];
 	const ptype_t *cur = NULL;
-	if (!numparts || !r_drawparticles->ivalue)
+	if (!r_drawparticles->ivalue)
+		return;
+	R_PCF_Draw();
+	if (!numparts)
 		return;
 	qsort(parts, numparts, sizeof(particle_t), part_cmp);
 	R_UseProgram(PROG_UNLIT);
@@ -1338,7 +1347,7 @@ static void effect_f(int argc, const char **argv)
 		return;
 	}
 	t = effect_by_name(argv[1]);
-	if (!t) {
+	if (!t && !R_PCF_Exists(argv[1])) {
 		Con_Printf("no effect %s\n", argv[1]);
 		return;
 	}
@@ -1354,7 +1363,10 @@ static void effect_f(int argc, const char **argv)
 		if (tr.fraction < 1)
 			VectorCopy(tr.normal, dir);
 	}
-	spawn_effect(t, org, dir, 1, 0);
+	if (t)
+		spawn_effect(t, org, dir, 1, 0);
+	else
+		R_PCF_Spawn(argv[1], org, dir);
 }
 
 static void list_f(int argc, const char **argv)
@@ -1684,11 +1696,13 @@ void R_InitParticles(void)
 	Cmd_AddD("r_beaminfo", beaminfo_f, "How many beam segments are alive");
 	Cmd_AddD("r_exportalleffects", exportall_f, "Write every effect read so far to particles/export.cfg");
 	Cmd_AddD("r_exportbuiltinparticles", exportbuiltin_f, "r_exportbuiltinparticles <set>: write one of the engine's effect sets to particles/");
+	R_PCF_Init();
 	Cmd_AddD("r_converteffectinfo", converteffectinfo_f, "r_converteffectinfo [file]: turn DarkPlaces' effectinfo.txt into particles/effectinfo.cfg");
 }
 
 void R_ShutdownParticles(void)
 {
+	R_PCF_Shutdown();
 	free_scripts();
 	dotmat = NULL;
 }
