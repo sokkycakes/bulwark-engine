@@ -743,7 +743,7 @@ CodeCallback_Precache(void)
 	precache_model("models/w_backpack.mdl");
 	precache_model("models/hostage.mdl");
 	precache_sound("misc/talk.wav");
-	precache_sound("events/Lvup.wav");
+	precache_sound("events/lvup.wav");
 	precache_sound("studio/scenariotx/levelup.wav");
 }
 

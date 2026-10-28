@@ -274,7 +274,7 @@ ZBS_LevelUp(entity p)
 		ents.Input(p, "SetHealth", ftos(min(p.max_health, p.health + 100)), world);
 
 	p.zbz_lvup++;
-	sound(p, CHAN_AUTO, "events/Lvup.wav", 1, ATTN_NONE);
+	sound(p, CHAN_AUTO, "events/lvup.wav", 1, ATTN_NONE);
 	printf("csnz %.1f: %s reached scenario level %d (stat %d now %d)\n", time, p.netname, p.zbz_level, s, st[s]);
 	ZBS_Publish(p);
 }

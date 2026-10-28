@@ -12,7 +12,7 @@
 void
 CodeCallback_Precache(void)
 {
-	precache_sound("events/Lvup.wav");
+	precache_sound("events/lvup.wav");
 	precache_sound("studio/scenariotx/levelup.wav");
 	/* player classes */
 	precache.Entity("csm_rifleman");
