@@ -240,14 +240,13 @@ entityDef csm_seeker_burning
 	"pm_runspeed"		"320"
 }
 
-// Studio: the tools are the CSO names (OBSERVED in the binaries' strings)
-// over placeholder weapons
+// Studio Create: the quick slot tools (studio/vx_tools.qc gives them;
+// client.dll's defaults are the long gun, short gun, connector, spinner)
 entityDef csm_builder
 {
 	"inherit"			"player"
-	"weapon"			"weapon_knife,weapon_usp"
+	"weapon"			"weapon_vxllonggun"
 	"current_weapon"	"0"
-	"ammo_45acp"		"100"
 	"pm_walkspeed"		"300"
 	"pm_runspeed"		"300"
 }

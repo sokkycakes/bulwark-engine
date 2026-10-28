@@ -21,6 +21,7 @@ spawnmenu.qc
 votemenu.qc
 shelter.qc
 vxbrowser.qc
+vxtools.qc
 progression.qc
 modehud.qc
 hud.qc

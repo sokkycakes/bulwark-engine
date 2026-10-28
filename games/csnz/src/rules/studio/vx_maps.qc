@@ -67,6 +67,71 @@ VX_SetText(string key, string value)
 	serverinfo.SetString(strcat("vx_", key), value);
 }
 
+/* --- World settings ------------------------------------------------------------
+   The Fullbrowser's World settings page (client.dll FUN_02b09a80) sends
+   one "vxl_<key> <value>" command per changed row (FUN_02b10390), and
+   hw.dll's vxl_ handler (FUN_021f0e60) keeps them with the map.
+   SOURCE-CONFIRMED: the command names below. DESIGN: they are kept as
+   "opt <key> <value>" lines in the map file and published to clients as
+   serverinfo vxo_<key>; vx_tools.qc VXT_ApplyOpts says which ones act. */
+
+#define VX_OPTKEYS "gamemode playtime respawn respawntime maxplayernum minplayernum endrule resettrigger playercollision enabletps initback humandestroy zombidestroy zombiseethru defeatbywipe friendlyfire enemyfire seekerpenalty hiderproplimit skyname weather daylight invlight remove_dim_light fogcolor fogdensity visdist fogon shelter_maxplaydate shelter_maxlevel shelter_maxtier shelter_lastdaywin shelter_buildrange gdmknifekillbonus gdmupperlvkillbonus"
+
+hashtable vx_optTab;
+void VXT_ApplyOpts(void);
+
+bool
+VX_OptKnown(string key)
+{
+	return strstrofs(strcat(" ", VX_OPTKEYS, " "), strcat(" ", key, " ")) >= 0;
+}
+
+string
+VX_OptGet(string key, string def)
+{
+	if (!vx_optTab)
+		return def;
+	return hash_get(vx_optTab, key, def, EV_STRING);
+}
+
+void
+VX_OptSet(string key, string value)
+{
+	if (!vx_optTab)
+		vx_optTab = hash_createtab(64, HASH_REPLACE);
+	value = strreplace("\n", " ", strreplace("\t", " ", value));
+	if (value == "")
+		hash_delete(vx_optTab, key);
+	else
+		hash_add(vx_optTab, key, value, EV_STRING);
+	serverinfo.SetString(strcat("vxo_", key), value);
+}
+
+void
+VX_OptClear(void)
+{
+	int n = tokenize(VX_OPTKEYS);
+	for (int i = 0; i < n; i++) {
+		tokenize(VX_OPTKEYS);
+		VX_OptSet(argv(i), "");
+	}
+}
+
+string
+VX_OptMeta(void)
+{
+	string m = "";
+	int n = tokenize(VX_OPTKEYS);
+	for (int i = 0; i < n; i++) {
+		tokenize(VX_OPTKEYS);
+		string k = argv(i);
+		string v = VX_OptGet(k, "");
+		if (v != "")
+			m = strcat(m, "opt ", k, " ", v, "\n");
+	}
+	return m;
+}
+
 /* Vxl_OutUI_Mode_* name -> CSO mode id. -1 = Studio play rules (39),
    -2 = a mode with no rules here (BLOCKERS.md) */
 float
@@ -105,6 +170,7 @@ VX_BuildMeta(void)
 	string m = "studio 1\n";
 	m = strcat(m, "title ", vx_title, "\n", "author ", vx_author, "\n");
 	m = strcat(m, "desc ", vx_desc, "\n", "mode ", vx_mapMode, "\n");
+	m = strcat(m, VX_OptMeta());
 	for (entity r = world; (r = find(r, ::classname, "vxblock"));)
 		m = strcat(m, sprintf("rec %s\t%s\t%g\t%s\t%s\n", VX_Key(r.vb_cell), voxel_typename(r.vb_type),
 			r.vb_rot, r.vb_props, r.vb_links));
@@ -228,6 +294,7 @@ VX_LoadFile(string path)
 	VX_SetText("author", "");
 	VX_SetText("desc", "");
 	VX_SetText("mode", "");
+	VX_OptClear();
 
 	string meta = voxel_meta();
 	float recs = 0, bad = 0;
@@ -248,6 +315,11 @@ VX_LoadFile(string path)
 		case "mode":
 			VX_SetText(key, rest);
 			break;
+		case "opt":
+			float osp = strstrofs(rest, " ");
+			if (osp > 0 && VX_OptKnown(substring(rest, 0, osp)))
+				VX_OptSet(substring(rest, 0, osp), substring(rest, osp + 1, -1));
+			break;
 		case "rec":
 			if (VX_LoadRecord(rest))
 				recs++;
@@ -262,6 +334,7 @@ VX_LoadFile(string path)
 	if (bad)
 		printf("studio: %g block records did not match the cells and were dropped\n", bad);
 	VX_Rescan();
+	VXT_ApplyOpts();
 	vx_dirty = false;
 	printf("studio: loaded data/%s (%g blocks, %g records, %g unknown cells)\n", path, vx_blocks, recs, voxel_unknown());
 	return true;

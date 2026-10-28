@@ -7,10 +7,14 @@
  * never committed. Without it a small built-in colour palette is used
  * (DESIGN), so the code paths still run.
  *
- * Block size: 32 units (INFERRED from the use_offset values of -16/-17/-15
- * in voxelprop.json, medium confidence). */
+ * Block size: 40 units for new worlds. SOURCE-CONFIRMED: mp.dll and
+ * hw.dll put a cell's centre at cell * 40 + origin + 20 (FUN_11257d50,
+ * FUN_112555a0). This replaces the earlier 32 (INFERRED from voxelprop.json
+ * use_offset values). A saved world keeps the block size it was saved with,
+ * so everything else reads the live world's size. */
 
-#define VX_BLOCK 32
+#define VX_NEWBLOCK 40
+#define VX_BLOCK voxel_blocksize()
 #define VX_CATALOG "data/studio/blocks.txt"
 #define VX_MAXTYPE 2048		/* CSO ids end at 2004; runtime variants use 2048+ */
 
@@ -176,7 +180,7 @@ VX_Boot(vector cells)
 	if (file == "" && floorSpec == "" && !fexists(strcat("data/", autoFile)))
 		return false;
 
-	if (!voxel_create(cells, VX_BLOCK, [-cells[0] * VX_BLOCK / 2, -cells[1] * VX_BLOCK / 2, -64])) {
+	if (!voxel_create(cells, VX_NEWBLOCK, [-cells[0] * VX_NEWBLOCK / 2, -cells[1] * VX_NEWBLOCK / 2, -64])) {
 		print("csnz: voxel world could not be created\n");
 		return false;
 	}

@@ -25,7 +25,8 @@
      SIGNAL column as _Signal_Out / _In / _InOut / _Property_None, the
      ATTRIBUTE column as _Property_*), shows it and plays
      "events/on mouse.wav".
-   - FUN_02b17290, a double click: "vxl_wpn 0 <id>" and "events/select.wav".
+   - FUN_02b19d50, a double click on a block: "vxl_set <id>" (hw.dll keeps
+     it as the block the build guns place) and "events/select.wav".
    - FUN_02b0e000, the search: a block shows when the search text is empty
      or found in its localized name or description.
    - FUN_02b024f0: TAG 1 and 2 draw resource/voxel/newicon and upicon.
@@ -44,9 +45,20 @@
 
    DESIGN: the frame art (igframe, as the other HUD menus), where the search
    box sits, the scroll wheel, the 0.4 s double click, closing with C or
-   Escape, BlockCostUI showing the rules' one cost total, and the Tool and
-   Setting pages, which are not ported. Rotate is UNRESOLVED (FUN_02b03fc0
+   Escape, BlockCostUI showing the rules' one cost total. The Tool and World
+   settings pages are in vxtools.qc. Rotate is UNRESOLVED (FUN_02b03fc0
    tests block-type fields not yet mapped), so it shows "-". */
+
+/* vxtools.qc */
+void VQ_DrawBar(void);
+bool VQ_Input(float evType, float key);
+bool VQ_Pick(int n);
+void VT_DrawPage(vector po);
+void VT_MouseDown(vector po);
+void VT_MouseUp(vector po);
+void VT_RightClick(vector po);
+void VS_DrawPage(vector po);
+void VS_Click(vector po, float dir);
 
 #define VB_MAX 1800
 #define VB_FW 1015
@@ -193,6 +205,14 @@ VB_Init(void)
 {
 	registercommand("radio3");
 	Loc_Load("resource/cso_na_en.utf8.txt", "Vxl_Name_ Vxl_Desc_ Vxl_Fullbrowser_ Vxl_Fullborwser CSO_Search");
+	Loc_Load("resource/cso_na_en.utf8.txt", "CSO_Item_Name_vxl CSO_Item_Desc_vxl Vxl_OutUI_Mode_ Vxl_AttackType_ CSO_Permanent");
+	registercommand("vxl_lastinv");
+	if (cvar_string("vx_quickslots") == "")
+		localcmd("seta vx_quickslots \"300 335 301 334 0\"\n");
+	precache_pic("resource/voxel/weapon_bg_ingame");
+	precache_pic("resource/voxel/weapon_effect_ingame");
+	precache_pic("resource/voxel/q_slot_number_box");
+	precache_pic("resource/voxel/weapon_slot_box");
 	precache_pic("resource/voxel/info_default");
 	precache_pic("resource/voxel/info_studio_default");
 	precache_pic("resource/voxel/cost_bg_left");
@@ -503,6 +523,7 @@ VB_DrawSearch(vector fo)
 void
 VB_Draw(void)
 {
+	VQ_DrawBar();
 	if (!g_vbOpen)
 		return;
 
@@ -524,10 +545,10 @@ VB_Draw(void)
 	if (g_vbTab <= 3i) {
 		VB_DrawGrid(fo);
 		VB_DrawInfo(fo);
+	} else if (g_vbTab == 4i) {
+		VT_DrawPage(po);
 	} else {
-		string s = "Not ported yet.";
-		float w = font.StringWidth(s, false, g_hudFont) / g_hs;
-		VB_Text(po + [(VB_SHEET_W - w) / 2, 200], s, [0.7, 0.7, 0.7]);
+		VS_DrawPage(po);
 	}
 }
 
@@ -564,14 +585,23 @@ VB_Click(vector fo)
 	if (g_vbTyping)
 		return;
 
+	if (g_vbTab == 4i) {
+		VT_MouseDown(VB_PageOrg(fo));
+		return;
+	}
+	if (g_vbTab == 5i) {
+		VS_Click(VB_PageOrg(fo), 1);
+		return;
+	}
+
 	int n = VB_CellAt(fo);
 	if (n < 0i)
 		return;
 
 	int i = g_vbShown[n];
 	if (n == g_vbLastCell && time - g_vbLastClick < 0.4) {
-		/* FUN_02b17290 */
-		localcmd(sprintf("cmd vxl_wpn 0 %d\n", g_vb[i].bid));
+		/* FUN_02b19d50 */
+		localcmd(sprintf("cmd vxl_set %d\n", g_vb[i].bid));
 		localsound("events/select.wav");
 		g_vbLastCell = -1i;
 		return;
@@ -593,7 +623,7 @@ bool
 VB_Input(float evType, float key, float chr, float dev)
 {
 	if (!g_vbOpen)
-		return false;
+		return VQ_Input(evType, key);
 
 	if (evType == IE_MOUSEABS || evType == IE_MOUSEDELTA)
 		return true;
@@ -605,6 +635,13 @@ VB_Input(float evType, float key, float chr, float dev)
 		}
 		if (key == K_MOUSE1) {
 			VB_Click(VB_Origin());
+			return true;
+		}
+		if (key == K_MOUSE2) {
+			if (g_vbTab == 4i)
+				VT_RightClick(VB_PageOrg(VB_Origin()));
+			else if (g_vbTab == 5i)
+				VS_Click(VB_PageOrg(VB_Origin()), -1);
 			return true;
 		}
 		if (key == K_MWHEELUP) {
@@ -636,6 +673,8 @@ VB_Input(float evType, float key, float chr, float dev)
 		return true;
 	}
 
+	if (evType == IE_KEYUP && key == K_MOUSE1 && g_vbTab == 4i)
+		VT_MouseUp(VB_PageOrg(VB_Origin()));
 	return evType == IE_KEYUP;
 }
 
@@ -643,6 +682,22 @@ bool
 VB_ConsoleCommand(string cmd)
 {
 	tokenize_console(cmd);
+
+	/* FUN_02a21e90: the slot keys pick quick slots in mode 38 */
+	if (HUD_ModeId() == 38) {
+		string c = argv(0);
+		if (substring(c, 0, 4) == "slot" && strlen(c) == 5) {
+			int n = stoi(substring(c, 4, 1)) - 1i;
+			if (n >= 0i && n < 5i) {
+				VQ_Pick(n);
+				return true;
+			}
+		}
+		if (c == "vxl_lastinv") {
+			localcmd("cmd vxl_lastinv\n");
+			return true;
+		}
+	}
 
 	if (argv(0) != "radio3")
 		return false;
