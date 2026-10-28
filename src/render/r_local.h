@@ -243,6 +243,15 @@ void R_AddParticleLights(void);
 void R_DrawParticles(void);
 void R_ClearParticles(void);
 void R_InitParticles(void);
+/* r_pcf.c: Source particle systems, run beside the r_part effects */
+bool R_PCF_Spawn(const char *name, const float *org, const float *dir);
+bool R_PCF_Exists(const char *name);
+void R_PCF_Update(float dt);
+void R_PCF_Draw(void);
+void R_PCF_Clear(void);
+int R_PCF_Count(void);
+void R_PCF_Init(void);
+void R_PCF_Shutdown(void);
 void R_ShutdownParticles(void);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);

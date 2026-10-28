@@ -123,3 +123,71 @@ scripts only.
   no material of that name exists yet.
 - `getlight` answers in Quake light units: 255 is a texture at its own
   brightness.
+
+## Source particle systems (.pcf)
+
+`src/render/r_pcf.c` runs Valve's particle system files beside the r_part
+effects. Everything here was read from the files themselves, which store
+each function's name and its attributes by name, and from how the result
+looks. No Source particle code was read. The rules marked "guess" are
+choices that looked right on TF2C's `explosion.pcf` (TF2 explosions) and
+may need changing when other content shows otherwise.
+
+- Files: binary DMX version 2 (`<!-- dmx encoding binary 2 format pcf 1 -->`)
+  only. A string table (int16 count), elements (int16 type index, inline
+  name, 16-byte id), then each element's attributes (int16 name index, a
+  type byte, the value; types above 14 are arrays with an int32 count).
+  Element references are int32 indices, -1 for none; -2 (another file)
+  is read past and treated as none.
+- Names: `particleeffectnum("file.system")` runs system `system` from
+  `particles/file.pcf` when no r_part effect has that name. A bare name is
+  looked for in every .pcf read so far and the ones
+  `particles/particles_manifest.txt` lists. `r_effect` spawns either kind.
+  `r_pcfinfo [system]` lists files or what one system runs and skips;
+  `r_pcfreload` forgets them. `r_drawpcf 0` hides them.
+- Control point 0 is the spawn point. Its forward axis is the effect's
+  direction (a wall's normal for Nuclide's projectiles), left and up
+  follow, so "local coordinate system" speeds turn with it. No direction
+  means the world's axes.
+- Children start with the parent at its point after their `delay`.
+- `emit_instantaneously` emits `num_to_emit` once `emission_start_time`
+  has passed, up to `max_particles`; `initial_particles` come at once.
+- Initializers set lifetime, position within a sphere (`distance_bias`
+  scales each axis; a nonzero `distance_bias_absolute_value` keeps that
+  axis on one side), velocity (radial speed plus a random local vector),
+  rotation in degrees, rotation speed, yaw flip (the picture is mirrored),
+  sheet sequence, colour (a random point between `color1` and `color2`),
+  alpha (0-255), radius and trail length. The definition's own `radius`,
+  `color`, `rotation` and `sequence_number` are the defaults.
+- Every particle dies when its lifetime ends.
+- `Alpha Fade and Decay`: times are fractions of the lifetime. Alpha rises
+  from `start_alpha` to full between the fade-in times, falls from full to
+  `end_alpha` between the fade-out times, and the particle dies when the
+  fade-out ends. (Read from the core fireball, whose start and end alpha
+  are both 0 yet which must show.)
+- `Color Fade`, `Radius Scale`: from the initial colour or scale to the
+  target between two lifetime fractions; `ease_in_and_out` smooths with
+  3t^2 - 2t^3, `scale_bias` bends the curve as t^(log b / log 0.5).
+- `Movement Basic`: gravity is a vector in units/s^2. Guess: `drag` removes
+  that fraction of the velocity every thirtieth of a second.
+- `Alpha Fade Out Random`, `Oscillate Scalar` (rotation, radius or alpha),
+  `Rotation Basic`, `Rotation Spin Roll`, `random force` and `Collision via
+  traces` (world only; bounce and slide) are run as their names and
+  attributes say. Operator fade windows ("operator start fadein" and the
+  like) are ignored; the shipped content leaves them at 0.
+- Renderers: `render_animated_sprites` draws camera-facing quads whose half
+  width is the radius; `render_sprite_trail` draws a quad from the particle
+  back along its velocity, `speed * trail length` long, clamped to the
+  renderer's min and max, growing over `length fade in time`;
+  `render_screen_velocity_rotate` turns the sprites to their motion on
+  screen. Orientation types other than 0 are drawn as type 0.
+- Sprite sheets: the VTF's resource 0x10 holds sequences of frames, each
+  with a duration and four sets of texture coordinates (the first set is
+  used, without blending frames). Guess: with `animation rate` r a
+  sequence plays r times a second; `use animation rate as FPS` makes r
+  frames a second; `animation_fit_lifetime` plays it once over the life.
+- Materials: the VMT's own blend ($additive adds with vertex alpha, others
+  blend by alpha). SpriteCard's `$startfadesize`/`$endfadesize` fade a
+  particle as its diameter grows from one fraction of the screen height to
+  the other; `$overbrightfactor` scales its colour. A missing material
+  becomes an additive soft dot, which stands in well for TF2's glows.
