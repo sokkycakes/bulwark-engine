@@ -46,7 +46,7 @@ Room_StartGame(void)
 	   own, Studio modes theirs, csnz.dat runs every other id */
 	if (mode == "8")
 		localcmd("set g_gametype zombi\n");
-	else if (mode == "38" || mode == "39" || mode == "49")
+	else if (mode == "38" || mode == "39" || mode == "49" || mode == "52" || mode == "53")
 		localcmd("set g_gametype studio\n");
 	else
 		localcmd("set g_gametype csnz\n");

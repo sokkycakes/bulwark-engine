@@ -2,14 +2,21 @@
  * owned by the Zombi thread; these are the other ids, built on one core.
  * Original code (ISC).
  *
- *   9 Zombi_Expand, 24 BotZombie, 35/36 ZombieOfficial   classic infection
- *   14 Zombi_3, 45 Zombi_3z                                 regen, revives, heroes, ATT bonus (+ mutations)
- *   29 Zombi_4                                              day and night
- *   32 Zombi_Exterminate, 43/44 SeasonZombie                equal teams, draws on time
- *   20 Zombi_Escape                                         escape zone, endless host zombie
- *   30 ZombieGiant                                          one giant boss, points
- *   37 ZombieTag                                            real and decoy zombies race to the goal
- *   46/47 ZombieTouchdown                                   flag to the touchdown zone, sides rotate
+ * mp.dll rules class of each id (SOURCE-CONFIRMED: InstallGameRules,
+ * FUN_11412000, and the constructor chains under it):
+ *   9 Zombi2, 58 Zombi3Classic (VoxelPlay<Zombi2>)          classic infection
+ *   24 ZombiBot (base Zombi3)                               classic infection, bots
+ *   14 Zombi3, 44 SeasonZombieHero (base Zombi3)            regen, revives, heroes, ATT bonus
+ *   45 ZombieZMode (base Zombi3)                            the Zombi3 set + mutations
+ *   32/35/36 Zombi3ExRenewal (base Zombi3),
+ *   43 SeasonZombieEx (base Zombi3ExRenewal)                the Zombi3 set in equal teams
+ *   29 Zombie4Reboot (base Zombi2)                          day and night
+ *   20 ZombiEscape (base Zombi3)                            escape zone, endless host zombie
+ *   30 ZombieBoss (base DM, not Zombi)                      one giant boss, points
+ *   37 Mugoonhwa (base CSOGameRules, not Zombi)             real and decoy zombies race to the goal
+ *   46/47 ZombieTouchdown (base Zombi3)                     flag to the touchdown zone, sides rotate
+ * The QC flags below stand for what each class adds; which of the Zombi3
+ * features the subclasses keep or override is not decompiled yet.
  *
  * Evidence: the OBSERVED tips are quoted where used (resource/cso_na_en).
  * Numbers without a citation are DESIGN. */
@@ -46,6 +53,7 @@ bool zv_zombieRespawn;		/* ZE: "You will respawn if you die as a normal zombie" 
 .float zv_stunEnd;
 .float zv_real;			/* zombie tag: the real one */
 .float zv_virus;		/* Zombi_3z points */
+.float zv_virusSent;		/* last zv_virus published as csnz_virus */
 .float zv_mutations;
 .float zv_mutSpeed;
 .float zv_hasFlag;
@@ -192,6 +200,22 @@ ZV_LateJoin(entity p)
 	return true;
 }
 
+/* heroes: OBSERVED "unique Heroes for Humans"; DESIGN: one per 8 players */
+void
+ZV_PickHeroes(int players)
+{
+	if (!zv_heroes || players < 4)
+		return;
+	int heroes = max(1, floor(players / 8));
+	for (entity h = world; (h = next.Player(h)) && heroes > 0;) {
+		if (CS_Playing(h) && !ZV_IsZombie(h) && random() < 0.5) {
+			ents.ChangeToClass(h, "csm_hero");
+			CS_Tell(h, "You are a Hero.");
+			heroes--;
+		}
+	}
+}
+
 /* picks the origin zombies when the countdown (freeze time) ends */
 void
 ZV_Live(void)
@@ -214,12 +238,14 @@ ZV_Live(void)
 		zv_flag.movetype = MOVETYPE_TOSS;
 		return;
 	}
-	if (zv_equalTeams)
-		return;
-
 	for (entity p = world; (p = next.Player(p));)
 		if (CS_Playing(p))
 			players++;
+
+	if (zv_equalTeams) {
+		ZV_PickHeroes(players);
+		return;
+	}
 
 	want = zv_giant ? 1 : max(1, ceil(players / max(1, autocvar_zv_origin_ratio)));
 	if (zv_tag)
@@ -269,17 +295,7 @@ ZV_Live(void)
 			}
 	}
 
-	/* heroes: OBSERVED "unique Heroes for Humans"; DESIGN: one per 8 players */
-	if (zv_heroes && players >= 4) {
-		int heroes = max(1, floor(players / 8));
-		for (entity h = world; (h = next.Player(h)) && heroes > 0;) {
-			if (CS_Playing(h) && !ZV_IsZombie(h) && random() < 0.5) {
-				ents.ChangeToClass(h, "csm_hero");
-				CS_Tell(h, "You are a Hero.");
-				heroes--;
-			}
-		}
-	}
+	ZV_PickHeroes(players);
 
 	CS_Banner(CS_Text("CSO_ZombiAppear", "The zombies have appeared!"));
 	printf("csnz %.1f: %i origin zombies\n", time, picked);
@@ -474,6 +490,11 @@ ZV_Frame(void)
 
 		if (zv_mutate && p.zv_virus >= 1000 * (p.zv_mutations + 1)) {
 			userinfo.SetInteger(p, "csnz_canmutate", 1);
+		}
+		/* the HUD's "Virus" line (hud/progression.qc), as Zombi 5 does */
+		if (zv_mutate && floor(p.zv_virus) != p.zv_virusSent) {
+			p.zv_virusSent = floor(p.zv_virus);
+			userinfo.SetInteger(p, "csnz_virus", (int)p.zv_virusSent);
 		}
 		if (p.zv_mutSpeed > 0) {
 			p.velocity[0] *= 1 + 0.002 * p.zv_mutSpeed;
@@ -682,6 +703,17 @@ ZV_EqualStart(void)
 		CS_SetTeam(p, (i++ & 1) ? ZV_ZOMBIE : ZV_HUMAN);
 }
 
+/* what Zombi3 (14) adds to the infection core; every class derived from
+   it starts from this set */
+void
+ZV_Zombi3(void)
+{
+	zv_regen = true;	/* OBSERVED ZM3 */
+	zv_revives = 2;		/* DESIGN count */
+	zv_heroes = true;
+	zv_attBonus = true;
+}
+
 void
 CSM_Zombie(float id)
 {
@@ -716,28 +748,34 @@ CSM_Zombie(float id)
 	switch (id) {
 	case 9:
 		break;
+	case 58:
+		/* Zombi3Classic derives from Zombi2 (the class of 9), not Zombi3,
+		   so no heroes (SOURCE-CONFIRMED base). Its functions name
+		   ZombieRandomWeaponMode and support item drops
+		   (#CSO_SupportItemSpawned), not ported yet. No title text in
+		   this build (DESIGN name from EGM_ZOMBI_3_CLASSIC). */
+		cs_modeTitle = "CSO_GameMode_Zombi_3_Classic";
+		cs_modeFallback = "Zombie Hero Classic";
+		break;
 	case 24:
 		cs_modeTitle = "CSO_GameMode_BotZombie";
 		cs_modeFallback = "Bot Zombie";
 		cs_noStats = true;
 		CSM_DefaultBots(9);
 		break;
-	case 35:
-	case 36:
-		cs_modeTitle = id == 35 ? "CSO_GameMode_ZombieOfficial" : "CSO_GameMode_ZombieOfficial_TieBreak";
-		cs_modeFallback = "Zombie Official";
-		cs_noStats = true;
-		break;
 	case 14:
+	case 44:
+		cs_modeTitle = id == 14 ? "CSO_GameMode_Zombi_3" : "CSO_GameMode_SeasonZombi_3";
+		cs_modeFallback = id == 14 ? "Zombie Hero" : "Ranked Mode: Zombie Hero";
+		ZV_Zombi3();
+		break;
 	case 45:
-		cs_modeTitle = id == 14 ? "CSO_GameMode_Zombi_3" : "CSO_GameMode_Zombi_3z";
-		cs_modeFallback = id == 14 ? "Zombie Hero" : "Zombie Z";
-		zv_regen = true;
-		zv_revives = 2;
-		zv_heroes = true;
-		zv_attBonus = true;
-		if (id == 45)
-			zv_mutate = true;
+		/* ZombieZMode derives from Zombi3 (SOURCE-CONFIRMED), so it keeps
+		   the hero set; its own functions name "herof"/"herom" */
+		cs_modeTitle = "CSO_GameMode_Zombi_3z";
+		cs_modeFallback = "Zombie Z";
+		ZV_Zombi3();
+		zv_mutate = true;
 		break;
 	case 29:
 		cs_modeTitle = "CSO_GameMode_Zombi_4";
@@ -746,23 +784,38 @@ CSM_Zombie(float id)
 		zv_dayNight = true;
 		break;
 	case 32:
+	case 35:
+	case 36:
 	case 43:
-	case 44:
-		cs_modeTitle = id == 32 ? "CSO_GameMode_Zombi_Exterminate" : "CSO_GameMode_SeasonZombie";
-		cs_modeFallback = id == 32 ? "Zombie War" : "Ranked Zombie War";
+		/* one class, Zombi3ExRenewal, for 32/35/36; 43 SeasonZombieEx
+		   derives from it. OBSERVED ZME tooltip: "Zombie Hero in a form of
+		   team vs team" */
+		switch (id) {
+		case 32:
+			cs_modeTitle = "CSO_GameMode_Zombi_Exterminate";
+			cs_modeFallback = "Zombie War";
+			break;
+		case 35:
+		case 36:
+			cs_modeTitle = id == 35 ? "CSO_GameMode_ZombieOfficial" : "CSO_GameMode_ZombieOfficial_TieBreak";
+			cs_modeFallback = "Zombie Official";
+			cs_noStats = true;
+			break;
+		default:
+			cs_modeTitle = "CSO_GameMode_SeasonZombieEx";
+			cs_modeFallback = "Ranked Zombie War";
+		}
+		ZV_Zombi3();
 		zv_equalTeams = true;
 		cs_oneSideStart = false;
-		/* OBSERVED ZME tip: regen; SeasonZombie: "Kill all humans" */
-		if (id == 32)
-			zv_regen = true;
-		else
-			zv_noInfect = true;
 		cs_roundTimeWinsTeam2 = false;	/* OBSERVED ZME: a draw on time */
 		cs_winLimitFallback = 5;	/* OBSERVED limitlist id 34 default */
 		cs_roundTimeFallback = 2;	/* OBSERVED limitlist id 33 default */
 		M_Start = ZV_EqualStart;
-		if (id != 32) {
-			/* OBSERVED: 8 rounds, first to 5, 1:45 */
+		if (id == 43) {
+			/* OBSERVED SeasonZombie tip: "Kill all humans"; 8 rounds,
+			   first to 5, 1:45 */
+			zv_noInfect = true;
 			cvars.SetFloat("mp_winlimit", 5);
 			cvars.SetFloat("mp_roundtime", 1.75);
 		}

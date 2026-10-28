@@ -88,10 +88,11 @@ VX_ModeId(string m)
 	case "PropHunt": return 49;
 	case "AllStar": return 40;
 	case "GunDeath": return 22;
-	case "Shelter":
-	case "Zombi5":
-	case "ScenarioTX":
-		return -2;
+	/* INFERRED: the Studio variants mp.dll has rules classes for
+	   (VoxelShelter 52, VoxelScenarioTX 53) and Zombi 5 (54) */
+	case "Shelter": return 52;
+	case "ScenarioTX": return 53;
+	case "Zombi5": return 54;
 	}
 	return -2;
 }

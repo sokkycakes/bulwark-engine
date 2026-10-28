@@ -475,7 +475,7 @@ Screens_Init(void)
 	vguiComboBox fmode = (vguiComboBox)Panel_Find(g_winRooms, "FilterGameMode");
 	if (fmode) {
 		fmode.AddItem("All", "all");
-		for (int m = 0i; m < 40i; m++)
+		for (int m = 0i; m < 60i; m++)
 			if (Tables_ModeRow(ftos(m)))
 				fmode.AddItem(VGUI_Localize(argv(1)), ftos(m));
 		fmode.SetSelected(0i);

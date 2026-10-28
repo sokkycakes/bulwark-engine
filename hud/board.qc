@@ -34,8 +34,12 @@ Board_TeamLabel(string team, bool left)
 	string side = left ? "left" : "right";
 
 	switch (strtolower(team)) {
-	case "zombie": return strcat("resource/hud/hud_text_icon_zb_", side);
-	case "human": return strcat("resource/hud/hud_text_icon_hm_", side);
+	case "zombie":
+	case "zombies":
+		return strcat("resource/hud/hud_text_icon_zb_", side);
+	case "human":
+	case "humans":
+		return strcat("resource/hud/hud_text_icon_hm_", side);
 	case "tr": return strcat("resource/hud/hud_text_icon_tr_", side);
 	case "ct": return strcat("resource/hud/hud_text_icon_ct_", side);
 	}
@@ -104,9 +108,10 @@ Board_Draw(void)
 }
 
 /* Round messages: the rules' banner (csnz_msg) for 5 s after it changes,
-   and Zombi's selection countdown (zb_status, OBSERVED text
-   CSO_ZombiSelectCount) while it runs. Drawn as centred text below the
-   board; CSO's own announcement art (resource/announceribbon) is not used
+   and the zombie selection countdown (zb_status, OBSERVED text
+   CSO_ZombiSelectCount) during freeze time; zombi.dat and csnz.dat's
+   infection modes publish it, other modes leave it empty. Drawn as centred
+   text below the board; CSO's own announcement art (resource/announceribbon) is not used
    yet (DESIGN). */
 void
 Board_DrawMessages(font_s fnt)
@@ -122,8 +127,8 @@ Board_DrawMessages(font_s fnt)
 
 	p = Art_Pos([Board_CX(), 96]);
 
-	if (serverkey("csnz_state") == "freeze" && serverkey("csnz_mode") == "8") {
-		msg = serverkey("zb_status");
+	msg = serverkey("zb_status");
+	if (serverkey("csnz_state") == "freeze" && msg != "") {
 		draw.Text(p - [font.StringWidth(msg, false, fnt) / 2, 0], msg, fnt);
 		p[1] += font.GetHeight(fnt) + 4;
 	}

@@ -348,6 +348,9 @@ CS_SetMoney(entity p, float amount)
 {
 	p.cs_money = bound(0, amount, CS_MONEY_MAX);
 	userinfo.SetInteger(p, "csnz_money", (int)p.cs_money);
+	/* csnz_money is also the progression money (csnz_progression.qc
+	   PROG_AwardMoney), which overwrites it; the buy menu reads this */
+	userinfo.SetInteger(p, "csnz_cash", (int)p.cs_money);
 }
 
 void
@@ -524,6 +527,15 @@ CS_PublishInfo(void)
 	serverinfo.SetInteger("csnz_a1", CS_Alive(cs_teams ? CS_TEAM1 : CS_TEAM_NONE));
 	serverinfo.SetInteger("csnz_a2", cs_teams ? CS_Alive(CS_TEAM2) : 0);
 	serverinfo.SetInteger("csnz_goal", (int)cs_goal);
+
+	/* the zombie selection countdown, as zombi.dat words it (OBSERVED
+	   CSO_ZombiSelectCount); the HUD shows it during freeze time. Only the
+	   infection modes pick zombies out of one starting side. */
+	if (cs_state == CS_FREEZE && cs_teams && cs_oneSideStart)
+		serverinfo.SetString("zb_status", strreplace("%s1", ftos(ceil(max(0, cs_stateEnd - time))),
+			CS_Text("CSO_ZombiSelectCount", "Time Remaining for Zombie Selection: %s1 Sec")));
+	else
+		serverinfo.SetString("zb_status", "");
 }
 
 /* --- rounds and the match ------------------------------------------------ */

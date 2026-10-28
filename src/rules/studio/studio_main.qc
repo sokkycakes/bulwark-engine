@@ -1,5 +1,6 @@
-/* studio_main: the Studio progs (studio.dat): Create (38), Play (39) and
- * Hide and Seek (49). Original code (ISC).
+/* studio_main: the Studio progs (studio.dat): Create (38), Play (39),
+ * Hide and Seek (49), Studio Zombie Shelter (52) and Scenario TX (53).
+ * Original code (ISC).
  *
  * Evidence
  *   OBSERVED (maploadingtip ids 38, 39, 49; Vxl_OutUI_Mode_Create/Play):
@@ -23,7 +24,7 @@
  * Commands: INTERFACES.md section 5. Every editing command is also reachable
  * from the server console as "sv vx as <player> <command>" for tests. */
 
-float studio_kind;		/* 38 create, 39 play, 49 hide and seek */
+float studio_kind;		/* 38 create, 39 play, 49 hide and seek, 52 shelter, 53 scenario TX */
 bool vx_testing;		/* create mode: a test is running */
 entity vx_tester;
 float vx_playedMarked;
@@ -718,8 +719,8 @@ void
 CodeCallback_StartGameType(void)
 {
 	studio_kind = autocvar_csnz_mode;
-	if (studio_kind != 38 && studio_kind != 39 && studio_kind != 49) {
-		printf("studio: mode %g is not a Studio mode (38, 39, 49); using Create\n", studio_kind);
+	if (studio_kind != 38 && studio_kind != 39 && studio_kind != 49 && studio_kind != 52 && studio_kind != 53) {
+		printf("studio: mode %g is not a Studio mode (38, 39, 49, 52, 53); using Create\n", studio_kind);
 		studio_kind = 38;
 	}
 	cs_noStats = false;
@@ -743,7 +744,7 @@ CodeCallback_StartGameType(void)
 	else if (studio_kind == 39)
 		SM_Play(-1);
 	else
-		SM_Play(49);
+		SM_Play(studio_kind);	/* 49, 52, 53: a Studio map played with that mode's rules */
 
 	CS_Init();
 	CS_ApplyLimits(cs_modeRun);

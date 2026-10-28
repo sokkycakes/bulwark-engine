@@ -3,9 +3,12 @@
    header lines. Also the room options shared by Create Room and the game
    room's option panel, which use the same panel names. */
 
-/* Zombi first; then the ids csnz.dat and studio.dat implement (INTERFACES.md
-   section 2). 48 and 44 share a name with 41 and 43, so only one of each. */
-#define MODES_OFFERED "8 0 1 2 3 4 5 6 7 9 10 11 12 14 16 18 19 20 21 22 23 24 27 29 30 31 32 34 35 36 37 40 41 42 43 45 46 47 50 38 39 49"
+/* Zombi first; then the ids csnz.dat implements, then the Studio ids
+   (studio.dat: 38, 39, 49, 52, 53). Every id mp.dll's InstallGameRules
+   (FUN_11412000) creates rules for, SOURCE-CONFIRMED; 44 and 48 are their
+   own classes (SeasonZombieHero, PlayRoomZBS), not copies of 43 and 41.
+   60 (PLAYROOM_ZHC) is left out: InstallGameRules has no case for it. */
+#define MODES_OFFERED "8 0 1 2 3 4 5 6 7 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 40 41 42 43 44 45 46 47 48 50 51 54 55 56 57 58 59 38 39 49 52 53"
 
 hashtable g_limits; /* limit_id -> "min max default step" */
 
@@ -240,30 +243,82 @@ Tables_MapId(string file)
 }
 
 /* names of the modes that this build's gamemodelist.csv lacks: the tokens
-   the na locale's gamemodelist.csv and maploadingtip.csv use (OBSERVED) */
+   the na locale's gamemodelist.csv, maploadingtip.csv and cso_na_en.txt use
+   (OBSERVED) */
 string
 Tables_ExtraModeToken(string modeId)
 {
 	switch (modeId) {
+	case "13": return "#CSO_GameMode_Zombi_Team_Ann";
+	case "26": return "#CSO_GameMode_ZombieShelter";
 	case "38": return "#CSO_GameMode_VoxelCreate";
 	case "39": return "#CSO_GameMode_VoxelPVE";
 	case "40": return "#CSO_GameMode_Allstar";
 	case "41": return "#CSO_GameMode_PlayRoom";
 	case "42": return "#CSO_GameMode_SeasonOriginal";
 	case "43": return "#CSO_GameMode_SeasonZombieEx";
+	case "44": return "#CSO_GameMode_SeasonZombi_3";	/* cstrike_na gamemodelist.csv; no text in cso_na_en */
 	case "45": return "#CSO_GameMode_Zombi_3z";
+	case "48": return "#CSO_GameMode_PlayRoom2";
 	case "49": return "#CSO_GameMode_VoxelPropHunt";
 	case "50": return "#CSO_GameMode_partnermode";
+	case "51": return "#CSO_GameMode_ZHE";
+	case "52": return "#CSO_GameMode_vxlzshelter";
+	case "53": return "#CSO_GameMode_ScenarioTX";
+	case "54": return "#CSO_GameMode_Zombi_5";
 	}
 
 	return "";
+}
+
+/* English names for the ids with no localised name in this build. DESIGN:
+   worded from the mp.dll EGM_* names (SOURCE-CONFIRMED) and the rules
+   class names. */
+string
+Tables_FallbackModeName(string modeId)
+{
+	switch (modeId) {
+	case "13": return "Annihilation";
+	case "15": return "Zombie Scenario";
+	case "17": return "Human Scenario";
+	case "25": return "Battle Rush";
+	case "26": return "Zombie Shelter";
+	case "28": return "Zombie Shelter Team";
+	case "33": return "Zombie Files";
+	case "44": return "Ranked Mode: Zombie Hero";
+	case "48": return "Hide-Out 2 Scenario";
+	case "51": return "Manhunt";
+	case "52": return "Studio Zombie Shelter";
+	case "53": return "Scenario TX";
+	case "54": return "Zombie Evolution";
+	case "55": return "Hide-Out Zombie Z";
+	case "56": return "Zombie Conquest";
+	case "57": return "Super Soldier";
+	case "58": return "Zombie Hero Classic";
+	case "59": return "ZS Rift";
+	}
+
+	return modeId;
+}
+
+/* the name of a mode without a gamemodelist.csv row: its token's text, or
+   the English fallback when the token or its text is missing */
+string
+Tables_ExtraModeName(string modeId)
+{
+	string tok = Tables_ExtraModeToken(modeId);
+	string name = (tok != "") ? VGUI_Localize(tok) : "";
+
+	if (name == "" || name == tok)
+		return Tables_FallbackModeName(modeId);
+	return name;
 }
 
 string
 Tables_ModeTitle(string modeId)
 {
 	if (!Tables_ModeRow(modeId))
-		return (Tables_ExtraModeToken(modeId) != "") ? VGUI_Localize(Tables_ExtraModeToken(modeId)) : modeId;
+		return Tables_ExtraModeName(modeId);
 
 	return VGUI_Localize(argv(1));
 }
@@ -389,8 +444,8 @@ RoomOpts_Init(vguiWindow frame)
 		if (Tables_ModeRow(id)) {
 			if (strtrim(VGUI_Localize(argv(1))) != "")
 				mode.AddItem(VGUI_Localize(argv(1)), id);
-		} else if (Tables_ExtraModeToken(id) != "") {
-			mode.AddItem(VGUI_Localize(Tables_ExtraModeToken(id)), id);
+		} else {
+			mode.AddItem(Tables_ExtraModeName(id), id);
 		}
 		strunzone(id);
 		tokenize(MODES_OFFERED);

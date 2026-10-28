@@ -6,7 +6,10 @@
  *
  * Original code (ISC). DESIGN layout. */
 
-/* rank names must match the server-side PROG_RankName() */
+/* rank names must match the server-side PROG_RankName(). DESIGN
+   placeholders: no level-class names were found in this build's
+   cso_na_en.txt (its CSO_Rank_* strings are league tiers and ranking
+   labels, not player ranks). */
 string
 Prog_RankName(int rank)
 {
@@ -109,8 +112,8 @@ Prog_DrawShelter(font_s fnt)
 	float barH = 8;
 	float barX = cx - barW * 0.5;
 	float barY = 56;
-	drawfill(Art_Pos([barX, barY]), [barW, barH], [0.2, 0.2, 0.2], 0.5);
-	drawfill(Art_Pos([barX, barY]), [barW * pct, barH], col, 0.8);
+	drawfill(Art_Pos([barX, barY]), [barW, barH] * g_hs, [0.2, 0.2, 0.2], 0.5);
+	drawfill(Art_Pos([barX, barY]), [barW * pct, barH] * g_hs, col, 0.8);
 }
 
 /* scenario round display */
@@ -120,6 +123,8 @@ Prog_DrawScenario(font_s fnt)
 	float round = floor(stof(serverkey("csnz_sctx_round")));
 	if (round <= 0) return;
 
+	/* below the shelter bar (40-64) when a shelter is shown */
 	float cx = HUD_W * 0.5;
-	draw.Text(Art_Pos([cx - 40, 40]), sprintf("Round %d", round), fnt);
+	float y = (stof(serverkey("csnz_shelter_max")) > 0) ? 72 : 40;
+	draw.Text(Art_Pos([cx - 40, y]), sprintf("Round %d", round), fnt);
 }

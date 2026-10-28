@@ -90,6 +90,7 @@ SH_RoundStart(void)
 
 	serverinfo.SetInteger("csnz_shelter_hp", (int)sh_shelterHP);
 	serverinfo.SetInteger("csnz_shelter_max", (int)sh_shelterMaxHP);
+	serverinfo.SetString("csnz_shelter_hp2", sh_isTeam ? ftos(sh_shelterHP2) : "");
 	CS_Banner("Build your shelter!");
 }
 

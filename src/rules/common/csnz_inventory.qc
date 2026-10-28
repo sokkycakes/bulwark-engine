@@ -226,8 +226,25 @@ INV_BuyItem(entity p, string itemId)
 
 	INV_AddItem(p, itemId);
 	INV_Save(p);
+	INV_PublishChars(p);
 	sprint(p, PRINT_HIGH, sprintf("Purchased %s for $%g!\n", itemId, price));
 	return true;
+}
+
+/* the owned characters and the equipped one, for the HUD's class menu
+   (hud/classmenu.qc): userinfo csnz_chars and csnz_char */
+void
+INV_PublishChars(entity p)
+{
+	string chars = "";
+	float n = tokenize(p.inv_items);
+
+	for (float i = 0; i < n; i++)
+		if (substring(argv(i), 0, 9) == "csm_char_")
+			chars = strcat(chars, chars == "" ? "" : " ", argv(i));
+
+	userinfo.SetString(p, "csnz_chars", chars);
+	userinfo.SetString(p, "csnz_char", p.inv_equipped_char);
 }
 
 /* --- equip system --- */
@@ -241,6 +258,7 @@ INV_EquipCharacter(entity p, string charId)
 	}
 	p.inv_equipped_char = charId;
 	INV_Save(p);
+	INV_PublishChars(p);
 	sprint(p, PRINT_HIGH, sprintf("Equipped character: %s\n", charId));
 	return true;
 }
@@ -307,6 +325,7 @@ INV_Command(entity p, string cmd)
 	if (c == "csnz_give") {
 		INV_AddItem(p, argv(1));
 		INV_Save(p);
+		INV_PublishChars(p);
 		sprint(p, PRINT_HIGH, sprintf("Added %s to inventory.\n", argv(1)));
 		return true;
 	}
@@ -327,6 +346,7 @@ INV_PlayerConnect(entity p)
 	userinfo.SetInteger(p, "csnz_level", (int)p.prog_level);
 	userinfo.SetInteger(p, "csnz_rank", (int)p.prog_rank);
 	userinfo.SetInteger(p, "csnz_money", (int)p.prog_money);
+	INV_PublishChars(p);
 }
 
 /* called when a player disconnects: save */

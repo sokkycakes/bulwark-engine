@@ -600,20 +600,20 @@ CSM_Challenge(void)
 	M_Damaged = __NULL__;
 }
 
-/* --- Hide-Out / Playroom (41, 48) -------------------------------------------
+/* --- Hide-Out / Playroom (41, 48, 55) -------------------------------------
+   mp.dll (SOURCE-CONFIRMED, RTTI templates and constructor chains): each
+   playroom wraps a regular mode's rules, CSOGameRulesPlayRoom<base>:
+     41 PlayRoomZBH      base Zombi3 (Zombie Hero, 14)
+     48 PlayRoomZBS      base ZombieScenarioVer2 (Zombie Scenario, 15)
+     55 PlayRoomZombieZ  base ZombieZMode (Zombie Z, 45)
+   So the base mode is played and the Hide-Out layer goes on top.
    OBSERVED tooltips: Decoders give items; others who are interested can try
-   them; guns can be tested. No objective. DESIGN: decoders give a random
-   placeholder weapon, every weapon given in the room can be tried by anyone
-   with "cmd csnz_try <weapon>", and players cannot hurt each other. */
+   them; guns can be tested. DESIGN: decoders give a random placeholder
+   weapon, and every weapon given in the room can be tried by anyone with
+   "cmd csnz_try <weapon>". */
 
 string pr_unlocked;
-
-void
-PR_Equip(entity p)
-{
-	ents.ChangeToClass(p, "csm_basic");
-	p.takedamage = DAMAGE_NO;
-}
+var float(entity, string) PR_InnerCommand;
 
 bool
 PR_Command(entity p, string cmd)
@@ -655,19 +655,37 @@ PR_Command(entity p, string cmd)
 	return false;
 }
 
-void
-CSM_Playroom(void)
+float
+PR_CommandAll(entity p, string cmd)
 {
-	CSM_Deathmatch(false);
-	cs_modeTitle = "CSO_GameMode_PlayRoom";
-	cs_modeFallback = "Hide-Out";
-	cs_scoreKills = false;
+	if (PR_Command(p, cmd))
+		return true;
+	return PR_InnerCommand ? PR_InnerCommand(p, cmd) : false;
+}
+
+/* the playroom id's base rules first, then the Hide-Out commands */
+void
+CSM_Playroom(float id)
+{
+	switch (id) {
+	case 41:
+		CSM_Zombie(14);
+		cs_modeTitle = "CSO_GameMode_PlayRoom";
+		cs_modeFallback = "Hide-Out";
+		break;
+	case 48:
+		CSM_ZombieScenario();
+		cs_modeTitle = "CSO_GameMode_PlayRoom2";
+		cs_modeFallback = "Hide-Out 2 Scenario";
+		break;
+	default:
+		CSM_Zombie(45);
+		cs_modeTitle = "CSO_GameMode_PlayRoom_ZombieZ";	/* no text in this build */
+		cs_modeFallback = "Hide-Out Zombie Z";
+	}
 	cs_noStats = true;
-	cs_timeLimitFallback = 0;
-	cs_killLimitFallback = 0;
-	cvars.SetFloat("csnz_spawnprotect", 0);
-	M_Equip = PR_Equip;
-	M_Command = PR_Command;
+	PR_InnerCommand = M_Command;
+	M_Command = PR_CommandAll;
 }
 
 /* --- snowman (27) ---------------------------------------------------------
@@ -801,6 +819,7 @@ SM_CoreRoundStart(void)
 	SM_SpawnCore(CS_TEAM2);
 	serverinfo.SetInteger("csnz_core1_hp", (int)sm_core1HP);
 	serverinfo.SetInteger("csnz_core2_hp", (int)sm_core2HP);
+	serverinfo.SetInteger("csnz_core_max", (int)sm_coreMaxHP);
 }
 
 void

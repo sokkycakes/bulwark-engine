@@ -456,17 +456,36 @@ CS_ActionFrame(entity p)
 
 /* --- buying ------------------------------------------------------------- */
 
-/* name, team (0 any), price, item. Prices STOCK-CS; the guns are
-   decls/def/cs_weapons.def (STOCK-CS stats, not CSNZ parity). */
+/* name, team (0 any), price, item. Names, teams and prices STOCK-CS; the
+   guns are decls/def/cs_weapons.def (STOCK-CS stats, not CSNZ parity).
+   The HUD's buy menu (hud/buymenu.qc) lists the same items: keep the two
+   in step. Flash and smoke grenades and night vision have no entityDefs
+   yet, so they are not sold. */
 string cs_buyList =
-	"glock18 1 400 weapon_glock18 "
-	"usp 2 500 weapon_usp "
+	"glock18 0 400 weapon_glock18 "
+	"usp 0 500 weapon_usp "
+	"p228 0 600 weapon_p228 "
 	"deagle 0 650 weapon_deagle "
+	"fiveseven 2 750 weapon_fiveseven "
+	"elite 1 800 weapon_elite "
 	"m3 0 1700 weapon_m3 "
+	"xm1014 0 3000 weapon_xm1014 "
+	"mac10 1 1400 weapon_mac10 "
+	"tmp 2 1250 weapon_tmp "
 	"mp5navy 0 1500 weapon_mp5 "
+	"ump45 0 1700 weapon_ump45 "
+	"p90 0 2350 weapon_p90 "
+	"galil 1 2000 weapon_galil "
+	"famas 2 2250 weapon_famas "
 	"ak47 1 2500 weapon_ak47 "
 	"m4a1 2 3100 weapon_m4a1 "
+	"sg552 1 3500 weapon_sg552 "
+	"aug 2 3500 weapon_aug "
+	"scout 0 2750 weapon_scout "
 	"awp 0 4750 weapon_awp "
+	"g3sg1 1 5000 weapon_g3sg1 "
+	"sg550 2 4200 weapon_sg550 "
+	"m249 0 5750 weapon_m249 "
 	"hegrenade 0 300 weapon_hegrenade "
 	"kevlar 0 650 armor100 "
 	"kevlar_helmet 0 1000 armor100 "
@@ -540,6 +559,8 @@ CS_MissionRoundStart(void)
 {
 	CS_RemoveBomb();
 	cs_buyEnd = time + autocvar_mp_freezetime + autocvar_mp_buytime * 60;
+	/* for the HUD's buy menu (buytime_num) */
+	serverinfo.SetFloat("csnz_buyend", cs_buyEnd);
 
 	for (entity p = world; (p = next.Player(p));) {
 		p.cs_hasC4 = false;

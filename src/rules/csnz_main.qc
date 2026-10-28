@@ -3,7 +3,8 @@
  *
  * csnz_mode (the CSO mode id, as in resource/gamemodelist.csv) picks the
  * rules. Ids routed to other progs (INTERFACES.md section 2): 8 -> zombi.dat,
- * 38/39/49 -> studio.dat. An id without rules here falls back to
+ * 38/39/49/52/53 -> studio.dat (mp.dll: VoxelCreate, VoxelPVE,
+ * VoxelPropHunt, VoxelShelter, VoxelScenarioTX). An id without rules here falls back to
  * Deathmatch and says so. MODE_INVENTORY.md lists every id's disposition. */
 
 /* --- callbacks ------------------------------------------------------------- */
@@ -66,6 +67,10 @@ CodeCallback_StartGameType(void)
 	if (cs_modeRun == 8 || cs_modeRun == 38 || cs_modeRun == 39 || cs_modeRun == 49)
 		printf("csnz: mode %g belongs to %s.dat (g_gametype); running Deathmatch here\n",
 			cs_modeRun, cs_modeRun == 8 ? "zombi" : "studio");
+	/* the registry has rules for 52/53 (studio.dat uses them), so they run,
+	   but without the Studio map layer */
+	if (cs_modeRun == 52 || cs_modeRun == 53)
+		printf("csnz: mode %g is a Studio mode (g_gametype studio); running its rules without a Studio map\n", cs_modeRun);
 
 	if (!CS_SelectMode(cs_modeRun)) {
 		printf("csnz: mode %g has no rules (see MODE_INVENTORY.md); falling back to Deathmatch\n", cs_modeRun);
@@ -168,9 +173,14 @@ CodeCallback_ClientCommand(entity p, string cmd)
 	case "buy":
 		CS_Buy(p, argv(1));
 		return (true);
+	case "jointeam":
 	case "csnz_team":
-		/* switching sides kills in round modes (STOCK-CS) */
+		/* switching sides kills in round modes (STOCK-CS). jointeam is
+		   the team menu's command (CSO_TeamMenu.res): 1, 2, 5 auto;
+		   3 (VIP) and 6 (spectate) aren't offered by the HUD */
 		float t = stof(argv(1));
+		if (t == 5 && cs_teams)
+			t = CS_AutoTeam(p);
 		if (!cs_teams || (t != CS_TEAM1 && t != CS_TEAM2) || t == p.team)
 			return (true);
 		if (CS_Playing(p) && cs_state == CS_LIVE) {

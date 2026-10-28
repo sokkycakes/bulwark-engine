@@ -164,7 +164,7 @@ HUD_DrawScores(void)
 
 	font_s fnt = g_hudFont;
 	vector o = [Board_CX() - SB_W / 2, HUD_H / 2 - SB_H / 2];
-	bool zombi = serverkey("csnz_mode") == "8";
+	bool zombi = HUD_ZombieTeams();
 	/* Counter-Strike's team colours (STOCK-CS) */
 	vector red = [1, 0.25, 0.25], blue = [0.6, 0.8, 1];
 

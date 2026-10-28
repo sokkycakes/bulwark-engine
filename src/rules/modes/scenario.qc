@@ -15,9 +15,18 @@
  *   BINARY    HealthBase/HealthIncrease, DamageBase/DamageIncrease scaling
  *
  * These are PvE survival / wave-defense modes where teams of humans fight
- * AI zombies/monsters through rounds of increasing difficulty. */
+ * AI zombies/monsters through rounds of increasing difficulty.
+ *
+ * mp.dll classes (SOURCE-CONFIRMED, InstallGameRules FUN_11412000 and the
+ * constructor chains): 15 ZombieScenarioVer2, 17 HumanScen, 53
+ * VoxelScenarioTX and 59 ZSRift each derive from CSOGameRules directly;
+ * 48 PlayRoomZBS derives from ZombieScenarioVer2. The wave core below is
+ * Zombie Scenario's (15); the others reuse it (DESIGN), they are not its
+ * subclasses in the binary. 51 ZHE and 56 ZombiConquest derive from Zombi3,
+ * 57 SuperSoldier from TDM2019 and 25 BattleRush from DM: their QC here is
+ * a stand-in, not their class. */
 
-/* --- Zombie Scenario TX (53) --- */
+/* --- the wave core: Zombie Scenario (15) --- */
 
 var float autocvar_sctx_rounds = 30;		/* DESIGN: total rounds */
 var float autocvar_sctx_round_time = 2;		/* DESIGN: minutes per round */
@@ -163,9 +172,9 @@ SCTX_Command(entity p, string cmd)
 }
 
 void
-CSM_ScenarioTX(void)
+CSM_ZombieScenario(void)
 {
-	cs_modeTitle = "CSO_GameMode_ScenarioTX";
+	cs_modeTitle = "CSO_GameMode_Zombi_Survival";
 	cs_modeFallback = "Zombie Scenario";
 	cs_teams = true;
 	cs_rounds = false;	/* continuous rounds managed internally */
@@ -186,13 +195,22 @@ CSM_ScenarioTX(void)
 	M_Command = SCTX_Command;
 }
 
+/* --- Scenario TX (53), a Studio mode: studio.dat plays it on a Studio map --- */
+void
+CSM_ScenarioTX(void)
+{
+	CSM_ZombieScenario();
+	cs_modeTitle = "CSO_GameMode_ScenarioTX";
+	cs_modeFallback = "Scenario TX";
+}
+
 /* --- Human Scenario (17) ---
- * PvE survival similar to ScenarioTX but without the voxel element.
+ * PvE survival on the Zombie Scenario wave core.
  * Evidence: EGM_HUMAN_SCENARIO = 17 */
 void
 CSM_HumanScenario(void)
 {
-	CSM_ScenarioTX();
+	CSM_ZombieScenario();
 	cs_modeTitle = "CSO_GameMode_HumanScenario";
 	cs_modeFallback = "Human Scenario";
 }
@@ -203,7 +221,7 @@ CSM_HumanScenario(void)
 void
 CSM_ZombieHorrorEscape(void)
 {
-	CSM_ScenarioTX();
+	CSM_ZombieScenario();
 	cs_modeTitle = "CSO_GameMode_ZombieHorrorEscape";
 	cs_modeFallback = "Zombie Horror Escape";
 	/* escape-focused: shorter rounds, more zombies */
@@ -216,7 +234,7 @@ CSM_ZombieHorrorEscape(void)
 void
 CSM_SuperSoldier(void)
 {
-	CSM_ScenarioTX();
+	CSM_ZombieScenario();
 	cs_modeTitle = "CSO_GameMode_SuperSoldier";
 	cs_modeFallback = "Super Soldier";
 }
@@ -240,8 +258,9 @@ CSM_BattleRush(void)
 void
 CSM_ZombiConquest(void)
 {
-	/* base on zombie infection core */
-	CSM_Zombie(9);	/* use Expand as base */
+	/* ZombiConquest derives from Zombi3 (SOURCE-CONFIRMED), so the
+	   Zombie Hero set; the territory rules are not ported */
+	CSM_Zombie(14);
 	cs_modeTitle = "CSO_GameMode_ZombiConquest";
 	cs_modeFallback = "Zombi Conquest";
 }
@@ -251,20 +270,9 @@ CSM_ZombiConquest(void)
 void
 CSM_ZSRift(void)
 {
-	CSM_ScenarioTX();
+	CSM_ZombieScenario();
 	cs_modeTitle = "CSO_GameMode_ZSRift";
 	cs_modeFallback = "ZS Rift";
-}
-
-/* --- Zombi Survival (15) ---
- * Evidence: EGM_ZOMBI_SURVIVAL = 15 */
-void
-CSM_ZombiSurvival(void)
-{
-	CSM_ScenarioTX();
-	cs_modeTitle = "CSO_GameMode_ZombiSurvival";
-	cs_modeFallback = "Zombi Survival";
-	sctx_maxRounds = 50;	/* DESIGN: longer survival */
 }
 
 /* --- Zombi Team Anniversary (13) ---
