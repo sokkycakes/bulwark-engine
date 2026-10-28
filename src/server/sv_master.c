@@ -22,6 +22,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "../net/net_compat.h"
+
 #define NUM_MASTERS 8
 #define HEARTBEAT_SECONDS 300
 

@@ -80,7 +80,11 @@ typedef struct {
 	float radius, fade, die;
 } plight_t;
 
+#ifdef BW_LOWMEM
+#define MAX_PARTICLES 8192
+#else
 #define MAX_PARTICLES 32768
+#endif
 #define MAX_PLIGHTS 64
 #define MAX_EFFECT_INDEX 1024
 

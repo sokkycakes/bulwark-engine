@@ -1,0 +1,32 @@
+; Bulwark engine - PICA200 vertex shader for sky surfaces: the direction
+; from the eye looks up the cube map, with Quake's axes turned the way the
+; GL renderer's sky shader turns them: (-x, z, y).
+; ISC licence, see LICENSE.
+.fvec mvp[4]
+.fvec vieworg
+
+.constf k(0.0, 1.0, -1.0, 0.5)
+
+.out opos position
+.out otc texcoord0
+.out otcw texcoord0w
+.out oclr color
+
+.alias apos v0
+
+.entry main_sky
+.proc main_sky
+	mov r0.xyz, apos
+	mov r0.w, k.yyyy
+	dp4 opos.x, mvp[0], r0
+	dp4 opos.y, mvp[1], r0
+	dp4 opos.z, mvp[2], r0
+	dp4 opos.w, mvp[3], r0
+
+	add r1, -vieworg, r0
+	mul otc.x, k.zzzz, r1.xxxx
+	mov otc.y, r1.zzzz
+	mov otcw, r1.yyyy
+	mov oclr, k.yyyy
+	end
+.end

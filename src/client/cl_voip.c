@@ -14,7 +14,7 @@
 #include "../net/protocol.h"
 #include "../sound/sound.h"
 
-#include <dlfcn.h>
+#include "../common/sys_dl.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

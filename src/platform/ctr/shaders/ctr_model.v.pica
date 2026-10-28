@@ -1,0 +1,47 @@
+; Bulwark engine - PICA200 vertex shader for models: an ambient and a
+; directional term per vertex (the GL renderer does it per pixel).
+;   n   = normalize(model3x3 * normal)
+;   col = lamb + ldiff * max(dot(n, ldir), 0)
+; lamb and ldiff arrive already multiplied by the entity colour and
+; halved; the fragment stage doubles them back so light can exceed 1.
+; ISC licence, see LICENSE.
+.fvec mvp[4]
+.fvec model[3]
+.fvec lamb
+.fvec ldiff
+.fvec ldir
+
+.constf k(0.0, 1.0, 0.000001, 0.5)
+
+.out opos position
+.out otc texcoord0
+.out oclr color
+
+.alias apos v0
+.alias atc v1
+.alias anrm v3
+
+.entry main_model
+.proc main_model
+	mov r0.xyz, apos
+	mov r0.w, k.yyyy
+	dp4 opos.x, mvp[0], r0
+	dp4 opos.y, mvp[1], r0
+	dp4 opos.z, mvp[2], r0
+	dp4 opos.w, mvp[3], r0
+
+	mov otc, atc
+
+	dp3 r1.x, model[0], anrm
+	dp3 r1.y, model[1], anrm
+	dp3 r1.z, model[2], anrm
+	dp3 r2.x, r1, r1
+	max r2.x, k.zzzz, r2.xxxx
+	rsq r2.x, r2.xxxx
+	mul r1.xyz, r2.xxxx, r1.xyzz
+	dp3 r3.x, ldir, r1
+	max r3.x, k.xxxx, r3.xxxx
+	mul r4, ldiff, r3.xxxx
+	add oclr, lamb, r4
+	end
+.end

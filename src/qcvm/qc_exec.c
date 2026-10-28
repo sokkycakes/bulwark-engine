@@ -189,6 +189,18 @@ static void string_setchar(qcvm_t *vm, int32_t s, int64_t idx, int ch)
 	p[idx] = (char)ch;
 }
 
+/* Float truth and equality by IEEE rules, whatever the FPU does with
+ * denormals. QuakeC keeps integers (function and entity numbers) in float
+ * variables, where they read as denormals, and tests them with the float
+ * opcodes; the 3DS runs its FPU flushing denormals to zero, which would
+ * make every such value false and equal to 0. */
+static inline bool fdenorm(int32_t i) { return (i & 0x7f800000) == 0 && (i & 0x7fffff); }
+static inline bool ftrue(const qcval_t *v) { return (v->i & 0x7fffffff) != 0; }
+static inline bool feq(const qcval_t *a, const qcval_t *b)
+{
+	return fdenorm(a->i) || fdenorm(b->i) ? a->i == b->i : a->f == b->f;
+}
+
 #define JUMP(x) ((vm->stmt32) ? (int32_t)(x) : (int32_t)(int16_t)(x))
 
 static void run(qcvm_t *vm, int s, int entrydepth)
@@ -256,12 +268,12 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 		}
 		case OP_BITAND: c->f = (float)(f2i(a->f) & f2i(b->f)); break;
 		case OP_BITOR: c->f = (float)(f2i(a->f) | f2i(b->f)); break;
-		case OP_AND_F: c->f = (a->f && b->f); break;
-		case OP_OR_F: c->f = (a->f || b->f); break;
+		case OP_AND_F: c->f = (ftrue(a) && ftrue(b)); break;
+		case OP_OR_F: c->f = (ftrue(a) || ftrue(b)); break;
 
 		/* --- comparisons with float results --- */
-		case OP_EQ_F: c->f = a->f == b->f; break;
-		case OP_NE_F: c->f = a->f != b->f; break;
+		case OP_EQ_F: c->f = feq(a, b); break;
+		case OP_NE_F: c->f = !feq(a, b); break;
 		case OP_LE_F: c->f = a->f <= b->f; break;
 		case OP_GE_F: c->f = a->f >= b->f; break;
 		case OP_LT_F: c->f = a->f < b->f; break;
@@ -272,8 +284,8 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 		case OP_NE_S: c->f = !str_eq(vm, a->i, b->i); break;
 		case OP_EQ_E: case OP_EQ_FNC: c->f = a->i == b->i; break;
 		case OP_NE_E: case OP_NE_FNC: c->f = a->i != b->i; break;
-		case OP_NOT_F: c->f = !a->f; break;
-		case OP_NOT_V: c->f = !a[0].f && !a[1].f && !a[2].f; break;
+		case OP_NOT_F: c->f = !ftrue(a); break;
+		case OP_NOT_V: c->f = !ftrue(&a[0]) && !ftrue(&a[1]) && !ftrue(&a[2]); break;
 		case OP_NOT_S: c->f = str_empty(vm, a->i); break;
 		case OP_NOT_ENT: case OP_NOT_FNC: c->f = !a->i; break;
 
@@ -480,10 +492,10 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 		case OP_NE_FI: c->i = a->f != (float)b->i; break;
 		case OP_AND_I: c->i = a->i && b->i; break;
 		case OP_OR_I: c->i = a->i || b->i; break;
-		case OP_AND_IF: c->i = a->i && b->f; break;
-		case OP_OR_IF: c->i = a->i || b->f; break;
-		case OP_AND_FI: c->i = a->f && b->i; break;
-		case OP_OR_FI: c->i = a->f || b->i; break;
+		case OP_AND_IF: c->i = a->i && ftrue(b); break;
+		case OP_OR_IF: c->i = a->i || ftrue(b); break;
+		case OP_AND_FI: c->i = ftrue(a) && b->i; break;
+		case OP_OR_FI: c->i = ftrue(a) || b->i; break;
 		case OP_NOT_I: c->i = !a->i; break;
 
 		/* --- 64-bit integers and doubles --- */
@@ -566,8 +578,8 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 		/* --- control flow --- */
 		case OP_IF: if (a->i) { s += JUMP(st->b); continue; } break;
 		case OP_IFNOT: if (!a->i) { s += JUMP(st->b); continue; } break;
-		case OP_IF_F: if (a->f) { s += JUMP(st->b); continue; } break;
-		case OP_IFNOT_F: if (!a->f) { s += JUMP(st->b); continue; } break;
+		case OP_IF_F: if (ftrue(a)) { s += JUMP(st->b); continue; } break;
+		case OP_IFNOT_F: if (!ftrue(a)) { s += JUMP(st->b); continue; } break;
 		case OP_IFS: if (!str_empty(vm, a->i)) { s += JUMP(st->b); continue; } break;
 		case OP_IFNOTS: if (str_empty(vm, a->i)) { s += JUMP(st->b); continue; } break;
 		case OP_GOTO: s += JUMP(st->a); continue;

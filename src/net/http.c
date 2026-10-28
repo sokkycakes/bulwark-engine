@@ -6,7 +6,7 @@
 #include "http.h"
 #include "../common/common.h"
 
-#include <dlfcn.h>
+#include "../common/sys_dl.h"
 #include <errno.h>
 #include <netdb.h>
 #include <pthread.h>

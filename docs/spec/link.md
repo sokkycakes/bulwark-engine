@@ -1,0 +1,151 @@
+# Bulwark Link: handhelds as companion players
+
+A Bulwark server (listen or dedicated) can take **link players**. A link
+player is a small device, the Nintendo DS first, that joins the game as its
+own player over UDP. It sends its buttons, stick and touch input, and it gets
+back:
+
+- a **private screen**, which the game draws with QuakeC (the bottom screen
+  on the DS: map, inventory, messages, like GBA link play);
+- a **view**: where its player is and what is near it, so the device can
+  draw the world itself (the top screen on the DS, through its own map
+  renderer).
+
+The device runs none of the game's code, so this works with full Nuclide
+games on the PC.
+
+## On the server
+
+| Cvar | Default | |
+|---|---|---|
+| `sv_link_port` | `27901` | UDP port for link players, `0` turns links off |
+| `sv_link_max` | `4` | how many player slots link players may take |
+| `sv_link_timeout` | `10` | seconds without input before a link player is dropped |
+
+A link player takes a normal client slot and edict. The game sees it as a
+real player: `clienttype` is `CLIENTTYPE_REAL`, `ClientConnect` and
+`PutClientInServer` run, and its input reaches the game through the usual
+`input_*` globals in `SV_RunClientCommand`. The `*link` info key is `1`.
+The engine sends it no entity snapshots, and between packets it repeats
+the last command, as it does for bots.
+
+### Default input mapping
+
+The device sends movement (-127..127 per axis), view angles, and its raw
+keys. The server turns them into a usercmd:
+
+| Device | usercmd |
+|---|---|
+| move axes | `movevalues`, ×400/127 forward and side, ×400/127 up |
+| angles | `angles` (pitch, yaw), as sent |
+| A | button 1 (attack) |
+| B | button 2 (jump) |
+| X | button 5 (use) |
+| Y | button 4 (reload) |
+| R | button 6 (attack2) |
+
+The game can read the raw state with `link_keys` and `link_touch` and do its
+own mapping.
+
+### QuakeC builtins
+
+```c
+float(entity player) link_isdevice;     // 1 for a link player
+float(entity player) link_keys;         // raw device key bits (DS: KEY_A = 1 ... as libnds)
+vector(entity player) link_touch;       // x, y on the private screen; z = 1 while touching
+void(entity player, vector rgb) link_clear;
+void(entity player, float x, float y, float w, float h, vector rgb) link_fill;
+void(entity player, float x, float y, string text, vector rgb) link_text;  // 8x8 font
+void(entity player) link_present;       // send what was drawn since link_clear
+void(entity player, vector org, float kind, vector rgb) link_marker;     // for the next view update
+```
+
+Colours are 0..1 per channel. The DS's private screen is 256×192, and text
+is 8×8 per character.
+
+Until the game first calls `link_present` for a player, the engine shows a
+default screen: the player's name, health, the map and the player list.
+
+## Packets
+
+All packets are UDP. Every packet starts with the 4 bytes `BWL1` and then
+a type byte. Multi-byte values are little endian. A device keeps sending
+`INPUT` at 20 Hz or more. That also acknowledges the last screen it got.
+
+### Device to server
+
+| Type | Name | Payload |
+|---|---|---|
+| 0x01 | DISCOVER | nothing (broadcast to the port) |
+| 0x02 | JOIN | u32 session, u16 device (1 = DS), char name[16] |
+| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack |
+| 0x04 | LEAVE | u32 session |
+
+Angles use 65536 per turn, and positive pitch looks up.
+
+### Server to device
+
+| Type | Name | Payload |
+|---|---|---|
+| 0x81 | INFO | char host[32], char map[32], u8 players, u8 maxplayers, u8 link_free |
+| 0x82 | WELCOME | u32 session, u8 playernum, u16 spawncount, char map[64] |
+| 0x83 | REFUSE | char reason[64] |
+| 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
+| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags, u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15} |
+| 0x86 | KICK | u32 session, char reason[64] |
+
+The server sends `WELCOME` again whenever the map changes (new
+`spawncount`). The device then loads `maps/<map>.bsp` from its own storage
+if it has a copy. Without one, it shows no 3D view.
+
+The server resends `SCREEN` every 250 ms until the device's `screen_ack`
+matches its version. One screen fits in one packet, up to 1200 bytes of
+commands.
+
+The server sends `VIEW` at 20 Hz. Flag bit 0 means the game turned the
+player (it set `fixangle`, after a teleporter or a respawn): the device
+takes the pitch and yaw in this packet as its own. Otherwise the device
+keeps its own angles, and the ones in `VIEW` echo what it sent. Kinds are 0 for other players and 1 to
+255 for whatever the game passes to `link_marker`.
+
+### Screen commands
+
+| Byte | Command | Arguments |
+|---|---|---|
+| 0x01 | CLEAR | u16 rgb15 |
+| 0x02 | FILL | u8 x, u8 y, u8 w, u8 h, u16 rgb15 (w and h of 0 mean 256) |
+| 0x03 | TEXT | u8 x, u8 y, u16 rgb15, u8 len, char text[len] |
+
+## On the DS
+
+The DS build (`bulwark_nds.nds`) offers *[Join a game over WiFi]* at the top
+of its menu. It joins
+WiFi in one of two ways:
+
+- with the network saved in the DS's own settings (Nintendo WFC settings);
+- with `link.txt` in a base folder, such as `/bulwark/link.txt` on the SD card:
+
+  ```
+  ssid=MyNetwork
+  key=passphrase   (WPA/WPA2 passphrase, or a WEP key in hex)
+  security=wpa2    (open, wep, wpa or wpa2)
+  server=192.168.1.20:27901   (optional: skips discovery)
+  name=Player      (optional)
+  autojoin=1       (optional: join the first server that answers, at start-up)
+  ```
+
+Then it broadcasts `DISCOVER`, lists the servers that answer, and joins the
+one you pick. The top screen draws the map from the player's position
+(Quake-format maps only, for now). The bottom screen shows the private
+screen. Touches on it go to the game.
+
+DS controls while linked:
+
+| Button | Action |
+|---|---|
+| D-pad up / down | move |
+| D-pad left / right | turn |
+| L + D-pad | strafe, and look up / down |
+| A, B, X, Y, R | game buttons (see the mapping above) |
+| touch | goes to the game's private screen |
+| START | leave |

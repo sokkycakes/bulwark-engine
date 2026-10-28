@@ -14,7 +14,7 @@
 #include "../common/fs.h"
 #include "../common/worker.h"
 
-#include <dlfcn.h>
+#include "../common/sys_dl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

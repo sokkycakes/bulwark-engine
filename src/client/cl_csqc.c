@@ -278,7 +278,7 @@ bool CSQC_Load(void)
 	tables[10] = r_skin_builtins;
 	tables[11] = r_qclight_builtins;
 	tables[12] = NULL;
-	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, 8192, 32 * 1024 * 1024);
+	vm = QC_Load(cl.csprogsname, data, len, QCVM_CLIENT, tables, BW_CSQC_MAXEDICTS, (size_t)BW_CSQC_HEAP_MB * 1024 * 1024);
 	Mem_Free(data);
 	if (!vm)
 		return false;
@@ -341,8 +341,8 @@ bool CSQC_Load(void)
 		vm->globals[G.mapname].i = QC_NewString(vm, cl.mapname);
 	set_frame_globals(vm);
 
-	cl.ents = Mem_Alloc(sizeof(clentity_t) * 65536);
-	cl.numents = 65536;
+	cl.ents = Mem_Alloc(sizeof(clentity_t) * BW_CL_MAXENTS);
+	cl.numents = BW_CL_MAXENTS;
 
 	{
 		func_t f = fn(vm, "init");
