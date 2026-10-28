@@ -69,6 +69,9 @@ Board_Draw(void)
 
 	if (serverkey("csnz_state") == "")
 		return;
+	/* Shelter Team draws its own (shelter.qc) */
+	if (HUD_ModeId() == 28)
+		return;
 
 	Art_Pic([x0, 0], BOARD_PIC, 1.0f);
 

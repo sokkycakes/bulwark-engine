@@ -63,10 +63,13 @@ bool TM_ConsoleCommand(string);
 bool CM_ConsoleCommand(string);
 bool PTN_ConsoleCommand(string);
 bool VK_ConsoleCommand(string);
+bool SHH_ConsoleCommand(string);
 
 bool
 HUD_ConsoleCommand(string commandString)
 {
+	if (SHH_ConsoleCommand(commandString))
+		return true;
 	if (BM_ConsoleCommand(commandString))
 		return (true);
 	if (TM_ConsoleCommand(commandString))
