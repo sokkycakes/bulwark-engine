@@ -1,0 +1,324 @@
+// ==========================================================================
+// CSNZ Character / Buff Class System
+// ==========================================================================
+//
+// Reverse-engineered from buffclass strings found in mp.dll binary data.
+// CSNZ assigns each playable character a buff class that modifies base
+// player stats (health, armor, movement speed, etc.). Characters inherit
+// from base player classes (csm_rifleman for combat roles, csm_basic for
+// specialist/utility roles) and override specific attributes.
+//
+// Factions:  CT = Counter-Terrorist,  T = Terrorist
+//
+// All values are DESIGN APPROXIMATIONS derived from observed gameplay
+// behavior and binary constant analysis. Actual server values may differ
+// due to region-specific tuning or patch changes.
+//
+// Speed reference:  default pm_runspeed = 250, pm_walkspeed ~ runspeed * 0.52
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// 1. Fernando  -  CT, balanced rifleman
+// --------------------------------------------------------------------------
+entityDef csm_char_fernando
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Fernando"
+	"health"		"100"
+	"max_health"		"100"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"130"
+	"pm_runspeed"		"250"
+}
+
+// --------------------------------------------------------------------------
+// 2. Blair  -  CT, speed buff
+// --------------------------------------------------------------------------
+entityDef csm_char_blair
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Blair"
+	"health"		"90"
+	"max_health"		"90"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"140"
+	"pm_runspeed"		"270"
+}
+
+// --------------------------------------------------------------------------
+// 3. Phoenix  -  T, damage buff
+// --------------------------------------------------------------------------
+entityDef csm_char_phoenix
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Phoenix"
+	"health"		"110"
+	"max_health"		"110"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"130"
+	"pm_runspeed"		"250"
+}
+
+// --------------------------------------------------------------------------
+// 4. Yuri  -  CT, armor buff
+// --------------------------------------------------------------------------
+entityDef csm_char_yuri
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Yuri"
+	"health"		"100"
+	"max_health"		"100"
+	"armor"			"100"
+	"maxarmor"		"150"
+	"pm_walkspeed"		"125"
+	"pm_runspeed"		"240"
+}
+
+// --------------------------------------------------------------------------
+// 5. Lycan  -  T, melee buff (knife-focused)
+// Buffclass grants bonus knife damage and attack speed.
+// --------------------------------------------------------------------------
+entityDef csm_char_lycan
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Lycan"
+	"health"		"120"
+	"max_health"		"120"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"146"
+	"pm_runspeed"		"280"
+}
+
+// --------------------------------------------------------------------------
+// 6. Hunter  -  CT, accuracy buff
+// --------------------------------------------------------------------------
+entityDef csm_char_hunter
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Hunter"
+	"health"		"95"
+	"max_health"		"95"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"135"
+	"pm_runspeed"		"260"
+}
+
+// --------------------------------------------------------------------------
+// 7. Pirate Girl  -  T, speed buff
+// --------------------------------------------------------------------------
+entityDef csm_char_pirategirl
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Pirate Girl"
+	"health"		"85"
+	"max_health"		"85"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"146"
+	"pm_runspeed"		"280"
+}
+
+// --------------------------------------------------------------------------
+// 8. Heavy Soldier  -  either faction, tank class
+// --------------------------------------------------------------------------
+entityDef csm_char_heavysoldier
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Heavy Soldier"
+	"health"		"150"
+	"max_health"		"150"
+	"armor"			"200"
+	"maxarmor"		"200"
+	"pm_walkspeed"		"109"
+	"pm_runspeed"		"210"
+}
+
+// --------------------------------------------------------------------------
+// 9. Special Agent  -  CT, all-round
+// --------------------------------------------------------------------------
+entityDef csm_char_specialagent
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Special Agent"
+	"health"		"110"
+	"max_health"		"110"
+	"armor"			"50"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"130"
+	"pm_runspeed"		"250"
+}
+
+// --------------------------------------------------------------------------
+// 10. Assassin  -  T, stealth class
+// --------------------------------------------------------------------------
+entityDef csm_char_assassin
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Assassin"
+	"health"		"80"
+	"max_health"		"80"
+	"armor"			"0"
+	"maxarmor"		"50"
+	"pm_walkspeed"		"156"
+	"pm_runspeed"		"300"
+}
+
+// --------------------------------------------------------------------------
+// 11. Commando  -  CT, assault class
+// --------------------------------------------------------------------------
+entityDef csm_char_commando
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Commando"
+	"health"		"120"
+	"max_health"		"120"
+	"armor"			"100"
+	"maxarmor"		"150"
+	"pm_walkspeed"		"125"
+	"pm_runspeed"		"240"
+}
+
+// --------------------------------------------------------------------------
+// 12. Operator  -  T, tactical
+// --------------------------------------------------------------------------
+entityDef csm_char_operator
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Operator"
+	"health"		"100"
+	"max_health"		"100"
+	"armor"			"50"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"135"
+	"pm_runspeed"		"260"
+}
+
+// --------------------------------------------------------------------------
+// 13. Medic  -  CT, healing support
+// Buffclass includes periodic heal aura for nearby teammates.
+// Heal tick: ~5 HP per 2 seconds within 256 unit radius.
+// --------------------------------------------------------------------------
+entityDef csm_char_medic
+{
+	"inherit"		"csm_basic"
+	"netname"		"Medic"
+	"health"		"100"
+	"max_health"		"100"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"135"
+	"pm_runspeed"		"260"
+}
+
+// --------------------------------------------------------------------------
+// 14. Engineer  -  CT, utility support
+// Buffclass includes armor repair aura for nearby teammates.
+// Repair tick: ~3 armor per 2 seconds within 256 unit radius.
+// --------------------------------------------------------------------------
+entityDef csm_char_engineer
+{
+	"inherit"		"csm_basic"
+	"netname"		"Engineer"
+	"health"		"100"
+	"max_health"		"100"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"130"
+	"pm_runspeed"		"250"
+}
+
+// --------------------------------------------------------------------------
+// 15. Sniper Pro  -  CT, marksman
+// --------------------------------------------------------------------------
+entityDef csm_char_sniperpro
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Sniper Pro"
+	"health"		"80"
+	"max_health"		"80"
+	"armor"			"0"
+	"maxarmor"		"50"
+	"pm_walkspeed"		"125"
+	"pm_runspeed"		"240"
+}
+
+// --------------------------------------------------------------------------
+// 16. Demolition  -  T, explosive specialist
+// --------------------------------------------------------------------------
+entityDef csm_char_demolition
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Demolition"
+	"health"		"130"
+	"max_health"		"130"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"120"
+	"pm_runspeed"		"230"
+}
+
+// --------------------------------------------------------------------------
+// 17. Ranger  -  either faction, survival class
+// --------------------------------------------------------------------------
+entityDef csm_char_ranger
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Ranger"
+	"health"		"110"
+	"max_health"		"110"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"140"
+	"pm_runspeed"		"270"
+}
+
+// --------------------------------------------------------------------------
+// 18. Shadow  -  T, stealth class
+// --------------------------------------------------------------------------
+entityDef csm_char_shadow
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Shadow"
+	"health"		"75"
+	"max_health"		"75"
+	"armor"			"0"
+	"maxarmor"		"50"
+	"pm_walkspeed"		"161"
+	"pm_runspeed"		"310"
+}
+
+// --------------------------------------------------------------------------
+// 19. Guardian  -  CT, defense class
+// --------------------------------------------------------------------------
+entityDef csm_char_guardian
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Guardian"
+	"health"		"150"
+	"max_health"		"150"
+	"armor"			"150"
+	"maxarmor"		"200"
+	"pm_walkspeed"		"114"
+	"pm_runspeed"		"220"
+}
+
+// --------------------------------------------------------------------------
+// 20. Berserker  -  T, melee class (knife-focused)
+// Buffclass grants bonus knife damage, attack speed, and HP regen on kill.
+// --------------------------------------------------------------------------
+entityDef csm_char_berserker
+{
+	"inherit"		"csm_rifleman"
+	"netname"		"Berserker"
+	"health"		"140"
+	"max_health"		"140"
+	"armor"			"0"
+	"maxarmor"		"100"
+	"pm_walkspeed"		"151"
+	"pm_runspeed"		"290"
+}

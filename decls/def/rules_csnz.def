@@ -1,0 +1,440 @@
+// csnz.dat and studio.dat entity definitions (modes other than Zombi).
+//
+// Evidence: OBSERVED facts are cited where used; every number not cited is
+// DESIGN or STOCK-CS (CS 1.6 defaults). Weapons are the CS guns of
+// decls/def/cs_weapons.def (STOCK-CS stats, not CSNZ parity). Each class's
+// loadout keeps the role of the Quake weapon it replaced (DESIGN).
+// CS speeds (STOCK-CS): 250 running with a knife, 130 walking. Nuclide moves
+// at pm_walkspeed unless sprinting, so pm_walkspeed holds the CS run speed.
+
+// --- player classes ---
+
+entityDef csm_rifleman
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_usp,weapon_m4a1"
+	"current_weapon"	"2"
+	"ammo_45acp"		"100"
+	"ammo_556nato"		"90"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+// Original family: knife and pistol, the rest is bought (STOCK-CS)
+entityDef csm_basic
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_usp"
+	"current_weapon"	"1"
+	"ammo_45acp"		"100"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+// FightYard: weapons come from the ground (OBSERVED tip)
+entityDef csm_knifeonly
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife"
+	"current_weapon"	"0"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+// Allstar stand-in classes (DESIGN)
+entityDef csm_heavy
+{
+	"inherit"			"player"
+	"health"			"150"
+	"max_health"		"150"
+	"weapon"			"weapon_knife,weapon_m249"
+	"current_weapon"	"1"
+	"ammo_556natobox"		"200"
+	"pm_walkspeed"		"210"
+	"pm_runspeed"		"210"
+}
+
+entityDef csm_scout
+{
+	"inherit"			"player"
+	"health"			"80"
+	"max_health"		"80"
+	"weapon"			"weapon_knife,weapon_m3"
+	"current_weapon"	"1"
+	"ammo_buckshot"		"32"
+	"pm_walkspeed"		"300"
+	"pm_runspeed"		"300"
+}
+
+entityDef csm_sniper
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_usp,weapon_awp"
+	"current_weapon"	"2"
+	"ammo_45acp"		"100"
+	"ammo_338magnum"		"30"
+	"pm_walkspeed"		"240"
+	"pm_runspeed"		"240"
+}
+
+entityDef csm_brawler
+{
+	"inherit"			"player"
+	"health"			"200"
+	"max_health"		"200"
+	"weapon"			"weapon_knife"
+	"current_weapon"	"0"
+	"pm_walkspeed"		"320"
+	"pm_runspeed"		"320"
+}
+
+// VIP: pistol only, 200 armor (both OBSERVED, tip ORIGINAL_AS)
+entityDef csm_vip
+{
+	"inherit"			"player"
+	"weapon"			"weapon_usp"
+	"current_weapon"	"0"
+	"ammo_45acp"		"100"
+	"armor"				"200"
+	"maxarmor"			"200"
+	"pm_walkspeed"		"227"
+	"pm_runspeed"		"227"
+}
+
+// Bazooka: the bazooka is handed out, movement is faster (OBSERVED tip BK)
+entityDef csm_bazooka
+{
+	"inherit"			"player"
+	"weapon"			"weapon_m249"
+	"current_weapon"	"0"
+	"ammo_556natobox"		"200"
+	"pm_walkspeed"		"320"
+	"pm_runspeed"		"320"
+}
+
+// zombies of the csnz.dat modes (Zombi itself uses zombi.def). DESIGN
+// numbers; OBSERVED: zombies are faster and tougher than humans.
+entityDef csm_zombie
+{
+	"inherit"			"player_zombie"
+	"health"			"1000"
+	"max_health"		"1000"
+	"weapon"			"weapon_csm_claw"
+	"noItemPickup"		"1"
+	"current_weapon"	"0"
+	"pm_walkspeed"		"280"
+	"pm_runspeed"		"280"
+}
+
+entityDef csm_zombie_origin
+{
+	"inherit"			"csm_zombie"
+	"health"			"2000"
+	"max_health"		"2000"
+}
+
+// Hidden: knife only, nearly invisible (OBSERVED tip Hidden_01)
+entityDef csm_hidden
+{
+	"inherit"			"player_zombie"
+	"health"			"300"
+	"max_health"		"300"
+	"weapon"			"weapon_csm_claw"
+	"noItemPickup"		"1"
+	"current_weapon"	"0"
+	"pm_walkspeed"		"360"
+	"pm_runspeed"		"360"
+}
+
+// Zombie Giant boss (OBSERVED tooltip: one random player is the boss)
+entityDef csm_giant
+{
+	"inherit"			"player_zombie"
+	"health"			"20000"
+	"max_health"		"20000"
+	"weapon"			"weapon_csm_giantclaw"
+	"noItemPickup"		"1"
+	"current_weapon"	"0"
+	"pm_walkspeed"		"200"
+	"pm_runspeed"		"200"
+}
+
+// Zombie heroes (OBSERVED Zombi_3: "unique Heroes for Humans")
+entityDef csm_hero
+{
+	"inherit"			"player"
+	"health"			"300"
+	"max_health"		"300"
+	"weapon"			"weapon_knife,weapon_m3,weapon_m249,weapon_awp"
+	"current_weapon"	"2"
+	"ammo_buckshot"		"32"
+	"ammo_556natobox"		"200"
+	"ammo_338magnum"		"30"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+// Prop Hunt (studio.dat)
+entityDef csm_seeker
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_m3"
+	"current_weapon"	"1"
+	"ammo_buckshot"		"32"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+entityDef csm_prop
+{
+	"inherit"			"player"
+	"weapon"			""
+	"noItemPickup"		"1"
+	"pm_walkspeed"		"260"
+	"pm_runspeed"		"260"
+}
+
+// Hide and Seek objects: OBSERVED "The larger the object, the higher the HP
+// but the lower the Movement Speed"; the numbers are DESIGN
+entityDef csm_prop_small
+{
+	"inherit"			"player"
+	"health"			"50"
+	"max_health"		"50"
+	"weapon"			""
+	"noItemPickup"		"1"
+	"pm_walkspeed"		"300"
+	"pm_runspeed"		"300"
+}
+
+entityDef csm_prop_medium
+{
+	"inherit"			"player"
+	"health"			"100"
+	"max_health"		"100"
+	"weapon"			""
+	"noItemPickup"		"1"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+entityDef csm_prop_large
+{
+	"inherit"			"player"
+	"health"			"200"
+	"max_health"		"200"
+	"weapon"			""
+	"noItemPickup"		"1"
+	"pm_walkspeed"		"200"
+	"pm_runspeed"		"200"
+}
+
+// Seeker in Burning Time: OBSERVED "Movement Speed Increased"
+entityDef csm_seeker_burning
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_m3"
+	"current_weapon"	"1"
+	"ammo_buckshot"		"32"
+	"pm_walkspeed"		"320"
+	"pm_runspeed"		"320"
+}
+
+// Studio: the tools are the CSO names (OBSERVED in the binaries' strings)
+// over placeholder weapons
+entityDef csm_builder
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_usp"
+	"current_weapon"	"0"
+	"ammo_45acp"		"100"
+	"pm_walkspeed"		"300"
+	"pm_runspeed"		"300"
+}
+
+// --- weapons ---
+
+entityDef weapon_csm_claw
+{
+	"inherit"			"weapon_csnz_claw"
+	"def_onFire"		"projectile_csm_claw"
+	"inv_name"			"Claw"
+	"fireRate"			"0.6"
+	"failRate"			"0.6"
+}
+
+entityDef projectile_csm_claw
+{
+	"inherit"			"projectile_knife_slash"
+	"damage"			"30"
+	"range"				"64"
+	"weapon"			"weapon_csm_claw"
+}
+
+entityDef weapon_csm_giantclaw
+{
+	"inherit"			"weapon_csnz_claw"
+	"def_onFire"		"projectile_csm_giantclaw"
+	"inv_name"			"Giant Claw"
+	"fireRate"			"1.0"
+	"failRate"			"1.0"
+}
+
+entityDef projectile_csm_giantclaw
+{
+	"inherit"			"projectile_knife_slash"
+	"damage"			"120"
+	"range"				"128"
+	"weapon"			"weapon_csm_giantclaw"
+}
+
+// --- map entities of CS / CSO maps (OBSERVED class names of CS 1.6 maps) ---
+
+entityDef info_player_terrorist
+{
+	"spawnclass"	"ncSpawnPoint"
+}
+
+entityDef info_player_counterterrorist
+{
+	"spawnclass"	"ncSpawnPoint"
+}
+
+entityDef info_vip_start
+{
+	"spawnclass"	"info_target"
+}
+
+entityDef info_bomb_target
+{
+	"spawnclass"	"info_target"
+}
+
+entityDef info_hostage_rescue
+{
+	"spawnclass"	"info_target"
+}
+
+entityDef hostage_entity
+{
+	"spawnclass"	"info_target"
+}
+
+entityDef armoury_entity
+{
+	"spawnclass"	"info_target"
+}
+
+entityDef func_bomb_target
+{
+	"spawnclass"	"trigger_multiple"
+}
+
+entityDef func_buyzone
+{
+	"spawnclass"	"trigger_multiple"
+}
+
+entityDef func_hostage_rescue
+{
+	"spawnclass"	"trigger_multiple"
+}
+
+entityDef func_vip_safetyzone
+{
+	"spawnclass"	"trigger_multiple"
+}
+
+entityDef func_escapezone
+{
+	"spawnclass"	"trigger_multiple"
+}
+
+// --- HUD text channels (game_text), contract in INTERFACES.md ---
+
+entityDef csnz_banner
+{
+	"spawnclass"	"game_text"
+	"message"	""
+	"x"		"-1"
+	"y"		"0.3"
+	"fadein"	"0.1"
+	"fadeout"	"0.5"
+	"holdtime"	"3"
+	"color"		"255 220 120"
+	"color2"	"255 255 255"
+	"spawnflags"	"1"
+	"channel"	"3"
+}
+
+entityDef csnz_center
+{
+	"spawnclass"	"game_text"
+	"message"	""
+	"x"		"-1"
+	"y"		"0.65"
+	"fadein"	"0.05"
+	"fadeout"	"0.3"
+	"holdtime"	"2.5"
+	"color"		"255 255 255"
+	"color2"	"255 255 255"
+	"spawnflags"	"0"
+	"channel"	"4"
+}
+
+// Studio monster blocks: CSO monsters (voxel_monster.csv) are not acquired, so
+// Nuclide's base soldier and ogre stand in (DESIGN). Self-contained because
+// base's monsters/army.def loads before monsters/base.def and its "inherit"
+// finds nothing.
+entityDef csm_vxmonster
+{
+	"spawnclass"	"ncMonster"
+	"netname"	"Monster"
+	"model"		"progs/soldier.mdl"
+	"propdata"	"actor_fleshy"
+	"mins"		"-16 -16 -24"
+	"maxs"		"16 16 40"
+	"health"	"30"
+	"speed_walk"	"64"
+	"speed_run"	"192"
+	"eye_height"	"55"
+	"mindset_idle"	"idle"
+	"mindset_hunt"	"huntPlayer"
+	"mindset_search"	"searchNearestPlayer"
+	"act_idle"	"0"
+	"act_walk"	"9"
+	"act_run"	"7"
+	"act_smallFlinch"	"4"
+	"act_bigFlinch"	"5,6"
+	"act_dieSimple"	"1,2"
+	"attack_ranged_range"	"1024"
+	"act_rangeAttack1"	"8"
+	"mindset_rangedCombat"	"army_rangedAttack1"
+	"def_rangedAttack1"	"projectile_army_rifle"
+}
+
+entityDef csm_vxboss
+{
+	"spawnclass"	"ncMonster"
+	"netname"	"Boss"
+	"model"		"progs/ogre.mdl"
+	"propdata"	"actor_fleshy"
+	"mins"		"-32 -32 -24"
+	"maxs"		"32 32 64"
+	"health"	"1000"
+	"speed_walk"	"64"
+	"speed_run"	"192"
+	"eye_height"	"55"
+	"mindset_idle"	"idle"
+	"mindset_hunt"	"huntPlayer"
+	"mindset_search"	"searchNearestPlayer"
+	"act_idle"	"0"
+	"act_walk"	"1"
+	"act_run"	"2"
+	"act_smallFlinch"	"6,7,8"
+	"act_bigFlinch"	"9,10"
+	"act_dieSimple"	"11,12"
+	"attack_melee_range"	"256"
+	"act_meleeAttack1"	"3,4"
+	"mindset_meleeCombat"	"knight_meleeAttack1"
+}

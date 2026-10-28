@@ -1,0 +1,143 @@
+// CS player for this game: replaces Nuclide base's Quake player.
+//
+// Models, bone names and sequence numbers are OBSERVED in the build
+// (models/player/<name>/<name>.mdl, read with tools/analysis/mdlinfo.py).
+// The numbered .seq files next to each model hold CSO's extra sequences;
+// the stock ones below are all inside the .mdl. Hull and view heights are
+// Nuclide's GoldSrc defaults, which are CS 1.6's (STOCK-CS).
+
+entityDef player
+{
+	"spawnclass"		"ncPlayer"
+	"health"			"100"
+	"max_health"		"100"
+	"maxarmor"			"100"
+	"bleeds"			"1"
+	"propdata"			"actor_human"
+	"armorProtection"	"0.5"
+	"armorBonus"		"0.5"
+	"model"				"models/player/gign/gign.mdl"
+	"weapon"			"weapon_knife,weapon_usp"
+	"current_weapon"	"1"
+	"ammo_45acp"		"24"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+	"pm_runfiring"		"1"
+
+	"spine"				"Bip01 Spine"
+	"torsoStart"		"Bip01 Spine"
+	"torsoEnd"			"Bip01 R Finger11"
+
+	"snd_jump"			"Player.Jump"
+	"snd_death"			"Player.Death"
+	"snd_pain"			"Player.Pain"
+
+	// legs (gign.mdl: 1 idle1, 2 crouch_idle, 3 walk, 4 run, 5 crouchrun, 6 jump, 8 swim, 9 treadwater)
+	"act_idle"			"1"
+	"act_idle_crouch"	"2"
+	"act_walk"			"3"
+	"act_run"			"4"
+	"act_walk_crouch"	"5"
+	"act_jump"			"6"
+	"act_swim"			"8"
+	"act_treadwater"	"9"
+	"act_death"			"101,102,103"
+	"act_dieHeadshot"	"104"
+	"act_smallFlinch"	"99"
+	"act_bigFlinch"		"100"
+
+	// torso, by the weapon's animPrefix: ref_aim/ref_shoot/ref_reload and crouch_*
+	"act_aim_carbine"			"13"
+	"act_attack_carbine"		"14"
+	"act_reload_carbine"		"15"
+	"act_aim_crouch_carbine"	"10"
+	"act_attack_crouch_carbine"	"11"
+	"act_aim_onehanded"			"19"
+	"act_attack_onehanded"		"20"
+	"act_reload_onehanded"		"21"
+	"act_aim_crouch_onehanded"	"16"
+	"act_attack_crouch_onehanded"	"17"
+	"act_aim_dualpistols"		"26"
+	"act_attack_dualpistols"	"27,28"
+	"act_reload_dualpistols"	"29"
+	"act_aim_crouch_dualpistols"	"22"
+	"act_attack_crouch_dualpistols"	"23,24"
+	"act_aim_rifle"				"33"
+	"act_attack_rifle"			"34"
+	"act_reload_rifle"			"35"
+	"act_aim_crouch_rifle"		"30"
+	"act_attack_crouch_rifle"	"31"
+	"act_aim_mp5"				"39"
+	"act_attack_mp5"			"40"
+	"act_reload_mp5"			"41"
+	"act_aim_crouch_mp5"		"36"
+	"act_attack_crouch_mp5"		"37"
+	"act_aim_shotgun"			"45"
+	"act_attack_shotgun"		"46"
+	"act_reload_shotgun"		"47"
+	"act_aim_crouch_shotgun"	"42"
+	"act_attack_crouch_shotgun"	"43"
+	"act_aim_m249"				"51"
+	"act_attack_m249"			"52"
+	"act_reload_m249"			"53"
+	"act_aim_crouch_m249"		"48"
+	"act_attack_crouch_m249"	"49"
+	"act_aim_grenade"			"56"
+	"act_attack_grenade"		"57"
+	"act_aim_crouch_grenade"	"58"
+	"act_attack_crouch_grenade"	"59"
+	"act_aim_knife"				"75"
+	"act_attack_knife"			"76"
+	"act_aim_crouch_knife"		"73"
+	"act_attack_crouch_knife"	"74"
+	"act_aim_ak47"				"80"
+	"act_attack_ak47"			"81"
+	"act_reload_ak47"			"82"
+	"act_aim_crouch_ak47"		"77"
+	"act_attack_crouch_ak47"	"78"
+}
+
+entityDef player_mp
+{
+	"inherit"			"player"
+}
+
+// CT and T characters of CS 1.6, all in this build (OBSERVED). Same skeleton
+// and stock sequence order as gign.mdl.
+entityDef player_ct_gign		{ "inherit" "player" "model" "models/player/gign/gign.mdl" }
+entityDef player_ct_gsg9		{ "inherit" "player" "model" "models/player/gsg9/gsg9.mdl" }
+entityDef player_ct_sas			{ "inherit" "player" "model" "models/player/sas/sas.mdl" }
+entityDef player_ct_urban		{ "inherit" "player" "model" "models/player/urban/urban.mdl" }
+entityDef player_t_arctic		{ "inherit" "player" "model" "models/player/arctic/arctic.mdl" }
+entityDef player_t_guerilla		{ "inherit" "player" "model" "models/player/guerilla/guerilla.mdl" }
+entityDef player_t_leet			{ "inherit" "player" "model" "models/player/leet/leet.mdl" }
+entityDef player_t_terror		{ "inherit" "player" "model" "models/player/terror/terror.mdl" }
+
+// Zombie: zombi_origin.mdl (Zombi's host zombie) has its own sequence order
+// after 72 (OBSERVED): 73 crouch_aim_knife, 75 ref_aim_knife, 76-79 knife
+// idle/walk/run/jump, 80 ref_shoot_knife, 107-109 death1-3.
+entityDef player_zombie
+{
+	"inherit"			"player"
+	"model"				"models/player/zombi_origin/zombi_origin.mdl"
+	"weapon"			"weapon_csnz_claw"
+	"current_weapon"	"0"
+	"act_idle"			"76"
+	"act_walk"			"77"
+	"act_run"			"78"
+	"act_jump"			"79"
+	"act_death"			"107,108,109"
+	"act_dieHeadshot"	"110"
+	"act_smallFlinch"	"104"
+	"act_bigFlinch"		"105"
+	"act_aim_knife"				"75"
+	"act_attack_knife"			"80,81"
+	"act_aim_crouch_knife"		"73"
+	"act_attack_crouch_knife"	"74"
+}
+
+entityDef player_zombie_host
+{
+	"inherit"			"player_zombie"
+	"model"				"models/player/zombi_host/zombi_host.mdl"
+}

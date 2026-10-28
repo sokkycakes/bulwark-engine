@@ -1,0 +1,362 @@
+// CSNZ Zombie Host Types - entityDef declarations
+//
+// All 18 zombie host types identified from binary evidence.
+// Inherits from player_csnz_zombie (defined in zombi.def).
+//
+// Evidence: DESIGN - all stat values are approximated from binary patterns
+// and behavioral observation; they are NOT exact CSNZ values.
+// Tune as needed for gameplay balance.
+
+// ============================================================================
+// Type 0: NORMAL - base zombie (already defined as player_csnz_zombie in
+// zombi.def; this alias exists for completeness in the type enum)
+// ============================================================================
+entityDef csm_zombie_normal
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1000 HP, 280 speed (matches base player_csnz_zombie)
+	"health"		"1000"
+	"max_health"		"1000"
+	"pm_walkspeed"		"280"
+	"pm_runspeed"		"280"
+}
+
+// ============================================================================
+// Type 1: LIGHT - faster but weaker
+// ============================================================================
+entityDef csm_zombie_light
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 800 HP, 320 speed - trades durability for mobility
+	"health"		"800"
+	"max_health"		"800"
+	"pm_walkspeed"		"320"
+	"pm_runspeed"		"320"
+}
+
+// ============================================================================
+// Type 2: HEAVY - slow but tough
+// ============================================================================
+entityDef csm_zombie_heavy
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 3000 HP, 200 speed - tank class
+	"health"		"3000"
+	"max_health"		"3000"
+	"pm_walkspeed"		"200"
+	"pm_runspeed"		"200"
+	"weapon"		"weapon_csnz_claw_heavy"
+}
+
+// ============================================================================
+// Type 3: PSYCHO - fast and dangerous
+// ============================================================================
+entityDef csm_zombie_psycho
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1200 HP, 310 speed - aggressive rushdown type
+	"health"		"1200"
+	"max_health"		"1200"
+	"pm_walkspeed"		"310"
+	"pm_runspeed"		"310"
+	"weapon"		"weapon_csnz_claw_fast"
+}
+
+// ============================================================================
+// Type 4: VOODOO - healing zombie
+// NOTE: healing aura ability not yet implemented; requires custom think logic
+// to periodically restore HP to nearby allied zombies.
+// ============================================================================
+entityDef csm_zombie_voodoo
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1500 HP, 260 speed - support/healer role
+	"health"		"1500"
+	"max_health"		"1500"
+	"pm_walkspeed"		"260"
+	"pm_runspeed"		"260"
+}
+
+// ============================================================================
+// Type 5: DEIMOS - mid-tier zombie
+// ============================================================================
+entityDef csm_zombie_deimos
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 2000 HP, 270 speed - well-rounded mid-tier
+	"health"		"2000"
+	"max_health"		"2000"
+	"pm_walkspeed"		"270"
+	"pm_runspeed"		"270"
+}
+
+// ============================================================================
+// Type 6: GANYMEDE - flying-capable zombie
+// NOTE: flight/hover ability not yet implemented; requires custom movement
+// flags or a fly movetype toggle on ability activation.
+// ============================================================================
+entityDef csm_zombie_ganymede
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1800 HP, 290 speed - aerial mobility class
+	"health"		"1800"
+	"max_health"		"1800"
+	"pm_walkspeed"		"290"
+	"pm_runspeed"		"290"
+}
+
+// ============================================================================
+// Type 7: STAMPER - ground-pound zombie
+// NOTE: stomp/ground-pound ability not yet implemented; would need an
+// area-damage projectile spawned on landing or ability use.
+// ============================================================================
+entityDef csm_zombie_stamper
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 2500 HP, 240 speed - area-denial bruiser
+	"health"		"2500"
+	"max_health"		"2500"
+	"pm_walkspeed"		"240"
+	"pm_runspeed"		"240"
+	"weapon"		"weapon_csnz_claw_heavy"
+}
+
+// ============================================================================
+// Type 8: BANSHEE - ranged screamer
+// NOTE: ranged scream attack not yet implemented; would need a ranged
+// projectile or hitscan attack in addition to the melee claw.
+// ============================================================================
+entityDef csm_zombie_banshee
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1500 HP, 280 speed - ranged/CC hybrid
+	"health"		"1500"
+	"max_health"		"1500"
+	"pm_walkspeed"		"280"
+	"pm_runspeed"		"280"
+}
+
+// ============================================================================
+// Type 9: VENOMGUARD - poison zombie
+// NOTE: poison/venom effect not yet implemented; would apply a damage-over-
+// time debuff on claw hit via a custom projectile or onHit callback.
+// ============================================================================
+entityDef csm_zombie_venomguard
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 2000 HP, 260 speed - DoT applicator
+	"health"		"2000"
+	"max_health"		"2000"
+	"pm_walkspeed"		"260"
+	"pm_runspeed"		"260"
+}
+
+// ============================================================================
+// Type 10: STINGFINGER - fast melee
+// NOTE: rapid attack pattern - uses weapon_csnz_claw_fast for higher
+// attack speed with reduced per-hit damage.
+// ============================================================================
+entityDef csm_zombie_stingfinger
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1000 HP, 330 speed - glass cannon with rapid attacks
+	"health"		"1000"
+	"max_health"		"1000"
+	"pm_walkspeed"		"330"
+	"pm_runspeed"		"330"
+	"weapon"		"weapon_csnz_claw_fast"
+}
+
+// ============================================================================
+// Type 11: METATRON - heavy boss type
+// NOTE: boss-tier zombie; significantly higher HP pool. Uses the giant
+// claw weapon for devastating but slow attacks.
+// ============================================================================
+entityDef csm_zombie_metatron
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 5000 HP, 220 speed - boss class, massive damage
+	"health"		"5000"
+	"max_health"		"5000"
+	"pm_walkspeed"		"220"
+	"pm_runspeed"		"220"
+	"weapon"		"weapon_csnz_claw_giant"
+}
+
+// ============================================================================
+// Type 12: LILITH - stealth zombie
+// NOTE: stealth/invisibility ability not yet implemented; would require
+// a render alpha toggle or cloaking field on ability activation.
+// ============================================================================
+entityDef csm_zombie_lilith
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1200 HP, 300 speed - ambush predator with cloaking
+	"health"		"1200"
+	"max_health"		"1200"
+	"pm_walkspeed"		"300"
+	"pm_runspeed"		"300"
+}
+
+// ============================================================================
+// Type 13: CHASER - pursuit specialist (fastest zombie)
+// NOTE: highest movement speed of all zombie types. Uses fast claw
+// for relentless pressure.
+// ============================================================================
+entityDef csm_zombie_chaser
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1500 HP, 350 speed - fastest zombie in the roster
+	"health"		"1500"
+	"max_health"		"1500"
+	"pm_walkspeed"		"350"
+	"pm_runspeed"		"350"
+	"weapon"		"weapon_csnz_claw_fast"
+}
+
+// ============================================================================
+// Type 14: BLOTTER - area denial
+// NOTE: area-of-effect attack not yet implemented; would need an AOE
+// projectile or lingering damage zone spawned on ability use.
+// ============================================================================
+entityDef csm_zombie_blotter
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 2000 HP, 250 speed - zone controller
+	"health"		"2000"
+	"max_health"		"2000"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+// ============================================================================
+// Type 15: RUSTYWING - aerial zombie
+// NOTE: glide/flight ability not yet implemented; similar to Ganymede
+// but with a sustained glide rather than a hover. Requires custom
+// movement handling.
+// ============================================================================
+entityDef csm_zombie_rustywing
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1600 HP, 300 speed - aerial with glide capability
+	"health"		"1600"
+	"max_health"		"1600"
+	"pm_walkspeed"		"300"
+	"pm_runspeed"		"300"
+}
+
+// ============================================================================
+// Type 16: AKSHA - fire zombie
+// NOTE: fire/incendiary attacks not yet implemented; would apply a
+// burn damage-over-time effect on claw hit and potentially leave
+// fire trails.
+// ============================================================================
+entityDef csm_zombie_aksha
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 2500 HP, 260 speed - incendiary bruiser
+	"health"		"2500"
+	"max_health"		"2500"
+	"pm_walkspeed"		"260"
+	"pm_runspeed"		"260"
+}
+
+// ============================================================================
+// Type 17: SOLDIER - balanced military zombie
+// NOTE: tactical/military behavior not yet implemented; would include
+// coordinated movement patterns and varied attack sequences.
+// ============================================================================
+entityDef csm_zombie_soldier
+{
+	"inherit"		"player_csnz_zombie"
+	// DESIGN: 1800 HP, 270 speed - disciplined all-rounder
+	"health"		"1800"
+	"max_health"		"1800"
+	"pm_walkspeed"		"270"
+	"pm_runspeed"		"270"
+}
+
+
+// ============================================================================
+// VARIANT CLAW WEAPONS
+// ============================================================================
+// These override the base weapon_csnz_claw (defined in zombi.def) for zombie
+// types that need different attack properties. All damage/rate values are
+// DESIGN approximations.
+
+// --- Fast Claw: higher attack speed, lower damage per hit ---
+// Used by: Psycho, Stingfinger, Chaser
+entityDef weapon_csnz_claw_fast
+{
+	"inherit"		"weapon_csnz_claw"
+	"inv_name"		"Fast Claw"
+	// DESIGN: 0.35s fire rate (vs 0.6s base) - rapid slashing
+	"fireRate"		"0.35"
+	"failRate"		"0.35"
+	"def_onFire"		"projectile_csnz_claw_fast"
+}
+
+entityDef projectile_csnz_claw_fast
+{
+	"spawnclass"		"ncProjectile"
+	"is_bullet"		"1"
+	// DESIGN: 14 damage per hit (vs 20 base) - compensated by attack speed
+	"damage"		"14"
+	"range"			"64"
+	"weapon"		"weapon_csnz_claw_fast"
+	"decal_detonate"	"Impact.Shot"
+	"snd_hitBody"		"Zombie.Hit"
+	"snd_hitWorld"		"Zombie.HitWall"
+}
+
+// --- Heavy Claw: slower but harder hitting ---
+// Used by: Heavy, Stamper
+entityDef weapon_csnz_claw_heavy
+{
+	"inherit"		"weapon_csnz_claw"
+	"inv_name"		"Heavy Claw"
+	// DESIGN: 0.9s fire rate (vs 0.6s base) - slow but devastating
+	"fireRate"		"0.9"
+	"failRate"		"0.9"
+	"def_onFire"		"projectile_csnz_claw_heavy"
+}
+
+entityDef projectile_csnz_claw_heavy
+{
+	"spawnclass"		"ncProjectile"
+	"is_bullet"		"1"
+	// DESIGN: 35 damage per hit (vs 20 base) - power strikes
+	"damage"		"35"
+	"range"			"72"
+	"weapon"		"weapon_csnz_claw_heavy"
+	"decal_detonate"	"Impact.Shot"
+	"snd_hitBody"		"Zombie.Hit"
+	"snd_hitWorld"		"Zombie.HitWall"
+}
+
+// --- Giant Claw: boss-tier weapon for Metatron ---
+// Used by: Metatron
+entityDef weapon_csnz_claw_giant
+{
+	"inherit"		"weapon_csnz_claw"
+	"inv_name"		"Giant Claw"
+	// DESIGN: 1.2s fire rate - massive windup, devastating impact
+	"fireRate"		"1.2"
+	"failRate"		"1.2"
+	"testDistance"		"-80"
+	"def_onFire"		"projectile_csnz_claw_giant"
+}
+
+entityDef projectile_csnz_claw_giant
+{
+	"spawnclass"		"ncProjectile"
+	"is_bullet"		"1"
+	// DESIGN: 60 damage per hit - boss-tier devastation
+	"damage"		"60"
+	// DESIGN: 80 range (vs 64 base) - massive reach
+	"range"			"80"
+	"weapon"		"weapon_csnz_claw_giant"
+	"decal_detonate"	"Impact.Shot"
+	"snd_hitBody"		"Zombie.Hit"
+	"snd_hitWorld"		"Zombie.HitWall"
+}
