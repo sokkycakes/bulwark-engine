@@ -1077,7 +1077,14 @@ static void CL_Connect_f(int argc, const char **argv)
 	CL_Connect(argv[1]);
 }
 
-static void CL_Disconnect_f(int argc, const char **argv) { CL_Disconnect(NULL); }
+/* the host leaving its own game ends it, as in Quake and GoldSrc */
+static void CL_Disconnect_f(int argc, const char **argv)
+{
+	bool host = cl.listen && sv.active;
+	CL_Disconnect(NULL);
+	if (host && Cmd_Exists("killserver"))
+		Cmd_ExecuteString("killserver");
+}
 
 static void CL_Reconnect_f(int argc, const char **argv)
 {
