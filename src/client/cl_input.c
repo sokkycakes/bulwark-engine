@@ -416,6 +416,13 @@ void IN_KeyEvent(int key, bool down, int unicode)
 			Cbuf_AddText("togglemenu\n");
 		return;
 	}
+	/* GoldSrc configs bind Escape to "cancelselect", and GoldSrc opens its
+	   menu on Escape regardless, so do both */
+	if (key == K_ESCAPE && !Str_ICmp(b, "cancelselect")) {
+		Cbuf_AddTextAtLevel("cancelselect\n", bindlevel[key]);
+		Cbuf_AddText("togglemenu\n");
+		return;
+	}
 	if (b[0] == '+') {
 		char cmd[1024];
 		Mem_Free(held_command[key]);
