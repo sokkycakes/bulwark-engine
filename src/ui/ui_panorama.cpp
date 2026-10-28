@@ -13,6 +13,7 @@ extern "C" {
 #include "../render/render.h"
 int Key_NumForName(const char *name);
 bool Key_IsDown(int key);
+const char *Key_NameForNum(int key);
 }
 
 #include "ui/panorama/panorama_font_atlas.hpp"
@@ -939,6 +940,19 @@ void UI_Eval(int num, const char *js)
 
 bool UI_WantsInput(void) { return input_view() != nullptr; }
 
+/* posts a "key" event: key is the DOM-style name (may be empty), bind the
+ * engine's own key name, as the bind command takes it */
+static void post_key(View *v, const char *name, int key, bool down)
+{
+	const char *bind = Key_NameForNum(key);
+	std::string json = "{\"key\":" + js_quote(name ? name : "") + ",\"bind\":" + js_quote(bind ? bind : "") +
+	                   ",\"down\":" + (down ? "true" : "false") +
+	                   ",\"shift\":" + (Key_IsDown(K_LSHIFT) ? "true" : "false") +
+	                   ",\"ctrl\":" + (Key_IsDown(K_LCTRL) ? "true" : "false") +
+	                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") + "}";
+	UI_Post(v->num, "key", json.c_str());
+}
+
 bool UI_KeyEvent(int key, bool down, int unicode)
 {
 	View *v = input_view();
@@ -948,15 +962,13 @@ bool UI_KeyEvent(int key, bool down, int unicode)
 	if (key == K_MOUSE1) {
 		mouse_down = down;
 		v->pv.update_pointer(mouse_x * s, mouse_y * s, mouse_down);
+		post_key(v, "", key, down);
 		return true;
 	}
 	if (key == K_MWHEELUP || key == K_MWHEELDOWN) {
 		if (down)
 			v->pv.update_wheel(mouse_x * s, mouse_y * s, key == K_MWHEELUP ? 1.0f : -1.0f);
-		char json[64];
-		snprintf(json, sizeof(json), "{\"key\":\"%s\",\"down\":%s}", key == K_MWHEELUP ? "WheelUp" : "WheelDown",
-		         down ? "true" : "false");
-		UI_Post(v->num, "key", json);
+		post_key(v, key == K_MWHEELUP ? "WheelUp" : "WheelDown", key, down);
 		return true;
 	}
 	if (down) {
@@ -975,14 +987,7 @@ bool UI_KeyEvent(int key, bool down, int unicode)
 		}
 	}
 	char buf[8];
-	const char *name = key_name(key, unicode, buf, sizeof(buf));
-	if (name) {
-		std::string json = "{\"key\":" + js_quote(name) + ",\"down\":" + (down ? "true" : "false") +
-		                   ",\"shift\":" + (Key_IsDown(K_LSHIFT) ? "true" : "false") +
-		                   ",\"ctrl\":" + (Key_IsDown(K_LCTRL) ? "true" : "false") +
-		                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") + "}";
-		UI_Post(v->num, "key", json.c_str());
-	}
+	post_key(v, key_name(key, unicode, buf, sizeof(buf)), key, down);
 	return true;
 }
 

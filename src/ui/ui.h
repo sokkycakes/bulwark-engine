@@ -32,7 +32,8 @@ void UI_SetActionHandler(ui_action_fn fn);
 /* fte_query(request) in a script returns what this writes to reply */
 typedef void (*ui_query_fn)(int view, const char *request, strbuf_t *reply);
 void UI_SetQueryHandler(ui_query_fn fn);
-void UI_InitQC(void); /* sends script actions to CSQC_UIAction */
+void UI_InitQC(void); /* sends script actions to CSQC_UIAction or Menu_UIAction */
+void UI_CloseMenuViews(void); /* closes the views the menu progs opened */
 
 int UI_Open(const char *layout, int flags); /* returns a view number, 0 on failure */
 /* as UI_Open, running bootstrap (JavaScript, may be NULL) before the layout's scripts */

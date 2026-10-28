@@ -48,7 +48,7 @@ archived). The UI scale is framebuffer height ÷ design height, so a layout
 fills the same share of the screen at any resolution. Widths follow the aspect
 ratio, so percentage positions are the safe way to place things horizontally.
 
-## QuakeC builtins (CSQC)
+## QuakeC builtins (CSQC and the menu progs)
 
 ```
 float(string layout, float flags) ui_open;            // flags: 1 = takes input; returns a view number, 0 on failure
@@ -63,8 +63,17 @@ Scripts call back into the client game with
 void(float view, string action, string arg) CSQC_UIAction;
 ```
 
-which is called when the progs defines it. The action `"cmd"` never reaches
-QC: its argument is run as a console command.
+which is called when the progs defines it. The menu progs (`menu.dat`) has
+the same four builtins; actions from a view it opened go to its
+
+```
+void(float view, string action, string arg) Menu_UIAction;
+```
+
+instead, and its views close when it is unloaded (`menu_restart`, a game
+switch). Views opened with the `ui_open` command belong to the client game.
+The action `"cmd"` never reaches QC: its argument is run as a console
+command.
 
 ## JavaScript API
 
@@ -84,8 +93,11 @@ Each view gets a `Bulwark` object:
   page address (`menu_webcore`, `gecko_create`); `window` is the global
   object.
 - The engine posts `"key"` events to every view that takes input, with
-  `{key: "<key name>", down: true|false, shift, ctrl, alt}`, before the key
-  is handled by Panorama's own focus navigation.
+  `{key: "<key name>", bind: "<engine key name>", down: true|false, shift,
+  ctrl, alt}`, before the key is handled by Panorama's own focus
+  navigation. `key` follows DOM `KeyboardEvent.key` and is `""` for keys it
+  has no name for (function keys, mouse buttons); `bind` is the name the
+  `bind` command takes (`F1`, `MOUSE1`, `SHIFT`...), for key binding pages.
 
 A script may close its own view (asking for it through a command or the
 bridge): the view stops drawing and taking input at once and is freed at

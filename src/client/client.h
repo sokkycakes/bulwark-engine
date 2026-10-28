@@ -285,6 +285,7 @@ bool MQC_Load(void);
 void MQC_LoadWhenActive(void); /* once the game being started is in */
 void MQC_PendingLoad(void); /* does the load MQC_LoadWhenActive asked for */
 void MQC_Shutdown(void);
+qcvm_t *MQC_VM(void); /* the menu progs, NULL when none is loaded */
 bool MQC_Active(void);
 void MQC_Toggle(int mode);
 void MQC_Frame(int width, int height);
