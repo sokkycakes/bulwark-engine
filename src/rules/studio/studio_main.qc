@@ -101,9 +101,13 @@ SM_StartTest(entity p)
 	vx_testing = true;
 	vx_tester = p;
 	VE_Activate();
-	/* OBSERVED: a bot is added when the tester is alone */
-	if (CS_Players() < 2)
+	/* OBSERVED: a bot is added when the tester is alone; SOURCE-CONFIRMED
+	   (CSOGameRulesVoxelPVE "vxl_starttest", FUN_10859420): it stands still
+	   ("bot_stop 1" there, bot_pause in Nuclide) */
+	if (CS_Players() < 2) {
 		localcmd("sv addBot marco 2 0 0 tester_bot\n");
+		localcmd("set bot_pause 1\n");
+	}
 	SM_RespawnAll();
 	CS_Banner(CS_Text("CSO_Voxel_Start_TestGame", "Begin test"));
 	printf("studio %.1f: test started\n", time);
@@ -116,6 +120,7 @@ SM_EndTest(string why)
 		return;
 	VE_Deactivate();
 	vx_testing = false;
+	localcmd("set bot_pause 0\n");
 	/* pistons, explosions, doors: back to the map as it was saved */
 	if (!VX_LoadFile(VX_SnapshotPath()))
 		print("studio: the test snapshot could not be restored; the world is as the test left it\n");
@@ -172,7 +177,9 @@ VX_Link(entity p, vector from, vector to)
 	string key = VX_Key(r.vb_cell);
 	if (strstrofs(strcat("|", s.vb_links, "|"), strcat("|", key, "|")) >= 0)
 		return true;
-	if (tokenizebyseparator(s.vb_links, "|") >= 64) {
+	/* SOURCE-CONFIRMED (CVoxelEntity link slots 0xa4..0xb4, 0xb8..0xc8): a
+	   block has at most 5 outputs and 5 inputs */
+	if (tokenizebyseparator(s.vb_links, "|") >= VE_MAXLINKS || VE_InputCount(r) >= VE_MAXLINKS) {
 		VX_Tell(p, "That block has too many links.");
 		return false;
 	}
@@ -225,12 +232,41 @@ VX_Command(entity p, string line)
 		if (p)
 			VE_Code(p, argv(1));
 		return true;
+	case "coinflip":
+	case "rsp":
+	case "lottery":
+	case "pay":
+		if (p)
+			VE_GameCommand(p, c, argv(1));
+		return true;
+	case "hit":
+		/* tests: sv vx hit x y z, damage through Nuclide on the block's hitbox */
+		if (!p && vx_live) {
+			entity hr = VX_RecordAt(VX_ArgCell(world, 1, false));
+			entity hp = next.Player(world);
+			if (hr && VE_Hittable(VE_Type(hr)) && hr.vb_hitbox && hp) {
+				if (argv(4) != "")
+					combat.Damage(hr.vb_hitbox, hp, hp, argv(4), hp.origin, '0 0 0', hr.origin);
+				else
+					hr.vb_hitbox.health -= 30;
+			}
+		}
+		return true;
+	case "coins":
+		/* tests: sv vx coins <player> <amount> */
+		if (!p)
+			for (entity cq = world; (cq = next.Player(cq));)
+				if (cq.netname == argv(1))
+					VE_SetCoins(cq, stof(argv(2)));
+		return true;
 	case "use":
 		/* E on the block at x y z (tests; players use csnz_use) */
 		r = VX_RecordAt(VX_ArgCell(p, 1, false));
 		entity user = p;
 		if (!user)
-			user = next.Player(world);
+			for (entity uq = world; (uq = next.Player(uq));)
+				if (uq.netname == argv(4) || (argv(4) == "" && !user))
+					user = uq;
 		if (vx_live && r && user)
 			printf("studio %.1f: use %s: %s\n", time, VX_Key(r.vb_cell), VE_Use(r, user) ? "yes" : "nothing");
 		return true;
@@ -783,6 +819,7 @@ CodeCallback_PlayerSpawn(entity p)
 		return;
 	}
 	CS_PutInGame(p);
+	VE_Respawned(p);
 }
 
 bool
@@ -795,6 +832,7 @@ CodeCallback_PlayerRequestRespawn(entity p)
 	if (p.cs_respawnAt > time)
 		return (false);
 	CS_PutInGame(p);
+	VE_Respawned(p);
 	return (true);
 }
 

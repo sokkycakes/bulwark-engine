@@ -19,7 +19,7 @@
  *   - compliments (thumbs up) from dead players, one per player per round,
  *     a Golden Thumbs Up at 10 in a round
  *   - results: longest-lived object, objects found
- * DESIGN: every duration and amount below, one Seeker per five players,
+ * DESIGN: the amounts below, one Seeker per five players,
  *   object = a Studio block type (shown to the client through userinfo
  *   csnz_prop; drawing it is client work, BLOCKERS.md), how a miss is told
  *   from a hit (shells used with no hit within 0.3 s).
@@ -27,11 +27,16 @@
  *   (client), fall damage immunity (Nuclide does not say what hurt). */
 
 #define PH_REROLLS 3
+/* SOURCE-CONFIRMED (CSOGameRulesVoxelPropHunt think FUN_1077f9d0, phases
+   at +0x25c/+0x260): seeker chosen after 10 s, then 15 s at the
+   Transformation Machine, 20 s of hiding, 75 s of hunting, a 20 s 2nd
+   Transformation window, 60 s more and 40 s of Burning Time */
 var float autocvar_ph_select_time = 15;
 var float autocvar_ph_hide_time = 20;
-var float autocvar_ph_second_at = 0.5;		/* share of the round */
+var float autocvar_ph_second_at = 75;		/* seconds after the Seeker appears */
 var float autocvar_ph_second_window = 20;
-var float autocvar_ph_burning = 60;		/* last seconds of the round */
+var float autocvar_ph_after_second = 60;
+var float autocvar_ph_burning = 40;		/* last seconds of the round */
 var float autocvar_ph_miss_damage = 5;
 
 .float ph_offer;		/* object type offered by the machine */
@@ -196,10 +201,9 @@ PH_Live(void)
 {
 	ph_liveAt = time;
 	ph_secondSaid = false;
-	float len = cs_roundTime > 0 ? cs_roundTime : 240;
-	ph_secondStart = time + len * autocvar_ph_second_at;
+	ph_secondStart = time + autocvar_ph_hide_time + autocvar_ph_second_at;
 	ph_secondEnd = ph_secondStart + autocvar_ph_second_window;
-	ph_burnAt = time + max(len - autocvar_ph_burning, ph_secondEnd - time);
+	ph_burnAt = ph_secondEnd + autocvar_ph_after_second;
 	CS_Banner(sprintf(CS_Text("CSO_PropHunt_Msg3", "%d seconds until the Seeker appears."), autocvar_ph_hide_time));
 }
 
@@ -404,7 +408,8 @@ CSM_PropHunt(void)
 	cs_minPlayers = 2;
 	cs_roundTimeWinsTeam2 = true;
 	cs_winLimitFallback = 5;
-	cs_roundTimeFallback = 4;
+	/* 20 + 75 + 20 + 60 + 40 s from the start of hiding (SOURCE-CONFIRMED) */
+	cs_roundTimeFallback = 215 / 60;
 	cs_timeLimitFallback = 30;
 	cs_noBuy = true;
 	cs_team1Name = "Seekers";

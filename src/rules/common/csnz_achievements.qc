@@ -179,8 +179,18 @@ ACH_Category(float id)
 
 /* --- per-player achievement state (entity fields) --- */
 
-.float ach_progress[ACH_MAX];	/* current progress toward each achievement */
-.float ach_completed[ACH_MAX];	/* 1 if completed, 0 otherwise */
+/* per-player tables, by client slot: field arrays would take 60 of the 256
+   spare entity words an added progs gets (studio.dat ran out) */
+#define ACH_SLOTS 64
+float ach_progressTab[ACH_SLOTS * ACH_MAX];	/* current progress toward each achievement */
+float ach_completedTab[ACH_SLOTS * ACH_MAX];	/* 1 if completed, 0 otherwise */
+float
+ACH_Idx(entity pl, float n)
+{
+	return bound(0, num_for_edict(pl) - 1, ACH_SLOTS - 1) * ACH_MAX + n;
+}
+#define ach_progress(pl, n) ach_progressTab[ACH_Idx(pl, n)]
+#define ach_completed(pl, n) ach_completedTab[ACH_Idx(pl, n)]
 
 /* per-match / per-life tracking counters */
 .float ach_kills_life;		/* kills in current life (for Rampage) */
@@ -224,8 +234,8 @@ ACH_Load(entity p)
 {
 	/* zero everything */
 	for (float i = 0; i < ACH_MAX; i++) {
-		p.ach_progress[i] = 0;
-		p.ach_completed[i] = 0;
+		ach_progress(p, i) = 0;
+		ach_completed(p, i) = 0;
 	}
 	p.ach_kills = 0;
 	p.ach_headshots = 0;
@@ -265,8 +275,8 @@ ACH_Load(entity p)
 		if (key == "ach" && n >= 4) {
 			float id = stof(val);
 			if (id >= 0 && id < ACH_MAX) {
-				p.ach_progress[id] = stof(argv(2));
-				p.ach_completed[id] = stof(argv(3));
+				ach_progress(p, id) = stof(argv(2));
+				ach_completed(p, id) = stof(argv(3));
 			}
 			continue;
 		}
@@ -288,7 +298,7 @@ ACH_Load(entity p)
 
 	float completed = 0;
 	for (float i = 0; i < ACH_MAX; i++)
-		if (p.ach_completed[i])
+		if (ach_completed(p, i))
 			completed++;
 	print(sprintf("achievements: loaded %s (%g/%g completed)\n",
 		p.netname, completed, (float)ACH_MAX));
@@ -309,7 +319,7 @@ ACH_Save(entity p)
 	/* write each achievement */
 	for (float i = 0; i < ACH_MAX; i++) {
 		fputs(f, sprintf("ach %g %g %g\n",
-			i, p.ach_progress[i], p.ach_completed[i]));
+			i, ach_progress(p, i), ach_completed(p, i)));
 	}
 
 	/* write cumulative stats */
@@ -334,10 +344,10 @@ void
 ACH_Award(entity p, float achId)
 {
 	if (achId < 0 || achId >= ACH_MAX) return;
-	if (p.ach_completed[achId]) return;	/* already earned */
+	if (ach_completed(p, achId)) return;	/* already earned */
 	if (clienttype(p) == CLIENTTYPE_BOT) return;
 
-	p.ach_completed[achId] = 1;
+	ach_completed(p, achId) = 1;
 	float xp = ACH_XPReward(achId);
 
 	sprint(p, PRINT_HIGH, sprintf(
@@ -353,13 +363,13 @@ void
 ACH_Check(entity p, float achId, float progress)
 {
 	if (achId < 0 || achId >= ACH_MAX) return;
-	if (p.ach_completed[achId]) return;
+	if (ach_completed(p, achId)) return;
 	if (clienttype(p) == CLIENTTYPE_BOT) return;
 
-	p.ach_progress[achId] += progress;
+	ach_progress(p, achId) += progress;
 
 	float threshold = ACH_Threshold(achId);
-	if (p.ach_progress[achId] >= threshold)
+	if (ach_progress(p, achId) >= threshold)
 		ACH_Award(p, achId);
 }
 
@@ -368,13 +378,13 @@ void
 ACH_SetProgress(entity p, float achId, float value)
 {
 	if (achId < 0 || achId >= ACH_MAX) return;
-	if (p.ach_completed[achId]) return;
+	if (ach_completed(p, achId)) return;
 	if (clienttype(p) == CLIENTTYPE_BOT) return;
 
-	p.ach_progress[achId] = value;
+	ach_progress(p, achId) = value;
 
 	float threshold = ACH_Threshold(achId);
-	if (p.ach_progress[achId] >= threshold)
+	if (ach_progress(p, achId) >= threshold)
 		ACH_Award(p, achId);
 }
 
@@ -614,7 +624,7 @@ ACH_Command(entity p, string cmd)
 
 	float completed = 0;
 	for (float i = 0; i < ACH_MAX; i++)
-		if (p.ach_completed[i])
+		if (ach_completed(p, i))
 			completed++;
 
 	sprint(p, PRINT_HIGH, sprintf(
@@ -629,12 +639,12 @@ ACH_Command(entity p, string cmd)
 			lastCat = cat;
 		}
 
-		if (p.ach_completed[i]) {
+		if (ach_completed(p, i)) {
 			sprint(p, PRINT_HIGH, sprintf(
 				"  [X] %s\n", ACH_Name(i)));
 		} else {
 			float threshold = ACH_Threshold(i);
-			float progress = p.ach_progress[i];
+			float progress = ach_progress(p, i);
 			float pct = min(100, floor(progress / threshold * 100));
 			sprint(p, PRINT_HIGH, sprintf(
 				"  [ ] %s (%g/%g - %g%%)\n",

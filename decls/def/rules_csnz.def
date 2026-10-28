@@ -386,6 +386,15 @@ entityDef csnz_center
 // Nuclide's base soldier and ogre stand in (DESIGN). Self-contained because
 // base's monsters/army.def loads before monsters/base.def and its "inherit"
 // finds nothing.
+// Studio hittable blocks (hit target, hit button, breakable, coin farm):
+// an invisible box that takes the shots; vx_entities.qc reads its health
+// loss as a hit (DESIGN).
+entityDef csm_vxhitbox
+{
+	"spawnclass"	"ncSurfacePropEntity"
+	"health"	"100000"
+}
+
 entityDef csm_vxmonster
 {
 	"spawnclass"	"ncMonster"
