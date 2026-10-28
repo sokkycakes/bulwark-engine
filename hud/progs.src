@@ -16,6 +16,7 @@ teammenu.qc
 classmenu.qc
 spectgui.qc
 spawnmenu.qc
+votemenu.qc
 progression.qc
 modehud.qc
 hud.qc

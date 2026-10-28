@@ -23,6 +23,7 @@ bool csnz_zombiesThisMatch;	/* someone was infected: a zombie match */
 void
 CSNZ_PlayerSpawned(entity p)
 {
+	VK_PlayerSpawned(p);
 	if (p.prog_level <= 0) {
 		INV_PlayerConnect(p);
 		ACH_PlayerConnect(p);
@@ -34,6 +35,7 @@ CSNZ_Disconnect(entity p)
 {
 	INV_PlayerDisconnect(p);
 	ACH_PlayerDisconnect(p);
+	VK_Disconnect(p);
 }
 
 /* the meta-game commands every rules progs understands */
@@ -53,6 +55,8 @@ CSNZ_Command(entity p, string cmd)
 	if (ACH_Command(p, cmd))
 		return (true);
 	if (IB_Command(p, cmd))
+		return (true);
+	if (VK_Command(p, cmd))
 		return (true);
 	return (false);
 }
@@ -139,6 +143,7 @@ CSNZ_Frame(void)
 {
 	CA_Frame();
 	ZA_Frame();
+	VK_Frame();
 
 	for (entity p = world; (p = next.Player(p));) {
 		float fired = p.stat_shotsFired - p.ach_seenShotsFired;

@@ -18,6 +18,7 @@ HUD_Init(void)
 	CM_Init();
 	SG_Init();
 	PTN_Init();
+	VK_Init();
 	precache_pic("resource/hud/hud_scoreboard_bg");
 	precache_pic("resource/hud/hud_character_bg_new_top");
 	precache_pic("resource/hud/hud_character_bg_new_bottom");
@@ -55,6 +56,7 @@ HUD_Draw(void)
 	TM_Draw();
 	CM_Draw();
 	PTN_Draw();
+	VK_Draw();
 }
 
 void
@@ -67,6 +69,7 @@ HUD_DrawSpectator(void)
 	KF_Draw(g_hudFont);
 	TM_Draw();
 	CM_Draw();
+	VK_Draw();
 }
 
 void
@@ -82,6 +85,8 @@ HUD_InputEvent(float evType, float key, float chr, float dev, vector mouse)
 	if (g_hs > 0)
 		g_resMouse = (mouse - g_hmins) / g_hs;
 
+	if (VK_Input(evType, key, chr, dev))
+		return true;
 	if (PTN_Input(evType, key, chr, dev))
 		return true;
 	if (TM_Input(evType, key, chr, dev))
@@ -94,5 +99,5 @@ HUD_InputEvent(float evType, float key, float chr, float dev, vector mouse)
 bool
 HUD_WantsCursor(void)
 {
-	return g_bmOpen || g_tmOpen || g_cmOpen || g_ptnOpen;
+	return g_bmOpen || g_tmOpen || g_cmOpen || g_ptnOpen || g_vkCallOpen;
 }

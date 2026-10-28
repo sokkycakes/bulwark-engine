@@ -25,6 +25,7 @@ modes/shelter.qc
 modes/zombi5.qc
 modes/scenario.qc
 modes/registry.qc
+common/csnz_vote.qc
 common/csnz_hooks.qc
 studio/vx_core.qc
 studio/vx_entities.qc

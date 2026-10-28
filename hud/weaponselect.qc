@@ -62,6 +62,7 @@ bool BM_ConsoleCommand(string);
 bool TM_ConsoleCommand(string);
 bool CM_ConsoleCommand(string);
 bool PTN_ConsoleCommand(string);
+bool VK_ConsoleCommand(string);
 
 bool
 HUD_ConsoleCommand(string commandString)
@@ -71,6 +72,8 @@ HUD_ConsoleCommand(string commandString)
 	if (TM_ConsoleCommand(commandString))
 		return (true);
 	if (PTN_ConsoleCommand(commandString))
+		return (true);
+	if (VK_ConsoleCommand(commandString))
 		return (true);
 	if (CM_ConsoleCommand(commandString))
 		return (true);
