@@ -208,6 +208,28 @@ models in Nuclide's `base` are two to three times heavier (soldier 886).
 melonDS doesn't time the ARM9 exactly, so the frame rates need checking
 on hardware. The polygon counts are the GPU's own.
 
+## Quads
+
+The GPU's 2048-polygon limit counts a quad as one polygon, the same as a
+triangle. World faces are drawn as quad strips, so an n-sided face costs
+(n - 1) / 2 polygons instead of n - 2. Over the shareware episode 1 maps
+that is 55% of the triangle count (most Quake faces have four to six
+sides). The image is the same: on `e1m2`, 2 pixels of 49152 differ by
+more than a few shades from the triangle build.
+
+Same bench, one pass, after the change:
+
+| Run | fps | Peak polygons | Peak vertices | Models | Faces left out |
+|---|---|---|---|---|---|
+| `e1m1` | 60 / 60 | 878 | 2846 | 3 | 0 |
+| `e1m2` | 60 / 60 | 1348 | 4350 | 5 | 0 |
+| `e1m5` | 60 / 60 | 1362 | 4475 | 7 | 0 |
+| `e1m1` + 16 knights | 60 / 60 | 1669 | 5206 | 11 | 0 |
+| `e1m1` + 24 knights | 60 / 60 | 1552 | 4872 | 11 | 0 |
+| `2:e1m1` + 24 knights | 30 / 30 | 2719 | 8380 | 22 | 0 |
+
+The tables below were measured before this change.
+
 ## Two passes: 4096 polygons at 30 fps
 
 The GPU stores 2048 polygons for each screen refresh. In two-pass mode a

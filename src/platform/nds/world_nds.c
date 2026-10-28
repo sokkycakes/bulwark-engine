@@ -699,16 +699,22 @@ static void setup_frustum(const ndscam_t *cam)
 	}
 }
 
+/* faces go to the GPU as quad strips: a quad is one of the 2048 polygons,
+ * as a triangle is, so an n-sided face costs (n - 1) / 2 polygons rather
+ * than n - 2. An odd face repeats its last vertex, closing with a triangle. */
+#define FACE_POLYS(f) (((f)->numverts - 1) / 2)
+#define FACE_VERTS(f) ((f)->numverts + ((f)->numverts & 1))
+
 /* adds a face to its texture's chain if it fits what's left of the budget */
 static inline bool chain_face(int i, int *verts, int *polys, int maxverts, int maxpolys, ndsstats_t *st)
 {
 	face_t *f = &w.faces[i];
-	if (*verts + f->numverts > maxverts || *polys + f->numverts - 2 > maxpolys) {
+	if (*verts + FACE_VERTS(f) > maxverts || *polys + FACE_POLYS(f) > maxpolys) {
 		st->skipped++;
 		return false;
 	}
-	*verts += f->numverts;
-	*polys += f->numverts - 2;
+	*verts += FACE_VERTS(f);
+	*polys += FACE_POLYS(f);
 	st->faces++;
 	f->next = w.texs[f->tex].chain;
 	w.texs[f->tex].chain = i;
@@ -726,10 +732,14 @@ ITCM_CODE static void draw_chains(void)
 		for (; i >= 0; i = w.faces[i].next) {
 			const face_t *f = &w.faces[i];
 			const dvert_t *v = &w.verts[f->firstvert];
-			glBegin(GL_TRIANGLE_STRIP);
+			glBegin(GL_QUAD_STRIP);
 			for (int k = 0; k < f->numverts; k++, v++) {
 				glColor(v->color);
 				glTexCoord2t16(v->s, v->t);
+				glVertex3v16(v->x, v->y, v->z);
+			}
+			if (f->numverts & 1) {
+				v--;
 				glVertex3v16(v->x, v->y, v->z);
 			}
 			glEnd();
@@ -816,7 +826,7 @@ int World_Split(int maxverts, int maxpolys, const int32_t *mdist2, const int *mp
 	*dist2 = INT32_MAX;
 	/* room for every brush entity, whichever pass it lands in */
 	for (int i = w.numtreevis; i < w.numvis; i++)
-		verts += w.faces[w.vislist[i]].numverts, polys += w.faces[w.vislist[i]].numverts - 2;
+		verts += FACE_VERTS(&w.faces[w.vislist[i]]), polys += FACE_POLYS(&w.faces[w.vislist[i]]);
 	for (; k < w.numtreevis; k++) {
 		const face_t *f = &w.faces[w.vislist[k]];
 		const dvert_t *v = &w.verts[f->firstvert];
@@ -828,12 +838,12 @@ int World_Split(int maxverts, int maxpolys, const int32_t *mdist2, const int *mp
 				break;
 			polys += mpolys[m], verts += mpolys[m] * 3, m++;
 		}
-		if ((m < nummodels && mdist2[m] < d) || verts + f->numverts > maxverts ||
-		    polys + f->numverts - 2 > maxpolys) {
+		if ((m < nummodels && mdist2[m] < d) || verts + FACE_VERTS(f) > maxverts ||
+		    polys + FACE_POLYS(f) > maxpolys) {
 			*dist2 = m < nummodels && mdist2[m] < d ? mdist2[m] : d;
 			break;
 		}
-		verts += f->numverts, polys += f->numverts - 2;
+		verts += FACE_VERTS(f), polys += FACE_POLYS(f);
 	}
 	return k;
 }
@@ -844,10 +854,10 @@ int World_Cost(int from, int to, int32_t split2, bool nearside, int *verts)
 {
 	int v = 0, p = 0;
 	for (int k = from; k < to && k < w.numtreevis; k++)
-		v += w.faces[w.vislist[k]].numverts, p += w.faces[w.vislist[k]].numverts - 2;
+		v += FACE_VERTS(&w.faces[w.vislist[k]]), p += FACE_POLYS(&w.faces[w.vislist[k]]);
 	for (int k = w.numtreevis; k < w.numvis; k++)
 		if ((w.visdist[k] < split2) == nearside)
-			v += w.faces[w.vislist[k]].numverts, p += w.faces[w.vislist[k]].numverts - 2;
+			v += FACE_VERTS(&w.faces[w.vislist[k]]), p += FACE_POLYS(&w.faces[w.vislist[k]]);
 	*verts = v;
 	return p;
 }
