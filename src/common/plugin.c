@@ -6,7 +6,7 @@
 #include "fs.h"
 
 #include <dirent.h>
-#include <dlfcn.h>
+#include "sys_dl.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>

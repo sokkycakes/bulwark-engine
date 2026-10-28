@@ -212,7 +212,11 @@ void R_End2D(void)
 
 #define MAX_FONTS 32
 #define MAX_FONT_SIZES 8
+#ifdef BW_LOWMEM
+#define FONT_ATLAS 512 /* holds the printable ASCII baked up to about 40 pixels */
+#else
 #define FONT_ATLAS 1024
+#endif
 #define FONT_FIRST 32
 #define FONT_COUNT 224 /* 32..255 */
 

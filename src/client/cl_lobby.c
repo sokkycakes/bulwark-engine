@@ -30,6 +30,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "../net/net_compat.h"
+
 #define LOBBY_MAGIC "BWLB1 "
 #define LOBBY_SEATS 16
 #define LOBBY_CHAT 10

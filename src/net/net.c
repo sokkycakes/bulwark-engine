@@ -14,13 +14,16 @@
 #include <unistd.h>
 
 #include "../common/common.h"
+#include "net_compat.h"
 #include "net.h"
 
-/* --- loopback: a ring of packets per direction --- */
+/* --- loopback: a ring of packets per direction. Each slot grows to the
+ * largest packet it has held, so the ring costs a few hundred KB rather than
+ * 256 times the largest possible packet. --- */
 #define LOOP_PACKETS 256
 typedef struct {
-	uint8_t data[NET_MAX_RECV];
-	size_t len;
+	uint8_t *data;
+	size_t len, cap;
 } looppacket_t;
 typedef struct {
 	looppacket_t *packets;
@@ -308,6 +311,10 @@ static void send_now(netsrc_t src, const void *data, size_t len, const netadr_t 
 		if (l->send - l->get >= LOOP_PACKETS)
 			l->get = l->send - LOOP_PACKETS + 1; /* drop the oldest */
 		p = &l->packets[l->send++ % LOOP_PACKETS];
+		if (p->cap < len) {
+			p->cap = len < NET_MAX_PACKET ? NET_MAX_PACKET : len;
+			p->data = Mem_Realloc(p->data, p->cap);
+		}
 		memcpy(p->data, data, len);
 		p->len = len;
 		return;

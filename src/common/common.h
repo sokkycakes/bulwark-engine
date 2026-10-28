@@ -17,6 +17,29 @@ typedef float vec3_t[3];
 #define BW_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define BW_CLAMP(v, lo, hi) BW_MIN(BW_MAX((v), (lo)), (hi))
 
+/* Memory the QuakeC VMs reserve up front: entity slots and memalloc heap
+ * (megabytes). The 3DS has 64-124 MB for everything, so it reserves a
+ * fraction of what desktops do; the server's pr_maxedicts and pr_heapsize
+ * cvars default to these. */
+#if defined(__3DS__) || defined(__NDS__)
+#define BW_LOWMEM 1
+#define BW_SV_MAXEDICTS "1024"
+#define BW_SV_HEAP_MB "4"
+#define BW_CSQC_MAXEDICTS 1024
+#define BW_CSQC_HEAP_MB 4
+#define BW_MENU_MAXEDICTS 1024
+#define BW_MENU_HEAP_MB 2
+#define BW_CL_MAXENTS 4096 /* network entity numbers the client game can track */
+#else
+#define BW_SV_MAXEDICTS "4096"
+#define BW_SV_HEAP_MB "32"
+#define BW_CSQC_MAXEDICTS 8192
+#define BW_CSQC_HEAP_MB 32
+#define BW_MENU_MAXEDICTS 4096
+#define BW_MENU_HEAP_MB 16
+#define BW_CL_MAXENTS 65536
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define BW_PRINTF(f, a) __attribute__((format(printf, f, a)))
 #define BW_NORETURN __attribute__((noreturn))

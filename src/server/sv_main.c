@@ -1003,8 +1003,8 @@ void SV_Init(void)
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
-	pr_maxedicts = Cvar_Get("pr_maxedicts", "4096", 0, "Entity slots in the server game");
-	pr_heapsize = Cvar_Get("pr_heapsize", "32", 0, "memalloc heap size in megabytes");
+	pr_maxedicts = Cvar_Get("pr_maxedicts", BW_SV_MAXEDICTS, 0, "Entity slots in the server game");
+	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
 	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
 	Cmd_Add("map", SV_Map_f);

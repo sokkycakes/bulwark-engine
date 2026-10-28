@@ -6,6 +6,9 @@
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
+#ifdef __3DS__
+void CTR_PrintMemory(const char *when);
+#endif
 
 int developer = 0;
 static con_hook_fn con_hook, con_log_hook;
@@ -68,6 +71,9 @@ void Sys_Error(const char *fmt, ...)
 	vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 	fprintf(stderr, "FATAL: %s\n", buf);
+#ifdef __3DS__
+	CTR_PrintMemory("at the error");
+#endif
 	exit(1);
 }
 
@@ -96,7 +102,7 @@ void *Mem_Alloc(size_t size)
 {
 	void *p = calloc(1, size ? size : 1);
 	if (!p)
-		Sys_Error("out of memory allocating %zu bytes", size);
+		Sys_Error("out of memory allocating %zu bytes (from %p)", size, __builtin_return_address(0));
 	return p;
 }
 

@@ -16,6 +16,7 @@
 #include "common/worker.h"
 #include "net/net.h"
 #include "net/pkg.h"
+#include "platform/platform.h"
 #include "render/render.h"
 #include "server/sv_local.h"
 #include "sound/sound.h"
@@ -55,7 +56,7 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-	const char *basedir = ".";
+	const char *basedir;
 	const char *games[16];
 	int numgames = 0;
 	long maxframes = -1;
@@ -63,6 +64,9 @@ int main(int argc, char **argv)
 	int width = 1280, height = 720;
 	bool fullscreen = false, size_given = false;
 	strbuf_t cmds = {0};
+
+	Plat_Init(&argc, &argv);
+	basedir = Plat_DefaultBaseDir();
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-basedir") && i + 1 < argc)
@@ -241,5 +245,6 @@ int main(int argc, char **argv)
 	S_Shutdown();
 	R_Shutdown();
 	VID_Shutdown();
+	Plat_Shutdown();
 	return 0;
 }

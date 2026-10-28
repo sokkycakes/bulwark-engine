@@ -40,8 +40,13 @@ typedef struct {
 	int firstvert, numverts;
 } rpoly_t;
 
+#ifdef BW_LOWMEM
+#define MAX_POLY_VERTS 8192
+#define MAX_POLYS 2048
+#else
 #define MAX_POLY_VERTS 32768
 #define MAX_POLYS 8192
+#endif
 static rvert_t polyverts[MAX_POLY_VERTS];
 static int numpolyverts;
 static rpoly_t polys[MAX_POLYS];

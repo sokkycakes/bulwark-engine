@@ -45,6 +45,15 @@ typedef struct {
 
 static bool compiling;
 
+#if defined(__3DS__) || defined(__NDS__)
+/* consoles can't start another program */
+static void compile_work(void *ctx)
+{
+	compilejob_t *j = ctx;
+	SB_Printf(&j->out, "compile: can't run a compiler on this platform\n");
+	j->status = -1;
+}
+#else
 static void compile_work(void *ctx)
 {
 	compilejob_t *j = ctx;
@@ -82,6 +91,7 @@ static void compile_work(void *ctx)
 	close(fds[0]);
 	waitpid(pid, &j->status, 0);
 }
+#endif
 
 static void compile_done(void *ctx)
 {
