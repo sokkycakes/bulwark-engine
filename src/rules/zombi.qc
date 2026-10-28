@@ -520,6 +520,7 @@ CodeCallback_FrameStart(void)
 		ZBN_Build();
 	}
 
+	CSNZ_PublishHudInfo();
 	for (entity p = world; (p = next.Player(p));) {
 		/* dead humans bitten by a zombie rise where they fell */
 		if (p.zb_infectAt > 0 && time >= p.zb_infectAt)

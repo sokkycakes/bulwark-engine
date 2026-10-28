@@ -778,6 +778,7 @@ CS_Frame(void)
 {
 	float verdict;
 
+	CSNZ_PublishHudInfo();
 	if (!cs_banner)
 		return;
 

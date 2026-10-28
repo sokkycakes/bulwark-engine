@@ -4,6 +4,7 @@
 #includelist
 ../nuclide/rules.src
 cs_weapons.qc
+common/csnz_hudinfo.qc
 zombi_nav.qc
 zombi.qc
 #endlist

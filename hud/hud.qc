@@ -25,6 +25,16 @@ HUD_Init(void)
 	precache_pic("resource/hud/hud_character_bg_new_bottom");
 	precache_pic("resource/hud/hud_weapon_bg_top");
 	precache_pic("resource/hud/hud_weapon_bg_bottom");
+	precache_pic("resource/hud/hud_dollar_bg");
+	precache_pic("resource/hud/hud_sb_num_bottom");
+	precache_pic("resource/hud/hud_sb_num_bottom_colon");
+	precache_pic("resource/hud/hud_sb_num_small_red");
+	precache_pic("resource/hud/hud_sb_num_small_blue");
+	precache_pic("resource/hud/hud_sb_num_center");
+	precache_pic("resource/hud/hud_sb_num_center_slash");
+	precache_pic("resource/hud/hud_sb_num_big_red");
+	precache_pic("resource/hud/hud_sb_num_big_blue");
+	precache_pic("resource/hud/hud_sb_num_big_white");
 }
 
 void
@@ -36,6 +46,7 @@ HUD_Draw(void)
 		Crosshair_Draw();
 		Panels_DrawCharacter(g_hudFont);
 		Panels_DrawWeapon(g_hudFont);
+		Panels_DrawMoney();
 	} else {
 		/* dead players watch through the spectator bars (INFERRED, as
 		   in CS) */

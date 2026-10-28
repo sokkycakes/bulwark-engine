@@ -6,6 +6,7 @@
 cs_weapons.qc
 ../shared/voxel_api.h
 common/csnz_protos.qc
+common/csnz_hudinfo.qc
 common/csnz_common.qc
 common/csnz_voxel.qc
 common/csnz_stats.qc

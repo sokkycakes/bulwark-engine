@@ -61,29 +61,25 @@ Prog_Draw(font_s fnt)
 	string rankStr = Prog_RankName(rank);
 	vector rankCol = Prog_RankColor(rank);
 
-	/* draw rank + level in top-right corner */
-	float x = HUD_W - 10;
-	float y = 8;
-
-	/* rank badge */
-	draw.RText(Art_Pos([x, y]), sprintf("Lv.%d  %s", level, rankStr), fnt);
-
-	/* money below rank */
-	y += 16;
-	draw.RText(Art_Pos([x, y]), sprintf("$%d", money), fnt);
+	/* The level/rank line and the "$money" text that were drawn here are
+	   gone: CSO's in-game HUD draws neither (money is panels.qc's money
+	   panel). The mode counters below stay, under the kill feed's four
+	   rows (DESIGN). */
+	float x = -10;
+	float y = 5 + 4 * 25.6 + 8;
 
 	/* mode-specific displays */
 	/* ampoules for Snowman */
 	float ampoules = floor(stof(getplayerkeyvalue(player_localnum, "csnz_ampoules")));
 	if (ampoules > 0) {
-		y += 16;
 		draw.RText(Art_Pos([x, y]), sprintf("Ampoules: %d/3", ampoules), fnt);
 	}
 
 	/* virus points for Zombi 5 */
 	float virus = floor(stof(getplayerkeyvalue(player_localnum, "csnz_virus")));
 	if (virus > 0) {
-		y += 16;
+		if (ampoules > 0)
+			y += 16;
 		draw.RText(Art_Pos([x, y]), sprintf("Virus: %d", virus), fnt);
 	}
 }
