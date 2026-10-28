@@ -53,6 +53,7 @@ var void(entity, entity) M_Damaged;	/* victim, attacker; victim survived */
 var float(void) M_CheckRound;		/* 0 = continue, 1/2 = that team won, 3 = draw */
 var void(float) M_RoundEnded;		/* winner */
 var void(entity) M_Disconnect;
+var void(entity, entity) M_NPCKilled;	/* npc, the player or entity credited */
 var float(entity, string) M_Command;
 var bool(entity) M_LateJoin;		/* a player joining a live round; true if placed */	/* player or world, the full command; true if handled */
 

@@ -110,36 +110,69 @@ ZV_EquipHuman(entity p)
    - Init (slot 1, FUN_108f7aa0): level 1, exp 25000 (one level's worth),
      1 mutation point; sends ZBZInitLV (level, points).
    - AddExp (slot 4, FUN_108f49f0, amount/type/force): not in mode 55, not
-     for negative amounts. Exp is capped at 40 levels (25000 each,
-     DAT_11d316b4) and at round cap * scale * 25000 when the round cap
-     (_DAT_11e62384) is set. Level = exp / 25000, at most 40. The percent
-     into the level goes out as ZBZExp when it moved over 3 points or on
-     force. A level up runs slot 0x16 (FUN_1090a4e0), which adds the
-     levels gained to the mutation points.
-   - The round cap is mp_winlimit (gamerules +0x4d0, FUN_1141b580) when a
-     player joins with none set (FUN_10748440).
-   - Kill exp (slot 0x2b, FUN_109090a0): a zombie killer gets
-     (5750 - 250 * round cap) * 2, type 5, forced (the two values are
-     static config objects 0x11e624e0 / 0x11e62528). A human killer only
-     gets exp from mutation 0x32, which is not ported.
-   - Playroom Zombie Z on join (FUN_1074a0f0): level 40, round cap =
-     mp_winlimit, money 32000.
-   Not ported: the cap scale (a float from gamerules +0x1f0 vtable 0x56c,
-   UNRESOLVED; autocvar_zbz_capscale, 0 = no round cap), mutation exp
-   bonuses (0x50/0x54), the item effects that grant 1/5/6 levels, and the
-   level-up message panel.
+     for negative amounts. Mutation 0x54 blocks type 1 exp and mutation 0x50
+     adds its param1 share. Exp is capped at 40 levels (25000 each,
+     DAT_11d316b4) and at R * rate * 25000 when R (_DAT_11e62384) is set.
+     rate is levelUpLimitRatePerRound from resource/zombiez/zombiez.json,
+     read by hw.dll's SharedDataMgr (FUN_025adc80, default 1.0, at +0x1e90,
+     read back through vtable 0x56c). The file is not in the NARs, so the
+     real value is UNRESOLVED; zbz_levelUpLimitRatePerRound defaults to 1.
+     The first time exp reaches the cap, FUN_1090ba60 sends the text
+     #CSO_ZBZ_Level_Limit (no localisation in this build). Level = exp /
+     25000, at most 40. The percent into the level goes out as ZBZExp when
+     it moved over 3 points or on force.
+   - Level up (slot 0x58, FUN_1090a4e0): adds the levels gained to the
+     mutation points, but only up to the level limit from hw.dll's
+     GameOptionManager (vtable 0x2c175c8 slot 0x2e8 = +0x3e4, 20 in its
+     constructor FUN_025fb490; a room option may change it, UNRESOLVED).
+     Then it sends ZBZNotify 0 (level, percent, points). The client's
+     ZBZNotify case 0 (FUN_028c78d0) shows the level-up message panel; the
+     HUD watches csnz_zbzlvup for that.
+   - R: OnPlayerPostSpawn (FUN_10748440) sets it to mp_winlimit if unset,
+     and every RestartRound (gamerules slot 0xc8) sets it to rounds played
+     + 1 through lambda 47aede54 (FUN_10875c60 -> FUN_10900e80). So with
+     rate 1 the level cap is the round number.
+   - RestartRound, ZombieZMode/PlayRoomZombieZ (FUN_10874540): the catch-up
+     level is the average level of the players + 1 (lambda be412ace), or 1
+     before any round was played. After the first round every player gets
+     one level (25000, type 1) and money topped up to 8000 (gamerules slot
+     0xa8, FUN_107475e0). ZombieZMutation (mode 45 with the event flag
+     "ZombieZMutation", FUN_107a5120): catch-up 6 or (rounds * 3 + 3) * 2,
+     5 levels in the first round, then 6 levels and the money top-up.
+   - First spawn (gamerules slot 0x1fc, FUN_10873b10): a player below the
+     catch-up level gets the difference as exp, type 6. The per-name record
+     that restores a rejoining player's level is not ported.
+   - Kill exp (slot 0xac, FUN_109090a0, on the victim for the killer): a
+     zombie killer gets (5750 - 250 * R + mutation 50 param2) * 2, type 5,
+     forced (the first two from static config objects 0x11e624e0 /
+     0x11e62528). A human killer gets only mutation 50's param1, type 4.
+   - Mutation values (FUN_108f6900 -> FUN_108722d0): base for R < 1, else
+     base + floor(R / period) * increment; period defaults to 1 in hw's
+     loader (FUN_01eb7d90). Data: resource/zombiez/mutations/
+     mutation_NNN.json. Team 0 applies to both sides, 1 to humans, 2 to
+     zombies (FUN_108f44c0). 0x50, 0x54 and 0x5a have no file in this build.
+     Lv2 mutations (a second param set, bitset at +0x1c0) are not ported.
+   - Playroom Zombie Z on join (FUN_1074a0f0): level 40, money 32000.
    The HUD reads userinfo csnz_zbzlv / csnz_zbzexp (percent). */
 
 #define ZBZ_EXP_PER_LEVEL 25000
 #define ZBZ_MAX_LEVEL 40
+#define ZBZ_POINT_LEVELS 20	/* GameOptionManager +0x3e4 default */
+#define ZBZ_START_MONEY 8000	/* gamerules slot 0xa8 */
 
-var float autocvar_zbz_capscale = 0;	/* UNRESOLVED factor, see above */
+var float autocvar_zbz_levelUpLimitRatePerRound = 1;
+var float autocvar_zbz_mutationEvent = 0;	/* the "ZombieZMutation" event flag */
 
 .float zbz_level;
 .float zbz_exp;
 .float zbz_pct;
 .float zbz_points;
-float zbz_roundCap;
+.float zbz_lvup;	/* ZBZNotify 0 count, for the HUD's level-up message */
+.float zbz_limitSent;
+.string zbz_muts;	/* owned mutation ids, " 50 12 " */
+float zbz_roundCap;	/* R */
+float zbz_catchup;	/* gamerules +0xa68 */
+float zbz_mutTab;
 
 void
 ZBZ_Publish(entity p)
@@ -147,6 +180,169 @@ ZBZ_Publish(entity p)
 	userinfo.SetInteger(p, "csnz_zbzlv", (int)p.zbz_level);
 	userinfo.SetInteger(p, "csnz_zbzexp", (int)p.zbz_pct);
 	userinfo.SetInteger(p, "csnz_zbzpoints", (int)p.zbz_points);
+	userinfo.SetInteger(p, "csnz_zbzlvup", (int)p.zbz_lvup);
+}
+
+/* ZBZNotify 0: level, percent, points; the client shows the level-up panel */
+void
+ZBZ_Notify(entity p)
+{
+	p.zbz_lvup++;
+	ZBZ_Publish(p);
+}
+
+/* reads mutation_NNN.json into zbz_mutTab: "<id>" = team, "<id> <n>" =
+   "base increment period" of param n. The files carry // comments, so they
+   are read line by line. */
+bool
+ZBZ_MutLoad(float id)
+{
+	if (!zbz_mutTab)
+		zbz_mutTab = hash_createtab(64, HASH_ADD);
+	string loaded = hash_get(zbz_mutTab, ftos(id), "", EV_STRING);
+	if (loaded != "")
+		return loaded != "none";
+
+	filestream fh = fopen(sprintf("resource/zombiez/mutations/mutation_%03d.json", id), FILE_READ);
+	if (fh < 0) {
+		hash_add(zbz_mutTab, ftos(id), "none", EV_STRING);
+		return false;
+	}
+	float team = 0, cur = 0;
+	float base = 0, inc = 0, period = 1;
+	string ln;
+	while ((ln = fgets(fh))) {
+		float c = strstrofs(ln, "//");
+		if (c >= 0)
+			ln = substring(ln, 0, c);
+		if (strstrofs(ln, "}") >= 0 && cur > 0) {
+			hash_add(zbz_mutTab, sprintf("%d %d", id, cur), sprintf("%g %g %g", base, inc, max(1, period)), EV_STRING);
+			cur = 0;
+		}
+		ln = strreplace(",", " ", strreplace(":", " ", strreplace("{", " ", strreplace("}", " ", ln))));
+		float n = tokenize(ln);
+		for (float i = 0; i < n; i++) {
+			string k = argv(i);
+			float v = stof(argv(i + 1));
+			if (substring(k, 0, 5) == "param") {
+				cur = stof(substring(k, 5, -1));
+				base = inc = 0;
+				period = 1;
+			} else if (k == "team") {
+				team = v;
+			} else if (k == "base_value") {
+				base = v;
+			} else if (k == "increment") {
+				inc = v;
+			} else if (k == "increment_period") {
+				period = v;
+			}
+		}
+	}
+	fclose(fh);
+	hash_add(zbz_mutTab, ftos(id), ftos(team), EV_STRING);
+	return true;
+}
+
+/* FUN_108722d0: param n (from 1) of mutation id at R */
+float
+ZBZ_MutValue(float id, float n, float r)
+{
+	if (!ZBZ_MutLoad(id))
+		return 0;
+	if (tokenize(hash_get(zbz_mutTab, sprintf("%d %d", id, n), "", EV_STRING)) < 3)
+		return 0;
+	float base = stof(argv(0)), inc = stof(argv(1)), period = stof(argv(2));
+	if (r < 1)
+		return base;
+	return floor(r / period) * inc + base;
+}
+
+bool
+ZBZ_HasMut(entity p, float id)
+{
+	return strstrofs(p.zbz_muts, sprintf(" %d ", id)) >= 0;
+}
+
+/* HasMutation (slot 0x50) and the team check (FUN_108f44c0) */
+bool
+ZBZ_MutApplies(entity p, float id)
+{
+	if (!ZBZ_HasMut(p, id) || !ZBZ_MutLoad(id))
+		return false;
+	float team = stof(hash_get(zbz_mutTab, ftos(id), "0", EV_STRING));
+	if (team == 1)
+		return !ZV_IsZombie(p);
+	if (team == 2)
+		return ZV_IsZombie(p);
+	return true;
+}
+
+void
+ZBZ_SetMuts(entity p, string s)
+{
+	if (p.zbz_muts)
+		strunzone(p.zbz_muts);
+	p.zbz_muts = strzone(s);
+}
+
+/* FUN_1090a4e0, the mutation point part */
+void
+ZBZ_LevelUp(entity p, float to, float from)
+{
+	if (to <= from)
+		return;
+	if (to < ZBZ_POINT_LEVELS)
+		p.zbz_points += to - from;
+	else
+		p.zbz_points += ZBZ_POINT_LEVELS - min(from, ZBZ_POINT_LEVELS);
+	printf("csnz %.1f: %s reached Zombie Z level %d (%d%%), %d mutation points\n", time, p.netname, p.zbz_level, p.zbz_pct, p.zbz_points);
+	ZBZ_Notify(p);
+}
+
+/* FUN_108f8000: exp still under the cap */
+float
+ZBZ_Cap(void)
+{
+	float full = ZBZ_MAX_LEVEL * ZBZ_EXP_PER_LEVEL;
+	if (zbz_roundCap < 1)
+		return full;
+	return min(full, floor(zbz_roundCap * autocvar_zbz_levelUpLimitRatePerRound * ZBZ_EXP_PER_LEVEL));
+}
+
+void
+ZBZ_AddExp(entity p, float amount, float type, bool force)
+{
+	if (!zv_zbz || zv_zbzPlayroom || amount < 0 || !p.zbz_level)
+		return;
+	if (type == 1 && ZBZ_MutApplies(p, 0x54))
+		return;
+	if (ZBZ_MutApplies(p, 0x50))
+		amount += floor(ZBZ_MutValue(0x50, 1, zbz_roundCap) * amount);
+
+	float full = ZBZ_MAX_LEVEL * ZBZ_EXP_PER_LEVEL;
+	p.zbz_exp = (amount <= full) ? min(p.zbz_exp + amount, full) : full;
+	float cap = ZBZ_Cap();
+	p.zbz_exp = min(p.zbz_exp, cap);
+	if (!p.zbz_limitSent && p.zbz_exp >= cap) {
+		p.zbz_limitSent = 1;
+		CS_Tell(p, CS_Text("CSO_ZBZ_Level_Limit", "#CSO_ZBZ_Level_Limit"));
+	}
+
+	float old = p.zbz_level;
+	p.zbz_level = min(ZBZ_MAX_LEVEL, floor(p.zbz_exp / ZBZ_EXP_PER_LEVEL));
+	float pct = floor((p.zbz_exp - p.zbz_level * ZBZ_EXP_PER_LEVEL) / ZBZ_EXP_PER_LEVEL * 100);
+
+	if (p.zbz_level > old) {
+		p.zbz_pct = pct;
+		ZBZ_LevelUp(p, p.zbz_level, old);
+		return;
+	}
+	if (pct - p.zbz_pct > 3 || force) {
+		p.zbz_pct = pct;
+		printf("csnz %.1f: %s Zombie Z level %d, %d%%\n", time, p.netname, p.zbz_level, p.zbz_pct);
+		ZBZ_Publish(p);
+	}
 }
 
 void
@@ -156,6 +352,8 @@ ZBZ_Init(entity p)
 	p.zbz_exp = ZBZ_EXP_PER_LEVEL;
 	p.zbz_pct = 0;
 	p.zbz_points = 1;
+	p.zbz_limitSent = 0;
+	ZBZ_SetMuts(p, " ");
 	if (zbz_roundCap < 1)
 		zbz_roundCap = cs_goal;
 	if (zv_zbzPlayroom) {
@@ -166,47 +364,99 @@ ZBZ_Init(entity p)
 		userinfo.SetInteger(p, "csnz_cash", 32000);
 	}
 	ZBZ_Publish(p);
+	/* FUN_10873b10: up to the catch-up level */
+	if (zbz_catchup > p.zbz_level)
+		ZBZ_AddExp(p, (zbz_catchup - p.zbz_level) * ZBZ_EXP_PER_LEVEL, 6, false);
 }
 
+/* RestartRound: FUN_10874540, or FUN_107a5120 for ZombieZMutation */
 void
-ZBZ_AddExp(entity p, float amount, bool force)
+ZBZ_RoundStart(void)
 {
-	if (zv_zbzPlayroom || amount < 0 || !p.zbz_level)
+	if (!zv_zbz)
 		return;
+	float played = max(0, cs_round - 1);
+	zbz_roundCap = played + 1;
+	float grant = 1;
 
-	float full = ZBZ_MAX_LEVEL * ZBZ_EXP_PER_LEVEL;
-	p.zbz_exp = min(p.zbz_exp + amount, full);
-
-	float cap = full;
-	if (zbz_roundCap >= 1 && autocvar_zbz_capscale > 0)
-		cap = min(full, floor(zbz_roundCap * autocvar_zbz_capscale * ZBZ_EXP_PER_LEVEL));
-	p.zbz_exp = min(p.zbz_exp, cap);
-
-	float old = p.zbz_level;
-	p.zbz_level = min(ZBZ_MAX_LEVEL, floor(p.zbz_exp / ZBZ_EXP_PER_LEVEL));
-	float pct = floor((p.zbz_exp - p.zbz_level * ZBZ_EXP_PER_LEVEL) / ZBZ_EXP_PER_LEVEL * 100);
-
-	if (p.zbz_level > old) {
-		p.zbz_pct = pct;
-		p.zbz_points += p.zbz_level - old;
-		printf("csnz %.1f: %s reached Zombie Z level %d (%d%%)\n", time, p.netname, p.zbz_level, p.zbz_pct);
-		ZBZ_Publish(p);
-		return;
+	if (autocvar_zbz_mutationEvent) {
+		zbz_catchup = played < 1 ? 6 : (played * 3 + 3) * 2;
+		grant = played < 1 ? 5 : 6;
+	} else {
+		float n = 0, sum = 0;
+		for (entity q = world; (q = next.Player(q));)
+			if (q.zbz_level && q.classname != "spectator") {
+				n++;
+				sum += q.zbz_level;
+			}
+		zbz_catchup = (n < 1 ? 1 : floor(sum / n)) + 1;
+		if (played < 1)
+			zbz_catchup = 1;
+		if (played < 1)
+			grant = 0;
 	}
-	if (pct - p.zbz_pct > 3 || force) {
-		p.zbz_pct = pct;
-		printf("csnz %.1f: %s Zombie Z level %d, %d%%\n", time, p.netname, p.zbz_level, p.zbz_pct);
-		ZBZ_Publish(p);
+	if (!grant)
+		return;
+	for (entity p = world; (p = next.Player(p));) {
+		if (!p.zbz_level)
+			continue;
+		ZBZ_AddExp(p, grant * ZBZ_EXP_PER_LEVEL, 1, false);
+		if (played >= 1 && p.cs_money < ZBZ_START_MONEY)
+			CS_SetMoney(p, ZBZ_START_MONEY);
 	}
 }
 
-/* FUN_109090a0: exp for the killer */
+/* FUN_109090a0: exp for the killer of a zombie, or for a zombie that
+   killed or infected a human */
 void
 ZBZ_KillExp(entity killer)
 {
-	if (!zv_zbz || !(killer.flags & FL_CLIENT) || !ZV_IsZombie(killer))
+	if (!zv_zbz || !(killer.flags & FL_CLIENT) || !killer.zbz_level)
 		return;
-	ZBZ_AddExp(killer, (5750 - 250 * zbz_roundCap) * 2, true);
+	float mut = ZBZ_HasMut(killer, 50);
+	if (!ZV_IsZombie(killer)) {
+		if (mut)
+			ZBZ_AddExp(killer, floor(ZBZ_MutValue(50, 1, zbz_roundCap)), 4, true);
+		return;
+	}
+	float e = 5750 - 250 * zbz_roundCap;
+	if (mut)
+		e = floor(ZBZ_MutValue(50, 2, zbz_roundCap) + e);
+	ZBZ_AddExp(killer, e * 2, 5, true);
+}
+
+/* mp.dll's ZBZSelectMut / ZBZRemoveMut (FUN_10748970). Selection here
+   just takes the id and a point; the real one (slot 0x1c, FUN_108f5430)
+   picks from level-gated lists. Removing gives the point back and sends
+   ZBZNotify 0 (FUN_10900250). */
+bool
+ZBZ_Command(entity p, string cmd)
+{
+	tokenize(cmd);
+	float id = stof(argv(1));
+	if (argv(0) == "ZBZSelectMut") {
+		if (!p.zbz_level || ZBZ_HasMut(p, id))
+			return true;
+		if (p.zbz_points < 1) {
+			CS_Tell(p, CS_Text("CSO_ZBZ_GainMut_Fail", "Mutation level not high enough"));
+			return true;
+		}
+		p.zbz_points--;
+		ZBZ_SetMuts(p, strcat(p.zbz_muts, ftos(id), " "));
+		printf("csnz %.1f: %s took mutation %d\n", time, p.netname, id);
+		ZBZ_Publish(p);
+		return true;
+	}
+	if (argv(0) == "ZBZRemoveMut") {
+		if (!ZBZ_HasMut(p, id))
+			return true;
+		ZBZ_SetMuts(p, strreplace(sprintf(" %d ", id), " ", p.zbz_muts));
+		p.zbz_points++;
+		printf("csnz %.1f: %s dropped mutation %d\n", time, p.netname, id);
+		ZBZ_Notify(p);
+		return true;
+	}
+	return false;
 }
 
 /* turns a player into a zombie where they stand */
@@ -293,6 +543,7 @@ ZV_RoundStart(void)
 		r.zv_revivesLeft = 0;
 		r.zv_hasFlag = 0;
 	}
+	ZBZ_RoundStart();
 }
 
 /* a player joining a live infection round comes in as a zombie (DESIGN,
@@ -462,6 +713,7 @@ ZV_Killed(entity p, entity inflictor, entity attacker, string weapon)
 
 	if (ZV_IsZombie(p)) {
 		if ((attacker.flags & FL_CLIENT) && !ZV_IsZombie(attacker)) {
+			ZBZ_KillExp(attacker);
 			attacker.zv_attLevel++;
 			if (zv_giant) {
 				attacker.cs_score += 5;
@@ -542,6 +794,20 @@ ZV_TestHooks(void)
 		if (z && h) {
 			cvars.SetString("cs_test_zbzinfect", "0");
 			ZV_Infect(h, z);
+		}
+	}
+	/* a player takes a Zombie Z mutation (cs_test_zbzmut <id>) */
+	if (zv_zbz && cvars.GetFloat("cs_test_zbzmut") > 0 && cs_state == CS_LIVE) {
+		float mid = cvars.GetFloat("cs_test_zbzmut");
+		for (entity mp = world; (mp = next.Player(mp));) {
+			if (!CS_Playing(mp) || !mp.zbz_level)
+				continue;
+			cvars.SetString("cs_test_zbzmut", "0");
+			ZBZ_Command(mp, sprintf("ZBZSelectMut %d", mid));
+			printf("csnz: test: %s mutation %d %s, values %g / %g at round %d\n", mp.netname, mid,
+				ZBZ_HasMut(mp, mid) ? "taken" : "not taken",
+				ZBZ_MutValue(mid, 1, zbz_roundCap), ZBZ_MutValue(mid, 2, zbz_roundCap), zbz_roundCap);
+			break;
 		}
 	}
 	if (cvars.GetBool("cs_test_hescape")) {
@@ -792,6 +1058,8 @@ ZV_RoundEnded(float winner)
 bool
 ZV_Command(entity p, string cmd)
 {
+	if (zv_zbz && p && ZBZ_Command(p, cmd))
+		return true;
 	tokenize(cmd);
 	if (argv(0) != "csnz_mutate" || !zv_mutate || !p)
 		return false;

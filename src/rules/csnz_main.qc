@@ -12,6 +12,8 @@
 void
 CodeCallback_Precache(void)
 {
+	precache_sound("events/Lvup.wav");
+	precache_sound("studio/scenariotx/levelup.wav");
 	/* player classes */
 	precache.Entity("csm_rifleman");
 	precache.Entity("csm_basic");
@@ -145,6 +147,16 @@ CodeCallback_PlayerKilled(entity p, entity inflictor, entity attacker, string we
 {
 	CS_PlayerKilled(p, inflictor, attacker, weapon);
 	CSNZ_Killed(p, inflictor, attacker, weapon);
+}
+
+/* Nuclide's Monster.qc calls NPCDeath(npc, inflictor, attacker) while the
+   delegate names them (npc, attacker, inflictor); take whichever is a player */
+void
+CodeCallback_NPCKilled(entity npc, entity a, entity b)
+{
+	entity credit = (b.flags & FL_CLIENT) ? b : a;
+	if (M_NPCKilled)
+		M_NPCKilled(npc, credit);
 }
 
 void

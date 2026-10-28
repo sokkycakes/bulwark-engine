@@ -69,6 +69,7 @@ Scores_Init(void)
 	g_loc = hash_createtab(256, HASH_REPLACE);
 	Loc_Load("resource/cso_na_en.utf8.txt",
 		"CSO_Kill CSO_DeathCount CSO_Ping_Lable CSO_ZombiTeam CSO_HumanTeam CSO_Spectator CSO_VoteKick CSO_AddBanButton CSO_QuickKick CSO_SpectKick CSO_AddFriend CSO_ClanInvite CSO_VoiceBlock CSO_ShowInfo");
+	Loc_Load("resource/cso_na_en.utf8.txt", "CSO_ZBSVER2_LevelUpMsg");
 	Loc_Load("resource/cstrike_na_en.utf8.txt", "Cstrike_ScoreBoard_");
 	/* names of the Nuclide base items that stand in for CSO weapons */
 	Loc_Load("resource/base_english.txt", "WEAPON_");

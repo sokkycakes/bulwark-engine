@@ -31,8 +31,31 @@
      ported). Our account level is the progression's csnz_level; the
      progression has no exp key yet, so the bar shows 0 (INFERRED stand-in
      for the account data).
-   - ScenarioTX 53 and Zombie Scenario v2 have their own sources
-     (FUN_02867ba0, ZBSVer2 FUN_0284bd40); not ported yet. */
+   - Zombie Scenario v2 15 (ZombieScenarioVer2 panel FUN_02852ce0, data
+     from ZBSVer2 FUN_0284bd40) and ScenarioTX 53 (FUN_02867ba0): the
+     scenario player's level and exp percent; the rules publish userinfo
+     csnz_zbslv / csnz_zbsexp (src/rules/modes/scenario.qc).
+
+   Level-up message, class ZombieScenarioVer2LevelUpMessage (ctor
+   FUN_0282f030, named "ZBZLevelUpMsgPanel" by the Zombie Z, Zombie
+   Scenario v2 and ScenarioTX owners, so one panel for all three):
+   - Show (vtable 0xac, FUN_028308d0): the text is the localised
+     #CSO_ZBSVER2_LevelUpMsg and the level, "%s %d"; on a fresh show it
+     also starts resource/ZBSVER2/levelup_line_top.bik and
+     levelup_line_bottom.bik. Bulwark can't play .bik, so the lines are
+     not drawn (not ported).
+   - It hides itself 2 s after showing (FUN_02830640).
+   - Layout (FUN_02830710), in screen pixels: the background and the
+     label fill (0, H * 0.7, W, 32); the background is the 3-slice
+     resource/hud/zbs/textbg_left / textbg_center / textbg_right (left and
+     right 128x32 images, centre 1x32 stretched). The label is centred in
+     font "ResultTeam", colour 210,187,129. The font's size isn't traced;
+     the HUD font stands in (DESIGN).
+   - Zombie Z shows it from ZBZNotify subtype 0 (FUN_028c78d0) with the
+     level mod 100; Zombie Scenario v2 from ZBSVer2 case 5, which also
+     plays events/Lvup.wav (the rules play it here). The rules count level
+     ups in userinfo csnz_zbzlvup / csnz_zbslvup and the HUD shows the
+     message when the count goes up. */
 
 float g_lpFrac;
 float g_lpChanged;
@@ -49,6 +72,13 @@ LevelPanel_Draw(void)
 	case 55:
 		level = stof(getplayerkeyvalue(player_localnum, "csnz_zbzlv"));
 		frac = stof(getplayerkeyvalue(player_localnum, "csnz_zbzexp")) / 100;
+		if (level <= 0)
+			return;
+		break;
+	case 15:
+	case 53:
+		level = stof(getplayerkeyvalue(player_localnum, "csnz_zbslv"));
+		frac = stof(getplayerkeyvalue(player_localnum, "csnz_zbsexp")) / 100;
 		if (level <= 0)
 			return;
 		break;
@@ -86,4 +116,52 @@ LevelPanel_Draw(void)
 	drawsubpic(Art_Pos(o + [12, 4]), [25, 14] * g_hs, "resource/zombiez/zmode_level_num",
 		[0, 1 / 16], [25 / 256, 14 / 16], [1, 1, 1], 1, 0);
 	Art_HudNum(o + [43, 3], "dollarNum_", level, [255, 255, 255], 255, true);
+}
+
+float g_lumCount;
+var float g_lumShown = -100;
+float g_lumLevel;
+
+void
+LevelUpMsg_Draw(void)
+{
+	float modeId = HUD_ModeId();
+	string countKey = "", levelKey = "";
+
+	switch (modeId) {
+	case 45:
+	case 55:
+		countKey = "csnz_zbzlvup";
+		levelKey = "csnz_zbzlv";
+		break;
+	case 15:
+	case 53:
+		countKey = "csnz_zbslvup";
+		levelKey = "csnz_zbslv";
+		break;
+	default:
+		return;
+	}
+
+	float count = stof(getplayerkeyvalue(player_localnum, countKey));
+	if (count < g_lumCount)
+		g_lumCount = count;	/* a new map or a reset */
+	if (count > g_lumCount) {
+		g_lumCount = count;
+		g_lumShown = time;
+		g_lumLevel = stof(getplayerkeyvalue(player_localnum, levelKey)) % 100;
+	}
+	if (time - g_lumShown >= 2 || time < g_lumShown)
+		return;
+
+	vector size = screen.HUDSize();
+	vector o = screen.HUDMins() + [0, floor(size[1] * 0.7)];
+	float W = size[0];
+	drawpic(o, "resource/hud/zbs/textbg_left", [128, 32], [1,1,1], 1, 0);
+	drawpic(o + [128, 0], "resource/hud/zbs/textbg_center", [max(0, W - 256), 32], [1,1,1], 1, 0);
+	drawpic(o + [W - 128, 0], "resource/hud/zbs/textbg_right", [128, 32], [1,1,1], 1, 0);
+
+	string msg = sprintf("%s %d", Loc("CSO_ZBSVER2_LevelUpMsg", "Level Up! Level:"), g_lumLevel);
+	vector tp = o + [(W - font.StringWidth(msg, false, g_hudFont)) / 2, (32 - g_hudFont.iScaleY) / 2];
+	draw.Text_RGB(tp, msg, [210, 187, 129] / 255, g_hudFont);
 }

@@ -40,6 +40,9 @@ HUD_Init(void)
 	precache_pic("resource/hud/hud_sb_num_big_red");
 	precache_pic("resource/hud/hud_sb_num_big_blue");
 	precache_pic("resource/hud/hud_sb_num_big_white");
+	precache_pic("resource/hud/zbs/textbg_left");
+	precache_pic("resource/hud/zbs/textbg_center");
+	precache_pic("resource/hud/zbs/textbg_right");
 }
 
 void
@@ -67,6 +70,7 @@ HUD_Draw(void)
 		Prog_Draw(g_hudFont);
 	Prog_DrawShelter(g_hudFont);
 	Prog_DrawScenario(g_hudFont);
+	LevelUpMsg_Draw();
 	Mode_Draw(g_hudFont);
 
 	Board_Draw();
