@@ -912,6 +912,14 @@ CodeCallback_ClientCommand(entity p, string cmd)
 	case "vx":
 		VX_Command(p, substring(cmd, 3, -1));
 		return (true);
+	case "vxl_wpn":
+		/* "vxl_wpn <quick slot> <id>": client.dll sends it when a block is
+		   double-clicked in the browser (FUN_02b17290, slot 0) or a quick
+		   slot is picked (FUN_02b1a110), and mp.dll stuffs it back in mode
+		   38 (FUN_10a5b180). mp.dll's handler is UNRESOLVED; here it picks
+		   the block to build with (DESIGN), the slot is not kept. */
+		VX_Command(p, sprintf("select %s", argv(2)));
+		return (true);
 	case "buy":
 		CS_Buy(p, argv(1));
 		return (true);

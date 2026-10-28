@@ -64,10 +64,13 @@ bool CM_ConsoleCommand(string);
 bool PTN_ConsoleCommand(string);
 bool VK_ConsoleCommand(string);
 bool SHH_ConsoleCommand(string);
+bool VB_ConsoleCommand(string);
 
 bool
 HUD_ConsoleCommand(string commandString)
 {
+	if (VB_ConsoleCommand(commandString))
+		return true;
 	if (SHH_ConsoleCommand(commandString))
 		return true;
 	if (BM_ConsoleCommand(commandString))

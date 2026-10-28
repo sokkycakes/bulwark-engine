@@ -20,6 +20,7 @@ spectgui.qc
 spawnmenu.qc
 votemenu.qc
 shelter.qc
+vxbrowser.qc
 progression.qc
 modehud.qc
 hud.qc
