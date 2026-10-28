@@ -26,14 +26,14 @@ endif()
 # map viewer on its 3D hardware instead (docs/platforms/nds.md).
 # BULWARK_NDS_NITROFS names a folder to pack into the ROM as nitro:/.
 if(NINTENDO_DS)
-	add_executable(bulwark_nds src/platform/nds/main_nds.c src/platform/nds/world_nds.c)
-	target_link_libraries(bulwark_nds PRIVATE filesystem fat m)
+	add_executable(bulwark_nds src/platform/nds/main_nds.c src/platform/nds/world_nds.c src/platform/nds/link_nds.c)
+	target_link_libraries(bulwark_nds PRIVATE dswifi9 filesystem fat m)
 	set(BULWARK_NDS_NITROFS "" CACHE PATH "Folder to pack into the ROM (maps/, gfx/palette.lmp)")
 	if(BULWARK_NDS_NITROFS)
-		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Map viewer" SUBTITLE2 "github.com/sokkycakes"
+		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Link client and map viewer" SUBTITLE2 "github.com/sokkycakes"
 		               NITROFS "${BULWARK_NDS_NITROFS}")
 	else()
-		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Map viewer" SUBTITLE2 "github.com/sokkycakes")
+		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Link client and map viewer" SUBTITLE2 "github.com/sokkycakes")
 	endif()
 	return()
 endif()
@@ -131,6 +131,7 @@ add_library(bwserver STATIC
 	src/server/sv_uri.c
 	src/server/sv_builtins.c
 	src/server/sv_client.c
+	src/server/sv_link.c
 	src/server/sv_pmove.c
 	src/server/sv_route.c
 	src/server/sv_cmds.c

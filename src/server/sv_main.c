@@ -258,7 +258,7 @@ static int spawn_entities(const char *data, bool world, int *first)
 
 /* --- lifecycle ------------------------------------------------------- */
 
-static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, sv_stat_builtins, sv_sql_builtins, qc_uri_builtins, script_builtins, qc_builtins_core, qc_builtins_extra, NULL};
+static const qc_builtin_t *const sv_tables[] = {sv_client_builtins, sv_builtins, sv_route_builtins, sv_voxel_builtins, sv_stat_builtins, sv_link_builtins, sv_sql_builtins, qc_uri_builtins, script_builtins, qc_builtins_core, qc_builtins_extra, NULL};
 
 void SV_Shutdown(void)
 {
@@ -816,6 +816,7 @@ void SV_Frame(double dt)
 	if (!sv.active)
 		return;
 	SV_ReadPackets();
+	SV_LinkReadPackets();
 	if (!sv.active)
 		return;
 	accum += dt;
@@ -833,6 +834,7 @@ void SV_Frame(double dt)
 		QC_CollectGarbage(sv.vm, false);
 	}
 	SV_SendClientMessages();
+	SV_LinkSend();
 }
 
 /* commands registered with registercommand go to the progs' ConsoleCmd */
@@ -1010,6 +1012,7 @@ void SV_Init(void)
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);
 	SV_InitClients();
+	SV_LinkInit();
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);

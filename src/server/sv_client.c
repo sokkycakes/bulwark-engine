@@ -745,6 +745,8 @@ void SV_DropClient(client_t *c, const char *reason)
 	}
 	Con_Printf("%s disconnected%s%s\n", c->name[0] ? c->name : "client", reason ? ": " : "", reason ? reason : "");
 	SV_AdminDisconnected(c);
+	if (c->link)
+		SV_LinkClientDropped(c, reason);
 	if (vm && c->edict < vm->max_edicts) {
 		QC_ClearEdict(vm, c->edict);
 	}
@@ -1805,7 +1807,31 @@ static void bi_clienttype(qcvm_t *vm)
 	else if (c->state == CS_FREE)
 		QC_ReturnFloat(vm, 0); /* CLIENTTYPE_DISCONNECTED */
 	else
-		QC_ReturnFloat(vm, c->bot ? 2 : 1);
+		QC_ReturnFloat(vm, c->bot && !c->link ? 2 : 1); /* link players are people */
+}
+
+/* a link player (sv_link.c): a slot the engine drives like a bot's, which
+ * enters the game as a player does */
+client_t *SV_SpawnLinkClient(const char *name, int link)
+{
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state != CS_FREE)
+			continue;
+		memset(c, 0, sizeof(*c));
+		c->bot = true;
+		c->link = link;
+		c->edict = i + 1;
+		snprintf(c->name, sizeof(c->name), "%s", name);
+		SV_InfoSet(c->userinfo, sizeof(c->userinfo), "name", c->name);
+		SV_InfoSet(c->userinfo, sizeof(c->userinfo), "*link", "1");
+		c->state = CS_CONNECTED;
+		broadcast_playerinfo(c, "", c->userinfo);
+		if (sv.active)
+			spawn_client(c);
+		return c;
+	}
+	return NULL;
 }
 
 static void bi_spawnclient(qcvm_t *vm)

@@ -752,10 +752,20 @@ ITCM_CODE static void draw_chains(void)
 	}
 }
 
-void World_Draw(const ndscam_t *cam, ndsstats_t *st)
+void World_SetView(const ndscam_t *cam)
 {
 	/* map axes to the GPU's: map x (forward) is -z, map y (left) is -x, map z (up) is y */
 	static const m4x4 axes = {{0, 0, -4096, 0, -4096, 0, 0, 0, 0, 4096, 0, 0, 0, 0, 0, 4096}};
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glRotateXi(-cam->pitch);
+	glRotateYi(-cam->yaw);
+	glMultMatrix4x4(&axes);
+	glTranslatef32(-cam->org[0], -cam->org[1], -cam->org[2]);
+}
+
+void World_Draw(const ndscam_t *cam, ndsstats_t *st)
+{
 	int leaf;
 	memset(st, 0, sizeof(*st));
 	if (!w.loaded)
@@ -770,12 +780,7 @@ void World_Draw(const ndscam_t *cam, ndsstats_t *st)
 	st->leaf = leaf;
 	setup_frustum(cam);
 
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	glRotateXi(-cam->pitch);
-	glRotateYi(-cam->yaw);
-	glMultMatrix4x4(&axes);
-	glTranslatef32(-eye[0], -eye[1], -eye[2]);
+	World_SetView(cam);
 
 	w.numvis = 0;
 	if (w.numnodes)

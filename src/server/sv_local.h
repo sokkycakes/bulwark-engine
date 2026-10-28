@@ -98,6 +98,7 @@ typedef struct {
 typedef struct client_s {
 	clientstate_t state;
 	bool bot;
+	int link; /* link player (sv_link.c): its slot + 1, 0 for none; bot is set too */
 	netchan_t chan;
 	char name[64];
 	char userinfo[2048];
@@ -333,6 +334,14 @@ void W_bi_getsurfacetexture(qcvm_t *vm);
 
 /* sv_stats.c */
 extern const qc_builtin_t sv_stat_builtins[];
+
+/* sv_link.c: handhelds as companion players (docs/spec/link.md) */
+extern const qc_builtin_t sv_link_builtins[];
+void SV_LinkInit(void);
+void SV_LinkReadPackets(void);
+void SV_LinkSend(void);
+void SV_LinkClientDropped(client_t *c, const char *reason);
+client_t *SV_SpawnLinkClient(const char *name, int link);
 void SV_UpdateStats(client_t *c);
 void SV_ResetStats(client_t *c);
 void SV_ClientReliable(client_t *c, const void *data, size_t len);

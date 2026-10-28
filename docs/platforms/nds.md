@@ -1,8 +1,14 @@
 # Bulwark on the Nintendo DS
 
-The DS build doesn't run the engine. It is a small, separate map viewer
-that loads Quake-format maps (BSP version 29) and flies through them on
-the DS's 3D hardware.
+The DS build doesn't run the engine. It is a small, separate program with
+two jobs:
+
+- a **link client**: the DS joins a game running on a PC over WiFi as its
+  own player, like a GBA on a link cable. The game draws a private screen
+  for it on the bottom screen, and the top screen shows the map from the
+  player's position (see "Joining a game" below);
+- a **map viewer** that loads Quake-format maps (BSP version 29) and flies
+  through them on the DS's 3D hardware.
 
 ## Why it isn't the engine
 
@@ -43,7 +49,49 @@ The viewer reads the SD card through the cart's DLDI driver. It also looks
 in `/bulwark/` and in the card's root. Without a palette, the textures come
 out grey.
 
-## Controls
+## Joining a game
+
+Pick *[Join a game over WiFi]* at the top of the menu. The DS connects with
+its own WiFi settings, or with `link.txt` from a base folder (for example
+`/bulwark/link.txt` on the SD card):
+
+```
+ssid=MyNetwork
+key=passphrase      WPA/WPA2 passphrase, or a WEP key in hex
+security=wpa2       open, wep, wpa or wpa2 (leave it out to take the best offered)
+server=192.168.1.20:27901   optional: asks this server as well as broadcasting
+name=Player         optional
+autojoin=1          optional: join the first server found at start-up
+```
+
+The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
+Link players use UDP port 27901 (`sv_link_port`). The DS lists the servers
+that answer, and A or a tap joins one.
+
+While linked:
+
+| Button | Action |
+|---|---|
+| D-pad up / down | move |
+| D-pad left / right | turn |
+| L + D-pad | strafe, and look up / down |
+| A, B, X, Y, R | attack, jump, use, reload, attack2 |
+| touch | goes to the game's private screen |
+| START | leave |
+
+The top screen draws the map only if the DS has a copy of it in `maps/`.
+Other players show as coloured markers, green for other DS players. The
+game can draw the bottom screen and add markers with the `link_*` QuakeC
+builtins. Until it does, the engine shows the player's name, health, the
+map and the player list. The protocol and builtins are in
+`docs/spec/link.md`.
+
+DS hardware has 802.11b WiFi. The DS Lite and the original DS only connect
+to open or WEP networks in Nintendo's own software. The libraries here
+include WPA2 code, but that hasn't been tried on hardware yet. An open
+network or a phone hotspot is the safest first test.
+
+## Map viewer controls
 
 | Button | Action |
 |---|---|
@@ -107,6 +155,16 @@ loads each of them and turns once on the spot over 512 frames. It then
 shows the average and worst frame rate, the peak GPU vertices, and how
 many faces went over the GPU's limit. After the bench, it stays in the
 last map. Use it to compare builds on real hardware.
+
+## Measured: linked, in melonDS 1.1
+
+melonDS joined a `bulwark-ded` server on Nuclide `base` with `link.txt`
+(`server=10.0.2.2:27901`, `autojoin=1`) through melonDS's own WiFi. The
+bottom screen showed the engine's default screen, and the top screen drew
+`dev` and `lqdm3` from the server's player position. A second link player
+walked down a corridor and showed up as a green marker in the right place.
+The DS's own button presses couldn't be scripted in the emulator, so the
+movement and buttons were tested with a script that sends the same packets.
 
 ## Not supported yet
 

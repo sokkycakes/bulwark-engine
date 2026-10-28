@@ -29,6 +29,16 @@ void World_Free(void);
 bool World_Loaded(void);
 void World_StartPosition(ndscam_t *cam);
 void World_Draw(const ndscam_t *cam, ndsstats_t *stats);
+void World_SetView(const ndscam_t *cam); /* the modelview World_Draw uses, for drawing more */
 int World_TextureBytes(void);
+
+/* main_nds.c */
+extern const char *const nds_basedirs[];
+#define NDS_NUMBASEDIRS 4
+void Nds_Init3D(void);
+
+/* link_nds.c: join a game on a PC over WiFi (docs/spec/link.md) */
+void Link_Run(const uint16_t *palette);
+bool Link_AutoJoin(void); /* link.txt says autojoin=1 */
 
 #endif

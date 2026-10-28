@@ -26,7 +26,8 @@
 
 #define MAX_MAPS 64
 
-static const char *const basedirs[] = {"nitro:/", "fat:/bulwark/base/", "fat:/bulwark/", "fat:/"};
+const char *const nds_basedirs[NDS_NUMBASEDIRS] = {"nitro:/", "fat:/bulwark/base/", "fat:/bulwark/", "fat:/"};
+#define basedirs nds_basedirs
 static char maps[MAX_MAPS][300];
 static int nummaps;
 static uint16_t palette[256];
@@ -105,36 +106,39 @@ static void print_memory(void)
 	iprintf("RAM %d KB used, VRAM tex %d KB\n", mi.uordblks >> 10, World_TextureBytes() >> 10);
 }
 
-/* the map list; returns the index picked */
+/* the menu: joining a game, then the maps; returns -1 to join, or the map picked */
 static int pick_map(int sel)
 {
+	const int rows = 17, entries = nummaps + 1;
 	int top = 0;
 	for (;;) {
 		if (sel < top)
 			top = sel;
-		if (sel >= top + 18)
-			top = sel - 17;
+		if (sel >= top + rows)
+			top = sel - rows + 1;
 		consoleClear();
-		iprintf("Bulwark DS - pick a map (A)\n\n");
-		for (int i = top; i < nummaps && i < top + 18; i++)
-			iprintf("%c %.29s\n", i == sel ? '>' : ' ', short_name(maps[i]));
+		iprintf("Bulwark DS - pick one (A)\n\n");
+		for (int i = top; i < entries && i < top + rows; i++)
+			iprintf("%c %.29s\n", i == sel ? '>' : ' ', i ? short_name(maps[i - 1]) : "[Join a game over WiFi]");
+		if (!nummaps)
+			iprintf("\nNo maps found. Put Quake (BSP 29)\nmaps in /bulwark/base/maps on\nthe SD card.\n");
 		for (;;) {
 			uint32_t down;
 			swiWaitForVBlank();
 			scanKeys();
 			down = keysDown();
 			if (down & KEY_A)
-				return sel;
+				return sel - 1;
 			if (down & KEY_TOUCH) {
-				/* a tap on a name picks it: the list starts on the third text row */
+				/* a tap on a line picks it: the list starts on the third text row */
 				touchPosition tp;
 				int row;
 				touchRead(&tp);
 				row = tp.py / 8 - 2 + top;
-				if (tp.py >= 16 && row < nummaps && row < top + 18)
-					return row;
+				if (tp.py >= 16 && row < entries && row < top + rows)
+					return row - 1;
 			}
-			if ((down & KEY_DOWN) && sel + 1 < nummaps) {
+			if ((down & KEY_DOWN) && sel + 1 < entries) {
 				sel++;
 				break;
 			}
@@ -146,7 +150,7 @@ static int pick_map(int sel)
 	}
 }
 
-static void init_3d(void)
+void Nds_Init3D(void)
 {
 	videoSetMode(MODE_0_3D);
 	glInit();
@@ -312,7 +316,7 @@ int main(int argc, char **argv)
 	bool fat, nitro;
 
 	consoleDemoInit();
-	init_3d();
+	Nds_Init3D();
 	irqSet(IRQ_VBLANK, on_vblank);
 	iprintf("Bulwark DS\n");
 	fat = fatInitDefault();
@@ -326,11 +330,8 @@ int main(int argc, char **argv)
 		snprintf(maps[0], sizeof(maps[0]), "%s", argv[1]);
 		nummaps = nummaps ? nummaps : 1;
 	}
-	if (!nummaps) {
-		iprintf("\nNo maps found. Put Quake (BSP 29)\nmaps in /bulwark/base/maps on\nthe SD card.\n");
-		for (;;)
-			swiWaitForVBlank();
-	}
+	if (Link_AutoJoin())
+		Link_Run(havepalette ? palette : NULL);
 	numbench = read_bench(benchmaps, MAX_RESULTS);
 	for (int i = 0; i < numbench; i++)
 		bench(benchmaps[i]);
@@ -340,7 +341,12 @@ int main(int argc, char **argv)
 		if (first && numbench) {
 			path = benchmaps[numbench - 1]; /* stay in the last one */
 		} else {
-			sel = nummaps > 1 ? pick_map(sel) : 0;
+			int picked = pick_map(nummaps ? sel + 1 : 0);
+			if (picked < 0) {
+				Link_Run(havepalette ? palette : NULL);
+				continue;
+			}
+			sel = picked;
 			path = maps[sel];
 		}
 		if (!load_map(path, &cam)) {
