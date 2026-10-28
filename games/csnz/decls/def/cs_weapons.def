@@ -1,0 +1,1068 @@
+/* Written by tools/assets/make_cs_weapons.py: mod/csnz/decls/def/cs_weapons.def and decls/sound/cs_weapons.sndshd
+(ours, ISC).
+
+Sequence numbers are OBSERVED: read from the build's v_*.mdl files with
+tools/analysis/mdlinfo.py (labels listed next to each number). Damage, clip,
+ammo, fire rate and speed values are STOCK-CS (Counter-Strike 1.6), not
+CSNZ data: CSNZ's weapon numbers live on its servers and are not in the
+client files. Sound file names are OBSERVED in the build's sound/weapons. */
+
+
+entityDef weapon_cs_base
+{
+	"spawnclass"		"ncWeapon"
+	"snd_acquire"	"Player.PickupWeapon"
+	"snd_empty"		"Weapon_CS.Empty"
+	"pickupFlash"	"0"
+	"spin"			"0"
+}
+
+entityDef weapon_knife
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_knife.mdl"
+	"model_player"	"models/p_knife.mdl"
+	"model_view"		"models/v_knife.mdl"
+	"inv_name"		"Knife"
+	"animPrefix"		"knife"
+	"hudSlot"		"2"
+	"hudSlotPos"		"0"
+	"weight"		"10"
+	"def_fireInfo"	"fireInfo_knife_slash"
+	"def_altFireInfo"	"fireInfo_knife_stab"
+	"ammoRequired"	"0"
+	"testDistance"	"-48"
+	"silent_fire"	"1"
+	"act_idle"		"0"
+	"act_draw"		"3"
+	"act_fire"		"6,7"
+	"act_fireFailed"		"1,2"
+}
+
+entityDef fireInfo_knife_slash
+{
+	"def_onFire"	"projectile_knife_slash"
+	"fireRate"	"0.4"
+	"failRate"	"0.35"
+	"act_fire"	"6,7"
+	"act_fireFailed"	"1,2"
+	"snd_hit"	"Weapon_KNIFE.Hit"
+	"snd_failed"	"Weapon_KNIFE.Slash"
+}
+
+entityDef fireInfo_knife_stab
+{
+	"def_onFire"	"projectile_knife_stab"
+	"fireRate"	"1.1"
+	"failRate"	"1.0"
+	"testDistance"	"-32"
+	"act_fire"	"4"
+	"act_fireFailed"	"5"
+	"snd_hit"	"Weapon_KNIFE.Stab"
+	"snd_failed"	"Weapon_KNIFE.Slash"
+}
+
+entityDef projectile_knife_slash
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"15"
+	"range"	"48"
+	"decal_detonate"	"Impact.Shot"
+	"snd_hitBody"	"Weapon_KNIFE.Hit"
+	"snd_hitWorld"	"Weapon_KNIFE.HitWall"
+}
+
+entityDef projectile_knife_stab
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"65"
+	"range"	"32"
+	"decal_detonate"	"Impact.Shot"
+	"snd_hitBody"	"Weapon_KNIFE.Hit"
+	"snd_hitWorld"	"Weapon_KNIFE.HitWall"
+}
+
+entityDef weapon_usp
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_usp.mdl"
+	"model_player"	"models/p_usp.mdl"
+	"model_view"		"models/v_usp.mdl"
+	"inv_name"		"USP"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"1"
+	"hudSlotPos"		"0"
+	"weight"		"9"
+	"def_onFire"		"projectile_usp"
+	"ammoType"		"ammo_45acp"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"12"
+	"fireRate"		"0.15"
+	"reloadTime"		"2.7"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_USP.Single"
+	"clipSizeDefault"	"12"
+	"inv_ammo_45acp"	"24"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"8"
+	"act_draw"		"14"
+	"act_fire"		"9,10,11"
+	"act_fireLast"		"12"
+	"act_reload"		"13"
+}
+
+entityDef projectile_usp
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"34"
+	"spread"	"0.006 0.006"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_glock18
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_glock18.mdl"
+	"model_player"	"models/p_glock18.mdl"
+	"model_view"		"models/v_glock18.mdl"
+	"inv_name"		"Glock 18"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"1"
+	"hudSlotPos"		"1"
+	"weight"		"9"
+	"def_onFire"		"projectile_glock18"
+	"ammoType"		"ammo_9mm"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"20"
+	"fireRate"		"0.15"
+	"reloadTime"		"2.2"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_GLOCK18.Single"
+	"clipSizeDefault"	"20"
+	"inv_ammo_9mm"	"40"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0,1,2"
+	"act_draw"		"8"
+	"act_fire"		"3,4"
+	"act_fireLast"		"6"
+	"act_reload"		"7"
+}
+
+entityDef projectile_glock18
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"25"
+	"spread"	"0.01 0.01"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_p228
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_p228.mdl"
+	"model_player"	"models/p_p228.mdl"
+	"model_view"		"models/v_p228.mdl"
+	"inv_name"		"P228"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"1"
+	"hudSlotPos"		"2"
+	"weight"		"9"
+	"def_onFire"		"projectile_p228"
+	"ammoType"		"ammo_357sig"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"13"
+	"fireRate"		"0.15"
+	"reloadTime"		"2.7"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_P228.Single"
+	"clipSizeDefault"	"13"
+	"inv_ammo_357sig"	"26"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"6"
+	"act_fire"		"1,2,3"
+	"act_fireLast"		"4"
+	"act_reload"		"5"
+}
+
+entityDef projectile_p228
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"32"
+	"spread"	"0.008 0.008"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_deagle
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_deagle.mdl"
+	"model_player"	"models/p_deagle.mdl"
+	"model_view"		"models/v_deagle.mdl"
+	"inv_name"		"Desert Eagle"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"1"
+	"hudSlotPos"		"3"
+	"weight"		"9"
+	"def_onFire"		"projectile_deagle"
+	"ammoType"		"ammo_50ae"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"7"
+	"fireRate"		"0.225"
+	"reloadTime"		"2.2"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_DEAGLE.Single"
+	"clipSizeDefault"	"7"
+	"inv_ammo_50ae"	"14"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"5"
+	"act_fire"		"1,2"
+	"act_fireLast"		"3"
+	"act_reload"		"4"
+}
+
+entityDef projectile_deagle
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"54"
+	"spread"	"0.01 0.01"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_fiveseven
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_fiveseven.mdl"
+	"model_player"	"models/p_fiveseven.mdl"
+	"model_view"		"models/v_fiveseven.mdl"
+	"inv_name"		"Five-SeveN"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"1"
+	"hudSlotPos"		"4"
+	"weight"		"9"
+	"def_onFire"		"projectile_fiveseven"
+	"ammoType"		"ammo_57mm"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"20"
+	"fireRate"		"0.15"
+	"reloadTime"		"2.7"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_FIVESEVEN.Single"
+	"clipSizeDefault"	"20"
+	"inv_ammo_57mm"	"40"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"5"
+	"act_fire"		"1,2"
+	"act_fireLast"		"3"
+	"act_reload"		"4"
+}
+
+entityDef projectile_fiveseven
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"20"
+	"spread"	"0.008 0.008"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_elite
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_elite.mdl"
+	"model_player"	"models/p_elite.mdl"
+	"model_view"		"models/v_elite.mdl"
+	"inv_name"		"Dual Elites"
+	"animPrefix"		"dualpistols"
+	"hudSlot"		"1"
+	"hudSlotPos"		"5"
+	"weight"		"9"
+	"def_onFire"		"projectile_elite"
+	"ammoType"		"ammo_9mm"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.2"
+	"reloadTime"		"4.5"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_ELITE.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_9mm"	"60"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"15"
+	"act_fire"		"2,3,4,5,6,8,9,10,11,12"
+	"act_fireLast"		"7"
+	"act_reload"		"14"
+}
+
+entityDef projectile_elite
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"36"
+	"spread"	"0.01 0.01"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_m3
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_m3.mdl"
+	"model_player"	"models/p_m3.mdl"
+	"model_view"		"models/v_m3.mdl"
+	"inv_name"		"M3"
+	"animPrefix"		"shotgun"
+	"hudSlot"		"0"
+	"hudSlotPos"		"0"
+	"weight"		"8"
+	"def_onFire"		"projectile_m3"
+	"ammoType"		"ammo_buckshot"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"8"
+	"fireRate"		"0.88"
+	"reloadTime"		"0.45"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_M3.Single"
+	"clipSizeDefault"	"8"
+	"inv_ammo_buckshot"	"16"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"6"
+	"act_fire"		"1,2"
+	"act_reloadStart"		"5"
+	"act_reload"		"3"
+	"act_reloadEnd"		"4"
+}
+
+entityDef projectile_m3
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"20"
+	"spread"	"0.0675 0.0675"
+	"hitscans"	"9"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_xm1014
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_xm1014.mdl"
+	"model_player"	"models/p_xm1014.mdl"
+	"model_view"		"models/v_xm1014.mdl"
+	"inv_name"		"XM1014"
+	"animPrefix"		"shotgun"
+	"hudSlot"		"0"
+	"hudSlotPos"		"1"
+	"weight"		"8"
+	"def_onFire"		"projectile_xm1014"
+	"ammoType"		"ammo_buckshot"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"7"
+	"fireRate"		"0.25"
+	"reloadTime"		"0.3"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_XM1014.Single"
+	"clipSizeDefault"	"7"
+	"inv_ammo_buckshot"	"14"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"6"
+	"act_fire"		"1,2"
+	"act_reloadStart"		"5"
+	"act_reload"		"3"
+	"act_reloadEnd"		"4"
+}
+
+entityDef projectile_xm1014
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"20"
+	"spread"	"0.0725 0.0725"
+	"hitscans"	"6"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_mac10
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_mac10.mdl"
+	"model_player"	"models/p_mac10.mdl"
+	"model_view"		"models/v_mac10.mdl"
+	"inv_name"		"MAC-10"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"0"
+	"hudSlotPos"		"2"
+	"weight"		"8"
+	"def_onFire"		"projectile_mac10"
+	"ammoType"		"ammo_45acp"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.07"
+	"reloadTime"		"3.15"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_MAC10.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_45acp"	"60"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_mac10
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"29"
+	"spread"	"0.03 0.03"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_tmp
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_tmp.mdl"
+	"model_player"	"models/p_tmp.mdl"
+	"model_view"		"models/v_tmp.mdl"
+	"inv_name"		"TMP"
+	"animPrefix"		"onehanded"
+	"hudSlot"		"0"
+	"hudSlotPos"		"3"
+	"weight"		"8"
+	"def_onFire"		"projectile_tmp"
+	"ammoType"		"ammo_9mm"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.07"
+	"reloadTime"		"2.12"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_TMP.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_9mm"	"60"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_tmp
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"20"
+	"spread"	"0.03 0.03"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_mp5
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_mp5.mdl"
+	"model_player"	"models/p_mp5.mdl"
+	"model_view"		"models/v_mp5.mdl"
+	"inv_name"		"MP5"
+	"animPrefix"		"mp5"
+	"hudSlot"		"0"
+	"hudSlotPos"		"4"
+	"weight"		"8"
+	"def_onFire"		"projectile_mp5"
+	"ammoType"		"ammo_9mm"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.075"
+	"reloadTime"		"2.63"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_MP5.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_9mm"	"60"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_mp5
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"26"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_ump45
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_ump45.mdl"
+	"model_player"	"models/p_ump45.mdl"
+	"model_view"		"models/v_ump45.mdl"
+	"inv_name"		"UMP45"
+	"animPrefix"		"carbine"
+	"hudSlot"		"0"
+	"hudSlotPos"		"5"
+	"weight"		"8"
+	"def_onFire"		"projectile_ump45"
+	"ammoType"		"ammo_45acp"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"25"
+	"fireRate"		"0.1"
+	"reloadTime"		"3.5"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_UMP45.Single"
+	"clipSizeDefault"	"25"
+	"inv_ammo_45acp"	"50"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_ump45
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"30"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_p90
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_p90.mdl"
+	"model_player"	"models/p_p90.mdl"
+	"model_view"		"models/v_p90.mdl"
+	"inv_name"		"P90"
+	"animPrefix"		"carbine"
+	"hudSlot"		"0"
+	"hudSlotPos"		"6"
+	"weight"		"8"
+	"def_onFire"		"projectile_p90"
+	"ammoType"		"ammo_57mm"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"50"
+	"fireRate"		"0.066"
+	"reloadTime"		"3.4"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_P90.Single"
+	"clipSizeDefault"	"50"
+	"inv_ammo_57mm"	"100"
+	"punchAngle"		"-2 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_p90
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"21"
+	"spread"	"0.025 0.025"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_galil
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_galil.mdl"
+	"model_player"	"models/p_galil.mdl"
+	"model_view"		"models/v_galil.mdl"
+	"inv_name"		"Galil"
+	"animPrefix"		"ak47"
+	"hudSlot"		"0"
+	"hudSlotPos"		"10"
+	"weight"		"7"
+	"def_onFire"		"projectile_galil"
+	"ammoType"		"ammo_556nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"35"
+	"fireRate"		"0.0875"
+	"reloadTime"		"2.45"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_GALIL.Single"
+	"clipSizeDefault"	"35"
+	"inv_ammo_556nato"	"70"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_galil
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"30"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_famas
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_famas.mdl"
+	"model_player"	"models/p_famas.mdl"
+	"model_view"		"models/v_famas.mdl"
+	"inv_name"		"FAMAS"
+	"animPrefix"		"carbine"
+	"hudSlot"		"0"
+	"hudSlotPos"		"11"
+	"weight"		"7"
+	"def_onFire"		"projectile_famas"
+	"ammoType"		"ammo_556nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"25"
+	"fireRate"		"0.0825"
+	"reloadTime"		"3.3"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_FAMAS.Single"
+	"clipSizeDefault"	"25"
+	"inv_ammo_556nato"	"50"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_famas
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"30"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_ak47
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_ak47.mdl"
+	"model_player"	"models/p_ak47.mdl"
+	"model_view"		"models/v_ak47.mdl"
+	"inv_name"		"AK-47"
+	"animPrefix"		"ak47"
+	"hudSlot"		"0"
+	"hudSlotPos"		"12"
+	"weight"		"7"
+	"def_onFire"		"projectile_ak47"
+	"ammoType"		"ammo_762nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.0955"
+	"reloadTime"		"2.45"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_AK47.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_762nato"	"60"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_ak47
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"36"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_m4a1
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_m4a1.mdl"
+	"model_player"	"models/p_m4a1.mdl"
+	"model_view"		"models/v_m4a1.mdl"
+	"inv_name"		"M4A1"
+	"animPrefix"		"rifle"
+	"hudSlot"		"0"
+	"hudSlotPos"		"13"
+	"weight"		"7"
+	"def_onFire"		"projectile_m4a1"
+	"ammoType"		"ammo_556nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.0875"
+	"reloadTime"		"3.05"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_M4A1.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_556nato"	"60"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"7"
+	"act_draw"		"12"
+	"act_fire"		"8,9,10"
+	"act_reload"		"11"
+}
+
+entityDef projectile_m4a1
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"32"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_sg552
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_sg552.mdl"
+	"model_player"	"models/p_sg552.mdl"
+	"model_view"		"models/v_sg552.mdl"
+	"inv_name"		"SG 552"
+	"animPrefix"		"mp5"
+	"hudSlot"		"0"
+	"hudSlotPos"		"14"
+	"weight"		"7"
+	"def_onFire"		"projectile_sg552"
+	"ammoType"		"ammo_556nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.0825"
+	"reloadTime"		"3"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_SG552.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_556nato"	"60"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_sg552
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"33"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_aug
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_aug.mdl"
+	"model_player"	"models/p_aug.mdl"
+	"model_view"		"models/v_aug.mdl"
+	"inv_name"		"AUG"
+	"animPrefix"		"carbine"
+	"hudSlot"		"0"
+	"hudSlotPos"		"15"
+	"weight"		"7"
+	"def_onFire"		"projectile_aug"
+	"ammoType"		"ammo_556nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.0825"
+	"reloadTime"		"3.3"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_AUG.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_556nato"	"60"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"2"
+	"act_fire"		"3,4,5"
+	"act_reload"		"1"
+}
+
+entityDef projectile_aug
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"32"
+	"spread"	"0.02 0.02"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_scout
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_scout.mdl"
+	"model_player"	"models/p_scout.mdl"
+	"model_view"		"models/v_scout.mdl"
+	"inv_name"		"Scout"
+	"animPrefix"		"rifle"
+	"hudSlot"		"0"
+	"hudSlotPos"		"16"
+	"weight"		"7"
+	"def_onFire"		"projectile_scout"
+	"ammoType"		"ammo_762nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"10"
+	"fireRate"		"1.25"
+	"reloadTime"		"2"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_SCOUT.Single"
+	"clipSizeDefault"	"10"
+	"inv_ammo_762nato"	"20"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"4"
+	"act_fire"		"1,2"
+	"act_reload"		"3"
+}
+
+entityDef projectile_scout
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"75"
+	"spread"	"0.005 0.005"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_awp
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_awp.mdl"
+	"model_player"	"models/p_awp.mdl"
+	"model_view"		"models/v_awp.mdl"
+	"inv_name"		"AWP"
+	"animPrefix"		"rifle"
+	"hudSlot"		"0"
+	"hudSlotPos"		"17"
+	"weight"		"7"
+	"def_onFire"		"projectile_awp"
+	"ammoType"		"ammo_338magnum"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"10"
+	"fireRate"		"1.45"
+	"reloadTime"		"2.5"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_AWP.Single"
+	"clipSizeDefault"	"10"
+	"inv_ammo_338magnum"	"20"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"5"
+	"act_fire"		"1,2,3"
+	"act_reload"		"4"
+}
+
+entityDef projectile_awp
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"115"
+	"spread"	"0.003 0.003"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_g3sg1
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_g3sg1.mdl"
+	"model_player"	"models/p_g3sg1.mdl"
+	"model_view"		"models/v_g3sg1.mdl"
+	"inv_name"		"G3/SG-1"
+	"animPrefix"		"mp5"
+	"hudSlot"		"0"
+	"hudSlotPos"		"18"
+	"weight"		"7"
+	"def_onFire"		"projectile_g3sg1"
+	"ammoType"		"ammo_762nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"20"
+	"fireRate"		"0.25"
+	"reloadTime"		"3.5"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_G3SG1.Single"
+	"clipSizeDefault"	"20"
+	"inv_ammo_762nato"	"40"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"4"
+	"act_fire"		"1,2"
+	"act_reload"		"3"
+}
+
+entityDef projectile_g3sg1
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"80"
+	"spread"	"0.005 0.005"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_sg550
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_sg550.mdl"
+	"model_player"	"models/p_sg550.mdl"
+	"model_view"		"models/v_sg550.mdl"
+	"inv_name"		"SG 550"
+	"animPrefix"		"rifle"
+	"hudSlot"		"0"
+	"hudSlotPos"		"19"
+	"weight"		"7"
+	"def_onFire"		"projectile_sg550"
+	"ammoType"		"ammo_556nato"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"30"
+	"fireRate"		"0.25"
+	"reloadTime"		"3.35"
+	"semiAuto"		"1"
+	"snd_fire"		"Weapon_SG550.Single"
+	"clipSizeDefault"	"30"
+	"inv_ammo_556nato"	"60"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"4"
+	"act_fire"		"1,2"
+	"act_reload"		"3"
+}
+
+entityDef projectile_sg550
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"70"
+	"spread"	"0.005 0.005"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_m249
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_m249.mdl"
+	"model_player"	"models/p_m249.mdl"
+	"model_view"		"models/v_m249.mdl"
+	"inv_name"		"M249"
+	"animPrefix"		"m249"
+	"hudSlot"		"0"
+	"hudSlotPos"		"20"
+	"weight"		"6"
+	"def_onFire"		"projectile_m249"
+	"ammoType"		"ammo_556natobox"
+	"ammoRequired"	"1"
+	"ammoPerShot"	"1"
+	"clipSize"		"100"
+	"fireRate"		"0.1"
+	"reloadTime"		"4.7"
+	"semiAuto"		"0"
+	"snd_fire"		"Weapon_M249.Single"
+	"clipSizeDefault"	"100"
+	"inv_ammo_556natobox"	"200"
+	"punchAngle"		"-1 0 0"
+	"act_idle"		"0"
+	"act_draw"		"4"
+	"act_fire"		"1,2"
+	"act_reload"		"3"
+}
+
+entityDef projectile_m249
+{
+	"spawnclass"	"ncProjectile"
+	"is_bullet"	"1"
+	"damage"	"32"
+	"spread"	"0.03 0.03"
+	"decal_detonate"	"Impact.Shot"
+}
+
+entityDef weapon_hegrenade
+{
+	"inherit"		"weapon_cs_base"
+	"model"			"models/w_hegrenade.mdl"
+	"model_player"	"models/p_hegrenade.mdl"
+	"model_view"		"models/v_hegrenade.mdl"
+	"inv_name"		"HE Grenade"
+	"animPrefix"		"grenade"
+	"hudSlot"		"3"
+	"hudSlotPos"		"0"
+	"weight"		"2"
+	"inv_ammo_hegrenade"	"1"
+	"def_onRelease"	"projectile_hegrenade"
+	"def_onFire"		"projectile_hegrenade"
+	"ammoType"		"ammo_hegrenade"
+	"ammoRequired"	"1"
+	"silent_fire"		"1"
+	"chargeTime"		"1"
+	"removeOnEmpty"	"1"
+	"drawAfterRelease"	"1"
+	"snd_fire"		"Weapon_HEGRENADE.PinPull"
+	"act_idle"		"0"
+	"act_draw"		"3"
+	"act_fire"		"1"
+	"act_delay"		"1"
+	"act_release"		"2"
+}
+
+entityDef projectile_hegrenade
+{
+	"spawnclass"		"ncProjectile"
+	"model"			"models/w_hegrenade.mdl"
+	"fuse"			"1.5"
+	"thrown"		"1"
+	"detonate_on_fuse"	"1"
+	"detonate_offset"	"64"
+	"bounce"		"1"
+	"angular_velocity"	"-350 0 0"
+	"velocity"		"750 0 40"
+	"model_detonate"	"fx_explosion.main"
+	"snd_explode"		"Weapon_HEGRENADE.Explode"
+	"snd_bounce"		"Weapon_HEGRENADE.Bounce"
+	"decal_detonate"	"ExplosionScorch"
+	"def_damage"		"damage_hegrenadeDirect"
+	"def_splash_damage"	"damage_hegrenadeSplash"
+}
+
+entityDef damage_hegrenadeDirect
+{
+	"damage"	"1"
+}
+
+entityDef damage_hegrenadeSplash
+{
+	"damage"	"100"
+	"radius"	"350"
+	"push"		"5000"
+}

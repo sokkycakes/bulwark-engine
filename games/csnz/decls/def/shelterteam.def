@@ -1,0 +1,84 @@
+// Shelter Team (mode 28) zombies, spawned by src/rules/modes/sheltert.qc.
+//
+// SOURCE-CONFIRMED (the map tables, zbs_zt_<map>.csv): each zombie type has
+// an appearance (a player model name), attack damage, range, interval,
+// health, armour and speed. The rules set health per type when they spawn
+// one. DESIGN: CSO's zombies are its own NPC class (CShelterTeamZombieImprov,
+// not traced); here they are Nuclide ncMonsters using the CSO player models'
+// zbs_* sequences (OBSERVED in zombi_host.mdl: 112 zbs_idle1, 113 zbs_walk,
+// 114 zbs_run, 123 zbs_attack1_run, 124 zbs_attack2_run, 102-104 death1-3,
+// 99 gut_flinch, 100 head_flinch).
+
+entityDef csm_shz_base
+{
+	"spawnclass"	"ncMonster"
+	"netname"	"Zombie"
+	"model"		"models/player/zombi_host/zombi_host.mdl"
+	"propdata"	"actor_fleshy"
+	"team"		"$ALLIANCE_ENEMY"
+	"mins"		"-16 -16 -36"
+	"maxs"		"16 16 36"
+	"health"	"100"
+	"speed_walk"	"120"
+	"speed_run"	"240"
+	"eye_height"	"28"
+	"act_idle"	"112"
+	"act_walk"	"113"
+	"act_run"	"114"
+	"act_smallFlinch"	"99"
+	"act_bigFlinch"	"100"
+	"act_dieSimple"	"102,103,104"
+	"act_meleeAttack1"	"123,124"
+	"attack_melee_range"	"72"
+	"melee_range"	"72"
+	"mindset_idle"	"idle"
+	"mindset_hunt"	"huntPlayer"
+	"mindset_search"	"searchNearestPlayerMelee"
+	"mindset_meleeCombat"	"sht_zombieMelee"
+	// a horde monster switches to the "combat" mindset once in reach
+	"mindset_combat"	"sht_zombieMelee"
+	"def_attack_melee"	"sht_zombie_claw"
+	"mindset_rangedCombat"	"moveTowardsEnemy"
+}
+
+entityDef csm_shz_zombi_host
+{
+	"inherit"	"csm_shz_base"
+}
+
+entityDef csm_shz_zombi_origin
+{
+	"inherit"	"csm_shz_base"
+	"model"		"models/player/zombi_origin/zombi_origin.mdl"
+}
+
+entityDef csm_shz_speed_zombi_host
+{
+	"inherit"	"csm_shz_base"
+	"model"		"models/player/speed_zombi_host/speed_zombi_host.mdl"
+	"speed_run"	"300"
+}
+
+entityDef csm_shz_heavy_zombi_host
+{
+	"inherit"	"csm_shz_base"
+	"model"		"models/player/heavy_zombi_host/heavy_zombi_host.mdl"
+	"speed_run"	"200"
+}
+
+entityDef csm_shz_deimos_zombi_host
+{
+	"inherit"	"csm_shz_base"
+	"model"		"models/player/deimos_zombi_host/deimos_zombi_host.mdl"
+}
+
+// the claw: a timed melee hit (Nuclide's def_attack_melee: first hit after
+// "delay", "attempts" hits spaced by "wait"). DESIGN damage; the zt table's
+// per-type damage is applied by the rules where they hurt buildings.
+entityDef sht_zombie_claw
+{
+	"damage"	"20"
+	"delay"		"0.3"
+	"attempts"	"1"
+	"wait"		"0.9"
+}

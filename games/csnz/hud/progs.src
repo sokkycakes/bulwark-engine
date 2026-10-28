@@ -1,0 +1,26 @@
+#pragma PROGS_DAT  "../hud.dat"
+
+#includelist
+../src/nuclide/hud.src
+art.qc
+modes.qc
+board.qc
+panels.qc
+levelpanel.qc
+radar.qc
+crosshair.qc
+killfeed.qc
+weaponselect.qc
+scores.qc
+resfile.qc
+buymenu.qc
+teammenu.qc
+classmenu.qc
+spectgui.qc
+spawnmenu.qc
+votemenu.qc
+shelter.qc
+progression.qc
+modehud.qc
+hud.qc
+#endlist

@@ -1,0 +1,115 @@
+// Zombi (mode 8) entity definitions.
+//
+// Evidence levels (see evidence/ZOMBI-CLIENT-EVIDENCE.md):
+//   OBSERVED (Z3): zombies have higher HP and faster speeds than humans;
+//     attacked zombies are pushed back and momentarily stunned.
+//   Every number below is a TEMPORARY APPROXIMATION chosen for this mod,
+//   not CSNZ data. Models, view models and sounds are the build's own
+//   (OBSERVED files, see player.def and cs_weapons.def); the loadout is DESIGN.
+
+// --- humans: knife, pistol and rifle (DESIGN loadout, CS weapons) ---
+entityDef player_csnz_human
+{
+	"inherit"			"player"
+	"weapon"			"weapon_knife,weapon_usp,weapon_m4a1"
+	"current_weapon"	"2"
+	"ammo_45acp"		"100"
+	"ammo_556nato"		"90"
+	"pm_walkspeed"		"250"
+	"pm_runspeed"		"250"
+}
+
+// --- zombies: claw only, faster than humans ---
+entityDef player_csnz_zombie
+{
+	"inherit"			"player_zombie"
+	"weapon"			"weapon_csnz_claw"
+	"noItemPickup"		"1"
+	"current_weapon"	"0"
+	"snd_death"			"Zombie.Death"
+	"snd_pain"			"Zombie.Pain"
+	"pm_walkspeed"		"280"
+	"pm_runspeed"		"280"
+}
+
+// v_knife_zombi.mdl (OBSERVED): 0 idle, 1-2 slash, 3 draw, 4 stab,
+// 5 stab_miss, 6-7 midslash, 8 reinforce
+entityDef weapon_csnz_claw
+{
+	"inherit"			"weapon_cs_base"
+	"model_view"		"models/v_knife_zombi.mdl"
+	"animPrefix"		"knife"
+	"inv_name"			"Claw"
+	"hudSlot"			"2"
+	"hudSlotPos"		"0"
+	"ammoRequired"		"0"
+	"silent_fire"		"1"
+	"testDistance"		"-64"
+	"def_onFire"		"projectile_csnz_claw"
+	"fireRate"			"0.6"
+	"failRate"			"0.6"
+	"snd_hit"			"Zombie.Hit"
+	"snd_failed"		"Zombie.Swing"
+	"act_idle"			"0"
+	"act_draw"			"3"
+	"act_fire"			"6,7"
+	"act_fireFailed"	"1,2"
+}
+
+entityDef projectile_csnz_claw
+{
+	"spawnclass"		"ncProjectile"
+	"is_bullet"			"1"
+	"damage"			"20"
+	"range"				"64"
+	"weapon"			"weapon_csnz_claw"
+	"decal_detonate"	"Impact.Shot"
+	"snd_hitBody"		"Zombie.Hit"
+	"snd_hitWorld"		"Zombie.HitWall"
+}
+
+// --- HUD text channels (game_text) ---
+entityDef zombi_banner
+{
+	"spawnclass"	"game_text"
+	"message"	""
+	"x"		"-1"
+	"y"		"0.3"
+	"fadein"	"0.1"
+	"fadeout"	"0.5"
+	"holdtime"	"3"
+	"color"		"255 220 120"
+	"color2"	"255 255 255"
+	"spawnflags"	"1"
+	"channel"	"1"
+}
+
+entityDef zombi_status
+{
+	"spawnclass"	"game_text"
+	"message"	""
+	"x"		"-1"
+	"y"		"0.04"
+	"fadein"	"0"
+	"fadeout"	"0"
+	"holdtime"	"1.2"
+	"color"		"255 255 255"
+	"color2"	"255 255 255"
+	"spawnflags"	"1"
+	"channel"	"2"
+}
+
+entityDef zombi_message
+{
+	"spawnclass"	"game_text"
+	"message"	""
+	"x"		"0.05"
+	"y"		"0.7"
+	"fadein"	"0.1"
+	"fadeout"	"0.5"
+	"holdtime"	"3"
+	"color"		"180 255 180"
+	"color2"	"255 255 255"
+	"spawnflags"	"0"
+	"channel"	"3"
+}

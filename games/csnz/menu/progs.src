@@ -1,0 +1,54 @@
+// CSNZ front end: Nuclide VGUI (without MenuButton/MenuTitle, which need
+// Nuclide's menu platform layer) plus the screens in this folder.
+#pragma target fte_5768
+#pragma progs_dat "../menu.dat"
+#define MENU
+
+#includelist
+../src/nuclide/common/include.src
+../src/nuclide/client/font.h
+../src/nuclide/menu-vgui/defs.h
+defs.h
+../src/nuclide/vgui/Color.qc
+../src/nuclide/vgui/Theme.qc
+../src/nuclide/vgui/ui.qc
+../src/nuclide/vgui/Widget.qc
+../src/nuclide/vgui/Control.qc
+../src/nuclide/vgui/Button.qc
+../src/nuclide/vgui/CommandButton.qc
+../src/nuclide/vgui/Radio.qc
+../src/nuclide/vgui/CheckBox.qc
+../src/nuclide/vgui/View.qc
+../src/nuclide/vgui/Window.qc
+../src/nuclide/vgui/Frame.qc
+../src/nuclide/vgui/Label.qc
+../src/nuclide/vgui/Pic.qc
+../src/nuclide/vgui/Rect.qc
+../src/nuclide/vgui/3DView.qc
+../src/nuclide/vgui/ScrollBar.qc
+../src/nuclide/vgui/List.qc
+../src/nuclide/vgui/ListPicker.qc
+../src/nuclide/vgui/ListBox.qc
+../src/nuclide/vgui/TextBox.qc
+../src/nuclide/vgui/TabViewItem.qc
+../src/nuclide/vgui/TabView.qc
+../src/nuclide/vgui/ProgressBar.qc
+../src/nuclide/vgui/LoadingPanel.qc
+../src/nuclide/vgui/TextView.qc
+../src/nuclide/vgui/ComboBox.qc
+../src/nuclide/vgui/ResImage.qc
+../src/nuclide/vgui/ResList.qc
+../src/nuclide/vgui/ResSlider.qc
+../src/nuclide/vgui/ResFile.qc
+../src/nuclide/vgui/SchemeTheme.qc
+csnz.h
+viewport.qc
+services.qc
+msgbox.qc
+tables.qc
+screens.qc
+options.qc
+loading.qc
+main.qc
+../src/nuclide/client/font.qc
+#endlist
