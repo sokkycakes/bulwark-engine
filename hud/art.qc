@@ -314,13 +314,14 @@ Art_SpriteCutTop(vector p, string name, float cut, vector rgb255, float alpha255
 		rgb255 * (alpha255 / 255) / 255, 1.0f, DRAWFLAG_ADDITIVE);
 }
 
-/* the 640 "ammo" entry of sprites/weapon_<name>.txt, the per-weapon HUD
-   file GoldSrc reads (OBSERVED in cstrike: weapon_ak47.txt "ammo 640
-   640hud7 72 72 24 24"); added to the hud.txt table as "ammo_<name>" */
+/* a 640 entry of sprites/weapon_<name>.txt, the per-weapon HUD file
+   GoldSrc reads (OBSERVED in cstrike: weapon_ak47.txt "ammo 640 640hud7
+   72 72 24 24", "weapon 640 640hud10 0 0 170 45"); added to the hud.txt
+   table as "<entry>_<name>" */
 string
-Art_WeaponAmmoIcon(string wname)
+Art_WeaponSprite(string wname, string entry)
 {
-	string key = strcat("ammo_", wname);
+	string key = strcat(entry, "_", wname);
 	string have = hash_get(g_hudSprites, key, "-", EV_STRING);
 
 	if (have != "-")
@@ -337,7 +338,7 @@ Art_WeaponAmmoIcon(string wname)
 				break;
 			if (tokenize_console(line) < 7)
 				continue;
-			if (argv(0) == "ammo" && argv(1) == "640") {
+			if (argv(0) == entry && argv(1) == "640") {
 				def = sprintf("sprites/%s.spr %s %s %s %s", argv(2), argv(3), argv(4), argv(5), argv(6));
 				break;
 			}
@@ -347,4 +348,35 @@ Art_WeaponAmmoIcon(string wname)
 
 	hash_add(g_hudSprites, key, def, EV_STRING);
 	return def == "" ? "" : key;
+}
+
+string
+Art_WeaponAmmoIcon(string wname)
+{
+	return Art_WeaponSprite(wname, "ammo");
+}
+
+/* a hud.txt sprite with its left `cut` columns left out, drawn from
+   p + cut (the flashlight charge, FUN_02a3ae60) */
+void
+Art_SpriteCutLeft(vector p, string name, float cut, vector rgb255, float alpha255)
+{
+	string def = hash_get(g_hudSprites, strtolower(name), "", EV_STRING);
+	vector sz;
+
+	if (def == "")
+		return;
+
+	tokenize_console(def);
+	string pic = argv(0);
+	vector rect = [stof(argv(1)), stof(argv(2))];
+	vector rsize = [stof(argv(3)), stof(argv(4))];
+	sz = drawgetimagesize(pic);
+
+	if (sz[0] <= 0 || cut >= rsize[0])
+		return;
+
+	drawsubpic(Art_Pos(p + [cut, 0]), [rsize[0] - cut, rsize[1]] * g_hs, pic,
+		[(rect[0] + cut) / sz[0], rect[1] / sz[1]], [(rsize[0] - cut) / sz[0], rsize[1] / sz[1]],
+		rgb255 * (alpha255 / 255) / 255, 1.0f, DRAWFLAG_ADDITIVE);
 }

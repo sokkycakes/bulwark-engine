@@ -83,10 +83,6 @@ Panels_DrawCharacter(font_s fnt)
 		}
 	}
 
-	/* player name over the panel's strip: not drawn by any HUD code read
-	   so far (UNRESOLVED); kept where the art leaves room (INFERRED) */
-	draw.Text(Art_Pos([100, H - 93 + 16]), getplayerkeyvalue(player_localnum, "name"), fnt);
-
 	/* health: cross_new at (9, H-34), the number from (28, H-39). Red
 	   250,0,0 under 26 hp, the HUD colour otherwise. */
 	col = (hp < 26) ? [250, 0, 0] : HUD_WHITE;
@@ -136,18 +132,10 @@ void
 Panels_DrawWeapon(font_s fnt)
 {
 	float H = HUD_H;
-	string title = weapon.GetTitle();
 
 	/* 288x76 at (W-288, H-84), colour 255,255,255,225 */
 	Art_PicRect([-288, H - 84], [288, 76], "resource/hud/hud_weapon_bg_bottom", 225);
 	Art_PicRect([-288, H - 84], [288, 76], "resource/hud/hud_weapon_bg_top", 225);
-
-	/* weapon name in the panel's top strip: no HUD code read so far draws
-	   it (UNRESOLVED); INFERRED place */
-	if (substring(title, 0, 1) == "#")
-		title = Loc(substring(title, 1, -1), title);
-	if (title != "")
-		draw.RText(Art_Pos([-18, H - 84 + 12]), title, fnt);
 
 	/* the knife and anything else without ammo: nothing */
 	if (!weapon.AmmoRequired())
@@ -179,6 +167,107 @@ Panels_DrawWeapon(font_s fnt)
 	   ammo2 icon is not drawn: Nuclide has no ammo type per weapon) */
 	if (weapon.UsesSecondaryAmmo() && weapon.GetAmmo2() > 0)
 		Art_HudNum([-208, H - 39], "number_", weapon.GetAmmo2(), [114, 197, 255], 255, false);
+}
+
+/* --- weapon box ------------------------------------------------------------- */
+
+/* The current weapon's box above the ammo panel, FUN_02a1ebf0 (called
+   from CHudAmmo::Draw for the new HUD; not in mode 16, nor in mode 37
+   with the zombie knife). Its list starts with the current weapon and,
+   while a slot is being picked, adds that slot's weapons above it; only
+   the current weapon's entry is drawn here (the selection list is not
+   ported yet).
+
+   - box: x = W-174, bottom H-88, 170x61 (the hud.txt sprite
+     weapon_selection_new, 640hud8 0 133 170 61, set by VidInit
+     FUN_02a233d0); the vgui image resource/Hud/hud_weapon_off_bg
+     (loaded by CHudAmmo::Init FUN_02a1fbf0) at 255,255,255,225
+   - the weapon's "weapon" sprite from sprites/weapon_<name>.txt at
+     (x, top+15), HUD colour at 0xc0; 255,16,16 at 0x80 when the weapon
+     uses ammo and has none in the clip or the reserve
+   - the reserve bar, FUN_02a1d240/FUN_02a1d300: at (x+10, top+18),
+     20x4 (DAT_039f133c/DAT_039f1338 at 640 wide and up), FillRGBA 0,160,0
+     for reserve/max, the rest in the HUD colour at 0x80; not drawn with
+     no reserve. The second bar (ammo2) is left out: Nuclide has no max
+     for it here.
+   - the weapon's localized name at (x+8, top+4), colour 1,1,1. The font
+     (the text drawer's +0x1c) is not traced, so the HUD font is used
+     (INFERRED). */
+void
+Panels_DrawWeaponBox(font_s fnt)
+{
+	float H = HUD_H;
+	float modeId = HUD_ModeId();
+	string wname = Panels_WeaponName();
+
+	if (modeId == 16 || wname == "")
+		return;
+
+	float x = -174;
+	float top = H - 88 - 61;
+
+	Art_PicRect([x, top], [170, 61], "resource/hud/hud_weapon_off_bg", 225);
+
+	vector col = HUD_WHITE;
+	float a = 0xc0;
+	if (weapon.AmmoRequired() && weapon.GetClip() < 1 && weapon.GetAmmo1() <= 0) {
+		col = [255, 16, 16];
+		a = 0x80;
+	}
+
+	string spr = Art_WeaponSprite(wname, "weapon");
+	if (spr != "")
+		Art_SpriteAdd([x, top + 15], spr, col, a);
+
+	float maxAmmo = weapon.MaxAmmo();
+	float reserve = weapon.GetAmmo1();
+	if (weapon.AmmoRequired() && reserve > 0 && maxAmmo > 0) {
+		float bw = 20;
+		float fw = max(1, floor(bw * min(1, reserve / maxAmmo)));
+		Art_FillAdd([x + 10, top + 18], [fw, 4], [0, 160, 0], 255);
+		Art_FillAdd([x + 10 + fw, top + 18], [bw - fw, 4], HUD_WHITE, 0x80);
+	}
+
+	string title = weapon.GetTitle();
+	if (substring(title, 0, 1) == "#")
+		title = Loc(substring(title, 1, -1), title);
+	if (title != "")
+		draw.Text(Art_Pos([x + 8, top + 4]), title, fnt);
+}
+
+/* --- flashlight ------------------------------------------------------------- */
+
+/* CHudFlashlight::Draw FUN_02a3ae60 (sprites from VidInit FUN_02a3b2a0:
+   flash_empty, flash_full, flash_beam). New HUD: flash_empty at
+   (W-54, H-82); when on, flash_beam right of it at x+32; flash_full over
+   the empty one with its left (1 - battery) * width cut off. HUD white,
+   alpha 225 when on and 100 when off; red 255,16,16 under 20% battery.
+
+   Nuclide has no flashlight or battery (mp_flashlight is only a cvar in
+   server/defs.h), so this always shows the off state with a full battery
+   (UNRESOLVED until a flashlight exists). */
+bool
+Panels_FlashlightOn(void)
+{
+	return false;
+}
+
+void
+Panels_DrawFlashlight(void)
+{
+	float H = HUD_H;
+	float battery = 1;
+	bool on = Panels_FlashlightOn();
+	vector col = (battery < 0.2) ? [255, 16, 16] : HUD_WHITE;
+	float a = on ? 225 : 100;
+	vector p = [-54, H - 82];
+
+	Art_SpriteAdd(p, "flash_empty", col, a);
+	if (on)
+		Art_SpriteAdd(p + [32, 0], "flash_beam", col, a);
+
+	float w = Art_SpriteSize("flash_full")[0];
+	Art_SpriteCutLeft(p, "flash_full", floor((1 - battery) * w), col, a);
 }
 
 /* --- money ------------------------------------------------------------------ */
