@@ -513,16 +513,9 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	World_Free();
 	glResetTextures();
 	link.haveview = false;
-	for (int b = 0; b < NDS_NUMBASEDIRS; b++) {
-		FILE *f;
-		snprintf(path, sizeof(path), "%smaps/%s.bsp", nds_basedirs[b], map);
-		if (!(f = fopen(path, "rb")))
-			continue;
-		fclose(f);
-		if (World_Load(path, palette, err, sizeof(err)))
-			World_StartPosition(cam);
-		break;
-	}
+	snprintf(path, sizeof(path), "maps/%s.bsp", map);
+	if (World_Load(path, palette, err, sizeof(err)))
+		World_StartPosition(cam);
 }
 
 static void handle_view(const uint8_t *d, int len, ndscam_t *cam)

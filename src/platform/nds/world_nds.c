@@ -29,7 +29,7 @@
 #define BSPVERSION 29
 #define MAX_GPU_VERTS 6000
 #define MAX_GPU_POLYS 2000
-#define TEX_BUDGET (384 * 1024) /* VRAM banks A, B and D */
+#define TEX_BUDGET (320 * 1024) /* VRAM banks A, B and D, less 64 KB for model skins */
 #define TEX_MAXDIM 256
 
 enum { L_ENTITIES, L_PLANES, L_TEXTURES, L_VERTEXES, L_VISIBILITY, L_NODES, L_TEXINFO, L_FACES, L_LIGHTING,
@@ -523,31 +523,16 @@ static void mark_visible(int leaf)
 
 bool World_Load(const char *path, const uint16_t *palette, char *err, int errsize)
 {
-	FILE *f;
+	size_t fsize;
 	long size;
 	uint32_t ofs[NUM_LUMPS], len[NUM_LUMPS];
 	World_Free();
-	f = fopen(path, "rb");
-	if (!f) {
-		snprintf(err, (size_t)errsize, "can't open %s", path);
-		return false;
-	}
-	fseek(f, 0, SEEK_END);
-	size = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	w.file = malloc((size_t)size + 1);
+	w.file = Fs_Load(path, &fsize); /* with a spare byte for a 0 */
 	if (!w.file) {
-		fclose(f);
-		snprintf(err, (size_t)errsize, "not enough memory for a %ld KB map", size >> 10);
+		snprintf(err, (size_t)errsize, "can't read %s (missing, or not enough memory)", path);
 		return false;
 	}
-	if (fread(w.file, 1, (size_t)size, f) != (size_t)size) {
-		fclose(f);
-		World_Free();
-		snprintf(err, (size_t)errsize, "read error");
-		return false;
-	}
-	fclose(f);
+	size = (long)fsize;
 	w.file[size] = 0;
 	w.filesize = (size_t)size;
 	if (size < 4 + NUM_LUMPS * 8 || rd32(w.file) != BSPVERSION) {
@@ -711,12 +696,12 @@ static void setup_frustum(const ndscam_t *cam)
 }
 
 /* the faces that fit the GPU's budget, nearest first, chained by texture */
-static void budget(ndsstats_t *st)
+static void budget(ndsstats_t *st, int maxverts, int maxpolys)
 {
 	int verts = 0, polys = 0;
 	for (int k = 0; k < w.numvis; k++) {
 		face_t *f = &w.faces[w.vislist[k]];
-		if (verts + f->numverts > MAX_GPU_VERTS || polys + f->numverts - 2 > MAX_GPU_POLYS) {
+		if (verts + f->numverts > maxverts || polys + f->numverts - 2 > maxpolys) {
 			st->skipped++;
 			continue;
 		}
@@ -764,10 +749,11 @@ void World_SetView(const ndscam_t *cam)
 	glTranslatef32(-cam->org[0], -cam->org[1], -cam->org[2]);
 }
 
-void World_Draw(const ndscam_t *cam, ndsstats_t *st)
+void World_Begin(const ndscam_t *cam, ndsstats_t *st)
 {
 	int leaf;
 	memset(st, 0, sizeof(*st));
+	World_SetView(cam);
 	if (!w.loaded)
 		return;
 	w.frame++;
@@ -779,9 +765,26 @@ void World_Draw(const ndscam_t *cam, ndsstats_t *st)
 	}
 	st->leaf = leaf;
 	setup_frustum(cam);
+}
 
-	World_SetView(cam);
+bool World_BoxVisible(const int16_t *mins, const int16_t *maxs)
+{
+	int32_t mid[3];
+	int leaf;
+	if (!w.loaded)
+		return true;
+	if (!box_visible(mins, maxs))
+		return false;
+	for (int c = 0; c < 3; c++)
+		mid[c] = (mins[c] + maxs[c]) * 4; /* the middle, in 1/8 units */
+	leaf = point_leaf(mid);
+	return leaf <= 0 || w.leafs[leaf].visframe == w.visframe;
+}
 
+void World_End(ndsstats_t *st, int reserve_verts, int reserve_polys)
+{
+	if (!w.loaded)
+		return;
 	w.numvis = 0;
 	if (w.numnodes)
 		walk(0);
@@ -794,6 +797,52 @@ void World_Draw(const ndscam_t *cam, ndsstats_t *st)
 			if (sm->firstface + i < w.numfaces)
 				add_face(sm->firstface + i);
 	}
-	budget(st);
+	budget(st, MAX_GPU_VERTS - reserve_verts, MAX_GPU_POLYS - reserve_polys);
 	draw_chains();
+}
+
+void World_Draw(const ndscam_t *cam, ndsstats_t *st)
+{
+	World_Begin(cam, st);
+	World_End(st, 0, 0);
+}
+
+const char *World_Entities(void) { return w.loaded ? w.entities : NULL; }
+
+/* about how bright the floor under a point (map units) is, 0..31, from the
+ * baked vertex colours of the nearest upward face below it */
+int World_LightAt(const int16_t *org)
+{
+	int best = -1;
+	int32_t bestdz = 0x7fffffff;
+	if (!w.loaded)
+		return 24;
+	for (int drop = 0; drop <= 128 && best < 0; drop += 64) {
+		int32_t p[3] = {org[0] * 8, org[1] * 8, (org[2] - drop) * 8};
+		int leaf = point_leaf(p);
+		const leaf_t *lf;
+		if (leaf <= 0)
+			continue;
+		lf = &w.leafs[leaf];
+		for (int m = 0; m < lf->nummarks && lf->firstmark + m < w.nummarks; m++) {
+			const face_t *f = &w.faces[w.marks[lf->firstmark + m]];
+			int32_t nz = w.planes[f->plane].n[2], z = 0;
+			if (f->tex < 0 || (f->back ? -nz : nz) < 2800 || !f->numverts)
+				continue;
+			for (int k = 0; k < f->numverts; k++)
+				z += w.verts[f->firstvert + k].z;
+			z /= f->numverts;
+			if (z <= org[2] * 8 && org[2] * 8 - z < bestdz)
+				bestdz = org[2] * 8 - z, best = (int)(f - w.faces);
+		}
+	}
+	if (best < 0)
+		return 24;
+	{
+		const face_t *f = &w.faces[best];
+		int sum = 0;
+		for (int k = 0; k < f->numverts; k++)
+			sum += w.verts[f->firstvert + k].color & 31;
+		return sum / f->numverts;
+	}
 }

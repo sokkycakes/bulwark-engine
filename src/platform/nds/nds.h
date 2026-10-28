@@ -8,6 +8,7 @@
 #define BW_NDS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define BW_NDS_MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -20,7 +21,9 @@ typedef struct {
 } ndscam_t;
 
 typedef struct {
-	int faces, verts, polys, leaf, skipped;
+	int faces, verts, polys, leaf, skipped; /* the world's share */
+	int ents, entpolys, entsdropped;        /* models */
+	int hwpolys, hwverts;                   /* what the GPU actually stored (after culling) */
 } ndsstats_t;
 
 /* palette: 256 RGB15 colours, or NULL for a grey ramp */
@@ -30,7 +33,26 @@ bool World_Loaded(void);
 void World_StartPosition(ndscam_t *cam);
 void World_Draw(const ndscam_t *cam, ndsstats_t *stats);
 void World_SetView(const ndscam_t *cam); /* the modelview World_Draw uses, for drawing more */
+/* World_Draw in two halves, for drawing models in the same GPU budget:
+ * Begin sets up the view and visibility, End draws the world in what's left */
+void World_Begin(const ndscam_t *cam, ndsstats_t *stats);
+bool World_BoxVisible(const int16_t *mins, const int16_t *maxs); /* map units; after Begin */
+void World_End(ndsstats_t *stats, int reserve_verts, int reserve_polys);
+const char *World_Entities(void);
+int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
+
+/* models_nds.c: Quake models (.mdl) on the map's entities, plus test crowds */
+void Ents_Load(const uint16_t *palette);                       /* from the loaded map's entities */
+int Ents_AddCrowd(const ndscam_t *cam, const char *model, int count); /* a grid in front of cam */
+void Ents_Free(void);
+void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
+
+/* fs_nds.c: loose files in the base folders, then pak0.pak ... pak9.pak */
+void Fs_Init(void);
+int Fs_NumPaks(void);
+uint8_t *Fs_Load(const char *name, size_t *size); /* malloc'd, with a 0 after the end */
+void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void *user), void *user);
 
 /* main_nds.c */
 extern const char *const nds_basedirs[];

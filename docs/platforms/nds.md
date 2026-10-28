@@ -7,8 +7,13 @@ two jobs:
   own player, like a GBA on a link cable. The game draws a private screen
   for it on the bottom screen, and the top screen shows the map from the
   player's position (see "Joining a game" below);
-- a **map viewer** that loads Quake-format maps (BSP version 29) and flies
-  through them on the DS's 3D hardware.
+- a **map viewer** that loads Quake-format maps (BSP version 29), with the
+  monsters and items they place as Quake models (`.mdl`), and flies through
+  them on the DS's 3D hardware.
+
+Files come from the base folders, then from `pak0.pak` to `pak9.pak` in
+them, so Quake's own `pak0.pak` (the shareware one works) can go in
+`/bulwark/base/` as it is.
 
 ## Why it isn't the engine
 
@@ -148,13 +153,56 @@ With `lqdm3` loaded, RAM use is about 1.2 MB and texture VRAM is 220 KB.
 `dev.bsp` uses about 600 KB of RAM. The view from its start position
 matches the desktop engine's view.
 
+## Models
+
+Monsters, weapons, armour, powerups and keys from the map's entities are
+drawn with their Quake models from `progs/`, animated at 10 frames a
+second through their first 40 frames. The view model is `v_shot.mdl`.
+
+- Frames stay as the file's bytes, plus a shade byte worked out at load
+  from the geometry: fixed light from above, times the brightness of the
+  floor under the model.
+- Skins are shrunk to at most 128×128. 64 KB of texture VRAM is kept for
+  them.
+- Models are back-face culled on the GPU. They're drawn first, nearest
+  first, and the engine then reads back how many polygons and vertices the
+  GPU actually stored. The world gets what's left, so a crowd costs the
+  farthest world faces, not the models.
+
 ## Bench
 
-`bench.txt` lists map file names, one per line. At start-up, the viewer
+`bench.txt` lists map file names, one per line. A line can add a crowd
+in front of the start position: `e1m1.bsp soldier 9` puts nine soldiers
+there. At start-up, the viewer
 loads each of them and turns once on the spot over 512 frames. It then
 shows the average and worst frame rate, the peak GPU vertices, and how
 many faces went over the GPU's limit. After the bench, it stays in the
 last map. Use it to compare builds on real hardware.
+
+## Measured: Quake shareware with models, in melonDS 1.1
+
+The shareware `pak0.pak` (v1.06), packed into the ROM. Each run is a full
+turn on the spot at the start, over 512 frames. Polygons and vertices are
+what the GPU actually stored at the peak, out of 2048 and 6144. *Models* is
+the most drawn at once, including the view model. *Faces left out* is
+summed over the 512 frames.
+
+| Run | fps (avg / worst) | Peak polygons | Peak vertices | Models | Faces left out |
+|---|---|---|---|---|---|
+| `e1m1` | 60 / 60 | 1342 | 2817 | 3 | 0 |
+| `e1m2` | 60 / 60 | 1823 | 4295 | 5 | 1741 |
+| `e1m3` | 60 / 60 | 718 | 1751 | 2 | 0 |
+| `e1m5` | 60 / 60 | 1667 | 4109 | 7 | 5836 |
+| `e1m1` + 9 soldiers | 60 / 60 | 1961 | 4833 | 8 | 4813 |
+| `e1m1` + 9 ogres | 60 / 60 | 1961 | 4852 | 8 | 4440 |
+| `e1m1` + 9 shamblers | 60 / 60 | 1960 | 4803 | 9 | 2998 |
+| `e1m1` + 16 knights | 60 / 60 | 1961 | 4781 | 11 | 1783 |
+
+The id models are 213 to 328 triangles (knight 213, shambler 284, soldier
+328), and about half of each survives back-face culling. LibreQuake's
+models in Nuclide's `base` are two to three times heavier (soldier 886).
+melonDS doesn't time the ARM9 exactly, so the frame rates need checking
+on hardware. The polygon counts are the GPU's own.
 
 ## Measured: linked, in melonDS 1.1
 
@@ -169,7 +217,9 @@ movement and buttons were tested with a script that sends the same packets.
 ## Not supported yet
 
 - Half-Life maps (BSP 30, with textures in external WADs) and Quake 3 maps.
-- Entities and models. Brush entities such as doors are drawn where the
-  map places them, and they don't move.
+- Game logic: models stand where the map puts them and animate on the
+  spot. Brush entities such as doors are drawn where the map places them,
+  and they don't move. Health and ammo boxes (which are small `.bsp`
+  models) aren't drawn.
 - Collision: you fly through walls.
 - Animated water, sky scrolling, sound.

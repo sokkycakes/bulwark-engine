@@ -33,65 +33,44 @@ static int nummaps;
 static uint16_t palette[256];
 static bool havepalette;
 
-static bool read_file(const char *path, uint8_t *buf, size_t size)
-{
-	FILE *f = fopen(path, "rb");
-	bool ok;
-	if (!f)
-		return false;
-	ok = fread(buf, 1, size, f) == size;
-	fclose(f);
-	return ok;
-}
-
 /* gfx/palette.lmp (768 bytes), or the 16x16 gfx/palette.tga Nuclide ships */
 static void load_palette(void)
 {
-	static uint8_t buf[18 + 16 * 16 * 4];
-	char path[300];
-	for (size_t b = 0; b < sizeof(basedirs) / sizeof(basedirs[0]) && !havepalette; b++) {
-		snprintf(path, sizeof(path), "%sgfx/palette.lmp", basedirs[b]);
-		if (read_file(path, buf, 768)) {
-			for (int i = 0; i < 256; i++)
-				palette[i] = RGB15(buf[i * 3] >> 3, buf[i * 3 + 1] >> 3, buf[i * 3 + 2] >> 3);
-			havepalette = true;
-			break;
-		}
-		snprintf(path, sizeof(path), "%sgfx/palette.tga", basedirs[b]);
-		if (read_file(path, buf, 18 + 16 * 16 * 3) && buf[2] == 2 && buf[12] == 16 && buf[14] == 16 &&
-		    (buf[16] == 24 || buf[16] == 32)) {
-			int bpp = buf[16] / 8;
-			bool topdown = buf[17] & 0x20;
-			if (bpp == 4 && !read_file(path, buf, 18 + 16 * 16 * 4))
-				continue;
-			for (int y = 0; y < 16; y++)
-				for (int x = 0; x < 16; x++) {
-					const uint8_t *p = buf + 18 + buf[0] + ((topdown ? y : 15 - y) * 16 + x) * bpp;
-					palette[y * 16 + x] = RGB15(p[2] >> 3, p[1] >> 3, p[0] >> 3);
-				}
-			havepalette = true;
-		}
+	size_t size;
+	uint8_t *buf = Fs_Load("gfx/palette.lmp", &size);
+	if (buf && size >= 768) {
+		for (int i = 0; i < 256; i++)
+			palette[i] = RGB15(buf[i * 3] >> 3, buf[i * 3 + 1] >> 3, buf[i * 3 + 2] >> 3);
+		havepalette = true;
 	}
+	free(buf);
+	if (havepalette || !(buf = Fs_Load("gfx/palette.tga", &size)))
+		return;
+	if (size >= 18 && buf[2] == 2 && buf[12] == 16 && buf[14] == 16 && (buf[16] == 24 || buf[16] == 32) &&
+	    size >= 18u + buf[0] + 16 * 16 * (buf[16] / 8)) {
+		int bpp = buf[16] / 8;
+		bool topdown = buf[17] & 0x20;
+		for (int y = 0; y < 16; y++)
+			for (int x = 0; x < 16; x++) {
+				const uint8_t *p = buf + 18 + buf[0] + ((topdown ? y : 15 - y) * 16 + x) * bpp;
+				palette[y * 16 + x] = RGB15(p[2] >> 3, p[1] >> 3, p[0] >> 3);
+			}
+		havepalette = true;
+	}
+	free(buf);
+}
+
+static void add_map(const char *name, void *user)
+{
+	(void)user;
+	if (nummaps < MAX_MAPS)
+		snprintf(maps[nummaps++], sizeof(maps[0]), "%s", name);
 }
 
 static void find_maps(void)
 {
 	nummaps = 0;
-	for (size_t b = 0; b < sizeof(basedirs) / sizeof(basedirs[0]); b++) {
-		char dir[280];
-		DIR *d;
-		struct dirent *e;
-		snprintf(dir, sizeof(dir), "%smaps", basedirs[b]);
-		d = opendir(dir);
-		if (!d)
-			continue;
-		while ((e = readdir(d)) && nummaps < MAX_MAPS) {
-			size_t n = strlen(e->d_name);
-			if (n > 4 && strcasecmp(e->d_name + n - 4, ".bsp") == 0)
-				snprintf(maps[nummaps++], sizeof(maps[0]), "%s/%s", dir, e->d_name);
-		}
-		closedir(d);
-	}
+	Fs_List("maps", ".bsp", add_map, NULL);
 }
 
 static const char *short_name(const char *path)
@@ -215,9 +194,11 @@ static void on_vblank(void) { vblanks++; }
 /* bench.txt in a base directory lists maps (one file name a line) to time
  * one turn on the spot in each, for comparing builds on hardware */
 #define MAX_RESULTS 8
-static char results[MAX_RESULTS][48];
+static char results[MAX_RESULTS][64];
 static int numresults;
 
+/* a line is a map file name, then optionally a model and a count for a crowd
+ * in front of the start: "e1m1.bsp soldier 12" */
 static int read_bench(char names[][300], int max)
 {
 	char path[300], line[256];
@@ -231,7 +212,7 @@ static int read_bench(char names[][300], int max)
 		while (n < max && fgets(line, sizeof(line), f)) {
 			line[strcspn(line, "\r\n")] = 0;
 			if (line[0])
-				snprintf(names[n++], 300, "%smaps/%s", basedirs[b], line);
+				snprintf(names[n++], 300, "maps/%s", line);
 		}
 		fclose(f);
 	}
@@ -248,6 +229,7 @@ static bool load_map(const char *path, ndscam_t *cam)
 		return false;
 	}
 	World_StartPosition(cam);
+	Ents_Load(havepalette ? palette : NULL);
 	return true;
 }
 
@@ -256,7 +238,9 @@ static int frame(const ndscam_t *cam, ndsstats_t *st)
 {
 	static int last;
 	int took;
-	World_Draw(cam, st);
+	Ents_Draw(cam, st);
+	glGetInt(GL_GET_POLYGON_RAM_COUNT, &st->hwpolys);
+	glGetInt(GL_GET_VERTEX_RAM_COUNT, &st->hwverts);
 	glFlush(0);
 	swiWaitForVBlank();
 	took = vblanks - last;
@@ -264,14 +248,17 @@ static int frame(const ndscam_t *cam, ndsstats_t *st)
 	return took;
 }
 
-static void bench(const char *path)
+static void bench(const char *line)
 {
 	ndscam_t cam;
 	ndsstats_t st;
 	const int steps = 512;
-	int start, worst = 0, peakverts = 0, skipped = 0;
-	if (numresults >= MAX_RESULTS || !load_map(path, &cam))
+	char path[300], model[40] = "";
+	int start, worst = 0, peakpolys = 0, peakverts = 0, peakents = 0, skipped = 0, count = 0;
+	if (numresults >= MAX_RESULTS || sscanf(line, "%299s %39s %d", path, model, &count) < 1 || !load_map(path, &cam))
 		return;
+	if (model[0] && count > 0)
+		Ents_AddCrowd(&cam, model, count);
 	frame(&cam, &st);
 	start = vblanks;
 	for (int i = 0; i < steps; i++) {
@@ -280,11 +267,15 @@ static void bench(const char *path)
 		took = frame(&cam, &st);
 		if (took > worst)
 			worst = took;
-		peakverts = st.verts > peakverts ? st.verts : peakverts;
+		peakpolys = st.hwpolys > peakpolys ? st.hwpolys : peakpolys;
+		peakverts = st.hwverts > peakverts ? st.hwverts : peakverts;
+		peakents = st.ents > peakents ? st.ents : peakents;
 		skipped += st.skipped;
 	}
-	snprintf(results[numresults++], sizeof(results[0]), "%.8s %2dfps min%2d v%4d s%d", short_name(path),
-	         steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakverts, skipped);
+	snprintf(results[numresults++], sizeof(results[0]), "%.6s%s%.7s %d/%dfps p%d v%d m%d s%d", short_name(path),
+	         model[0] ? "+" : "", model, steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakverts,
+	         peakents, skipped);
+	Ents_Free();
 	World_Free();
 	glResetTextures();
 }
@@ -293,7 +284,9 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 {
 	consoleClear();
 	iprintf("%s  %d fps\n", short_name(map), fps);
-	iprintf("faces %d  verts %d  polys %d\n", st->faces, st->verts, st->polys);
+	iprintf("world: faces %d polys %d\n", st->faces, st->polys);
+	iprintf("models: %d drawn, %d tris, %d cut\n", st->ents, st->entpolys, st->entsdropped);
+	iprintf("GPU: %d polys, %d verts\n", st->hwpolys, st->hwverts);
 	if (st->skipped)
 		iprintf("over the GPU limit: %d faces\n", st->skipped);
 	iprintf("leaf %d  eye %ld %ld %ld\n", st->leaf, (long)(cam->org[0] / 8), (long)(cam->org[1] / 8),
@@ -301,7 +294,7 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 	print_memory();
 	iprintf("START: map list\n");
 	if (numresults) {
-		iprintf("\nbench: avg, worst, peak verts,\nfaces over the limit\n");
+		iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut\n");
 		for (int i = 0; i < numresults; i++)
 			iprintf("%s\n", results[i]);
 	}
@@ -309,7 +302,8 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 
 int main(int argc, char **argv)
 {
-	static char benchmaps[MAX_RESULTS][300];
+	static char benchmaps[MAX_RESULTS][300], crowd[40];
+	int crowdsize = 0;
 	ndscam_t cam;
 	ndsstats_t st;
 	int sel = 0, frames = 0, lastvb = 0, lasttx = -1, lastty = -1, numbench;
@@ -321,7 +315,8 @@ int main(int argc, char **argv)
 	iprintf("Bulwark DS\n");
 	fat = fatInitDefault();
 	nitro = nitroFSInit(NULL);
-	iprintf("SD card: %s, ROM files: %s\n", fat ? "yes" : "no", nitro ? "yes" : "no");
+	Fs_Init();
+	iprintf("SD card: %s, ROM files: %s, paks: %d\n", fat ? "yes" : "no", nitro ? "yes" : "no", Fs_NumPaks());
 	load_palette();
 	if (!havepalette)
 		iprintf("no gfx/palette.lmp: grey\n");
@@ -339,7 +334,10 @@ int main(int argc, char **argv)
 	for (bool first = true;; first = false) {
 		const char *path;
 		if (first && numbench) {
-			path = benchmaps[numbench - 1]; /* stay in the last one */
+			char line[300];
+			snprintf(line, sizeof(line), "%s", benchmaps[numbench - 1]);
+			sscanf(line, "%299s %39s %d", benchmaps[numbench - 1], crowd, &crowdsize);
+			path = benchmaps[numbench - 1]; /* stay in the last map, with its crowd */
 		} else {
 			int picked = pick_map(nummaps ? sel + 1 : 0);
 			if (picked < 0) {
@@ -357,6 +355,8 @@ int main(int argc, char **argv)
 			} while (!(keysDown() & KEY_A));
 			continue;
 		}
+		if (crowd[0] && crowdsize > 0)
+			Ents_AddCrowd(&cam, crowd, crowdsize), crowd[0] = 0;
 		print_memory();
 		for (;;) {
 			scanKeys();
@@ -370,6 +370,7 @@ int main(int argc, char **argv)
 				lastvb = vblanks;
 			}
 		}
+		Ents_Free();
 		World_Free();
 		glResetTextures();
 	}
