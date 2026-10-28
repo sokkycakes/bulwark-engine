@@ -2,3 +2,5 @@
 *.lno
 src/nuclide
 progs/
+maps/zbs_*.csv
+shelterteam/*.csv

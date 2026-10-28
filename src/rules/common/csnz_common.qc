@@ -64,6 +64,7 @@ bool cs_rounds;			/* round based */
 float cs_respawnDelay;		/* < 0: dead players wait for the next round */
 bool cs_scoreKills;		/* score is kills (else round wins) */
 bool cs_oneSideStart;		/* starts with everyone on one team (infection modes) */
+bool cs_pve;			/* team 1 is the rules' NPCs: starts with team 2 alone */
 float cs_minPlayers;
 bool cs_freezeLock;		/* freeze time holds players still (Original family) */
 bool cs_scorePoints;		/* score is each player's mode points (.cs_score) */
@@ -807,7 +808,7 @@ CS_Frame(void)
 	switch (cs_state) {
 	case CS_WAIT:
 		/* team modes start once both sides have someone (STOCK-CS) */
-		if (CS_Players() >= max(autocvar_csnz_min_players, cs_minPlayers) && (!cs_teams || cs_oneSideStart || (CS_TeamSize(CS_TEAM1) > 0 && CS_TeamSize(CS_TEAM2) > 0))) {
+		if (CS_Players() >= max(autocvar_csnz_min_players, cs_minPlayers) && (!cs_teams || cs_oneSideStart || cs_pve || (CS_TeamSize(CS_TEAM1) > 0 && CS_TeamSize(CS_TEAM2) > 0))) {
 			/* the match clock starts with the first round */
 			if (cs_round == 0)
 				cs_matchEnd = cs_timeLimit > 0 ? time + cs_timeLimit * 60 : 0;

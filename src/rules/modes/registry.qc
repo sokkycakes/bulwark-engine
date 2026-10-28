@@ -4,6 +4,8 @@
 
 float cs_modeRun;		/* the id whose rules actually run */
 
+void CSM_ShelterTeam(void);	/* modes/sheltert.qc, after this file (it uses getentitytoken) */
+
 /* partner mode: two AI partners per human on the human's side (DESIGN count) */
 float
 CSM_PartnerPickTeam(entity p)
@@ -273,7 +275,7 @@ CS_SelectMode(float id)
 
 	/* --- shelter modes --- */
 	case 26: CSM_Shelter(false); break;
-	case 28: CSM_Shelter(true); break;
+	case 28: CSM_ShelterTeam(); break;
 	case 52:
 		/* VoxelShelter: VoxelPlay<SHELTERTeam> (SOURCE-CONFIRMED);
 		   studio.dat runs it on a Studio map */
