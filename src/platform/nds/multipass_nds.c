@@ -103,7 +103,8 @@ void Mp_Frame(const ndscam_t *cam, ndsstats_t *st)
 
 	/* the far pass */
 	World_SetView(cam);
-	Ents_DrawPass(cam, split2, false, false, st);
+	polys = World_Cost(k, World_NumTreeFaces(), split2, false, &verts);
+	Ents_DrawPass(cam, split2, false, false, Ents_FlickerBudget(polys, verts), st);
 	Gpu_Counts(&polys, &verts);
 	World_DrawPass(k, World_NumTreeFaces(), split2, false, st, WORLD_MAX_VERTS - verts, WORLD_MAX_POLYS - polys);
 	Gpu_Counts(&farpolys, &farverts);
@@ -118,7 +119,8 @@ void Mp_Frame(const ndscam_t *cam, ndsstats_t *st)
 	/* the near pass */
 	draw_backdrop();
 	World_SetView(cam);
-	Ents_DrawPass(cam, split2, true, true, st);
+	polys = World_Cost(0, k, split2, true, &verts);
+	Ents_DrawPass(cam, split2, true, true, Ents_FlickerBudget(polys + QUAD_POLYS, verts + QUAD_VERTS), st);
 	Gpu_Counts(&polys, &verts);
 	World_DrawPass(0, k, split2, true, st, WORLD_MAX_VERTS - verts, WORLD_MAX_POLYS - polys);
 	Gpu_Counts(&polys, &verts);

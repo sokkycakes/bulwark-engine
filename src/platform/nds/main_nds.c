@@ -270,15 +270,26 @@ static int frame(const ndscam_t *cam, ndsstats_t *st)
 	return took;
 }
 
+static const char *flickstr(int n)
+{
+	static char buf[12];
+	snprintf(buf, sizeof(buf), " f%d", n);
+	return buf;
+}
+
 static void bench(const char *line)
 {
 	ndscam_t cam;
 	ndsstats_t st;
 	const int steps = 512;
 	char path[300], model[40] = "";
-	int start, worst = 0, peakpolys = 0, peakverts = 0, peakents = 0, skipped = 0, count = 0;
+	int start, worst = 0, peakpolys = 0, peakverts = 0, peakents = 0, peakflicker = 0, skipped = 0, count = 0;
 	if (!strncmp(line, "maps/multipass ", 15)) {
 		multipass = !strcmp(line + 15, "on");
+		return;
+	}
+	if (!strncmp(line, "maps/flicker ", 13)) {
+		Ents_Flicker = !strcmp(line + 13, "on");
 		return;
 	}
 	if (numresults >= MAX_RESULTS || sscanf(line, "%299s %39s %d", path, model, &count) < 1 || !load_map(path, &cam))
@@ -296,11 +307,13 @@ static void bench(const char *line)
 		peakpolys = st.hwpolys > peakpolys ? st.hwpolys : peakpolys;
 		peakverts = st.hwverts > peakverts ? st.hwverts : peakverts;
 		peakents = st.ents > peakents ? st.ents : peakents;
+		peakflicker = st.entsflicker > peakflicker ? st.entsflicker : peakflicker;
 		skipped += st.skipped;
 	}
-	snprintf(results[numresults++], sizeof(results[0]), "%s%.6s%s%.7s %d/%dfps p%d v%d m%d s%d", multipass ? "2:" : "",
-	         short_name(path), model[0] ? "+" : "", model, steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakverts,
-	         peakents, skipped);
+	snprintf(results[numresults++], sizeof(results[0]), "%s%s%.6s%s%.7s %d/%dfps p%d v%d m%d s%d%s", multipass ? "2" : "",
+	         Ents_Flicker ? "f:" : multipass ? ":" : "", short_name(path), model[0] ? "+" : "", model,
+	         steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakverts, peakents, skipped,
+	         Ents_Flicker ? flickstr(peakflicker) : "");
 	Ents_Free();
 	World_Free();
 	Nds_ResetTextures();
@@ -309,9 +322,11 @@ static void bench(const char *line)
 static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *st, int fps)
 {
 	consoleClear();
-	iprintf("%s  %d fps  %s\n", short_name(map), fps, multipass ? "2 passes" : "1 pass");
+	iprintf("%s  %d fps  %s%s\n", short_name(map), fps, multipass ? "2 passes" : "1 pass", Ents_Flicker ? " flicker" : "");
 	iprintf("world: faces %d polys %d\n", st->faces, st->polys);
 	iprintf("models: %d drawn, %d tris, %d cut\n", st->ents, st->entpolys, st->entsdropped);
+	if (st->entsflicker)
+		iprintf("taking turns: %d models\n", st->entsflicker);
 	iprintf("GPU: %d polys, %d verts\n", st->hwpolys, st->hwverts);
 	if (multipass)
 		iprintf("near: %d of %d faces; far %d polys\n", st->split, st->treefaces, st->farpolys);
@@ -320,9 +335,9 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 	iprintf("leaf %d  eye %ld %ld %ld\n", st->leaf, (long)(cam->org[0] / 8), (long)(cam->org[1] / 8),
 	        (long)(cam->org[2] / 8));
 	print_memory();
-	iprintf("START: map list  SELECT: passes\n");
+	iprintf("START: map list  SELECT: mode\n");
 	if (numresults) {
-		iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut\n");
+		iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut;\nf: models taking turns\n");
 		for (int i = 0; i < numresults; i++)
 			iprintf("%s\n", results[i]);
 	}
@@ -390,8 +405,11 @@ int main(int argc, char **argv)
 			scanKeys();
 			if (keysDown() & KEY_START)
 				break;
-			if (keysDown() & KEY_SELECT)
-				multipass = !multipass;
+			/* SELECT steps through 1 pass, 1 pass + flicker, 2 passes, 2 passes + flicker */
+			if (keysDown() & KEY_SELECT) {
+				multipass ^= Ents_Flicker;
+				Ents_Flicker = !Ents_Flicker;
+			}
 			fly(&cam, keysHeld(), &lasttx, &lastty);
 			frame(&cam, &st);
 			if (++frames >= 60) {

@@ -393,7 +393,11 @@ ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int light)
 	glEnd();
 }
 
+/* GPU polygons a model stores, about: half its triangles survive back-face culling */
+#define STORED(m) ((m)->numtris * 55 / 100)
+
 static int order[MAX_ENTS], numorder;
+bool Ents_Flicker;
 
 void Ents_Select(const ndscam_t *cam)
 {
@@ -426,17 +430,35 @@ void Ents_Select(const ndscam_t *cam)
 int Ents_Costs(int32_t *dist2, int *polys, int max, int *viewpolys)
 {
 	int n = 0;
-	*viewpolys = viewmodel >= 0 ? mdls[viewmodel].numtris * 55 / 100 : 0;
+	*viewpolys = viewmodel >= 0 ? STORED(&mdls[viewmodel]) : 0;
 	for (int k = 0; k < numorder && n < max; k++, n++) {
 		dist2[n] = ents[order[k]].dist;
-		polys[n] = mdls[ents[order[k]].mdl].numtris * 55 / 100;
+		polys[n] = STORED(&mdls[ents[order[k]].mdl]);
 	}
 	return n;
 }
 
-void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool withviewmodel, ndsstats_t *st)
+static void draw_ent(const ent_t *e)
 {
-	int sent = 0, drawn = 0;
+	const mdl_t *m = &mdls[e->mdl];
+	glPushMatrix();
+	glTranslatef32(e->org[0] * 8, e->org[1] * 8, e->org[2] * 8);
+	glRotateZi(e->yaw);
+	glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
+	draw_mdl(m, ticks / 6 + e->phase, e->light);
+	glPopMatrix(1);
+}
+
+/* flicker < 0: the nearest models that fit MAX_ENT_POLYS, the rest left out.
+ * flicker >= 0 is the GPU polygons the world leaves models in this pass. The
+ * nearest models up to STEADY_POLYS are always drawn; past that, the models
+ * that don't all fit take turns, a different run of them each frame, as NES
+ * games did with sprites. */
+#define STEADY_POLYS 600
+void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool withviewmodel, int flicker, ndsstats_t *st)
+{
+	static int rest[MAX_ENTS];
+	int sent = 0, drawn = 0, stored = 0, numrest = 0, restcost = 0;
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
 	if (withviewmodel && viewmodel >= 0) {
 		ndscam_t eyecam = {{0, 0, 0}, 0, 0};
@@ -445,24 +467,43 @@ void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool with
 		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
 		draw_mdl(m, 0, 24);
 		World_SetView(cam);
-		sent += m->numtris, drawn++;
+		sent += m->numtris, stored += STORED(m), drawn++;
 	}
 	for (int k = 0; k < numorder; k++) {
 		const ent_t *e = &ents[order[k]];
 		const mdl_t *m = &mdls[e->mdl];
 		if ((e->dist < split2) != nearside)
 			continue;
-		if (sent + m->numtris > MAX_ENT_POLYS) {
-			st->entsdropped++;
+		if (sent + m->numtris > MAX_ENT_POLYS ||
+		    (flicker >= 0 && (numrest || stored + STORED(m) > STEADY_POLYS))) {
+			if (flicker >= 0)
+				rest[numrest++] = order[k], restcost += STORED(&mdls[e->mdl]);
+			else
+				st->entsdropped++;
 			continue;
 		}
-		glPushMatrix();
-		glTranslatef32(e->org[0] * 8, e->org[1] * 8, e->org[2] * 8);
-		glRotateZi(e->yaw);
-		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
-		draw_mdl(m, ticks / 6 + e->phase, e->light);
-		glPopMatrix(1);
-		sent += m->numtris, drawn++;
+		draw_ent(e);
+		sent += m->numtris, stored += STORED(m), drawn++;
+	}
+	if (numrest) {
+		/* the rest, starting a little further along the list each frame */
+		int room = flicker - stored, start = 0;
+		if (restcost > room) {
+			int fit = room > 0 ? room * numrest / restcost : 0;
+			start = fit ? ticks * fit % numrest : 0;
+			st->entsflicker += numrest;
+		}
+		for (int i = 0; i < numrest; i++) {
+			const ent_t *e = &ents[rest[(start + i) % numrest]];
+			const mdl_t *m = &mdls[e->mdl];
+			if (stored + STORED(m) > flicker || sent + m->numtris > MAX_ENT_POLYS) {
+				if (restcost <= room)
+					st->entsdropped++;
+				continue;
+			}
+			draw_ent(e);
+			sent += m->numtris, stored += STORED(m), drawn++;
+		}
 	}
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
 	st->ents += drawn;
@@ -477,15 +518,27 @@ void Gpu_Counts(int *polys, int *verts)
 	glGetInt(GL_GET_VERTEX_RAM_COUNT, verts);
 }
 
+int Ents_FlickerBudget(int worldpolys, int worldverts)
+{
+	int polys = WORLD_MAX_POLYS - worldpolys, byverts = (WORLD_MAX_VERTS - worldverts) / 3;
+	if (!Ents_Flicker)
+		return -1;
+	polys = byverts < polys ? byverts : polys;
+	return polys > 0 ? polys : 0;
+}
+
 /* models first, then the world in whatever the GPU has left: after
  * back-face culling a model stores about half its triangles, so the count
- * is read back from the GPU rather than guessed */
+ * is read back from the GPU rather than guessed. With Ents_Flicker the
+ * world is counted first, and models past the nearest few share what it leaves. */
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *st)
 {
-	int polys, verts;
+	int polys, verts, wverts, wpolys;
 	World_Begin(cam, st);
 	Ents_Select(cam);
-	Ents_DrawPass(cam, INT32_MAX, true, true, st);
+	World_Collect();
+	wpolys = World_Cost(0, World_NumTreeFaces(), INT32_MAX, true, &wverts);
+	Ents_DrawPass(cam, INT32_MAX, true, true, Ents_FlickerBudget(wpolys, wverts), st);
 	Gpu_Counts(&polys, &verts);
-	World_End(st, verts, polys);
+	World_DrawPass(0, World_NumTreeFaces(), INT32_MAX, true, st, WORLD_MAX_VERTS - verts, WORLD_MAX_POLYS - polys);
 }

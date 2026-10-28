@@ -840,6 +840,18 @@ int World_Split(int maxverts, int maxpolys, const int32_t *mdist2, const int *mp
 
 int World_NumTreeFaces(void) { return w.numtreevis; }
 
+int World_Cost(int from, int to, int32_t split2, bool nearside, int *verts)
+{
+	int v = 0, p = 0;
+	for (int k = from; k < to && k < w.numtreevis; k++)
+		v += w.faces[w.vislist[k]].numverts, p += w.faces[w.vislist[k]].numverts - 2;
+	for (int k = w.numtreevis; k < w.numvis; k++)
+		if ((w.visdist[k] < split2) == nearside)
+			v += w.faces[w.vislist[k]].numverts, p += w.faces[w.vislist[k]].numverts - 2;
+	*verts = v;
+	return p;
+}
+
 void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t *st, int maxverts, int maxpolys)
 {
 	int verts = 0, polys = 0;

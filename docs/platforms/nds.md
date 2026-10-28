@@ -107,7 +107,7 @@ network or a phone hotspot is the safest first test.
 | A / Y | rise / sink |
 | touch and drag | look around |
 | START | back to the map list |
-| SELECT | one pass (60 fps) or two passes (30 fps) |
+| SELECT | steps through one pass, one pass with flicker, two passes, two passes with flicker |
 
 In the map list, the D-pad and A pick a map, or you can tap a name. The
 bottom screen shows the frame rate, faces, GPU vertices and polygons, and
@@ -177,7 +177,7 @@ second through their first 40 frames. The view model is `v_shot.mdl`.
 `bench.txt` lists map file names, one per line. A line can add a crowd
 in front of the start position: `e1m1.bsp soldier 9` puts nine soldiers
 there. A line `multipass on` (or `off`) switches the drawing mode for the
-lines after it. At start-up, the viewer
+lines after it, and `flicker on` (or `off`) does the same for flicker. At start-up, the viewer
 loads each of them and turns once on the spot over 512 frames. It then
 shows the average and worst frame rate, the peak GPU vertices, and how
 many faces went over the GPU's limit. After the bench, it stays in the
@@ -252,6 +252,34 @@ and 16 knights fit whole. 24 knights (about 4600 triangles before culling)
 overflow even 4096 polygons, so both passes fill and the far pass drops
 faces, but twice as many knights get drawn. The cost is half the frame
 rate and 128 KB of texture VRAM.
+
+## Flicker: models take turns
+
+With flicker on, the world is counted first, and models get only what it
+leaves. The view model and the nearest models, up to 600 GPU polygons,
+are always drawn. The models past those that don't all fit take turns:
+each frame draws a different run of them, as NES games did with sprites.
+A model drawn every other frame looks half transparent at 60 fps, and
+flickers at 15 Hz in two-pass mode. Without flicker, models are drawn
+first and the farthest world faces are cut instead.
+
+Same bench. `f:` is flicker on, `2f:` two passes with flicker. *Taking
+turns* is the most models sharing the leftover budget in one frame.
+
+| Run | fps | Peak polygons | Models per frame | Taking turns | Faces left out |
+|---|---|---|---|---|---|
+| `e1m1` + 24 knights | 60 / 60 | 1960 | 11 | 0 | 180 |
+| `f:e1m1` + 24 knights | 60 / 60 | 1837 | 11 | 22 | 0 |
+| `f:e1m1` + 16 knights | 60 / 60 | 1812 | 11 | 14 | 0 |
+| `f:e1m5` | 60 / 60 | 1644 | 7 | 2 | 1780 |
+| `2:e1m1` + 24 knights | 30 / 30 | 3079 | 22 | 0 | 1959 |
+| `2f:e1m1` + 16 knights | 30 / 30 | 2828 | 17 | 0 | 0 |
+| `2f:e1m1` + 24 knights | 30 / 30 | 2972 | 21 | 8 | 0 |
+| `2f:e1m1` + 32 knights | 30 / 30 | 2806 | 22 | 23 | 0 |
+
+With flicker, no world faces are cut for models. `e1m5` still loses faces
+because its world alone is over 2048 polygons in places. Flicker hasn't
+been seen on hardware; melonDS screenshots show one frame at a time.
 
 ## Measured: linked, in melonDS 1.1
 

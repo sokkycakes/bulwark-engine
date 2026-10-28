@@ -25,6 +25,7 @@ typedef struct {
 	int ents, entpolys, entsdropped;        /* models */
 	int hwpolys, hwverts;                   /* what the GPU actually stored (after culling) */
 	int split, treefaces, farpolys;          /* two passes: nearest faces in the near pass, of how many */
+	int entsflicker;                        /* models taking turns (Ents_Flicker) */
 } ndsstats_t;
 
 /* palette: 256 RGB15 colours, or NULL for a grey ramp */
@@ -47,6 +48,7 @@ void World_End(ndsstats_t *stats, int reserve_verts, int reserve_polys);
 void World_Collect(void);
 int World_Split(int maxverts, int maxpolys, const int32_t *mdist2, const int *mpolys, int nummodels, int32_t *dist2);
 int World_NumTreeFaces(void);
+int World_Cost(int from, int to, int32_t split2, bool nearside, int *verts); /* polygons DrawPass would send */
 void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t *stats, int maxverts, int maxpolys);
 #define WORLD_MAX_VERTS 6000
 #define WORLD_MAX_POLYS 2000
@@ -63,7 +65,11 @@ void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and mode
  * DrawPass draws the models on one side of split2 (squared map units) */
 void Ents_Select(const ndscam_t *cam);
 int Ents_Costs(int32_t *dist2, int *polys, int max, int *viewpolys); /* nearest first, estimated */
-void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool withviewmodel, ndsstats_t *stats);
+/* flicker: -1 leaves out the models past the budget; otherwise it is the
+ * GPU polygons the world leaves for models, and those that don't fit take turns */
+void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool withviewmodel, int flicker, ndsstats_t *stats);
+int Ents_FlickerBudget(int worldpolys, int worldverts); /* -1 when Ents_Flicker is off */
+extern bool Ents_Flicker; /* models that don't fit take turns, NES style, rather than being left out */
 void Gpu_Counts(int *polys, int *verts); /* what the GPU has stored so far this frame */
 
 /* multipass_nds.c: the view in two passes, a far one captured to VRAM and a
