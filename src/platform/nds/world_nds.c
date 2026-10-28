@@ -22,14 +22,15 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "nds.h"
 
 #define BSPVERSION 29
-#define MAX_GPU_VERTS 6000
-#define MAX_GPU_POLYS 2000
-#define TEX_BUDGET (320 * 1024) /* VRAM banks A, B and D, less 64 KB for model skins */
+#define MAX_GPU_VERTS WORLD_MAX_VERTS
+#define MAX_GPU_POLYS WORLD_MAX_POLYS
+#define TEX_BUDGET (192 * 1024) /* VRAM banks A and B, less 64 KB for model skins (C and D hold captures) */
 #define TEX_MAXDIM 256
 
 enum { L_ENTITIES, L_PLANES, L_TEXTURES, L_VERTEXES, L_VISIBILITY, L_NODES, L_TEXINFO, L_FACES, L_LIGHTING,
@@ -115,8 +116,9 @@ static struct {
 	int visframe, frame;
 	int lastleaf;
 	uint8_t *leafvis; /* decompressed PVS for lastleaf */
-	int *vislist;     /* this frame's faces, nearest first */
-	int numvis;
+	int *vislist;     /* this frame's faces: the tree's nearest first, then brush entities' */
+	int32_t *visdist; /* for brush entities' faces: the squared distance to the entity (map units) */
+	int numvis, numtreevis;
 } w;
 
 static inline uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -162,6 +164,7 @@ void World_Free(void)
 	free(w.models);
 	free(w.leafvis);
 	free(w.vislist);
+	free(w.visdist);
 	memset(&w, 0, sizeof(w));
 }
 
@@ -326,8 +329,9 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 	w.numfaces = (int)(len[L_FACES] / 20);
 	w.faces = calloc((size_t)w.numfaces, sizeof(face_t));
 	w.vislist = malloc(sizeof(int) * (size_t)(w.numfaces + 1));
+	w.visdist = malloc(sizeof(int32_t) * (size_t)(w.numfaces + 1));
 	w.verts = malloc(sizeof(dvert_t) * (size_t)numse);
-	if (!w.faces || !w.verts || !w.vislist)
+	if (!w.faces || !w.verts || !w.vislist || !w.visdist)
 		return false;
 	for (int i = 0; i < w.numfaces; i++) {
 		const uint8_t *f = fc + i * 20;
@@ -695,23 +699,20 @@ static void setup_frustum(const ndscam_t *cam)
 	}
 }
 
-/* the faces that fit the GPU's budget, nearest first, chained by texture */
-static void budget(ndsstats_t *st, int maxverts, int maxpolys)
+/* adds a face to its texture's chain if it fits what's left of the budget */
+static inline bool chain_face(int i, int *verts, int *polys, int maxverts, int maxpolys, ndsstats_t *st)
 {
-	int verts = 0, polys = 0;
-	for (int k = 0; k < w.numvis; k++) {
-		face_t *f = &w.faces[w.vislist[k]];
-		if (verts + f->numverts > maxverts || polys + f->numverts - 2 > maxpolys) {
-			st->skipped++;
-			continue;
-		}
-		verts += f->numverts;
-		polys += f->numverts - 2;
-		st->faces++;
-		f->next = w.texs[f->tex].chain;
-		w.texs[f->tex].chain = w.vislist[k];
+	face_t *f = &w.faces[i];
+	if (*verts + f->numverts > maxverts || *polys + f->numverts - 2 > maxpolys) {
+		st->skipped++;
+		return false;
 	}
-	st->verts = verts, st->polys = polys;
+	*verts += f->numverts;
+	*polys += f->numverts - 2;
+	st->faces++;
+	f->next = w.texs[f->tex].chain;
+	w.texs[f->tex].chain = i;
+	return true;
 }
 
 ITCM_CODE static void draw_chains(void)
@@ -781,24 +782,82 @@ bool World_BoxVisible(const int16_t *mins, const int16_t *maxs)
 	return leaf <= 0 || w.leafs[leaf].visframe == w.visframe;
 }
 
-void World_End(ndsstats_t *st, int reserve_verts, int reserve_polys)
+void World_Collect(void)
 {
+	w.numvis = 0;
 	if (!w.loaded)
 		return;
-	w.numvis = 0;
 	if (w.numnodes)
 		walk(0);
+	w.numtreevis = w.numvis;
 	/* doors, lifts and other brush entities: all their faces, by box */
 	for (int m = 1; m < w.nummodels; m++) {
 		const submodel_t *sm = &w.models[m];
+		int32_t d = 0;
 		if (!box_visible(sm->mins, sm->maxs))
 			continue;
+		for (int c = 0; c < 3; c++) {
+			int32_t v = (sm->mins[c] + sm->maxs[c]) / 2 - eye[c] / 8;
+			d += v * v;
+		}
 		for (int i = 0; i < sm->numfaces; i++)
-			if (sm->firstface + i < w.numfaces)
+			if (sm->firstface + i < w.numfaces) {
+				int before = w.numvis;
 				add_face(sm->firstface + i);
+				if (w.numvis > before)
+					w.visdist[before] = d;
+			}
 	}
-	budget(st, MAX_GPU_VERTS - reserve_verts, MAX_GPU_POLYS - reserve_polys);
+}
+
+int World_Split(int maxverts, int maxpolys, const int32_t *mdist2, const int *mpolys, int nummodels, int32_t *dist2)
+{
+	int verts = 0, polys = 0, k = 0, m = 0;
+	*dist2 = INT32_MAX;
+	/* room for every brush entity, whichever pass it lands in */
+	for (int i = w.numtreevis; i < w.numvis; i++)
+		verts += w.faces[w.vislist[i]].numverts, polys += w.faces[w.vislist[i]].numverts - 2;
+	for (; k < w.numtreevis; k++) {
+		const face_t *f = &w.faces[w.vislist[k]];
+		const dvert_t *v = &w.verts[f->firstvert];
+		int32_t dx = (v->x - eye[0]) / 8, dy = (v->y - eye[1]) / 8, dz = (v->z - eye[2]) / 8;
+		int32_t d = dx * dx + dy * dy + dz * dz;
+		/* the models nearer than this face come first */
+		while (m < nummodels && mdist2[m] < d) {
+			if (polys + mpolys[m] > maxpolys || verts + mpolys[m] * 3 > maxverts)
+				break;
+			polys += mpolys[m], verts += mpolys[m] * 3, m++;
+		}
+		if ((m < nummodels && mdist2[m] < d) || verts + f->numverts > maxverts ||
+		    polys + f->numverts - 2 > maxpolys) {
+			*dist2 = m < nummodels && mdist2[m] < d ? mdist2[m] : d;
+			break;
+		}
+		verts += f->numverts, polys += f->numverts - 2;
+	}
+	return k;
+}
+
+int World_NumTreeFaces(void) { return w.numtreevis; }
+
+void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t *st, int maxverts, int maxpolys)
+{
+	int verts = 0, polys = 0;
+	if (!w.loaded)
+		return;
+	for (int k = from; k < to && k < w.numtreevis; k++)
+		chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);
+	for (int k = w.numtreevis; k < w.numvis; k++)
+		if ((w.visdist[k] < split2) == nearside)
+			chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);
+	st->verts += verts, st->polys += polys;
 	draw_chains();
+}
+
+void World_End(ndsstats_t *st, int reserve_verts, int reserve_polys)
+{
+	World_Collect();
+	World_DrawPass(0, w.numtreevis, INT32_MAX, true, st, MAX_GPU_VERTS - reserve_verts, MAX_GPU_POLYS - reserve_polys);
 }
 
 void World_Draw(const ndscam_t *cam, ndsstats_t *st)

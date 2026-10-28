@@ -318,7 +318,8 @@ static void screen_init(void)
 static void screen_done(void)
 {
 	sub = NULL;
-	consoleDemoInit();
+	Nds_InitConsole();
+	Mp_Init();
 }
 
 static void fill(int x, int y, int w, int h, uint16_t c)
@@ -511,7 +512,7 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 		return;
 	snprintf(link.map, sizeof(link.map), "%s", map);
 	World_Free();
-	glResetTextures();
+	Nds_ResetTextures();
 	link.haveview = false;
 	snprintf(path, sizeof(path), "maps/%s.bsp", map);
 	if (World_Load(path, palette, err, sizeof(err)))
@@ -710,7 +711,7 @@ void Link_Run(const uint16_t *pal)
 	iprintf("%s\n", play(&cam));
 	close_socket();
 	World_Free();
-	glResetTextures();
+	Nds_ResetTextures();
 	iprintf("A or START: back\n");
 	wait_keys_or(1 << 30, KEY_A | KEY_START);
 }

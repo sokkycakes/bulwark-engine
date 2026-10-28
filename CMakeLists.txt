@@ -27,7 +27,7 @@ endif()
 # BULWARK_NDS_NITROFS names a folder to pack into the ROM as nitro:/.
 if(NINTENDO_DS)
 	add_executable(bulwark_nds src/platform/nds/main_nds.c src/platform/nds/world_nds.c src/platform/nds/link_nds.c src/platform/nds/fs_nds.c
-	               src/platform/nds/models_nds.c)
+	               src/platform/nds/models_nds.c src/platform/nds/multipass_nds.c)
 	target_link_libraries(bulwark_nds PRIVATE dswifi9 filesystem fat m)
 	set(BULWARK_NDS_NITROFS "" CACHE PATH "Folder to pack into the ROM (maps/, gfx/palette.lmp)")
 	if(BULWARK_NDS_NITROFS)

@@ -129,6 +129,21 @@ static int pick_map(int sel)
 	}
 }
 
+void Nds_InitConsole(void)
+{
+	videoSetModeSub(MODE_0_2D);
+	vramSetBankH(VRAM_H_SUB_BG);
+	/* map at 0, font at 16 KB: both fit bank H's 32 KB */
+	consoleInit(NULL, 0, BgType_Text4bpp, BgSize_T_256x256, 0, 1, false, true);
+}
+
+void Nds_ResetTextures(void)
+{
+	Mp_Stop();
+	glResetTextures();
+	Mp_Init();
+}
+
 void Nds_Init3D(void)
 {
 	videoSetMode(MODE_0_3D);
@@ -138,11 +153,12 @@ void Nds_Init3D(void)
 	glClearPolyID(63);
 	glClearDepth(GL_MAX_DEPTH);
 	glViewport(0, 0, 255, 191);
-	/* textures in banks A, B and D; C shows the text on the bottom screen */
+	/* textures in banks A and B; C and D take the two-pass captures
+	 * (multipass_nds.c), and H holds the bottom screen's text */
 	vramSetBankA(VRAM_A_TEXTURE);
 	vramSetBankB(VRAM_B_TEXTURE);
-	vramSetBankD(VRAM_D_TEXTURE);
 	vramSetBankE(VRAM_E_TEX_PALETTE);
+	Mp_Init();
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
 	/* 70 degrees tall; near 4 map units, far 8192 (1/8 units in 20.12) */
@@ -234,15 +250,21 @@ static bool load_map(const char *path, ndscam_t *cam)
 }
 
 /* one frame; returns the vblanks it took */
+static bool multipass;
+
 static int frame(const ndscam_t *cam, ndsstats_t *st)
 {
 	static int last;
 	int took;
-	Ents_Draw(cam, st);
-	glGetInt(GL_GET_POLYGON_RAM_COUNT, &st->hwpolys);
-	glGetInt(GL_GET_VERTEX_RAM_COUNT, &st->hwverts);
-	glFlush(0);
-	swiWaitForVBlank();
+	if (multipass) {
+		Mp_Frame(cam, st);
+	} else {
+		Mp_Stop();
+		Ents_Draw(cam, st);
+		Gpu_Counts(&st->hwpolys, &st->hwverts);
+		glFlush(0);
+		swiWaitForVBlank();
+	}
 	took = vblanks - last;
 	last = vblanks;
 	return took;
@@ -255,6 +277,10 @@ static void bench(const char *line)
 	const int steps = 512;
 	char path[300], model[40] = "";
 	int start, worst = 0, peakpolys = 0, peakverts = 0, peakents = 0, skipped = 0, count = 0;
+	if (!strncmp(line, "maps/multipass ", 15)) {
+		multipass = !strcmp(line + 15, "on");
+		return;
+	}
 	if (numresults >= MAX_RESULTS || sscanf(line, "%299s %39s %d", path, model, &count) < 1 || !load_map(path, &cam))
 		return;
 	if (model[0] && count > 0)
@@ -272,27 +298,29 @@ static void bench(const char *line)
 		peakents = st.ents > peakents ? st.ents : peakents;
 		skipped += st.skipped;
 	}
-	snprintf(results[numresults++], sizeof(results[0]), "%.6s%s%.7s %d/%dfps p%d v%d m%d s%d", short_name(path),
-	         model[0] ? "+" : "", model, steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakverts,
+	snprintf(results[numresults++], sizeof(results[0]), "%s%.6s%s%.7s %d/%dfps p%d v%d m%d s%d", multipass ? "2:" : "",
+	         short_name(path), model[0] ? "+" : "", model, steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakverts,
 	         peakents, skipped);
 	Ents_Free();
 	World_Free();
-	glResetTextures();
+	Nds_ResetTextures();
 }
 
 static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *st, int fps)
 {
 	consoleClear();
-	iprintf("%s  %d fps\n", short_name(map), fps);
+	iprintf("%s  %d fps  %s\n", short_name(map), fps, multipass ? "2 passes" : "1 pass");
 	iprintf("world: faces %d polys %d\n", st->faces, st->polys);
 	iprintf("models: %d drawn, %d tris, %d cut\n", st->ents, st->entpolys, st->entsdropped);
 	iprintf("GPU: %d polys, %d verts\n", st->hwpolys, st->hwverts);
+	if (multipass)
+		iprintf("near: %d of %d faces; far %d polys\n", st->split, st->treefaces, st->farpolys);
 	if (st->skipped)
 		iprintf("over the GPU limit: %d faces\n", st->skipped);
 	iprintf("leaf %d  eye %ld %ld %ld\n", st->leaf, (long)(cam->org[0] / 8), (long)(cam->org[1] / 8),
 	        (long)(cam->org[2] / 8));
 	print_memory();
-	iprintf("START: map list\n");
+	iprintf("START: map list  SELECT: passes\n");
 	if (numresults) {
 		iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut\n");
 		for (int i = 0; i < numresults; i++)
@@ -309,7 +337,7 @@ int main(int argc, char **argv)
 	int sel = 0, frames = 0, lastvb = 0, lasttx = -1, lastty = -1, numbench;
 	bool fat, nitro;
 
-	consoleDemoInit();
+	Nds_InitConsole();
 	Nds_Init3D();
 	irqSet(IRQ_VBLANK, on_vblank);
 	iprintf("Bulwark DS\n");
@@ -326,7 +354,7 @@ int main(int argc, char **argv)
 		nummaps = nummaps ? nummaps : 1;
 	}
 	if (Link_AutoJoin())
-		Link_Run(havepalette ? palette : NULL);
+		Mp_Stop(), Link_Run(havepalette ? palette : NULL);
 	numbench = read_bench(benchmaps, MAX_RESULTS);
 	for (int i = 0; i < numbench; i++)
 		bench(benchmaps[i]);
@@ -341,7 +369,7 @@ int main(int argc, char **argv)
 		} else {
 			int picked = pick_map(nummaps ? sel + 1 : 0);
 			if (picked < 0) {
-				Link_Run(havepalette ? palette : NULL);
+				Mp_Stop(), Link_Run(havepalette ? palette : NULL);
 				continue;
 			}
 			sel = picked;
@@ -362,6 +390,8 @@ int main(int argc, char **argv)
 			scanKeys();
 			if (keysDown() & KEY_START)
 				break;
+			if (keysDown() & KEY_SELECT)
+				multipass = !multipass;
 			fly(&cam, keysHeld(), &lasttx, &lastty);
 			frame(&cam, &st);
 			if (++frames >= 60) {
@@ -372,7 +402,7 @@ int main(int argc, char **argv)
 		}
 		Ents_Free();
 		World_Free();
-		glResetTextures();
+		Nds_ResetTextures();
 	}
 	return 0;
 }

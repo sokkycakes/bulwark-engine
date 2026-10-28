@@ -107,6 +107,7 @@ network or a phone hotspot is the safest first test.
 | A / Y | rise / sink |
 | touch and drag | look around |
 | START | back to the map list |
+| SELECT | one pass (60 fps) or two passes (30 fps) |
 
 In the map list, the D-pad and A pick a map, or you can tap a name. The
 bottom screen shows the frame rate, faces, GPU vertices and polygons, and
@@ -122,7 +123,9 @@ integer and fixed-point maths. The full list is at the top of
   maps can reach ±4096 units.
 - **Textures:**
   - They stay 8-bit with the Quake palette, the DS's 256-colour format.
-  - A map's textures have to fit in 384 KB of VRAM (banks A, B and D).
+  - A map's textures have to fit in 256 KB of VRAM (banks A and B): 192 KB
+    for the world and 64 KB for models. Banks C and D are kept for two-pass
+    drawing, and the bottom-screen console lives in bank H.
     When they don't, the viewer drops to a smaller mip level from the map
     itself.
   - Textures whose names start with `{` see through on index 255.
@@ -173,7 +176,8 @@ second through their first 40 frames. The view model is `v_shot.mdl`.
 
 `bench.txt` lists map file names, one per line. A line can add a crowd
 in front of the start position: `e1m1.bsp soldier 9` puts nine soldiers
-there. At start-up, the viewer
+there. A line `multipass on` (or `off`) switches the drawing mode for the
+lines after it. At start-up, the viewer
 loads each of them and turns once on the spot over 512 frames. It then
 shows the average and worst frame rate, the peak GPU vertices, and how
 many faces went over the GPU's limit. After the bench, it stays in the
@@ -203,6 +207,51 @@ The id models are 213 to 328 triangles (knight 213, shambler 284, soldier
 models in Nuclide's `base` are two to three times heavier (soldier 886).
 melonDS doesn't time the ARM9 exactly, so the frame rates need checking
 on hardware. The polygon counts are the GPU's own.
+
+## Two passes: 4096 polygons at 30 fps
+
+The GPU stores 2048 polygons for each screen refresh. In two-pass mode a
+frame takes two refreshes (`multipass_nds.c`):
+
+1. The far pass draws the faces past a split distance and the models out
+   there. The display capture unit copies the 3D image into VRAM C. The
+   screen meanwhile shows VRAM D, the last finished frame.
+2. The near pass draws VRAM C as a texture on one quad at the back of the
+   depth range, then the nearest faces, models and the view model over it.
+   The capture unit copies the result into VRAM D for the next frame.
+
+The world is walked once a frame, nearest face first. The split is the
+point in that list where the near pass's budget runs out. Models are
+counted into the budget at their distance as the list is walked, so a
+crowd near the camera moves the split closer. Brush entities always go
+in the near pass. Because the BSP order is front to back, nothing in the
+far pass can cover anything in the near pass, so laying one image over
+the other is correct without sharing a depth buffer. Both passes are
+full resolution; in melonDS the joined image shows no seam. This hasn't
+been checked on hardware yet.
+
+This is the method pikmin-nds documents, written here from the hardware
+documentation (GBATEK), not from its code.
+
+Same bench as above, shareware `pak0.pak`, melonDS 1.1. A `2:` run is
+two-pass. Polygons and vertices are both passes added together.
+
+| Run | fps (avg / worst) | Peak polygons | Peak vertices | Models | Faces left out |
+|---|---|---|---|---|---|
+| `e1m2` | 60 / 60 | 1823 | 4295 | 5 | 1741 |
+| `2:e1m2` | 30 / 30 | 1902 | 4455 | 5 | 0 |
+| `e1m5` | 60 / 60 | 1667 | 4119 | 7 | 5696 |
+| `2:e1m5` | 30 / 30 | 1943 | 4678 | 7 | 0 |
+| `e1m1` + 16 knights | 60 / 60 | 1961 | 4799 | 11 | 1747 |
+| `2:e1m1` + 16 knights | 30 / 30 | 2817 | 7211 | 17 | 0 |
+| `e1m1` + 24 knights | 60 / 60 | 1960 | 4671 | 11 | 180 |
+| `2:e1m1` + 24 knights | 30 / 30 | 3078 | 8086 | 22 | 1981 |
+
+Two passes draw every face on the shareware maps that one pass has to cut,
+and 16 knights fit whole. 24 knights (about 4600 triangles before culling)
+overflow even 4096 polygons, so both passes fill and the far pass drops
+faces, but twice as many knights get drawn. The cost is half the frame
+rate and 128 KB of texture VRAM.
 
 ## Measured: linked, in melonDS 1.1
 

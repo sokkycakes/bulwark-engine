@@ -24,6 +24,7 @@ typedef struct {
 	int faces, verts, polys, leaf, skipped; /* the world's share */
 	int ents, entpolys, entsdropped;        /* models */
 	int hwpolys, hwverts;                   /* what the GPU actually stored (after culling) */
+	int split, treefaces, farpolys;          /* two passes: nearest faces in the near pass, of how many */
 } ndsstats_t;
 
 /* palette: 256 RGB15 colours, or NULL for a grey ramp */
@@ -38,6 +39,17 @@ void World_SetView(const ndscam_t *cam); /* the modelview World_Draw uses, for d
 void World_Begin(const ndscam_t *cam, ndsstats_t *stats);
 bool World_BoxVisible(const int16_t *mins, const int16_t *maxs); /* map units; after Begin */
 void World_End(ndsstats_t *stats, int reserve_verts, int reserve_polys);
+/* World_End in parts, for drawing the view in two passes (multipass_nds.c):
+ * Collect walks the tree; Split says how many of the nearest faces fit a
+ * budget, counting the models (nearest first) that stand nearer than each,
+ * and how far away (squared, map units) the near pass ends; DrawPass
+ * draws a range of them, plus the brush entities on that side of split2 */
+void World_Collect(void);
+int World_Split(int maxverts, int maxpolys, const int32_t *mdist2, const int *mpolys, int nummodels, int32_t *dist2);
+int World_NumTreeFaces(void);
+void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t *stats, int maxverts, int maxpolys);
+#define WORLD_MAX_VERTS 6000
+#define WORLD_MAX_POLYS 2000
 const char *World_Entities(void);
 int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
@@ -47,6 +59,18 @@ void Ents_Load(const uint16_t *palette);                       /* from the loade
 int Ents_AddCrowd(const ndscam_t *cam, const char *model, int count); /* a grid in front of cam */
 void Ents_Free(void);
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
+/* Ents_Draw in parts, for two passes: Select culls and sorts after World_Begin;
+ * DrawPass draws the models on one side of split2 (squared map units) */
+void Ents_Select(const ndscam_t *cam);
+int Ents_Costs(int32_t *dist2, int *polys, int max, int *viewpolys); /* nearest first, estimated */
+void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool withviewmodel, ndsstats_t *stats);
+void Gpu_Counts(int *polys, int *verts); /* what the GPU has stored so far this frame */
+
+/* multipass_nds.c: the view in two passes, a far one captured to VRAM and a
+ * near one drawn over it, for twice the GPU's polygons at 30 fps */
+void Mp_Init(void);                  /* keeps VRAM C and D out of texture use */
+void Mp_Frame(const ndscam_t *cam, ndsstats_t *stats); /* two refreshes */
+void Mp_Stop(void);                  /* back to drawing the 3D straight to the screen */
 
 /* fs_nds.c: loose files in the base folders, then pak0.pak ... pak9.pak */
 void Fs_Init(void);
@@ -58,6 +82,8 @@ void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void
 extern const char *const nds_basedirs[];
 #define NDS_NUMBASEDIRS 4
 void Nds_Init3D(void);
+void Nds_InitConsole(void);   /* the bottom screen's text, in VRAM H */
+void Nds_ResetTextures(void); /* glResetTextures, keeping VRAM C and D out of it */
 
 /* link_nds.c: join a game on a PC over WiFi (docs/spec/link.md) */
 void Link_Run(const uint16_t *palette);

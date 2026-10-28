@@ -393,20 +393,18 @@ ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int light)
 	glEnd();
 }
 
-void Ents_Draw(const ndscam_t *cam, ndsstats_t *st)
+static int order[MAX_ENTS], numorder;
+
+void Ents_Select(const ndscam_t *cam)
 {
-	static int order[MAX_ENTS];
-	int n = 0, polys = 0, verts = 0;
-	World_Begin(cam, st);
+	numorder = 0;
 	ticks++;
-	/* the view model goes first in the budget */
-	if (viewmodel >= 0)
-		polys += mdls[viewmodel].numtris, verts += mdls[viewmodel].numtris * 3;
 	for (int i = 0; i < numents; i++) {
 		ent_t *e = &ents[i];
 		const mdl_t *m = &mdls[e->mdl];
 		int16_t mins[3], maxs[3];
 		int32_t dx = e->org[0] - cam->org[0] / 8, dy = e->org[1] - cam->org[1] / 8, dz = e->org[2] - cam->org[2] / 8;
+		int k;
 		for (int c = 0; c < 3; c++) {
 			int r = c < 2 ? m->radius : 0;
 			mins[c] = (int16_t)(e->org[c] + (c < 2 ? -r : m->mins[c]));
@@ -416,51 +414,78 @@ void Ents_Draw(const ndscam_t *cam, ndsstats_t *st)
 			continue;
 		e->dist = dx * dx + dy * dy + dz * dz;
 		/* nearest first */
-		int k = n++;
+		k = numorder++;
 		while (k > 0 && ents[order[k - 1]].dist > e->dist)
 			order[k] = order[k - 1], k--;
 		order[k] = i;
 	}
-	{
-		int kept = 0;
-		for (int k = 0; k < n; k++) {
-			const mdl_t *m = &mdls[ents[order[k]].mdl];
-			if (polys + m->numtris > MAX_ENT_POLYS) {
-				st->entsdropped++;
-				continue;
-			}
-			polys += m->numtris, verts += m->numtris * 3;
-			order[kept++] = order[k];
-		}
-		n = kept;
+}
+
+/* what the visible models will cost the GPU, nearest first: about half
+ * their triangles survive back-face culling, three vertices each */
+int Ents_Costs(int32_t *dist2, int *polys, int max, int *viewpolys)
+{
+	int n = 0;
+	*viewpolys = viewmodel >= 0 ? mdls[viewmodel].numtris * 55 / 100 : 0;
+	for (int k = 0; k < numorder && n < max; k++, n++) {
+		dist2[n] = ents[order[k]].dist;
+		polys[n] = mdls[ents[order[k]].mdl].numtris * 55 / 100;
 	}
-	/* models first, then the world in whatever the GPU has left: after
-	 * back-face culling a model stores about half its triangles, so the
-	 * count is read back from the GPU rather than guessed */
+	return n;
+}
+
+void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool withviewmodel, ndsstats_t *st)
+{
+	int sent = 0, drawn = 0;
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
-	if (viewmodel >= 0) {
+	if (withviewmodel && viewmodel >= 0) {
 		ndscam_t eyecam = {{0, 0, 0}, 0, 0};
 		const mdl_t *m = &mdls[viewmodel];
 		World_SetView(&eyecam);
 		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
 		draw_mdl(m, 0, 24);
 		World_SetView(cam);
+		sent += m->numtris, drawn++;
 	}
-	for (int k = 0; k < n; k++) {
+	for (int k = 0; k < numorder; k++) {
 		const ent_t *e = &ents[order[k]];
+		const mdl_t *m = &mdls[e->mdl];
+		if ((e->dist < split2) != nearside)
+			continue;
+		if (sent + m->numtris > MAX_ENT_POLYS) {
+			st->entsdropped++;
+			continue;
+		}
 		glPushMatrix();
 		glTranslatef32(e->org[0] * 8, e->org[1] * 8, e->org[2] * 8);
 		glRotateZi(e->yaw);
-		glTranslatef32(mdls[e->mdl].trans[0], mdls[e->mdl].trans[1], mdls[e->mdl].trans[2]);
-		draw_mdl(&mdls[e->mdl], ticks / 6 + e->phase, e->light);
+		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
+		draw_mdl(m, ticks / 6 + e->phase, e->light);
 		glPopMatrix(1);
+		sent += m->numtris, drawn++;
 	}
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
+	st->ents += drawn;
+	st->entpolys += sent;
+}
+
+void Gpu_Counts(int *polys, int *verts)
+{
 	while (GFX_STATUS & BIT(27))
-		; /* the geometry engine is still busy with the models */
-	glGetInt(GL_GET_POLYGON_RAM_COUNT, &polys);
-	glGetInt(GL_GET_VERTEX_RAM_COUNT, &verts);
+		; /* the geometry engine is still working through what was sent */
+	glGetInt(GL_GET_POLYGON_RAM_COUNT, polys);
+	glGetInt(GL_GET_VERTEX_RAM_COUNT, verts);
+}
+
+/* models first, then the world in whatever the GPU has left: after
+ * back-face culling a model stores about half its triangles, so the count
+ * is read back from the GPU rather than guessed */
+void Ents_Draw(const ndscam_t *cam, ndsstats_t *st)
+{
+	int polys, verts;
+	World_Begin(cam, st);
+	Ents_Select(cam);
+	Ents_DrawPass(cam, INT32_MAX, true, true, st);
+	Gpu_Counts(&polys, &verts);
 	World_End(st, verts, polys);
-	st->ents = n + (viewmodel >= 0);
-	st->entpolys = polys;
 }
