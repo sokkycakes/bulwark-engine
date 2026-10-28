@@ -577,6 +577,9 @@ static void physics_toss(int e, int movetype)
 				VectorClear(avel);
 		}
 	}
+	/* touch functions read the hit from the trace globals: Nuclide's
+	 * projectiles take trace_endpos and trace_plane_normal as the impact */
+	SV_SetTraceGlobals(&tr);
 	impact(e, tr.ent);
 }
 
