@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "nds.h"
+#include "portals_nds.h"
 
 #define BSPVERSION 29
 #define MAX_GPU_VERTS WORLD_MAX_VERTS
@@ -55,6 +56,7 @@ typedef struct {
 	int tex;        /* -1: not drawn */
 	int frame;
 	int next;       /* texture chain */
+	int alias;      /* merged into this face, or -1 */
 } face_t;
 
 typedef struct {
@@ -119,6 +121,15 @@ static struct {
 	int *vislist;     /* this frame's faces: the tree's nearest first, then brush entities' */
 	int32_t *visdist; /* for brush entities' faces: the squared distance to the entity (map units) */
 	int numvis, numtreevis;
+	pt_portals_t portals; /* none (numportals 0) if they couldn't be worked out */
+	int16_t (*leafrect)[4]; /* this frame: the part of the screen each leaf is seen through */
+	int *leafstamp, *queue;
+	uint8_t *inqueue;
+	int flood;
+	bool flooded;           /* the last frame's leaves came from the portals */
+	int portalleaves;       /* leaves the portals reached this frame */
+	int portaltests, pvsleaves;
+	int loadms;             /* portal building time, for the stats */
 } w;
 
 static inline uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -163,6 +174,8 @@ void World_Free(void)
 	free(w.texs);
 	free(w.models);
 	free(w.leafvis);
+	Pt_Free(&w.portals);
+	free(w.leafrect), free(w.leafstamp), free(w.queue), free(w.inqueue);
 	free(w.vislist);
 	free(w.visdist);
 	memset(&w, 0, sizeof(w));
@@ -320,6 +333,175 @@ static int sample_light(const uint8_t *light, int lightlen, int lightofs, const 
 	return total;
 }
 
+/* --- merging ---------------------------------------------------------------------------
+ *
+ * The map compiler cuts walls into many small faces (along BSP splits, and
+ * into pieces small enough for Quake's software surface cache). At load,
+ * faces on the same plane with the same texture mapping are joined again
+ * where they share a whole edge and the result stays convex, and vertices
+ * left in the middle of a straight edge are dropped when the light there
+ * is what the edge would give anyway. Each face's leaves still see it: a
+ * face that was merged away points at the face that took it in (alias). */
+
+typedef struct {
+	int16_t x, y, z;
+	int32_t s, t;   /* t16, not yet moved near zero */
+	uint16_t color;
+} mvert_t;
+
+typedef struct {
+	int first, num; /* into the mvert pool, fan order */
+	int key;        /* model, for grouping */
+	int texinfo;
+} mface_t;
+
+#define MERGE_MAXVERTS 32
+
+bool World_MergeFaces = true;
+int World_MergeLight = 2; /* of 31: how far a dropped vertex's light may be from what its edge gives */
+static int merged_faces;
+
+static bool same_pos(const mvert_t *a, const mvert_t *b) { return a->x == b->x && a->y == b->y && a->z == b->z; }
+
+/* a joined polygon in out[], or 0 if a and b don't share an edge or the join isn't convex */
+static int try_merge(const mvert_t *a, int na, const mvert_t *b, int nb, const float *normal, mvert_t *out)
+{
+	mvert_t tmp[2 * MERGE_MAXVERTS];
+	int n = 0, i, j;
+	for (i = 0; i < na; i++) {
+		const mvert_t *a0 = &a[i], *a1 = &a[(i + 1) % na];
+		for (j = 0; j < nb; j++)
+			if (same_pos(&b[j], a1) && same_pos(&b[(j + 1) % nb], a0))
+				goto found;
+	}
+	return 0;
+found:
+	/* a from the end of the shared edge round to its start, then b's other vertices */
+	for (int k = 0; k < na; k++)
+		tmp[n++] = a[(i + 1 + k) % na];
+	for (int k = 2; k < nb; k++)
+		tmp[n++] = b[(j + k) % nb];
+	/* drop straight-through vertices whose light is what their edge gives
+	 * anyway (one that isn't stays, as a corner of 180 degrees); any turn
+	 * the wrong way means the join isn't convex */
+	{
+		int m = 0;
+		for (int k = 0; k < n; k++) {
+			const mvert_t *p = &tmp[(k + n - 1) % n], *v = &tmp[k], *q = &tmp[(k + 1) % n];
+			float e1[3] = {v->x - p->x, v->y - p->y, v->z - p->z}, e2[3] = {q->x - v->x, q->y - v->y, q->z - v->z};
+			float c[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+			float turn = c[0] * normal[0] + c[1] * normal[1] + c[2] * normal[2];
+			float l1 = sqrtf(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+			float l2 = sqrtf(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]);
+			if (turn < -0.002f * l1 * l2)
+				return 0;
+			if (turn <= 0.002f * l1 * l2 && l1 + l2 > 0) {
+				int want = (int)(((p->color & 31) * l2 + (q->color & 31) * l1) / (l1 + l2) + 0.5f);
+				if (abs((v->color & 31) - want) <= World_MergeLight)
+					continue;
+			}
+			out[m++] = *v;
+		}
+		n = m;
+	}
+	return n >= 3 && n <= MERGE_MAXVERTS ? n : 0;
+}
+
+static const mface_t *sort_faces;
+static const face_t *sort_dfaces;
+static int cmp_faces(const void *pa, const void *pb)
+{
+	int a = *(const int *)pa, b = *(const int *)pb;
+	const mface_t *fa = &sort_faces[a], *fb = &sort_faces[b];
+	if (fa->key != fb->key)
+		return fa->key - fb->key;
+	if (sort_dfaces[a].plane != sort_dfaces[b].plane)
+		return sort_dfaces[a].plane - sort_dfaces[b].plane;
+	if (sort_dfaces[a].back != sort_dfaces[b].back)
+		return sort_dfaces[a].back - sort_dfaces[b].back;
+	if (fa->texinfo != fb->texinfo)
+		return fa->texinfo - fb->texinfo;
+	return a - b;
+}
+
+/* after moving near zero by whole repeats, every coordinate has to fit t16 */
+static bool fits_t16(const mvert_t *v, int n)
+{
+	int32_t smin = v[0].s, smax = v[0].s, tmin = v[0].t, tmax = v[0].t;
+	for (int k = 1; k < n; k++) {
+		smin = v[k].s < smin ? v[k].s : smin, smax = v[k].s > smax ? v[k].s : smax;
+		tmin = v[k].t < tmin ? v[k].t : tmin, tmax = v[k].t > tmax ? v[k].t : tmax;
+	}
+	return smax - smin < 24000 && tmax - tmin < 24000;
+}
+
+static bool other_group(int a, int b, const mface_t *mf)
+{
+	return mf[a].key != mf[b].key || w.faces[a].plane != w.faces[b].plane || w.faces[a].back != w.faces[b].back ||
+	       mf[a].texinfo != mf[b].texinfo;
+}
+
+static void merge_faces(mface_t *mf, mvert_t *pool, int *poolused, int poolsize)
+{
+	int *idx = malloc(sizeof(int) * (size_t)w.numfaces);
+	if (!idx)
+		return;
+	for (int i = 0; i < w.numfaces; i++)
+		idx[i] = i;
+	sort_faces = mf, sort_dfaces = w.faces;
+	qsort(idx, (size_t)w.numfaces, sizeof(int), cmp_faces);
+	for (int g = 0; g < w.numfaces;) {
+		int e = g + 1;
+		while (e < w.numfaces && !other_group(idx[g], idx[e], mf))
+			e++;
+		for (int a = g; a < e; a++) {
+			face_t *fa = &w.faces[idx[a]];
+			mface_t *ma = &mf[idx[a]];
+			float normal[3];
+			bool again = true;
+			if (fa->tex < 0 || fa->alias >= 0 || w.texs[fa->tex].sky)
+				continue;
+			/* the face's own winding gives which way is convex */
+			normal[0] = normal[1] = normal[2] = 0;
+			for (int k = 0; k < ma->num; k++) {
+				const mvert_t *v = &pool[ma->first + k], *u = &pool[ma->first + (k + 1) % ma->num];
+				normal[0] += (float)(v->y - u->y) * (v->z + u->z);
+				normal[1] += (float)(v->z - u->z) * (v->x + u->x);
+				normal[2] += (float)(v->x - u->x) * (v->y + u->y);
+			}
+			{
+				float l = sqrtf(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+				if (l <= 0)
+					continue;
+				normal[0] /= l, normal[1] /= l, normal[2] /= l;
+			}
+			while (again) {
+				again = false;
+				for (int b = g; b < e; b++) {
+					face_t *fb = &w.faces[idx[b]];
+					mface_t *mb = &mf[idx[b]];
+					int n;
+					if (b == a || fb->tex < 0 || fb->alias >= 0)
+						continue;
+					if (*poolused + ma->num + mb->num > poolsize)
+						goto out;
+					n = try_merge(&pool[ma->first], ma->num, &pool[mb->first], mb->num, normal, &pool[*poolused]);
+					if (!n || !fits_t16(&pool[*poolused], n))
+						continue;
+					ma->first = *poolused, ma->num = n;
+					*poolused += n;
+					fb->alias = idx[a];
+					merged_faces++;
+					again = true;
+				}
+			}
+		}
+		g = e;
+	}
+out:
+	free(idx);
+}
+
 static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *len)
 {
 	const uint8_t *vx = d + ofs[L_VERTEXES], *ed = d + ofs[L_EDGES], *se = d + ofs[L_SURFEDGES];
@@ -330,23 +512,39 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 	w.faces = calloc((size_t)w.numfaces, sizeof(face_t));
 	w.vislist = malloc(sizeof(int) * (size_t)(w.numfaces + 1));
 	w.visdist = malloc(sizeof(int32_t) * (size_t)(w.numfaces + 1));
-	w.verts = malloc(sizeof(dvert_t) * (size_t)numse);
-	if (!w.faces || !w.verts || !w.vislist || !w.visdist)
+	int poolsize = numse + (World_MergeFaces ? numse / 2 : 0), poolused = 0;
+	mvert_t *pool = malloc(sizeof(mvert_t) * (size_t)poolsize);
+	mface_t *mf = calloc((size_t)w.numfaces, sizeof(mface_t));
+	const uint8_t *mo = d + ofs[L_MODELS];
+	int nummodels = (int)(len[L_MODELS] / 64);
+	if (!w.faces || !w.vislist || !w.visdist || !pool || !mf) {
+		free(pool), free(mf);
 		return false;
+	}
+	/* which brush model each face belongs to: faces merge only within one */
+	for (int m = 0; m < nummodels; m++) {
+		int first = (int)rd32(mo + m * 64 + 56), num = (int)rd32(mo + m * 64 + 60);
+		for (int i = first; i < first + num && i < w.numfaces; i++)
+			if (i >= 0)
+				mf[i].key = m;
+	}
+	merged_faces = 0;
 	for (int i = 0; i < w.numfaces; i++) {
 		const uint8_t *f = fc + i * 20;
 		face_t *face = &w.faces[i];
 		int first = (int)rd32(f + 4), num = rd16(f + 8), texinfo = rd16(f + 10), lightofs = (int)rd32(f + 16);
 		const uint8_t *t;
-		float vecs[2][4], smin = 1e9f, smax = -1e9f, tmin = 1e9f, tmax = -1e9f, sbase, tbase, sscale, tscale;
+		float vecs[2][4], smin = 1e9f, smax = -1e9f, tmin = 1e9f, tmax = -1e9f, sscale, tscale;
 		float pos[64][3], st[64][2];
-		int order[64], lw, lh, bmins, bmint, texnum;
+		int lw, lh, bmins, bmint, texnum;
 		tex_t *tex;
 		face->plane = rd16(f);
 		face->back = rd16(f + 2) != 0;
 		face->frame = -1;
 		face->next = -1;
 		face->tex = -1;
+		face->alias = -1;
+		mf[i].texinfo = texinfo;
 		if (num < 3 || num > 64 || first < 0 || first + num > numse || texinfo < 0 || texinfo >= numti)
 			continue;
 		t = ti + texinfo * 40;
@@ -360,10 +558,10 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		for (int k = 0; k < num; k++) {
 			int e = (int)rd32(se + (first + k) * 4), v;
 			if (e >= 0 ? e >= numedges : -e >= numedges)
-				return false;
+				goto bad;
 			v = e >= 0 ? (uint16_t)rd16(ed + e * 4) : (uint16_t)rd16(ed + (-e) * 4 + 2);
 			if (v >= numvx)
-				return false;
+				goto bad;
 			for (int c = 0; c < 3; c++)
 				pos[k][c] = rdf(vx + v * 12 + c * 4);
 			for (int a = 0; a < 2; a++)
@@ -374,12 +572,52 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		bmins = (int)floorf(smin / 16), bmint = (int)floorf(tmin / 16);
 		lw = (int)ceilf(smax / 16) - bmins + 1;
 		lh = (int)ceilf(tmax / 16) - bmint + 1;
-		/* keep texture coordinates near zero: t16 only reaches +-2048 texels */
-		sbase = floorf((smin + smax) * 0.5f / tex->w) * tex->w;
-		tbase = floorf((tmin + tmax) * 0.5f / tex->h) * tex->h;
-		/* the sky keeps only its back layer, the left half of the picture */
 		sscale = (float)tex->tw * (tex->sky ? 2 : 1) / tex->w;
 		tscale = (float)tex->th / tex->h;
+		face->tex = texnum;
+		mf[i].first = poolused, mf[i].num = num;
+		for (int k = 0; k < num; k++) {
+			mvert_t *mv = &pool[poolused++];
+			int l;
+			mv->x = (int16_t)BW_NDS_CLAMP(lrintf(pos[k][0] * 8), -32767, 32767);
+			mv->y = (int16_t)BW_NDS_CLAMP(lrintf(pos[k][1] * 8), -32767, 32767);
+			mv->z = (int16_t)BW_NDS_CLAMP(lrintf(pos[k][2] * 8), -32767, 32767);
+			mv->s = lrintf(st[k][0] * sscale * 16);
+			mv->t = lrintf(st[k][1] * tscale * 16);
+			if (tex->fullbright)
+				l = 255;
+			else
+				l = sample_light(light, (int)len[L_LIGHTING], lightofs, f + 12, lw, lh, st[k][0] / 16 - bmins,
+				                 st[k][1] / 16 - bmint);
+			mv->color = light_color(l);
+		}
+	}
+	if (World_MergeFaces)
+		merge_faces(mf, pool, &poolused, poolsize);
+	/* out to the GPU's layout: strip order, texture coordinates moved near zero
+	 * (t16 only reaches +-2048 texels) by whole repeats of the texture */
+	w.verts = malloc(sizeof(dvert_t) * (size_t)numse);
+	if (!w.verts) {
+		free(pool), free(mf);
+		return false;
+	}
+	for (int i = 0; i < w.numfaces; i++) {
+		face_t *face = &w.faces[i];
+		const mvert_t *mv = &pool[mf[i].first];
+		int num = mf[i].num, order[64];
+		int32_t smin = INT32_MAX, smax = INT32_MIN, tmin = INT32_MAX, tmax = INT32_MIN, sbase, tbase, sper, tper;
+		face->firstvert = w.numverts;
+		face->numverts = 0;
+		if (face->tex < 0 || face->alias >= 0 || num < 3)
+			continue;
+		sper = w.texs[face->tex].tw * 16 * (w.texs[face->tex].sky ? 2 : 1);
+		tper = w.texs[face->tex].th * 16;
+		for (int k = 0; k < num; k++) {
+			smin = mv[k].s < smin ? mv[k].s : smin, smax = mv[k].s > smax ? mv[k].s : smax;
+			tmin = mv[k].t < tmin ? mv[k].t : tmin, tmax = mv[k].t > tmax ? mv[k].t : tmax;
+		}
+		sbase = (int32_t)floorf((smin + smax) * 0.5f / sper) * sper;
+		tbase = (int32_t)floorf((tmin + tmax) * 0.5f / tper) * tper;
 		/* fan order 0 1 2 ... n-1 to strip order 0 1 n-1 2 n-2 3 ... */
 		for (int k = 0, lo = 1, hi = num - 1; k < num; k++) {
 			if (k == 0)
@@ -389,27 +627,32 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 			else
 				order[k] = hi--;
 		}
-		face->firstvert = w.numverts;
 		face->numverts = num;
-		face->tex = texnum;
 		for (int k = 0; k < num; k++) {
-			int o = order[k], l;
+			const mvert_t *v = &mv[order[k]];
 			dvert_t *dv = &w.verts[w.numverts++];
-			float s = (st[o][0] - sbase) * sscale * 16, tt = (st[o][1] - tbase) * tscale * 16;
-			dv->x = (int16_t)BW_NDS_CLAMP(lrintf(pos[o][0] * 8), -32767, 32767);
-			dv->y = (int16_t)BW_NDS_CLAMP(lrintf(pos[o][1] * 8), -32767, 32767);
-			dv->z = (int16_t)BW_NDS_CLAMP(lrintf(pos[o][2] * 8), -32767, 32767);
-			dv->s = (int16_t)BW_NDS_CLAMP(lrintf(s), -32767, 32767);
-			dv->t = (int16_t)BW_NDS_CLAMP(lrintf(tt), -32767, 32767);
-			if (tex->fullbright)
-				l = 255;
-			else
-				l = sample_light(light, (int)len[L_LIGHTING], lightofs, f + 12, lw, lh, st[o][0] / 16 - bmins,
-				                 st[o][1] / 16 - bmint);
-			dv->color = light_color(l);
+			dv->x = v->x, dv->y = v->y, dv->z = v->z;
+			dv->s = (int16_t)BW_NDS_CLAMP(v->s - sbase, -32767, 32767);
+			dv->t = (int16_t)BW_NDS_CLAMP(v->t - tbase, -32767, 32767);
+			dv->color = v->color;
 		}
 	}
+	free(pool), free(mf);
 	return true;
+bad:
+	free(pool), free(mf);
+	return false;
+}
+
+int World_MergedFaces(void) { return merged_faces; }
+
+int World_TotalPolys(void)
+{
+	int p = 0;
+	for (int i = 0; i < w.numfaces; i++)
+		if (w.faces[i].tex >= 0 && w.faces[i].numverts >= 3)
+			p += (w.faces[i].numverts - 1) / 2;
+	return p;
 }
 
 /* --- tree and visibility ---------------------------------------------------------------- */
@@ -483,6 +726,18 @@ static int point_leaf(const int32_t *org)
 	return -(n + 1);
 }
 
+static void mark_leaf(int leaf)
+{
+	leaf_t *lf = &w.leafs[leaf];
+	if (lf->visframe == w.visframe)
+		return;
+	lf->visframe = w.visframe;
+	for (int n = lf->parent; n >= 0 && w.nodes[n].visframe != w.visframe; n = w.nodes[n].parent)
+		w.nodes[n].visframe = w.visframe;
+}
+
+static inline bool in_pvs(int leaf) { return leaf > 0 && leaf <= w.visleafs && (w.leafvis[(leaf - 1) >> 3] & (1 << ((leaf - 1) & 7))); }
+
 static void mark_visible(int leaf)
 {
 	const uint8_t *in;
@@ -522,6 +777,9 @@ static void mark_visible(int leaf)
 			w.nodes[n].visframe = w.visframe;
 	}
 }
+
+
+static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t *len);
 
 /* --- loading ----------------------------------------------------------------------------- */
 
@@ -578,6 +836,7 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 		if (i == 0)
 			w.visleafs = BW_NDS_MIN((int)rd32(q + 52), w.numleafs - 1);
 	}
+	build_portals(w.file, ofs, len);
 	/* the lighting and pictures have been used up; the rest of the file
 	 * (planes, vis, marks) is still read from */
 	w.loaded = true;
@@ -623,6 +882,7 @@ typedef struct {
 
 static fplane_t frustum[4];
 static int32_t eye[3];
+static int32_t vfwd[3], vright[3], vup[3]; /* the view's axes in map space (4.12) */
 
 /* false if the box (map units) is wholly outside the view */
 static bool box_visible(const int16_t *mins, const int16_t *maxs)
@@ -643,6 +903,8 @@ static inline void add_face(int i)
 	face_t *f = &w.faces[i];
 	const plane_t *pl;
 	int32_t d;
+	if (f->alias >= 0)
+		i = f->alias, f = &w.faces[i];
 	if (f->frame == w.frame || f->tex < 0)
 		return;
 	f->frame = w.frame;
@@ -687,6 +949,7 @@ static void setup_frustum(const ndscam_t *cam)
 	int32_t fwd[3] = {cp * cy >> 12, cp * sy >> 12, sp};
 	int32_t right[3] = {sy, -cy, 0};
 	int32_t up[3] = {-sp * cy >> 12, -sp * sy >> 12, cp};
+	memcpy(vfwd, fwd, sizeof(vfwd)), memcpy(vright, right, sizeof(vright)), memcpy(vup, up, sizeof(vup));
 	/* half angles: 35 degrees up and down; 4:3 makes about 43 across.
 	 * Each side plane leans in from the eye: n = fwd * sin(a) +- side * cos(a) */
 	const int sv = sinLerp(35 * 32768 / 360), cv = cosLerp(35 * 32768 / 360);
@@ -760,6 +1023,164 @@ void World_SetView(const ndscam_t *cam)
 	glTranslatef32(-cam->org[0], -cam->org[1], -cam->org[2]);
 }
 
+/* --- portals ------------------------------------------------------------------------------
+ *
+ * Each frame, out from the eye's leaf through the portals (portals_nds.c),
+ * keeping for every leaf reached the part of the screen it is seen through.
+ * A portal is followed only where it shows inside that part, so leaves the
+ * PVS lets through but walls hide from here are never reached. Screen
+ * parts are boxes in the frustum's terms: +-4096 is the edge of the view. */
+
+int World_Portals = WORLD_PORTALS_AUTO;
+
+#define PT_NEAR 8      /* 1 map unit, in 1/8 units */
+#define PT_KX 4241     /* 1 / tan(44 degrees), the frustum's sides, in 4.12 */
+#define PT_KY 5850     /* 1 / tan(35 degrees), its top and bottom */
+#define PT_EDGE 4096
+
+/* r: in, the box the portal is seen through; out, the part of it the portal covers */
+static bool portal_rect(const pt_portal_t *p, int16_t *r)
+{
+	int32_t v[32][3], c[40][3];
+	int n = 0, m = 0, x0 = 32767, y0 = 32767, x1 = -32767, y1 = -32767;
+	for (int k = 0; k < p->num && n < 32; k++, n++) {
+		const int16_t *pt = w.portals.points[p->first + k];
+		int32_t rel[3] = {pt[0] - eye[0], pt[1] - eye[1], pt[2] - eye[2]};
+		v[n][0] = (rel[0] * vright[0] + rel[1] * vright[1] + rel[2] * vright[2]) >> 12;
+		v[n][1] = (rel[0] * vup[0] + rel[1] * vup[1] + rel[2] * vup[2]) >> 12;
+		v[n][2] = (rel[0] * vfwd[0] + rel[1] * vfwd[1] + rel[2] * vfwd[2]) >> 12;
+	}
+	/* the part in front of the eye */
+	for (int k = 0; k < n && m < 38; k++) {
+		const int32_t *a = v[k], *b = v[(k + 1) % n];
+		if (a[2] >= PT_NEAR)
+			memcpy(c[m++], a, sizeof(c[0]));
+		if ((a[2] >= PT_NEAR) != (b[2] >= PT_NEAR)) {
+			int32_t t = div32((PT_NEAR - a[2]) << 12, b[2] - a[2]); /* 4.12, 0..1 */
+			c[m][0] = a[0] + (int32_t)(((int64_t)(b[0] - a[0]) * t) >> 12);
+			c[m][1] = a[1] + (int32_t)(((int64_t)(b[1] - a[1]) * t) >> 12);
+			c[m][2] = PT_NEAR;
+			m++;
+		}
+	}
+	if (m < 3)
+		return false;
+	for (int k = 0; k < m; k++) {
+		/* the hardware divider; |c| < 2^17 and the factors < 2^13, so no overflow */
+		int32_t sx = div32(c[k][0] * PT_KX, c[k][2]), sy = div32(c[k][1] * PT_KY, c[k][2]);
+		x0 = sx < x0 ? sx : x0, x1 = sx > x1 ? sx : x1;
+		y0 = sy < y0 ? sy : y0, y1 = sy > y1 ? sy : y1;
+	}
+	x0 = x0 > r[0] ? x0 : r[0], y0 = y0 > r[1] ? y0 : r[1];
+	x1 = x1 < r[2] ? x1 : r[2], y1 = y1 < r[3] ? y1 : r[3];
+	if (x0 >= x1 || y0 >= y1)
+		return false;
+	r[0] = (int16_t)x0, r[1] = (int16_t)y0, r[2] = (int16_t)x1, r[3] = (int16_t)y1;
+	return true;
+}
+
+static void flood_portals(int start)
+{
+	int head = 0, tail = 0, cap = w.portals.numleafs;
+	w.visframe++;
+	w.flood++;
+	w.portalleaves = 0;
+	w.portaltests = 0;
+	w.leafrect[start][0] = -PT_EDGE, w.leafrect[start][1] = -PT_EDGE;
+	w.leafrect[start][2] = PT_EDGE, w.leafrect[start][3] = PT_EDGE;
+	w.leafstamp[start] = w.flood;
+	w.queue[tail++] = start, w.inqueue[start] = 1;
+	while (head != tail) {
+		int leaf = w.queue[head];
+		head = head + 1 == cap ? 0 : head + 1;
+		w.inqueue[leaf] = 0;
+		for (int i = w.portals.leaffirst[leaf]; i < w.portals.leaffirst[leaf + 1]; i++) {
+			const pt_portal_t *p = &w.portals.portals[w.portals.leafportals[i]];
+			const plane_t *pl = &w.planes[p->plane];
+			int other = p->leaf[0] == leaf ? p->leaf[1] : p->leaf[0];
+			int32_t d = pl->n[0] * eye[0] + pl->n[1] * eye[1] + pl->n[2] * eye[2] - pl->dist;
+			int16_t r[4];
+			/* only looking out of this leaf through the portal, not back in */
+			if (p->leaf[0] == leaf ? d < -32768 : d > 32768)
+				continue;
+			if (!in_pvs(other))
+				continue;
+			memcpy(r, w.leafrect[leaf], sizeof(r));
+			w.portaltests++;
+			if (!portal_rect(p, r))
+				continue;
+			if (w.leafstamp[other] == w.flood) {
+				int16_t *o = w.leafrect[other];
+				if (r[0] >= o[0] && r[1] >= o[1] && r[2] <= o[2] && r[3] <= o[3])
+					continue; /* nothing new */
+				o[0] = r[0] < o[0] ? r[0] : o[0], o[1] = r[1] < o[1] ? r[1] : o[1];
+				o[2] = r[2] > o[2] ? r[2] : o[2], o[3] = r[3] > o[3] ? r[3] : o[3];
+			} else {
+				memcpy(w.leafrect[other], r, sizeof(r));
+				w.leafstamp[other] = w.flood;
+			}
+			if (!w.inqueue[other]) {
+				w.queue[tail] = other, w.inqueue[other] = 1;
+				tail = tail + 1 == cap ? 0 : tail + 1;
+			}
+		}
+	}
+	w.pvsleaves = 0;
+	for (int l = 1; l <= w.visleafs; l++) {
+		w.pvsleaves += in_pvs(l);
+		if (w.leafstamp[l] == w.flood)
+			mark_leaf(l), w.portalleaves++;
+		else if (w.portals.leaffirst[l] == w.portals.leaffirst[l + 1] && in_pvs(l))
+			mark_leaf(l); /* no portals were found for it: the PVS decides */
+	}
+	mark_leaf(start);
+}
+
+static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t *len)
+{
+	int np = (int)(len[L_PLANES] / 20);
+	pt_plane_t *pl = malloc(sizeof(pt_plane_t) * (size_t)np);
+	pt_node_t *nd = malloc(sizeof(pt_node_t) * (size_t)(w.numnodes ? w.numnodes : 1));
+	int *contents = malloc(sizeof(int) * (size_t)w.numleafs);
+	float mins[3], maxs[3];
+	int start = Nds_Vblanks();
+	/* auto: only for maps compiled without a PVS, where they pay; with one,
+	 * Quake's PVS plus the frustum test leave the portals little to remove
+	 * for a lot of work (docs/platforms/nds.md) */
+	bool want = World_Portals == WORLD_PORTALS_ON || (World_Portals == WORLD_PORTALS_AUTO && !w.vissize);
+	if (want && pl && nd && contents && w.numnodes && w.nummodels) {
+		for (int i = 0; i < np; i++) {
+			for (int c = 0; c < 3; c++)
+				pl[i].n[c] = rdf(d + ofs[L_PLANES] + i * 20 + c * 4);
+			pl[i].dist = rdf(d + ofs[L_PLANES] + i * 20 + 12);
+		}
+		for (int i = 0; i < w.numnodes; i++) {
+			nd[i].plane = w.nodes[i].plane;
+			nd[i].children[0] = w.nodes[i].children[0], nd[i].children[1] = w.nodes[i].children[1];
+		}
+		for (int i = 0; i < w.numleafs; i++)
+			contents[i] = w.leafs[i].contents;
+		for (int c = 0; c < 3; c++)
+			mins[c] = w.models[0].mins[c], maxs[c] = w.models[0].maxs[c];
+		if (Pt_Build(&w.portals, pl, nd, w.numnodes, contents, w.numleafs, mins, maxs) && w.portals.overflow)
+			Pt_Free(&w.portals);
+	}
+	free(pl), free(nd), free(contents);
+	w.leafrect = malloc(sizeof(w.leafrect[0]) * (size_t)w.numleafs);
+	w.leafstamp = calloc((size_t)w.numleafs, sizeof(int));
+	w.queue = malloc(sizeof(int) * (size_t)w.numleafs);
+	w.inqueue = calloc((size_t)w.numleafs, 1);
+	if (!w.leafrect || !w.leafstamp || !w.queue || !w.inqueue)
+		Pt_Free(&w.portals);
+	w.loadms = (Nds_Vblanks() - start) * 1000 / 60;
+}
+
+int World_PortalCount(void) { return w.portals.numportals; }
+int World_PortalLeaves(void) { return w.flooded ? w.portalleaves : -1; }
+int World_PortalLoadMs(void) { return w.loadms; }
+int World_PortalTests(void) { return w.portaltests; }
+int World_PvsLeaves(void) { return w.pvsleaves; }
+
 void World_Begin(const ndscam_t *cam, ndsstats_t *st)
 {
 	int leaf;
@@ -770,12 +1191,19 @@ void World_Begin(const ndscam_t *cam, ndsstats_t *st)
 	w.frame++;
 	memcpy(eye, cam->org, sizeof(eye));
 	leaf = point_leaf(eye);
-	if (leaf != w.lastleaf) {
-		mark_visible(leaf);
-		w.lastleaf = leaf;
-	}
-	st->leaf = leaf;
 	setup_frustum(cam);
+	if (World_Portals != WORLD_PORTALS_OFF && w.portals.numportals && leaf > 0 && leaf <= w.visleafs &&
+	    w.portals.leaffirst[leaf] != w.portals.leaffirst[leaf + 1]) {
+		if (leaf != w.lastleaf)
+			mark_visible(leaf); /* for its PVS */
+		flood_portals(leaf);
+		w.flooded = true;
+	} else if (leaf != w.lastleaf || w.flooded) {
+		mark_visible(leaf);
+		w.flooded = false;
+	}
+	w.lastleaf = leaf;
+	st->leaf = leaf;
 }
 
 bool World_BoxVisible(const int16_t *mins, const int16_t *maxs)
@@ -907,7 +1335,10 @@ int World_LightAt(const int16_t *org)
 		lf = &w.leafs[leaf];
 		for (int m = 0; m < lf->nummarks && lf->firstmark + m < w.nummarks; m++) {
 			const face_t *f = &w.faces[w.marks[lf->firstmark + m]];
-			int32_t nz = w.planes[f->plane].n[2], z = 0;
+			int32_t nz, z = 0;
+			if (f->alias >= 0)
+				f = &w.faces[f->alias];
+			nz = w.planes[f->plane].n[2];
 			if (f->tex < 0 || (f->back ? -nz : nz) < 2800 || !f->numverts)
 				continue;
 			for (int k = 0; k < f->numverts; k++)

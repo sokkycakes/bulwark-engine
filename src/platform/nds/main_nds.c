@@ -206,6 +206,7 @@ static void fly(ndscam_t *cam, uint32_t held, int *lasttx, int *lastty)
 
 static volatile int vblanks;
 static void on_vblank(void) { vblanks++; }
+int Nds_Vblanks(void) { return vblanks; }
 
 /* bench.txt in a base directory lists maps (one file name a line) to time
  * one turn on the spot in each, for comparing builds on hardware */
@@ -270,6 +271,15 @@ static int frame(const ndscam_t *cam, ndsstats_t *st)
 	return took;
 }
 
+/* the drawing modes off the defaults, for a bench line: u unmerged, p portals, n no portals, 2 two passes, f flicker */
+static const char *modes(void)
+{
+	static char buf[8];
+	snprintf(buf, sizeof(buf), "%s%s%s%s", World_MergeFaces ? "" : "u", World_Portals == WORLD_PORTALS_ON ? "p" : World_Portals == WORLD_PORTALS_OFF ? "n" : "", multipass ? "2" : "",
+	         Ents_Flicker ? "f" : "");
+	return buf;
+}
+
 static const char *flickstr(int n)
 {
 	static char buf[12];
@@ -283,9 +293,19 @@ static void bench(const char *line)
 	ndsstats_t st;
 	const int steps = 512;
 	char path[300], model[40] = "";
-	int start, worst = 0, peakpolys = 0, peakverts = 0, peakents = 0, peakflicker = 0, skipped = 0, count = 0;
+	int start, worst = 0, sumpolys = 0, peakpolys = 0, peakverts = 0, peakents = 0, peakflicker = 0, skipped = 0, count = 0;
 	if (!strncmp(line, "maps/multipass ", 15)) {
 		multipass = !strcmp(line + 15, "on");
+		return;
+	}
+	if (!strncmp(line, "maps/portals ", 13)) {
+		World_Portals = !strcmp(line + 13, "on") ? WORLD_PORTALS_ON : !strcmp(line + 13, "off") ? WORLD_PORTALS_OFF : WORLD_PORTALS_AUTO;
+		return;
+	}
+	if (!strncmp(line, "maps/merge ", 11)) {
+		World_MergeFaces = strcmp(line + 11, "off") != 0;
+		if (atoi(line + 11) > 0)
+			World_MergeLight = atoi(line + 11);
 		return;
 	}
 	if (!strncmp(line, "maps/flicker ", 13)) {
@@ -305,14 +325,15 @@ static void bench(const char *line)
 		if (took > worst)
 			worst = took;
 		peakpolys = st.hwpolys > peakpolys ? st.hwpolys : peakpolys;
+		sumpolys += st.hwpolys;
 		peakverts = st.hwverts > peakverts ? st.hwverts : peakverts;
 		peakents = st.ents > peakents ? st.ents : peakents;
 		peakflicker = st.entsflicker > peakflicker ? st.entsflicker : peakflicker;
 		skipped += st.skipped;
 	}
-	snprintf(results[numresults++], sizeof(results[0]), "%s%s%.6s%s%.7s %d/%dfps p%d v%d m%d s%d%s", multipass ? "2" : "",
-	         Ents_Flicker ? "f:" : multipass ? ":" : "", short_name(path), model[0] ? "+" : "", model,
-	         steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakverts, peakents, skipped,
+	snprintf(results[numresults++], sizeof(results[0]), "%s%s%.6s%s%.7s %d/%dfps p%d a%d v%d m%d s%d%s", modes(),
+	         modes()[0] ? ":" : "", short_name(path), model[0] ? "+" : "", model,
+	         steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, sumpolys / steps, peakverts, peakents, skipped,
 	         Ents_Flicker ? flickstr(peakflicker) : "");
 	Ents_Free();
 	World_Free();
@@ -324,6 +345,14 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 	consoleClear();
 	iprintf("%s  %d fps  %s%s\n", short_name(map), fps, multipass ? "2 passes" : "1 pass", Ents_Flicker ? " flicker" : "");
 	iprintf("world: faces %d polys %d\n", st->faces, st->polys);
+	if (World_MergeFaces)
+		iprintf("merged: %d faces joined at load\n", World_MergedFaces());
+	iprintf("map: %d polys in all\n", World_TotalPolys());
+	if (World_PortalLeaves() >= 0)
+		iprintf("portals: %d leaves of %d PVS, %d tests, %d ms load\n", World_PortalLeaves(), World_PvsLeaves(),
+		        World_PortalTests(), World_PortalLoadMs());
+	else
+		iprintf("portals: %d (%d ms), PVS used\n", World_PortalCount(), World_PortalLoadMs());
 	iprintf("models: %d drawn, %d tris, %d cut\n", st->ents, st->entpolys, st->entsdropped);
 	if (st->entsflicker)
 		iprintf("taking turns: %d models\n", st->entsflicker);

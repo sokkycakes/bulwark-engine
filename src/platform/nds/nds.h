@@ -55,6 +55,19 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 const char *World_Entities(void);
 int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
+extern bool World_MergeFaces; /* join coplanar faces at load (default on) */
+int World_MergedFaces(void);  /* faces the last load joined into others */
+extern int World_MergeLight;  /* light steps (of 31) a dropped vertex may be off */
+int World_TotalPolys(void);   /* GPU polygons the whole map would take */
+enum { WORLD_PORTALS_OFF, WORLD_PORTALS_ON, WORLD_PORTALS_AUTO };
+extern int World_Portals;     /* follow portals out from the eye rather than draw the whole PVS; auto (the
+                                 default) builds them only for maps without a PVS. Read at load. */
+int World_PortalCount(void);  /* worked out at load; 0 if that failed */
+int World_PortalLeaves(void); /* leaves reached this frame, or -1 if the PVS was used */
+int World_PortalLoadMs(void);
+int World_PortalTests(void);  /* portals looked through this frame */
+int World_PvsLeaves(void);    /* leaves the PVS allows from the eye's leaf */
+int Nds_Vblanks(void);        /* screen refreshes since start-up (main_nds.c) */
 
 /* models_nds.c: Quake models (.mdl) on the map's entities, plus test crowds */
 void Ents_Load(const uint16_t *palette);                       /* from the loaded map's entities */

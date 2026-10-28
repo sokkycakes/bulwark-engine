@@ -176,11 +176,21 @@ second through their first 40 frames. The view model is `v_shot.mdl`.
 
 `bench.txt` lists map file names, one per line. A line can add a crowd
 in front of the start position: `e1m1.bsp soldier 9` puts nine soldiers
-there. A line `multipass on` (or `off`) switches the drawing mode for the
-lines after it, and `flicker on` (or `off`) does the same for flicker. At start-up, the viewer
-loads each of them and turns once on the spot over 512 frames. It then
-shows the average and worst frame rate, the peak GPU vertices, and how
-many faces went over the GPU's limit. After the bench, it stays in the
+there. These lines change a setting for the lines after them:
+
+| Line | Setting |
+|---|---|
+| `multipass on` / `off` | two passes |
+| `flicker on` / `off` | models take turns |
+| `merge on` / `off` / `2` | joining faces at load; a number sets the light step |
+| `portals on` / `off` / `auto` | following portals instead of drawing the PVS |
+
+At start-up, the viewer loads each map and turns once on the spot over 512
+frames. A result reads `e1m1.b 60/60fps p816 a230 v2652 m3 s0`: average
+and worst frame rate, peak and average GPU polygons, peak vertices, most
+models drawn, and faces that went over the GPU's limit (summed). A prefix
+shows settings off their defaults: `u` unmerged, `p` portals forced on,
+`n` portals off, `2` two passes, `f` flicker. After the bench, it stays in the
 last map. Use it to compare builds on real hardware.
 
 ## Measured: Quake shareware with models, in melonDS 1.1
@@ -229,6 +239,51 @@ Same bench, one pass, after the change:
 | `2:e1m1` + 24 knights | 30 / 30 | 2719 | 8380 | 22 | 0 |
 
 The tables below were measured before this change.
+
+## Joining faces
+
+The map compiler cuts walls into many small faces, along BSP splits and
+into pieces small enough for Quake's software surface cache. At load,
+faces on the same plane with the same texture mapping are joined again
+where they share a whole edge and the result stays convex
+(`World_MergeFaces`). A vertex left in the middle of a straight edge is
+dropped only when its light is within 2 steps (of 31) of what the edge
+gives, so the lighting stays as it was. A face that was joined away points
+at the face that took it in, so its leaves still draw it.
+
+On the whole of `e1m2` this takes the GPU polygons from 8521 to about 6900,
+and the peak in one view from 1343 to about 1270. Ignoring light, the
+limit for joining convex pieces is about 74% of the polygons. An earlier
+estimate of 55% counted triangles and allowed shapes the GPU can't draw
+in one piece; it was wrong for quads. The image is the same as unjoined.
+
+## Portals
+
+Quake maps keep a PVS: from each leaf, the leaves that can be seen from
+somewhere in it. `portals_nds.c` works out the portals, the openings
+between neighbouring leaves, from the BSP tree at load. Each frame the
+viewer follows them out from the eye's leaf, narrowing the view to each
+opening as it goes, and draws only the leaves it reaches (`World_Portals`).
+
+That pays only on maps without a PVS. On the shareware maps, which have
+one, the PVS and the frustum test leave little for portals to remove, and
+following them costs CPU time. So the default (`auto`) builds portals only
+for a map with no PVS. Measured on `e1m1`, and on a copy of it with the
+PVS removed:
+
+| Run | fps (avg / worst) | Peak polygons | Average polygons | Faces left out |
+|---|---|---|---|---|
+| `e1m1`, PVS | 60 / 60 | 816 | 230 | 0 |
+| `e1m1`, PVS and portals | 55 / 30 | 800 | 222 | 0 |
+| `e1m5`, PVS | 60 / 60 | 1270 | 376 | 0 |
+| `e1m5`, PVS and portals | 42 / 20 | 1268 | 368 | 0 |
+| `e1m1` without its PVS | 39 / 20 | 1938 | 717 | 210833 |
+| `e1m1` without its PVS, portals | 50 / 30 | 800 | 222 | 0 |
+
+Without its PVS and with portals, `e1m1` draws the same image as with its
+PVS, pixel for pixel, at the end of the bench. Building the portals took
+about 6.8 s of loading in melonDS (about 3300 portals) and 350 KB of RAM.
+Water leaves stay hidden, as Quake's PVS keeps them.
 
 ## Two passes: 4096 polygons at 30 fps
 
