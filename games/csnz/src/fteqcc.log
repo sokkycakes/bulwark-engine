@@ -1,0 +1,7 @@
+Source file: rules/csnz.src
+rules/csnz.src:1: warning: Unknown target 'fte_5768'. Ignored.
+Outputfile: ../../progs/csnz.dat
+
+************ ERROR ************
+Couldn't open file nuclide/rules.src
+Error in rules/csnz.src on line 4

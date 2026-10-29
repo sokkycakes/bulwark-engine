@@ -1,0 +1,8 @@
+*.dat
+*.lno
+src/nuclide
+progs/
+maps/zbs_*.csv
+shelterteam/*.csv
+data/studio/blocks.txt
+data/games_mp.log

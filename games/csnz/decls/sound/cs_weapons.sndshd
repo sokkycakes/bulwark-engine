@@ -1,0 +1,206 @@
+// CS weapon sounds (file names OBSERVED in the build). Written by tools/assets/make_cs_weapons.py.
+
+Weapon_CS.Empty
+{
+	sample weapons/dryfire_rifle.wav
+}
+
+Weapon_USP.Single
+{
+	alerts
+	sample weapons/usp_unsil-1.wav
+}
+
+Weapon_GLOCK18.Single
+{
+	alerts
+	sample weapons/glock18-1.wav
+	sample weapons/glock18-2.wav
+}
+
+Weapon_P228.Single
+{
+	alerts
+	sample weapons/p228-1.wav
+}
+
+Weapon_DEAGLE.Single
+{
+	alerts
+	sample weapons/deagle-1.wav
+	sample weapons/deagle-2.wav
+}
+
+Weapon_FIVESEVEN.Single
+{
+	alerts
+	sample weapons/fiveseven-1.wav
+}
+
+Weapon_ELITE.Single
+{
+	alerts
+	sample weapons/elite_fire.wav
+}
+
+Weapon_M3.Single
+{
+	alerts
+	sample weapons/m3-1.wav
+}
+
+Weapon_XM1014.Single
+{
+	alerts
+	sample weapons/xm1014-1.wav
+}
+
+Weapon_MAC10.Single
+{
+	alerts
+	sample weapons/mac10-1.wav
+}
+
+Weapon_TMP.Single
+{
+	alerts
+	sample weapons/tmp-1.wav
+	sample weapons/tmp-2.wav
+}
+
+Weapon_MP5.Single
+{
+	alerts
+	sample weapons/mp5-1.wav
+	sample weapons/mp5-2.wav
+}
+
+Weapon_UMP45.Single
+{
+	alerts
+	sample weapons/ump45-1.wav
+}
+
+Weapon_P90.Single
+{
+	alerts
+	sample weapons/p90-1.wav
+}
+
+Weapon_GALIL.Single
+{
+	alerts
+	sample weapons/galil-1.wav
+	sample weapons/galil-2.wav
+}
+
+Weapon_FAMAS.Single
+{
+	alerts
+	sample weapons/famas-1.wav
+	sample weapons/famas-2.wav
+}
+
+Weapon_AK47.Single
+{
+	alerts
+	sample weapons/ak47-1.wav
+	sample weapons/ak47-2.wav
+}
+
+Weapon_M4A1.Single
+{
+	alerts
+	sample weapons/m4a1_unsil-1.wav
+	sample weapons/m4a1_unsil-2.wav
+}
+
+Weapon_SG552.Single
+{
+	alerts
+	sample weapons/sg552-1.wav
+	sample weapons/sg552-2.wav
+}
+
+Weapon_AUG.Single
+{
+	alerts
+	sample weapons/aug-1.wav
+}
+
+Weapon_SCOUT.Single
+{
+	alerts
+	sample weapons/scout_fire-1.wav
+}
+
+Weapon_AWP.Single
+{
+	alerts
+	sample weapons/awp1.wav
+}
+
+Weapon_G3SG1.Single
+{
+	alerts
+	sample weapons/g3sg1-1.wav
+}
+
+Weapon_SG550.Single
+{
+	alerts
+	sample weapons/sg550-1.wav
+}
+
+Weapon_M249.Single
+{
+	alerts
+	sample weapons/m249-1.wav
+	sample weapons/m249-2.wav
+}
+
+Weapon_KNIFE.Hit
+{
+	sample weapons/knife_hit1.wav
+	sample weapons/knife_hit2.wav
+	sample weapons/knife_hit3.wav
+	sample weapons/knife_hit4.wav
+}
+
+Weapon_KNIFE.HitWall
+{
+	sample weapons/knife_hitwall1.wav
+}
+
+Weapon_KNIFE.Slash
+{
+	sample weapons/knife_slash1.wav
+	sample weapons/knife_slash2.wav
+}
+
+Weapon_KNIFE.Stab
+{
+	sample weapons/knife_stab.wav
+}
+
+Weapon_KNIFE.Deploy
+{
+	sample weapons/knife_deploy1.wav
+}
+
+Weapon_HEGRENADE.PinPull
+{
+	sample weapons/pinpull.wav
+}
+
+Weapon_HEGRENADE.Bounce
+{
+	sample weapons/he_bounce-1.wav
+}
+
+Weapon_HEGRENADE.Explode
+{
+	alerts
+	sample weapons/hegrenade-1.wav
+	sample weapons/hegrenade-2.wav
+}

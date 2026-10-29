@@ -1,0 +1,4 @@
+items weapon_knife weapon_usp weapon_glock18 weapon_m4a1 weapon_ak47 weapon_mp5 weapon_m3 weapon_hegrenade csm_char_fernando csm_char_phoenix
+char csm_char_fernando
+primary weapon_m4a1
+secondary weapon_usp

@@ -1,0 +1,33 @@
+#pragma target fte_5768
+#pragma PROGS_DAT  "../../progs/csnz.dat"
+
+#includelist
+../nuclide/rules.src
+cs_weapons.qc
+../shared/voxel_api.h
+common/csnz_protos.qc
+common/csnz_hudinfo.qc
+common/csnz_common.qc
+common/csnz_voxel.qc
+common/csnz_stats.qc
+common/csnz_progression.qc
+common/csnz_inventory.qc
+common/csnz_char_abilities.qc
+common/csnz_zombie_abilities.qc
+common/csnz_buymenu.qc
+common/csnz_achievements.qc
+common/csnz_itembox.qc
+modes/objectives.qc
+modes/basic.qc
+modes/zombie.qc
+modes/fun.qc
+modes/pvpve.qc
+modes/shelter.qc
+modes/zombi5.qc
+modes/scenario.qc
+modes/registry.qc
+modes/sheltert.qc
+common/csnz_vote.qc
+common/csnz_hooks.qc
+csnz_main.qc
+#endlist
