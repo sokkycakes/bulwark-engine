@@ -33,6 +33,9 @@ texture name (or none for flat colour) and flags:
 | `VXS_SLAB_LOW` (4) / `VXS_SLAB_HIGH` (5) | lower / upper half |
 | `VXS_THIN` (6) | panel at the +X side (fences, doors) |
 | `VXS_FIELD` (7) | whole cell, contents only (water, ladders, volumes) |
+| `VXS_SLAB3` (8) | CSO's SLAB: the rotation is a height state, not a turn. 0 low third, 1 low two thirds, 2 whole cell, 3 high two thirds, 4 high third (hw.dll display-type bounds, 13.33 units a step); 5..7 read as 0 |
+
+Cells keep rotations 0..7. Rotations turn a shape by `rot & 3` quarter turns; `VXS_SLAB3` never turns.
 
 Flags: `VXF_NODRAW` 1 (collides, not drawn), `VXF_FULLBRIGHT` 2.
 
@@ -105,7 +108,7 @@ crc32             u32      of everything before it
 
 Chunk runs cover the 4096 cells of a chunk in x-fastest, then y, then z
 order: `varuint count, u16 type, u8 rot` repeated until 4096 cells are
-covered. A run of 0, a run past the end, a rotation above 3 or a type outside
+covered. A run of 0, a run past the end, a rotation above 7 or a type outside
 the table makes the file invalid.
 
 Loading checks the magic, version, sizes against the limits, every length
