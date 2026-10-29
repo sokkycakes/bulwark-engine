@@ -241,19 +241,25 @@ static bool mentions(const char *text, const char *file)
 
 /* the startup configs, in order. A game with a quake.rc gets it in place
  * of default.cfg: Nuclide games set their defaults there (Rad-Therapy's
- * movement cvars are in a default_cvar.cfg only its quake.rc runs). The
- * saved config and autoexec.cfg follow unless the quake.rc runs them. */
+ * movement cvars are in a default_cvar.cfg only its quake.rc runs). It
+ * counts only from the same game directory as the default.cfg (or
+ * default_controls.cfg) or a later one, so a mod on top of base with its
+ * own default.cfg (TF) doesn't run base's quake.rc. The saved config and
+ * autoexec.cfg follow unless the quake.rc runs them. */
 static void configs_text(strbuf_t *sb)
 {
-	char *rc = FS_LoadFile("quake.rc", NULL);
+	const char *fallback = FS_FileExists("default.cfg") ? "default.cfg" :
+	                       FS_FileExists("default_controls.cfg") ? "default_controls.cfg" : NULL;
+	int rcdir = FS_WhichGameDir("quake.rc");
+	char *rc = NULL;
+	if (rcdir >= 0 && (!fallback || rcdir >= FS_WhichGameDir(fallback)))
+		rc = FS_LoadFile("quake.rc", NULL);
 	if (active.precmds.data)
 		SB_AppendStr(sb, active.precmds.data);
 	if (rc)
 		SB_AppendStr(sb, "exec quake.rc\n");
-	else if (FS_FileExists("default.cfg"))
-		SB_AppendStr(sb, "exec default.cfg\n");
-	else if (FS_FileExists("default_controls.cfg"))
-		SB_AppendStr(sb, "exec default_controls.cfg\n");
+	else if (fallback)
+		SB_Printf(sb, "exec %s\n", fallback);
 	if (active.postcmds.data)
 		SB_AppendStr(sb, active.postcmds.data);
 	const char *cfg = va("%s.cfg", Cvar_String("cfg_save_name"));
