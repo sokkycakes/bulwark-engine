@@ -16,7 +16,7 @@ keeps working when the database is down.
 | `game_server` | live servers (heartbeat every 30 s, dropped after 120 s) | public |
 | `match_record`, `match_player` | every finished match and its players | public |
 | `offline_account`, `offline_chunk` | the real client's offline server database, as snapshots (see Offline server below) | private |
-| `channel_server`, `channel`, `room` | the lobby (see Lobby below) | public |
+| `lobby_server`, `channel`, `room` | the lobby (see Lobby below) | public |
 | `operator` | identities allowed to write | private |
 
 Reducers: `player_seen`, `save_progression`, `save_inventory`,

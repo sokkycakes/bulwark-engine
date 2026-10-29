@@ -20,8 +20,8 @@ const DEFAULT_SERVER: &str = "Bulwark";
 /// CSNZ_Server's ServerConfig maxPlayers default
 const DEFAULT_CHANNEL_PLAYERS: u32 = 600;
 
-#[table(accessor = channel_server, public)]
-pub struct ChannelServer {
+#[table(accessor = lobby_server, public)]
+pub struct LobbyServer {
     #[primary_key]
     #[auto_inc]
     pub id: u32,
@@ -72,8 +72,8 @@ fn server_title(name: &str, index: usize, total: usize) -> String {
 }
 
 fn add_server_row(db: &spacetimedb::Local, name: &str, channels: u32) {
-    let server = db.channel_server().insert(ChannelServer { id: 0, name: name.to_string() });
-    let index = db.channel_server().iter().count();
+    let server = db.lobby_server().insert(LobbyServer { id: 0, name: name.to_string() });
+    let index = db.lobby_server().iter().count();
     for c in 1..=channels.max(1) {
         db.channel().insert(Channel {
             id: 0,
@@ -101,9 +101,9 @@ pub fn add_channel_server(ctx: &ReducerContext, name: String, channels: u32) -> 
 #[reducer]
 pub fn add_channel(ctx: &ReducerContext, server_id: u32, name: String, max_players: u32) -> Result<(), String> {
     require_operator(ctx)?;
-    let server = ctx.db.channel_server().id().find(server_id).ok_or("no such channel server")?;
+    let server = ctx.db.lobby_server().id().find(server_id).ok_or("no such channel server")?;
     let index = ctx.db.channel().server_id().filter(server_id).map(|c| c.index).max().unwrap_or(0) + 1;
-    let position = ctx.db.channel_server().iter().filter(|s| s.id <= server_id).count();
+    let position = ctx.db.lobby_server().iter().filter(|s| s.id <= server_id).count();
     let name = if name.trim().is_empty() { format!("{} {position}-{index}", server.name) } else { clean(name.trim()) };
     ctx.db.channel().insert(Channel {
         id: 0,
@@ -201,10 +201,10 @@ pub fn drop_stale_rooms(ctx: &ReducerContext, cutoff: Timestamp) {
 #[procedure]
 pub fn list_channels(ctx: &mut ProcedureContext) -> Result<String, String> {
     ctx.try_with_tx(|tx| {
-        if tx.db.channel_server().iter().next().is_none() {
+        if tx.db.lobby_server().iter().next().is_none() {
             add_server_row(&tx.db, DEFAULT_SERVER, 1);
         }
-        let mut servers: Vec<ChannelServer> = tx.db.channel_server().iter().collect();
+        let mut servers: Vec<LobbyServer> = tx.db.lobby_server().iter().collect();
         servers.sort_by_key(|s| s.id);
         let total = servers.len();
         let mut out = String::new();
