@@ -47,8 +47,8 @@
    layouts inside the 980x600 sheet, list rows stepped with the arrows, the
    colour rows as three bars, the Number of players lists (1..32), the
    defaults shown before the map sets a value, right click to empty a quick
-   slot, and keeping the slots in the archived vx_quickslots cvar (sent
-   with vxl_qsload) in place of the registry. The Shelter, Gun Deathmatch,
+   slot, sending the tool slots to the server with vxl_qsload, and the
+   registry file name. The .vxlqs registry itself follows client.dll. The Shelter, Gun Deathmatch,
    level and difficulty rows are not ported. */
 
 #define VQ_SLOTS 5
@@ -100,34 +100,117 @@ VT_Label(float wid)
 
 /* --- the quick slots --------------------------------------------------------------- */
 
+/* The .vxlqs registry (client.dll FUN_02b14530 load, FUN_02b19480 save):
+   one line of "%04d" ids, the 10 block quick slots (DAT_03584c4c) then the
+   5 tool quick slots (DAT_03584c5c), 60 digits in all. */
+#define VQ_BLOCKSLOTS 10
+#define VQ_REGLEN 15
+#define VQ_FILE "studio/quickslot.vxlqs"	/* DESIGN: CSO names it <user>.vxlqs */
+float g_vqReg[VQ_REGLEN];
+bool g_vqRegLoaded;
+
+bool VB_BlockKnown(float bid);
+
+string
+VQ_Pad4(float v)
+{
+	string n = ftos(bound(0, floor(v), 9999));
+	return strcat(substring("0000", 0, 4 - strlen(n)), n);
+}
+
+void
+VQ_RegSave(void)
+{
+	string out = "";
+	for (int i = 0i; i < VQ_REGLEN; i++)
+		out = strcat(out, VQ_Pad4(g_vqReg[i]));
+	filestream fh = fopen(VQ_FILE, FILE_WRITE);
+	if (fh < 0)
+		return;
+	fputs(fh, out);
+	fclose(fh);
+}
+
+/* a saved tool id is kept when it is one of the four defaults
+   (DAT_0317444c), one of the item tools (DAT_0317445c: item 970 -> 363,
+   971 -> 364, 8412 -> 485, kept only if the item is owned) or a weapon
+   client.dll knows. DESIGN: Bulwark has no item inventory, so the item
+   tools count as owned and "a known weapon" is a tool on the Tool page. */
+bool
+VQ_ToolKnown(float wid)
+{
+	for (int i = 0i; i < VT_COUNT; i++)
+		if (g_vtIds[i] == wid)
+			return true;
+	return false;
+}
+
+void
+VQ_RegLoad(void)
+{
+	if (g_vqRegLoaded)
+		return;
+	g_vqRegLoaded = true;
+
+	string s = "";
+	filestream fh = fopen(VQ_FILE, FILE_READ);
+	if (fh >= 0) {
+		s = fgets(fh);
+		fclose(fh);
+	}
+	bool ok = (strlen(s) == VQ_REGLEN * 4);
+	for (int c = 0i; ok && c < strlen(s); c++) {
+		float ch = str2chr(s, c);
+		if (ch < 48 || ch > 57)
+			ok = false;
+	}
+	if (!ok) {
+		/* FUN_02b11da0 twice, the default tools, then save */
+		print("Voxel Quickslot : wrong quickslot registry format\n");
+		for (int i = 0i; i < VQ_REGLEN; i++)
+			g_vqReg[i] = 0;
+		tokenize(VQ_DEFAULTS);
+		for (int i = 0i; i < 4i; i++)
+			g_vqReg[VQ_BLOCKSLOTS + i] = stof(argv(i));
+		VQ_RegSave();
+		return;
+	}
+	for (int i = 0i; i < VQ_REGLEN; i++) {
+		float v = stof(substring(s, i * 4, 4));
+		if (i < VQ_BLOCKSLOTS)
+			g_vqReg[i] = VB_BlockKnown(v) ? v : 0;	/* FUN_02b12550 */
+		else
+			g_vqReg[i] = VQ_ToolKnown(v) ? v : 0;
+	}
+}
+
 string
 VQ_List(void)
 {
-	string s = cvar_string("vx_quickslots");
-	if (tokenize(s) != VQ_SLOTS)
-		return VQ_DEFAULTS;
-	return s;
+	VQ_RegLoad();
+	string out = "";
+	for (int i = 0i; i < VQ_SLOTS; i++)
+		out = (i == 0i) ? ftos(g_vqReg[VQ_BLOCKSLOTS + i]) : strcat(out, " ", ftos(g_vqReg[VQ_BLOCKSLOTS + i]));
+	return out;
 }
 
 float
 VQ_Slot(int n)
 {
-	tokenize(VQ_List());
-	return stof(argv(n));
+	VQ_RegLoad();
+	if (n < 0i || n >= VQ_SLOTS)
+		return 0;
+	return g_vqReg[VQ_BLOCKSLOTS + n];
 }
 
 void
 VQ_SetSlot(int n, float wid)
 {
-	string out = "";
-	string cur = VQ_List();
-	for (int i = 0i; i < VQ_SLOTS; i++) {
-		tokenize(cur);
-		string v = (i == n) ? ftos(wid) : argv(i);
-		out = (i == 0i) ? v : strcat(out, " ", v);
-	}
-	localcmd(sprintf("seta vx_quickslots \"%s\"\n", out));
-	cvar_set("vx_quickslots", out);
+	VQ_RegLoad();
+	if (n < 0i || n >= VQ_SLOTS)
+		return;
+	g_vqReg[VQ_BLOCKSLOTS + n] = wid;
+	VQ_RegSave();
 }
 
 void

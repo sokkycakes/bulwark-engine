@@ -128,6 +128,19 @@ VB_LoadBlocks(void)
 	fclose(fh);
 }
 
+void VB_Load(void);
+
+/* a block id that is in voxel_list.csv / blocks.txt */
+bool
+VB_BlockKnown(float bid)
+{
+	if (bid <= 0)
+		return false;
+	if (!g_vbLoaded)
+		VB_Load();
+	return hash_get(g_vbCost, ftos(bid), "", EV_STRING) != "";
+}
+
 void
 VB_Load(void)
 {
@@ -207,8 +220,6 @@ VB_Init(void)
 	Loc_Load("resource/cso_na_en.utf8.txt", "Vxl_Name_ Vxl_Desc_ Vxl_Fullbrowser_ Vxl_Fullborwser CSO_Search");
 	Loc_Load("resource/cso_na_en.utf8.txt", "CSO_Item_Name_vxl CSO_Item_Desc_vxl Vxl_OutUI_Mode_ Vxl_AttackType_ CSO_Permanent");
 	registercommand("vxl_lastinv");
-	if (cvar_string("vx_quickslots") == "")
-		localcmd("seta vx_quickslots \"300 335 301 334 0\"\n");
 	precache_pic("resource/voxel/weapon_bg_ingame");
 	precache_pic("resource/voxel/weapon_effect_ingame");
 	precache_pic("resource/voxel/q_slot_number_box");
