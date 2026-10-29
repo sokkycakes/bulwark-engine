@@ -148,6 +148,7 @@ VXT_Draw(entity p, float slot)
 	}
 	userinfo.SetInteger(p, "vx_qscur", (int)p.vxt_cur);
 	p.vxt_mode = 0;
+	userinfo.SetInteger(p, "vx_mode", 0i);
 	p.vxt_from = 0;
 	p.vxt_rate = 0.2;
 	if (cls != "") {
@@ -363,6 +364,7 @@ VXT_PlayerFrame(entity p)
 	case 363:	/* minigun */
 		if (a2) {
 			p.vxt_mode = !p.vxt_mode;
+			userinfo.SetInteger(p, "vx_mode", (int)p.vxt_mode);
 			p.vxt_next = time + 1.0;
 			CS_Tell(p, p.vxt_mode ? "Remove mode" : "Create mode");
 			sound(p, CHAN_WEAPON, "weapons/vxllonggun_changea.wav", 1, ATTN_NORM);
@@ -445,8 +447,20 @@ VXT_SendEnv(entity to)
 	} else {
 		cmd = "fog 0\n";
 	}
-	if (sky != "" && sky != "none")
-		cmd = strcat(cmd, "sky ", sky, "\n");
+	/* SOURCE-CONFIRMED (hw.dll): the sky goes to sv_skyname (FUN_0224dfd0);
+	   day_light's first byte mixes block-only light with block and sky
+	   light (DAT_02df8300), inv_light tints faces by side (FUN_022534c0),
+	   remove_dim_light makes unlit faces fully dark (1/7 for 0.6/7 in
+	   FUN_02142020) and drops models' base light of 50 (FUN_02159370).
+	   The engine's r_voxel_* cvars do each (docs/spec/voxel.md "Light").
+	   Unset values keep the engine's defaults, which leave the look as
+	   before: full day, no tint. Weather is read by the HUD from
+	   serverinfo vxo_weather (vxweather.qc). */
+	cmd = strcat(cmd, "sky \"", (sky == "none") ? "" : sky, "\"\n");
+	string day = VX_OptGet("daylight", "255 255 255");
+	string inv = VX_OptGet("invlight", "255 255 255");
+	cmd = strcat(cmd, sprintf("r_voxel_daylight \"%s\"\nr_voxel_invlight \"%s\"\n", day, inv));
+	cmd = strcat(cmd, sprintf("r_voxel_fulldark %d\n", stof(VX_OptGet("remove_dim_light", "0")) ? 1 : 0));
 	for (entity p = world; (p = next.Player(p));)
 		if ((!to || p == to) && clienttype(p) == CLIENTTYPE_REAL)
 			stuffcmd(p, cmd);
@@ -556,6 +570,7 @@ VXT_Command(entity p, string cmd)
 			p.vxt_last = p.vxt_cur;
 			p.vxt_cur = slot;
 			p.vxt_mode = p.vxt_from = 0;
+			userinfo.SetInteger(p, "vx_mode", 0i);
 			userinfo.SetInteger(p, "vx_qscur", (int)p.vxt_cur);
 		} else
 			VXT_Draw(p, slot);
