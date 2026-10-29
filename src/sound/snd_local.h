@@ -23,6 +23,8 @@ typedef struct sfx_s {
 
 sfx_t *S_FindSfx(const char *name, bool load);
 bool S_LoadSfx(sfx_t *sfx);
+/* decodes a whole MP3 file to 16-bit PCM, at most two channels (snd_mp3.c) */
+bool S_DecodeMP3(const uint8_t *buf, size_t len, int16_t **data, int *frames, int *channels, int *rate);
 void S_FreeAllSfx(void);
 void S_ForEachSfx(void (*fn)(const sfx_t *sfx, void *ctx), void *ctx);
 

@@ -171,7 +171,7 @@ if(NOT BULWARK_CONSOLE)
 	target_link_libraries(mdlcheck bwcommon)
 	add_executable(studiotest tools/studiotest.c)
 	target_link_libraries(studiotest bwcommon)
-	add_executable(wavcheck tools/wavcheck.c)
+	add_executable(wavcheck tools/wavcheck.c src/sound/snd_mp3.c)
 	target_link_libraries(wavcheck bwcommon)
 	add_executable(rescheck tools/rescheck.c)
 	target_link_libraries(rescheck bwcommon)
@@ -288,7 +288,8 @@ add_library(bwclient STATIC
 	src/render/r_voxel.c
 	src/sound/snd_main.c
 	src/sound/snd_dsp.c
-	src/sound/snd_mem.c)
+	src/sound/snd_mem.c
+	src/sound/snd_mp3.c)
 target_link_libraries(bwclient PUBLIC bwserver bwui)
 target_include_directories(bwclient PRIVATE third_party)
 

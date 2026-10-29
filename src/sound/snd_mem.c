@@ -1,7 +1,7 @@
 /* Bulwark engine - sound samples and the music stream. WAV is read from
  * the RIFF layout described in Microsoft's multimedia file format notes;
- * Ogg Vorbis is decoded with stb_vorbis (public domain). ISC licence, see
- * LICENSE. */
+ * Ogg Vorbis is decoded with stb_vorbis (public domain), MP3 with minimp3
+ * (CC0). ISC licence, see LICENSE. */
 #include "snd_local.h"
 #include "../common/fs.h"
 
@@ -149,6 +149,20 @@ static bool decode_ogg(const uint8_t *buf, size_t len, pcm_t *out)
 	return true;
 }
 
+/* an ID3 tag, or an MPEG audio frame sync */
+static bool is_mp3(const uint8_t *buf, size_t len)
+{
+	if (len >= 3 && !memcmp(buf, "ID3", 3))
+		return true;
+	return len >= 2 && buf[0] == 0xFF && (buf[1] & 0xE0) == 0xE0;
+}
+
+static bool decode_mp3(const uint8_t *buf, size_t len, pcm_t *out)
+{
+	out->loopstart = -1;
+	return S_DecodeMP3(buf, len, &out->data, &out->frames, &out->channels, &out->rate);
+}
+
 static bool decode_file(const char *path, pcm_t *out)
 {
 	size_t len;
@@ -156,9 +170,14 @@ static bool decode_file(const char *path, pcm_t *out)
 	bool ok;
 	if (!buf)
 		return false;
-	ok = len >= 4 && !memcmp(buf, "OggS", 4) ? decode_ogg(buf, len, out) : decode_wav(buf, len, out);
+	if (len >= 4 && !memcmp(buf, "OggS", 4))
+		ok = decode_ogg(buf, len, out);
+	else if (len >= 4 && !memcmp(buf, "RIFF", 4))
+		ok = decode_wav(buf, len, out);
+	else
+		ok = is_mp3(buf, len) && decode_mp3(buf, len, out);
 	if (!ok)
-		Con_DPrintf("sound %s: not a PCM wav or ogg vorbis file\n", path);
+		Con_DPrintf("sound %s: not a PCM wav, ogg vorbis or mp3 file\n", path);
 	Mem_Free(buf);
 	return ok;
 }
