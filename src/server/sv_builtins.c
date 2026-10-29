@@ -149,7 +149,13 @@ void W_bi_tracebox(qcvm_t *vm)
 	do_trace(vm, QC_PVEC(vm, 0), QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3), (int)QC_PFLOAT(vm, 4), QC_PENT(vm, 5));
 }
 
-void W_bi_pointcontents(qcvm_t *vm) { QC_ReturnFloat(vm, (float)SV_ContentsToQuake(SV_PointContentsBits(QC_PVEC(vm, 0)))); }
+/* Sky is solid to movement, but pointcontents reports it as sky, as Quake
+ * does, so the game can tell open sky from a wall. */
+void W_bi_pointcontents(qcvm_t *vm)
+{
+	int bits = SV_PointContentsBits(QC_PVEC(vm, 0));
+	QC_ReturnFloat(vm, (float)((bits & CONTENTS_SKY) ? CONTENT_SKY : SV_ContentsToQuake(bits)));
+}
 
 void W_bi_droptofloor(qcvm_t *vm)
 {
