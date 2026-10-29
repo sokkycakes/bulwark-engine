@@ -200,6 +200,7 @@ if(NOT BULWARK_CONSOLE)
 	target_link_libraries(bsptest bwserver)
 	add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 	add_test(NAME bots COMMAND ${CMAKE_SOURCE_DIR}/tests/bots/run.sh $<TARGET_FILE:bulwark-ded>)
+	add_test(NAME uri COMMAND ${CMAKE_SOURCE_DIR}/tests/uri/run.sh $<TARGET_FILE:bulwark-ded>)
 	add_test(NAME scene COMMAND scenetest ${CMAKE_SOURCE_DIR}/tests/scene)
 
 	add_executable(ftewtest tests/ftew/ftewtest.c src/server/bspfile.c src/server/bsp_source.c src/server/bsp_props.c)

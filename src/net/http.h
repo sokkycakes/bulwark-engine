@@ -11,6 +11,13 @@ typedef struct http_s http_t;
 
 /* starts fetching url, into savepath (an OS path) or into memory when NULL */
 http_t *HTTP_Get(const char *url, const char *savepath);
+/* an API request, answered into memory: method is "GET", "POST" and so on,
+ * body (len bytes, may be NULL) is sent with ctype as its Content-Type, and
+ * headers holds extra "Name: value\r\n" lines or is NULL. Any status the
+ * server answers with counts as done, with its body kept, and redirects are
+ * not followed, so the extra headers never reach another host. */
+http_t *HTTP_Request(const char *method, const char *url, const char *ctype, const void *body, size_t len,
+                     const char *headers);
 int HTTP_State(const http_t *h);
 int HTTP_Code(const http_t *h);
 const char *HTTP_Error(const http_t *h);
