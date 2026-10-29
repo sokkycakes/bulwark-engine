@@ -166,16 +166,34 @@ world changes:
    or down.
 3. Vertex: each face vertex averages the light of the cell in front of the
    face and of the side and corner cells around the vertex that are not
-   blocked (the corner only when a side is open), clamped to 7. Darkness is
-   `(7 - avg) * 0.6 / 7` per channel, taking the lesser of block and sky
-   darkness. Corner darkening subtracts 0.1 per blocked side cell, 0.3 when
-   both are blocked. The face shade (top 1.0, bottom 0.7, +y 0.925,
-   -y 0.775, ±x 0.85, slope top 0.97, slope underside 0.73) is tinted by
-   `r_voxel_daylight` ("r g b", default "255 255 255").
+   blocked (the corner only when a side is open), clamped to 7. Each vertex
+   gets two colours: night, darkened by `(7 - block) * k` per channel, and
+   day, darkened by `(7 - max(block, sky)) * k`, with k = 0.6/7 (1/7 when
+   `r_voxel_fulldark` is 1, the map's "remove default key light"). Corner
+   darkening subtracts 0.1 per blocked side cell, 0.3 when both are
+   blocked. The drawn colour is `night * (1 - d) + day * d`, with d the
+   first value of `r_voxel_daylight` / 255 ("r g b", default
+   "255 255 255", the map's day light).
+4. Face shade: top 1.0, bottom 0.7, +y 0.925, -y 0.775, ±x 0.85, slope top
+   0.97, slope underside 0.73, each tinted by `r_voxel_invlight` ("r g b",
+   default "255 255 255", the map's back colour) as
+   `1 + (v / 255 * 0.2 - 0.2) * w / 7`, where w is 0, 7, 2, 5, 3, 4, 1, 6
+   for the faces in that order.
+
+Models (entities and the view model) inside a voxel world are lit from the
+light cell at their origin: with base 50 (0 when `r_voxel_fulldark` is 1)
+and s = (256 - base) / 7, each channel is
+`max(sky, c) * s * d + c * s * (1 - d) + base` out of 255, split 70/30
+between ambient and a light from above (the split is ours).
+
+A voxel world with no BSP world under it draws the sky named by `sky`
+(`env/`, `gfx/env/` or `materials/skybox/` faces) as a background cube
+before the voxels.
 
 `r_voxel_light 0` turns this off (face shade only). Fullbright types are
 never darkened. The behaviour is matched to Counter-Strike Online's Studio
-lighting from observation of its game data; see the CSNZ studio trace notes.
+lighting from its hw.dll (vertex colours, day mix, face shade and model
+light); see the CSNZ studio trace notes.
 
 ## Void maps
 

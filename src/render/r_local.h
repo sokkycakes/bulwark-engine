@@ -255,8 +255,10 @@ void R_PCF_Shutdown(void);
 void R_ShutdownParticles(void);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);
+void R_DrawBackgroundSky(const float *mvp);
+bool R_VoxelLightPoint(const float *p, float *rgb);
 /* voxel worlds (r_voxel.c) */
-extern cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight;
+extern cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight, *r_voxel_invlight, *r_voxel_fulldark;
 void R_DrawVoxels(bool translucentpass);
 void R_FreeVoxels(void);
 void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
