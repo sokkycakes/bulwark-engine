@@ -93,7 +93,8 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
   view) in the client game.
 - `setcustomskin`, `loadcustomskin`, `applycustomskin`,
   `releasecustomskin`: `.skin` text; `geomset <group> <value>` picks a
-  Half-Life model's sub-model per body part, `replace` (or the legacy
+  Half-Life model's sub-model per body part (counted from 1; 0 is the
+  first), `replace` (or the legacy
   `surface,shader`) swaps a surface's material. `src/render/r_skin.c`.
 - `remapshader` swaps a material's look until the map changes;
   `r_readimage` returns an image's RGBA pixels in the game's heap (the
