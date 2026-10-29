@@ -867,6 +867,7 @@ CodeCallback_Precache(void)
 	precache_sound("weapons/vxllonggun-1.wav");
 	precache_sound("weapons/vxllonggun-2.wav");
 	precache_sound("weapons/vxllonggun_changea.wav");
+	precache_sound("weapons/vxlbuildmarker-1.wav");
 	precache_sound("weapons/vxlconnector-1.wav");
 	precache_sound("weapons/vxleditor-shootleft.wav");
 	precache.Entity("weapon_vxllonggun");

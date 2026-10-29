@@ -52,14 +52,16 @@ VXW_DrawGhost(void)
 	float wid = g_vqHeld;
 	if (HUD_ModeId() != 38 || HUD_WantsCursor() || player.GetHealth() <= 0)
 		return;
-	if (wid != 300 && wid != 335 && wid != 363)
+	if (wid != 300 && wid != 335 && wid != 363 && wid != 485)
 		return;
+	/* the Build Marker places at 100 units, in the air too (vx_tools.qc) */
+	bool marker = (wid == 485);
 	float bs = voxel_blocksize();
 	if (bs <= 0)
 		return;
 
-	bool remove = stof(getplayerkeyvalue(player_localnum, "vx_mode")) != 0;
-	float reach = (wid == 335) ? 100 : 2000;
+	bool remove = !marker && stof(getplayerkeyvalue(player_localnum, "vx_mode")) != 0;
+	float reach = (wid == 335 || marker) ? 100 : 2000;
 	vector src = player.GetCameraPosition();
 	makevectors(player.GetCameraAngles());
 	traceline(src, src + v_forward * reach, MOVE_NOMONSTERS, world);
@@ -68,7 +70,7 @@ VXW_DrawGhost(void)
 
 	if (hit[0] >= 0 && trace_fraction < 1)
 		cell = remove ? hit : voxel_cellforpoint(trace_endpos + trace_plane_normal * (bs * 0.5));
-	else if (!remove && wid == 335)
+	else if (!remove && (wid == 335 || marker))
 		cell = voxel_cellforpoint(src + v_forward * reach);
 	else
 		return;
@@ -77,17 +79,45 @@ VXW_DrawGhost(void)
 
 	vector o = voxel_cellorigin(cell);
 	vector rgb = remove ? [1, 0.3, 0.25] : [1, 1, 1];
+	if (marker)
+		rgb = [0.3, 1, 0.4];
 	/* the rules refuse a cell that would trap a player (VX_CanPlace,
 	   vx_core.qc); the HUD only knows the eye, so our own hull is taken as
 	   16 units around it, from 64 below (30 ducked) to 10 above, and such
 	   a cell is outlined in grey */
-	if (!remove) {
+	if (!remove && !marker) {
 		vector lo = src - [16, 16, player.IsCrouched() ? 30 : 64], hi = src + '16 16 10';
 		if (lo[0] < o[0] + bs && hi[0] > o[0] && lo[1] < o[1] + bs && hi[1] > o[1] && lo[2] < o[2] + bs && hi[2] > o[2])
 			rgb = [0.45, 0.45, 0.45];
 	}
 	/* a hair outside the cell so the lines sit on top of its faces */
 	VXW_Box(o - '0.3 0.3 0.3', o + [bs, bs, bs] + '0.3 0.3 0.3', rgb);
+}
+
+/* the Build Marker's markers and area (DESIGN look: CSO's drawing of
+   them is not traced), from the rules' userinfo vx_marks */
+void
+VXW_DrawMarks(void)
+{
+	if (HUD_ModeId() != 38)
+		return;
+	int n = (int)tokenize(getplayerkeyvalue(player_localnum, "vx_marks"));
+	if (n < 3)
+		return;
+	float bs = voxel_blocksize();
+	if (bs <= 0)
+		return;
+	vector a = [stof(argv(0)), stof(argv(1)), stof(argv(2))];
+	vector oa = voxel_cellorigin(a);
+	VXW_Box(oa - '0.6 0.6 0.6', oa + [bs, bs, bs] + '0.6 0.6 0.6', [0.3, 1, 0.4]);
+	if (n < 6)
+		return;
+	vector b = [stof(argv(3)), stof(argv(4)), stof(argv(5))];
+	vector lo = [min(a[0], b[0]), min(a[1], b[1]), min(a[2], b[2])];
+	vector hi = [max(a[0], b[0]), max(a[1], b[1]), max(a[2], b[2])];
+	vector ob = voxel_cellorigin(b);
+	VXW_Box(ob - '0.6 0.6 0.6', ob + [bs, bs, bs] + '0.6 0.6 0.6', [1, 0.6, 0.2]);
+	VXW_Box(voxel_cellorigin(lo) - '1 1 1', voxel_cellorigin(hi) + [bs, bs, bs] + '1 1 1', [0.35, 0.8, 1]);
 }
 
 void
@@ -124,6 +154,7 @@ VXW_DrawWeather(void)
 void
 VXW_Draw(void)
 {
+	VXW_DrawMarks();
 	VXW_DrawGhost();
 	VXW_DrawWeather();
 }
