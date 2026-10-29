@@ -24,6 +24,8 @@ void R_SetFrameGrab(r_grab_fn fn);
 bool R_EncodeImage(const char *ext, const uint8_t *rgb, int w, int h, int quality, strbuf_t *out);
 void R_Shutdown(void);
 bool R_Active(void);           /* true when there is a window to draw into */
+bool R_CursorMode(void);       /* the focused progs (menu while open, else client game) wants a free cursor */
+void R_ResetCursorMode(qcvm_t *vm); /* forget a progs' setcursormode as it unloads */
 void R_GetSize(int *w, int *h);
 
 void R_PrecacheModel(int index); /* cl.models[index] was just named */
