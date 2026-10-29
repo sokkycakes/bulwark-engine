@@ -10,8 +10,11 @@
  *
  * Write-through: every save still writes the local file, so the server
  * keeps working when the database can't be reached. Calls that get no
- * answer (or a 5xx) are retried with backoff; a 4xx is reported and
- * dropped. On a player's first spawn the local files load as before, then
+ * answer (or a 5xx) are retried with backoff; a refusal is reported and
+ * dropped. OBSERVED on Maincloud: a reducer that returns Err (e.g. "not an
+ * operator") answers HTTP 530 with the message as the body.
+ *
+ * On a player's first spawn the local files load as before, then
  * get_profile's answer replaces them section by section. A section the
  * database doesn't have yet is uploaded from what was loaded locally, which
  * migrates existing saves. Until that answer, saves stay local only, so the
@@ -84,18 +87,16 @@ STDB_Json(string s)
 	return strcat("\"", s, "\"");
 }
 
-/* the string a procedure returned: SpacetimeDB answers with its JSON
-   encoding ("..."), possibly wrapped as {"Ok": "..."} */
+/* the string in a procedure's answer. OBSERVED on Maincloud (2.13.0,
+   2026-10-29): a Result<String, String> comes back as HTTP 200 with the
+   sum's tag and value, [0,"..."] for Ok and, by the same encoding,
+   [1,"..."] for Err (see STDB_IsErr) */
 string
 STDB_JsonString(string body)
 {
 	float start = strstrofs(body, "\"");
 	if (start < 0)
 		return body;	/* not JSON: take it as it is */
-	if (substring(body, start, 4) == "\"Ok\"")
-		start = strstrofs(body, "\"", start + 4);
-	if (start < 0)
-		return "";
 
 	string out = "";
 	float len = strlen(body);
@@ -132,6 +133,12 @@ STDB_JsonString(string body)
 		from = i + 1;
 	}
 	return strcat(out, substring(body, from, -1));
+}
+
+bool
+STDB_IsErr(string body)
+{
+	return substring(strreplace(" ", "", body), 0, 3) == "[1,";
 }
 
 string
@@ -352,7 +359,7 @@ URI_Get_Callback(float id, float code, string body, int len)
 			if (p.stdb_profileReq != req)
 				continue;
 			p.stdb_profileReq = 0;
-			if (code >= 200 && code < 300) {
+			if (code >= 200 && code < 300 && !STDB_IsErr(body)) {
 				STDB_ApplyProfile(p, STDB_JsonString(body));
 			} else {
 				/* keep the local data, and don't let saves overwrite what
@@ -376,7 +383,7 @@ URI_Get_Callback(float id, float code, string body, int len)
 		return;
 	if (code >= 200 && code < 300) {
 		STDB_Free(slot);
-	} else if ((code == 0 || code >= 500) && stdb_qTries[slot] < STDB_TRIES) {
+	} else if ((code == 0 || (code >= 500 && code != 530)) && stdb_qTries[slot] < STDB_TRIES) {
 		/* no answer or a server error: back off 2, 4, 8... seconds */
 		stdb_qRetryAt[slot] = time + pow(2, stdb_qTries[slot]);
 	} else {

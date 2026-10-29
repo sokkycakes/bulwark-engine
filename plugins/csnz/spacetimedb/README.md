@@ -77,6 +77,10 @@ sets the server-list interval in seconds.
 - The QC side was tested end to end against a mock of this module's HTTP
   surface: new-player upload, stored-profile apply, match record and
   heartbeat.
-- **Not yet tested against a real SpacetimeDB server.** Unconfirmed: the
-  exact JSON shape of a procedure's HTTP answer (the QC accepts `"..."` and
-  `{"Ok": "..."}`), and whether `init`'s sender is the publisher.
+- Live on Maincloud (2026-10-29, SpacetimeDB 2.13.0, database bulwark-fu58e):
+  publish, init (the publisher became the operator), save_progression,
+  save_inventory, get_profile, server_heartbeat, record_match and
+  server_shutdown over HTTP all work, and an anonymous call is refused.
+  Observed answer shapes: a procedure's `Result<String, String>` is HTTP 200
+  with `[0,"..."]` (Ok) or `[1,"..."]` (Err). A reducer's `Err` is HTTP 530
+  with the message as plain text. The QC handles both.
