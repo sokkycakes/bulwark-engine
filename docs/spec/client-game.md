@@ -23,9 +23,7 @@ noclip movement through `W_RunEntityPhysics`:
 - Entities the game spawned itself (`entnum` 0) then move by their
   movetype, with gravity from the server's `sv_gravity` serverinfo key.
 - Entities that mirror a server entity (`entnum` above 0) only think. Their
-  position comes from snapshots and the engine's interpolation. Nuclide
-  gives other players MOVETYPE_FLY "for interpolation purposes", which
-  suggests FTE moves them between updates too; Bulwark doesn't.
+  position comes from snapshots and the engine's interpolation (below).
 - The step is the client time since the last frame, at most 0.1 s.
 
 Found from Nuclide's client QC: `BreakModel_SpawnID` (propdata.qc) spawns
@@ -34,6 +32,29 @@ scheduled and remove themselves with `ScheduleThink(Disappear, fadetime)`.
 Without this frame they hung in the air where they spawned and never went
 away (until the 33-entry pool reused them). Other client-only entities
 that time out the same way, such as `EV_TraceDebug`'s, depend on it too.
+
+## Drawing between snapshots
+
+A server entity's fields only change when a snapshot carries it, about 72
+times a second. Nuclide sends monsters' `frame1time` every tick and the
+client game never advances it (only the server's `ncEntity::ParentUpdate`
+adds `frametime`), so poses and positions stood still between updates. A
+probe against FTE (2026-10-29) showed FTE draws them the same way. Bulwark
+now goes further, as GoldSrc does:
+
+- With `cl_lerpentities 1` (the default) an entity that mirrors a server
+  entity is drawn `cl_interp` seconds (0.03) behind the newest snapshot,
+  between the two snapshots around that moment: origin, angles, and
+  `frame1time` while `frame` stays the same. The server's lag compensation
+  already rewinds by the same `cl_interp`. Only the drawn copy changes; the
+  client game's fields don't. A field the client game changed after the
+  snapshot (prediction, effects) is drawn as it is, and so is the local
+  player. A gap of more than 0.1 s between updates means the entity stood
+  still, so the change is spread over the last 0.1 s; a move of more than
+  256 units is a teleport and isn't spread.
+- `r_seqblend` (0.1 s): when a skeletal model's `frame` changes, the pose it
+  had then fades out over that time instead of snapping, unless the client
+  game blends with `lerpfrac` itself or poses it with a skeleton object.
 
 ## Things that have to hold
 
