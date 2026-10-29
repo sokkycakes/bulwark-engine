@@ -5,7 +5,7 @@
  * Nuclide's fteextensions.qc:
  *   surfacename,shadername         the legacy (Quake 3) form of replace
  *   replace "surface" "shader"     draw that surface with another material
- *   geomset <group> <value>        which sub-model of a body part to draw
+ *   geomset <group> <value>        which sub-model of a body part to draw (from 1)
  * Nuclide sets body groups this way ("geomset 0 2"); for Half-Life models a
  * group is a body part and the value one of its sub-models. qwskin, q1upper,
  * q1lower, h2class and compose are accepted and ignored.
@@ -41,11 +41,14 @@ typedef struct {
 } entskins_t;
 static entskins_t entskins[4];
 
+/* Geomset values count sub-models from 1, with 0 meaning the first one:
+ * Nuclide's Half-Life content is written that way (scientist heads 1-4,
+ * Barney's drawn gun "1 2", the grunt commander's head "1 2"). */
 int R_SkinGeomset(const rskin_t *s, int group)
 {
-	if (!s || group < 0 || group >= SKIN_GEOMSETS || s->geomset[group] < 0)
+	if (!s || group < 0 || group >= SKIN_GEOMSETS || s->geomset[group] <= 0)
 		return 0;
-	return s->geomset[group];
+	return s->geomset[group] - 1;
 }
 
 material_t *R_SkinReplace(const rskin_t *s, const char *surface)
