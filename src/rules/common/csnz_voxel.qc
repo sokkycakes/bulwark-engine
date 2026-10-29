@@ -27,6 +27,7 @@ string vx_group[VX_MAXTYPE];		/* filler names of a multi-cell block */
 float vx_signal[VX_MAXTYPE];		/* 0 none, 1 send, 2 receive, 3 both */
 string vx_display[VX_MAXTYPE];
 string vx_model[VX_MAXTYPE];
+hashtable vx_switchLight;	/* LIGHT_ONOFF type id -> its light "r g b" when on */
 bool vx_placeable[VX_MAXTYPE];		/* shown in the block browser */
 float vx_exit[VX_MAXTYPE];		/* 0 playing, 1 round clear, 2 round fail */
 float vx_hp[VX_MAXTYPE];		/* breakable blocks */
@@ -94,6 +95,8 @@ VX_LoadCatalog(void)
 	}
 
 	vx_firstType = 0;
+	if (!vx_switchLight)
+		vx_switchLight = hash_createtab(64, HASH_REPLACE);
 	while (1) {
 		s = fgets(f);
 		if not (s)	/* end of file; "" is a blank line */
@@ -145,6 +148,20 @@ VX_LoadCatalog(void)
 		tokenize(dmg);
 		vx_dmgTo[id] = argv(0) == "TO_ALL" ? 1 : (argv(0) == "TO_HUMAN" ? 2 : (argv(0) == "TO_ZOMBIE" ? 3 : 0));
 		vx_dmgPct[id] = stof(argv(1));
+		/* light (hw.dll voxel light, see docs/spec/voxel.md "Light"):
+		   a light switch block gives none until it is switched on, when
+		   its LIT_ variant (vx_entities.qc) takes the light */
+		tokenizebyseparator(s, "\t");
+		if (argv(21) != "" && checkbuiltin(voxel_setlight)) {
+			float lt = stof(argv(21));
+			tokenize(argv(22));
+			vector lrgb = [stof(argv(0)), stof(argv(1)), stof(argv(2))];
+			if (ent == "LIGHT_ONOFF" && lrgb != '0 0 0') {
+				hash_add(vx_switchLight, ftos(id), vtos(lrgb), EV_STRING);
+				lrgb = '0 0 0';
+			}
+			voxel_setlight(id, lt, lrgb);
+		}
 		/* names starting with "__" are internal (fillers, fakes) */
 		vx_placeable[id] = substring(nm, 0, 2) != "__" && cat >= 0;
 		if (!vx_firstType && vx_placeable[id] && shape == VXS_BOX)

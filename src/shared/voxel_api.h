@@ -13,6 +13,15 @@
 #define VXS_THIN	6	/* panel on the +X side at rotation 0 */
 #define VXS_FIELD	7	/* full cell, contents only (water, ladders, volumes) */
 
+/* light kinds (CSO VoxelLightType) */
+#define VXL_NONE	0
+#define VXL_BLOCKED	1
+#define VXL_SLOPE_BLOCKED	2
+#define VXL_POINT	3
+#define VXL_SKY	4
+#define VXL_WATER_BLOCKED	5
+#define VXL_SLAB_BLOCKED	6
+
 /* block flags */
 #define VXF_NODRAW	1
 #define VXF_FULLBRIGHT	2
@@ -27,6 +36,10 @@
 float voxel_create(vector cells, float blocksize, vector origin) = #0:voxel_create;
 void voxel_free(void) = #0:voxel_free;
 float voxel_define(float type, string name, float shape, float contents, vector rgb, float alpha, string texture, float flags) = #0:voxel_define;
+/* how a defined type passes light (VXL_*) and the light it gives, 0..15 per
+   channel; call after voxel_define, which resets both. Newer engines only:
+   guard with checkbuiltin(voxel_setlight). */
+float voxel_setlight(float type, float lighttype, vector rgb) = #0:voxel_setlight;
 float voxel_set(vector cell, float type, float rot) = #0:voxel_set;
 float voxel_fill(vector mincell, vector maxcell, float type, float rot) = #0:voxel_fill;
 float voxel_save(string name, string meta) = #0:voxel_save;	/* data/<name>, keeps <name>.bak */
