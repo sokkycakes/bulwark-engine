@@ -394,62 +394,81 @@ static bool call_sendentity(int e, int client_edict, uint32_t flags)
 	return ok;
 }
 
-/* Writes as many entity updates as fit in 'budget' bytes. */
+/* Writes entity e's update, if it has one. Returns false when it doesn't
+ * fit in 'budget' bytes. Calling it again in the same packet writes
+ * nothing, since the first call cleared what was pending. */
+static bool write_entity(client_t *c, msg_t *m, size_t budget, snaprec_t *rec, int e)
+{
+	qcvm_t *vm = sv.vm;
+	uint8_t *st = &c->estate[e];
+	bool alive = !vm->edicts[e].free && F.sendentity >= 0 && QC_EInt(vm, e, F.sendentity);
+	size_t before = m->cursize;
+	uint32_t flags = c->pending[e];
+	bool create;
+
+	if (!alive) {
+		if ((*st & ES_KNOWN) || (*st & ES_NEEDREMOVE)) {
+			if (m->cursize + 6 > budget)
+				return false;
+			MSG_WriteVarUInt(m, ((uint32_t)(e + 1) << 1) | 1);
+			snap_add(rec, (uint32_t)e, 0, true, false);
+			*st = 0;
+			c->pending[e] = 0;
+		}
+		return true;
+	}
+
+	create = !(*st & ES_KNOWN);
+	if (create || !(*st & ES_CONFIRMED))
+		flags = flags || create ? SENDFLAGS_ALL : 0;
+	if (!flags)
+		return true;
+	if (!call_sendentity(e, c->edict, flags)) {
+		/* hidden from this client: remove it if it was known */
+		if (*st & ES_KNOWN) {
+			MSG_WriteVarUInt(m, ((uint32_t)(e + 1) << 1) | 1);
+			snap_add(rec, (uint32_t)e, 0, true, false);
+		}
+		*st = 0;
+		c->pending[e] = 0;
+		return true;
+	}
+	if (m->cursize + msg_entity_buf.len + 10 > budget) {
+		m->cursize = before;
+		return false;
+	}
+	MSG_WriteVarUInt(m, (uint32_t)(e + 1) << 1);
+	MSG_WriteVarUInt(m, (uint32_t)msg_entity_buf.len);
+	MSG_WriteData(m, msg_entity_buf.data, msg_entity_buf.len);
+	snap_add(rec, (uint32_t)e, flags, false, create);
+	*st = (uint8_t)((*st | ES_KNOWN) & ~ES_NEEDREMOVE);
+	c->pending[e] = 0;
+	return true;
+}
+
+/* Writes as many entity updates as fit in 'budget' bytes. The client's own
+ * entity and the ones it owns (its weapons, its projectiles) go first, then
+ * the rest in turn, starting where the last full packet stopped. Without
+ * that, a player joining a map with thousands of entities waited for every
+ * one of them before their own weapons arrived. */
 static void write_entities(client_t *c, msg_t *m, size_t budget, snaprec_t *rec)
 {
 	qcvm_t *vm = sv.vm;
 	int n = vm->num_edicts;
 	uint32_t start = c->ent_rotor % (uint32_t)BW_MAX(n, 1);
 	bool full = false;
+
+	if (c->edict > 0 && c->edict < n)
+		full = !write_entity(c, m, budget, rec, c->edict);
+	for (int e = 1; e < n && !full; e++)
+		if (!vm->edicts[e].free && QC_EInt(vm, e, F.owner) == c->edict)
+			full = !write_entity(c, m, budget, rec, e);
+
 	for (int k = 0; k < n && !full; k++) {
 		int e = (int)((start + (uint32_t)k) % (uint32_t)n);
-		uint8_t *st = &c->estate[e];
-		bool alive = !vm->edicts[e].free && F.sendentity >= 0 && QC_EInt(vm, e, F.sendentity);
-		size_t before = m->cursize;
-
-		if (!alive) {
-			if ((*st & ES_KNOWN) || (*st & ES_NEEDREMOVE)) {
-				if (m->cursize + 6 > budget) {
-					full = true;
-					break;
-				}
-				MSG_WriteVarUInt(m, ((uint32_t)(e + 1) << 1) | 1);
-				snap_add(rec, (uint32_t)e, 0, true, false);
-				*st = 0;
-				c->pending[e] = 0;
-			}
-			continue;
-		}
-
-		{
-			uint32_t flags = c->pending[e];
-			bool create = !(*st & ES_KNOWN);
-			if (create || !(*st & ES_CONFIRMED))
-				flags = flags || create ? SENDFLAGS_ALL : 0;
-			if (!flags)
-				continue;
-			if (!call_sendentity(e, c->edict, flags)) {
-				/* hidden from this client: remove it if it was known */
-				if (*st & ES_KNOWN) {
-					MSG_WriteVarUInt(m, ((uint32_t)(e + 1) << 1) | 1);
-					snap_add(rec, (uint32_t)e, 0, true, false);
-				}
-				*st = 0;
-				c->pending[e] = 0;
-				continue;
-			}
-			if (m->cursize + msg_entity_buf.len + 10 > budget) {
-				m->cursize = before;
-				full = true;
-				c->ent_rotor = (uint32_t)e; /* start here next time */
-				break;
-			}
-			MSG_WriteVarUInt(m, (uint32_t)(e + 1) << 1);
-			MSG_WriteVarUInt(m, (uint32_t)msg_entity_buf.len);
-			MSG_WriteData(m, msg_entity_buf.data, msg_entity_buf.len);
-			snap_add(rec, (uint32_t)e, flags, false, create);
-			*st = (uint8_t)((*st | ES_KNOWN) & ~ES_NEEDREMOVE);
-			c->pending[e] = 0;
+		if (!write_entity(c, m, budget, rec, e)) {
+			full = true;
+			c->ent_rotor = (uint32_t)e; /* start here next time */
 		}
 	}
 	if (!full)
@@ -464,8 +483,9 @@ static void send_snapshot(client_t *c)
 	snaprec_t *rec;
 	uint32_t seq = c->chan.outseq + 1; /* the sequence Netchan_Transmit will use */
 	size_t budget = NET_MAX_PACKET - 48;
-	if (Netchan_HasPendingReliable(&c->chan))
-		budget -= NETCHAN_FRAGSIZE + 8;
+	/* leave room for the reliable fragments this packet will carry; ones
+	 * in flight and not yet due for a resend take none */
+	budget -= Netchan_ReliableBytesDue(&c->chan);
 
 	MSG_Init(&m, buf, sizeof(buf));
 	m.allowoverflow = true;
