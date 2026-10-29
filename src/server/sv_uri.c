@@ -98,6 +98,24 @@ static bool vm_alive(qcvm_t *vm)
 	return false;
 }
 
+/* at exit: give requests still going (the saves a disconnect sent) up to
+ * seconds to reach the server; their answers have nobody left to hear them */
+void QC_URIDrain(double seconds)
+{
+	double until = Sys_Seconds() + seconds;
+	int left;
+	do {
+		left = 0;
+		for (int i = 0; i < MAX_URI_REQUESTS; i++)
+			if (reqs[i].http && HTTP_State(reqs[i].http) == HTTP_RUNNING)
+				left++;
+		if (left)
+			Sys_Sleep(0.01);
+	} while (left && Sys_Seconds() < until);
+	if (left)
+		Con_Printf("%d web request%s still unanswered at exit\n", left, left == 1 ? "" : "s");
+}
+
 void QC_URIFrame(void)
 {
 	for (int i = 0; i < MAX_URI_REQUESTS; i++) {
@@ -105,14 +123,16 @@ void QC_URIFrame(void)
 		int state;
 		if (!r->http)
 			continue;
+		state = HTTP_State(r->http);
+		/* a request outlives the code that made it (a save sent as the
+		 * server shuts down still has to arrive), but its answer is dropped */
+		if (state == HTTP_RUNNING)
+			continue;
 		if (!vm_alive(r->vm)) {
 			HTTP_Free(r->http);
 			r->http = NULL;
 			continue;
 		}
-		state = HTTP_State(r->http);
-		if (state == HTTP_RUNNING)
-			continue;
 		{
 			size_t len = 0;
 			const char *body = state == HTTP_DONE ? HTTP_Body(r->http, &len) : NULL;

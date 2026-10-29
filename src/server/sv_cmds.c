@@ -48,13 +48,19 @@ static client_t *find_client(const char *s)
 
 /* --- maps ----------------------------------------------------------------------------------- */
 
+/* every client goes, through the game's ClientDisconnect (which saves) */
+void SV_DropClients(const char *reason)
+{
+	for (int i = 0; i < svs.maxclients; i++)
+		if (svs.clients[i].state != CS_FREE)
+			SV_DropClient(&svs.clients[i], reason);
+}
+
 static void Killserver_f(int argc, const char **argv)
 {
 	if (!need_server())
 		return;
-	for (int i = 0; i < svs.maxclients; i++)
-		if (svs.clients[i].state != CS_FREE)
-			SV_DropClient(&svs.clients[i], "server shut down");
+	SV_DropClients("server shut down");
 	SV_Shutdown();
 	Con_Printf("server shut down\n");
 }
