@@ -363,7 +363,9 @@ bool R_Init(bool headless)
 	r_drawworld = Cvar_Get("r_drawworld", "1", 0, "Draw the world");
 	r_drawvoxels = Cvar_Get("r_drawvoxels", "1", 0, "Draw the voxel world");
 	r_voxel_light = Cvar_Get("r_voxel_light", "1", 0, "Light voxel blocks from light blocks and the sky (0: fixed shade)");
-	r_voxel_daylight = Cvar_Get("r_voxel_daylight", "255 255 255", 0, "Day colour tinting voxel block faces, r g b 0-255");
+	r_voxel_daylight = Cvar_Get("r_voxel_daylight", "255 255 255", 0, "Voxel day share, CSO's Color (day): its first number 0-255 mixes block light only (0, night) with block and sky light (255, day)");
+	r_voxel_invlight = Cvar_Get("r_voxel_invlight", "255 255 255", 0, "CSO's Color (Back), r g b 0-255: tints voxel block faces by side");
+	r_voxel_fulldark = Cvar_Get("r_voxel_fulldark", "0", 0, "CSO's Remove default key light: unlit voxel faces and models go fully dark");
 	r_novis = Cvar_Get("r_novis", "0", 0, "Ignore visibility data");
 	r_clearcolor = Cvar_Get("r_clearcolor", "0 0 0", CVAR_ARCHIVE, "Colour behind everything");
 	gl_texturemode = Cvar_Get("gl_texturemode", "linear", CVAR_ARCHIVE, "Texture filtering: linear or nearest");

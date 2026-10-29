@@ -2,6 +2,7 @@
  * clearscene, view properties, addentity/addentities, polygons, dynamic
  * lights and renderscene. ISC licence, see LICENSE. */
 #include "r_local.h"
+#include "../server/sv_local.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -576,6 +577,8 @@ void R_RenderScene(void)
 	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
+	if (r_scene.drawworld && r_drawworld->ivalue && vx_clientworld && !(r_world.loaded && r_world.numsubmodels))
+		R_DrawBackgroundSky(r_scene.viewproj);
 	if (r_scene.drawworld && r_drawworld->ivalue)
 		R_DrawVoxels(false);
 	if (r_drawentities->ivalue) {

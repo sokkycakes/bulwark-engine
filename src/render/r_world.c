@@ -730,7 +730,17 @@ void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 {
 	int c[3];
 	const uint8_t *g;
-	float lat, lng, scale = r_lightmapscale ? r_lightmapscale->value : 2;
+	float lat, lng, scale = r_lightmapscale ? r_lightmapscale->value : 2, vox[3];
+	/* inside a voxel world, its block and sky light (r_voxel.c); DESIGN:
+	   CSO's one colour is split 7:3 between ambient and a light from above */
+	if (R_VoxelLightPoint(p, vox)) {
+		for (int i = 0; i < 3; i++) {
+			ambient[i] = vox[i] * 0.7f;
+			diffuse[i] = vox[i] * 0.3f;
+		}
+		dir[0] = 0.3f, dir[1] = 0.3f, dir[2] = 0.9f;
+		return;
+	}
 	if (!r_world.lightgrid && R_Q1LightPoint(p, ambient, diffuse, dir))
 		return;
 	if (!r_world.lightgrid) {
@@ -916,14 +926,9 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 	GL_SetCull(true);
 }
 
-/* sky surfaces: drawn after the opaque world, looking up the skybox */
-void R_DrawSky(const float *mvp)
+/* the skybox named by worldspawn or the sky command, loaded on first use */
+static void load_skybox(void)
 {
-	const glprog_t *p = &r_progs[PROG_SKY];
-	rmodel_t *m;
-	bool any = false;
-	if (!r_world.loaded || !r_world.vao || !r_world.numsubmodels)
-		return;
 	if (!r_world.skybox && r_world.skyname[0]) {
 		/* worldspawn and the sky command name either a path or a set in
 		 * env/, gfx/env/ where GoldSrc keeps them, or Source's folder */
@@ -943,6 +948,54 @@ void R_DrawSky(const float *mvp)
 			r_world.skybox = R_LoadCubemap(env);
 		}
 	}
+}
+
+/* a world with no sky surfaces (a voxel world, as CSO Studio's): the
+ * skybox drawn behind everything, a cube around the view with depth off,
+ * before the blocks. CSO sets the sky with sv_skyname (hw.dll
+ * FUN_0224dfd0); the sky command does it here. Nothing is drawn without a
+ * sky name, as before. */
+void R_DrawBackgroundSky(const float *mvp)
+{
+	const glprog_t *p = &r_progs[PROG_SKY];
+	static const uint16_t idx[36] = {0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1,
+	                                 1, 5, 6, 1, 6, 2, 2, 6, 7, 2, 7, 3, 3, 7, 4, 3, 4, 0};
+	rvert_t v[8];
+	const float r = 64;
+	if (!r_world.skyname[0])
+		return;
+	load_skybox();
+	if (!r_world.skybox)
+		return;
+	memset(v, 0, sizeof(v));
+	for (int i = 0; i < 8; i++) {
+		v[i].xyz[0] = r_scene.origin[0] + ((i == 1 || i == 2 || i == 5 || i == 6) ? r : -r);
+		v[i].xyz[1] = r_scene.origin[1] + ((i == 2 || i == 3 || i == 6 || i == 7) ? r : -r);
+		v[i].xyz[2] = r_scene.origin[2] + (i >= 4 ? r : -r);
+	}
+	R_UseProgram(PROG_SKY);
+	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
+	qglUniform3f(p->u_vieworg, r_scene.origin[0], r_scene.origin[1], r_scene.origin[2]);
+	qglUniform4f(p->u_color, 1, 1, 1, 1);
+	GL_BindTexture(3, GL_TEXTURE_CUBE_MAP, r_world.skybox->tex);
+	GL_SetBlend(BLEND_OPAQUE, 0, 0);
+	GL_SetDepth(false, false);
+	GL_SetCull(false);
+	R_StreamDraw(GL_TRIANGLES, v, 8, idx, 36);
+	qglBindVertexArray(0);
+	GL_SetDepth(true, true);
+	GL_SetCull(true);
+}
+
+/* sky surfaces: drawn after the opaque world, looking up the skybox */
+void R_DrawSky(const float *mvp)
+{
+	const glprog_t *p = &r_progs[PROG_SKY];
+	rmodel_t *m;
+	bool any = false;
+	if (!r_world.loaded || !r_world.vao || !r_world.numsubmodels)
+		return;
+	load_skybox();
 	m = &r_world.submodels[0];
 	R_UseProgram(PROG_SKY);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);

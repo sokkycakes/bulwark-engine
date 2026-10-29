@@ -37,10 +37,12 @@ static struct {
 	uint8_t *lkind;
 	uint32_t *lightsum;     /* per chunk, to find chunks whose light changed */
 	uint32_t lightrev;      /* world revision + 1 the grid was built for */
-	float daylight[3];      /* r_voxel_daylight the meshes were built with */
+	float daylight[3];      /* r_voxel_invlight (the face tint) the meshes were built with */
+	float daymix;           /* r_voxel_daylight's day share, 0..1 */
+	bool fulldark;          /* r_voxel_fulldark */
 } rv;
 
-cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight;
+cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight, *r_voxel_invlight, *r_voxel_fulldark;
 
 static void free_mesh(vxmesh_t *m)
 {
@@ -205,6 +207,36 @@ static void touch_lit_chunks(vxworld_t *w)
 	}
 }
 
+/* a model's light inside a voxel world (FUN_02159370): from the light of
+ * the cell it stands in, per channel c: max(sky, c) * s * d + c * s * (1 - d)
+ * + base, with base 50 (0 with remove_dim_light), s = (256 - base) / 7 and
+ * d the day share, in 0..255. Returns false outside a lit voxel world. */
+static const uint8_t *light_at(const vxworld_t *w, int x, int y, int z, int *kind);
+
+bool R_VoxelLightPoint(const float *p, float *rgb)
+{
+	const vxworld_t *w = vx_clientworld;
+	int c[3], kind;
+	const uint8_t *l;
+	if (!w || !rv.light || rv.world != w || !r_voxel_light || !r_voxel_light->ivalue)
+		return false;
+	for (int i = 0; i < 3; i++)
+		c[i] = (int)floorf((p[i] + (i == 2 ? 1 : 0) - w->origin[i]) / w->blocksize);
+	l = light_at(w, c[0], c[1], c[2], &kind);
+	if (!l)
+		return false;
+	{
+		int base = rv.fulldark ? 0 : 50, s = (256 - base) / 7;
+		float sky = l[3] < 7 ? l[3] : 7;
+		for (int i = 0; i < 3; i++) {
+			float ch = l[i] < 7 ? l[i] : 7, hi = sky > ch ? sky : ch;
+			rgb[i] = ((int)(hi * s * rv.daymix + ch * s * (1 - rv.daymix)) & 0xff) + base;
+			rgb[i] /= 255;
+		}
+	}
+	return true;
+}
+
 static bool lit(const vxworld_t *w)
 {
 	return rv.light && r_voxel_light && r_voxel_light->ivalue &&
@@ -212,7 +244,9 @@ static bool lit(const vxworld_t *w)
 }
 
 /* the face shade by CSO face (FUN_022534c0: base DAT_02e024d8, tinted by the
- * day colour with weight DAT order 0,7,2,5,3,4,1,6 sevenths):
+ * map's inv_light, "Color (Back)", with weight order 0,7,2,5,3,4,1,6
+ * sevenths; FUN_0224a970 puts inv_light at +0x24 of the world settings,
+ * which sit at +0x120 of DAT_02f2a828, so the bytes read are +0x144..0x146):
  * 0 +z, 1 -z, 2 +y, 3 -y, 4 +x, 5 -x, 6 slope top, 7 slope underside */
 static float face_shade(int face, int ch)
 {
@@ -235,15 +269,19 @@ static const uint8_t *light_at(const vxworld_t *w, int x, int y, int z, int *kin
 /* one vertex's brightness per channel (AddQuad, FUN_02142020): the light of
  * the cell in front of the face and of the three cells around the vertex
  * (two sides and the corner, the corner only when a side is open), opaque
- * cells left out; then (7 - light) * 0.6/7 darkens each channel, using the
- * brighter of block and sky light, and each opaque side or corner takes
- * 0.1 off (both sides opaque count as three) */
+ * cells left out; then (7 - light) * 0.6/7 darkens each channel (1/7 with
+ * the map's remove_dim_light), and each opaque side or corner takes 0.1 off
+ * (both sides opaque count as three). CSO keeps two colours per vertex: a
+ * night one from block light alone and a day one from the brighter of block
+ * and sky light, and draws night * (1 - d) + day * d with d the map's
+ * day_light byte / 255 (FUN_02133510 via DAT_02df8300, set from +0x147 of
+ * the world settings) */
 static void vertex_light(const vxworld_t *w, const int front[3], int ax, const float p[3], int face, float out[3])
 {
 	int u = (ax + 1) % 3, v = (ax + 2) % 3, du = p[u] < 0.5f ? -1 : 1, dv = p[v] < 0.5f ? -1 : 1;
 	int cells[4][3], kind, blocked[3] = {0, 0, 0};
 	float sum[4] = {0, 0, 0, 0}, count = 0, ao, dark[4];
-	const float k = 0.6f / 7;
+	const float k = (rv.fulldark ? 1.0f : 0.6f) / 7;
 	for (int c = 0; c < 4; c++)
 		memcpy(cells[c], front, sizeof(cells[c]));
 	cells[0][u] += du;
@@ -265,9 +303,13 @@ static void vertex_light(const vxworld_t *w, const int front[3], int ax, const f
 	}
 	ao = (blocked[0] && blocked[1] ? 3 : blocked[0] + blocked[1] + blocked[2]) * 0.1f;
 	for (int i = 0; i < 3; i++) {
-		float d = dark[i] < dark[3] ? dark[i] : dark[3];
-		out[i] = face_shade(face, i) - ao - d;
-		out[i] = out[i] < 0 ? 0 : out[i] > 1 ? 1 : out[i];
+		float base = face_shade(face, i) - ao;
+		float night = base - dark[i];
+		float day = base - (dark[i] < dark[3] ? dark[i] : dark[3]);
+		night = night < 0 ? 0 : night;
+		day = day < 0 ? 0 : day;
+		out[i] = night * (1 - rv.daymix) + day * rv.daymix;
+		out[i] = out[i] > 1 ? 1 : out[i];
 	}
 }
 
@@ -603,11 +645,18 @@ static void update_meshes(const vxworld_t *w)
 		rv.meshes = Mem_Alloc(sizeof(vxmesh_t) * n);
 	}
 	{
-		float day[3] = {255, 255, 255};
+		float tint[3] = {255, 255, 255}, day[3] = {255, 255, 255};
+		bool fulldark = r_voxel_fulldark && r_voxel_fulldark->ivalue;
+		if (r_voxel_invlight)
+			sscanf(r_voxel_invlight->string, "%f %f %f", &tint[0], &tint[1], &tint[2]);
+		/* CSO reads only the first byte of day_light */
 		if (r_voxel_daylight)
 			sscanf(r_voxel_daylight->string, "%f %f %f", &day[0], &day[1], &day[2]);
-		if (memcmp(day, rv.daylight, sizeof(day))) {
-			memcpy(rv.daylight, day, sizeof(day));
+		day[0] = day[0] < 0 ? 0 : day[0] > 255 ? 1 : day[0] / 255;
+		if (memcmp(tint, rv.daylight, sizeof(tint)) || day[0] != rv.daymix || fulldark != rv.fulldark) {
+			memcpy(rv.daylight, tint, sizeof(tint));
+			rv.daymix = day[0];
+			rv.fulldark = fulldark;
 			Vox_TouchAll((vxworld_t *)w);
 		}
 	}
