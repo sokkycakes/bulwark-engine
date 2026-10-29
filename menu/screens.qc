@@ -939,6 +939,11 @@ Nav_Command(vguiWidget w, string cmd)
 	case "releasemodalwindow":
 		m_toggle(0);
 		break;
+	case "voxelsave":
+		/* the dialog is the HUD's: it knows whether a test runs */
+		m_toggle(0);
+		localcmd("vxl_savedlg\n");
+		break;
 	case "openconfirmdialog":
 		/* title, button and first line OBSERVED (CSO_GameLeave*); the
 		   point penalty line is left out: there is no account here */

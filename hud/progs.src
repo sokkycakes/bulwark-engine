@@ -22,6 +22,7 @@ votemenu.qc
 shelter.qc
 vxbrowser.qc
 vxtools.qc
+vxsave.qc
 progression.qc
 modehud.qc
 hud.qc

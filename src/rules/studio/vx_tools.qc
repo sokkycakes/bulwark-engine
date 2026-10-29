@@ -265,7 +265,7 @@ VXT_UnlinkAll(entity r)
 				strunzone(o.vb_links);
 			o.vb_links = strzone(kept);
 		}
-	vx_dirty = true;
+	VX_Changed();
 }
 
 void
@@ -476,7 +476,7 @@ VXT_Setting(entity p, string key, string args)
 	VX_OptSet(key, args);
 	if (key == "gamemode")
 		VX_SetText("mode", args);
-	vx_dirty = true;
+	VX_Changed();
 	VXT_SendEnv(world);
 	printf("studio %.1f: %s set %s to %s\n", time, p ? p.netname : "console", key, args);
 	return true;

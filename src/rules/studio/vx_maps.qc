@@ -21,6 +21,7 @@
  *   DESIGN: the metadata layout, autosave period, file names. */
 
 var float autocvar_studio_autosave = 120;	/* seconds; 0 = off */
+var float autocvar_studio_savealarm = 300;	/* seconds; 0 = off. hw.dll DAT_02dfabd8 */
 var string autocvar_studio_map = "";		/* VxlPlay / prop hunt: map to load */
 
 #define VX_MAPDIR "studio/maps/"
@@ -195,9 +196,66 @@ VX_SaveFile(string path)
 	return ok;
 }
 
+/* --- the save button ------------------------------------------------------------
+   SOURCE-CONFIRMED (GameUI.dll strings, cstrike/resource/voxel/popup_voxelsave.res):
+   the in-game menu has a VoxelSaveButton (resource/taskbar/btn_save) whose
+   command "VoxelSave" opens CVoxelSaveDlg: "Save map" (#CSO_VoxelSave_Title),
+   "This will overwrite the original file. Save?" (#Vxl_OutUI_Save_OK), OK
+   and Cancel. #Vxl_OutUI_Save_On_Test refuses it during a test; the upload
+   ends in #Vxl_Draft_Upload_OK "Saved!", _Failed or _FailedSaveWorld.
+   SOURCE-CONFIRMED (hw.dll FUN_02150c60, FUN_02150d70, FUN_0214c240 case
+   0x13): for the map's creator, #Vxl_SaveAlarm "There are recent changes in
+   the map.. Please save!" shows for 5 s, 300 s after a change and every
+   300 s after that, until a save clears it.
+   INFERRED: the alarm is armed by an edit (FUN_02150d70's caller is not
+   traced). DESIGN: the save goes to a local file, not CSO's upload; the
+   rules publish the state the HUD's dialog needs as serverinfo keys:
+   vx_owner, vx_testing, vx_alarm (a count) and vx_saveres ("<count> ok",
+   "fail" or "test"). */
+
+float vx_saveAlarm;		/* when the next alarm is due; 0 = not armed */
+float vx_alarmSeq, vx_saveSeq;
+
+void
+VX_SaveResult(string code)
+{
+	vx_saveSeq++;
+	serverinfo.SetString("vx_saveres", sprintf("%g %s", vx_saveSeq, code));
+}
+
+void
+VX_SaveAlarmFrame(void)
+{
+	if (!vx_unsaved || autocvar_studio_savealarm <= 0) {
+		vx_saveAlarm = 0;
+		return;
+	}
+	if (vx_testing || vx_owner == "")
+		return;
+	if (vx_saveAlarm <= 0) {
+		vx_saveAlarm = time + autocvar_studio_savealarm;
+		return;
+	}
+	if (time < vx_saveAlarm)
+		return;
+	vx_saveAlarm = time + autocvar_studio_savealarm;
+	vx_alarmSeq++;
+	serverinfo.SetString("vx_alarm", ftos(vx_alarmSeq));
+	printf("studio %.1f: save alarm\n", time);
+}
+
 bool
 VX_SaveMap(entity p, string n)
 {
+	if (vx_testing) {
+		VX_Tell(p, "You can't save while testing the script.");
+		VX_SaveResult("test");
+		return false;
+	}
+	if (p && !VX_CanEdit(p)) {
+		VX_Tell(p, "Only the creator can save this map.");
+		return false;
+	}
 	if (!VX_ValidName(n)) {
 		VX_Tell(p, "Map names use letters, digits, _ and -, up to 32 characters.");
 		return false;
@@ -208,6 +266,7 @@ VX_SaveMap(entity p, string n)
 		VX_SetText("title", n);
 	if (!VX_SaveFile(VX_MapPath(n))) {
 		VX_Tell(p, sprintf("Could not save: %s", voxel_error()));
+		VX_SaveResult("fail");
 		return false;
 	}
 	if (vx_mapName)
@@ -215,6 +274,9 @@ VX_SaveMap(entity p, string n)
 	vx_mapName = strzone(n);
 	serverinfo.SetString("vx_map", n);
 	vx_dirty = false;
+	vx_unsaved = false;
+	vx_saveAlarm = 0;
+	VX_SaveResult("ok");
 	printf("studio %.1f: saved %s (%g blocks, cost %g)\n", time, n, vx_blocks, vx_costTotal);
 	VX_Tell(p, sprintf("Saved %s.", n));
 	return true;
@@ -351,6 +413,7 @@ VX_LoadMap(entity p, string n)
 		strunzone(vx_mapName);
 	vx_mapName = strzone(n);
 	serverinfo.SetString("vx_map", n);
+	vx_unsaved = false;
 	for (entity q = world; (q = next.Player(q));) {
 		q.vx_undoPos = q.vx_undoTop = 0;	/* history belongs to the old world */
 		q.vx_marks = 0;
@@ -399,6 +462,7 @@ VX_Recover(entity p)
 		VX_Tell(p, sprintf("The autosave could not be loaded: %s", voxel_error()));
 		return false;
 	}
+	vx_unsaved = true;	/* the autosave is newer than the named file */
 	VX_Tell(p, "Recovered the autosave.");
 	return true;
 }
