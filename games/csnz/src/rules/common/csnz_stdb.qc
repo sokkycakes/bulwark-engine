@@ -28,6 +28,7 @@
  * Original code (ISC). */
 
 var float autocvar_csnz_stdb = 0;		/* 1: use SpacetimeDB */
+var float autocvar_csnz_stdb_channel = 0;	/* the lobby channel this server is a room in, 0 none */
 var string autocvar_csnz_stdb_db = "";		/* the database's name or identity */
 var string autocvar_csnz_stdb_address = "";	/* host:port players connect to, for the server list */
 var float autocvar_csnz_stdb_heartbeat = 30;	/* seconds between server list updates */
@@ -398,6 +399,19 @@ STDB_Heartbeat(void)
 	STDB_Call("server_heartbeat", sprintf("%s,%s,%s,%d,%d,%d,%s", STDB_Json(autocvar_csnz_stdb_address),
 		STDB_Json(cvar_string("hostname")), STDB_Json(mapname), autocvar_csnz_mode, players,
 		cvar("maxplayers") ? cvar("maxplayers") : cvar("sv_playerslots"), STDB_Json("bulwark-csnz")));
+
+	/* a room in the lobby's channel (set by the menu's Create Room, or by
+	   hand on a dedicated server); 0 keeps it off the lobby */
+	if (autocvar_csnz_stdb_channel > 0) {
+		/* builtins take 8 arguments: two sprintfs */
+		string room = sprintf("%d,%s,%s,%d,%s,%d,%d", autocvar_csnz_stdb_channel,
+			STDB_Json(autocvar_csnz_stdb_address), STDB_Json(cvar_string("hostname")), autocvar_csnz_mode,
+			STDB_Json(mapname), players, cvar("maxplayers") ? cvar("maxplayers") : cvar("sv_playerslots"));
+		string locked = "false";
+		if (cvar_string("password") != "")
+			locked = "true";
+		STDB_Call("room_heartbeat", sprintf("%s,%s,true,%s", room, locked, STDB_Json("bulwark-csnz")));
+	}
 }
 
 void

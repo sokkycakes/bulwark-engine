@@ -16,6 +16,7 @@ keeps working when the database is down.
 | `game_server` | live servers (heartbeat every 30 s, dropped after 120 s) | public |
 | `match_record`, `match_player` | every finished match and its players | public |
 | `offline_account`, `offline_chunk` | the real client's offline server database, as snapshots (see Offline server below) | private |
+| `channel_server`, `channel`, `room` | the lobby (see Lobby below) | public |
 | `operator` | identities allowed to write | private |
 
 Reducers: `player_seen`, `save_progression`, `save_inventory`,
@@ -70,6 +71,21 @@ saves of their name (`data/csnz/players/<name>*.txt`). Only one key may do
 that per name: `<name>.claimed` records which. The name's files and rows stay
 as they were. Copy `_playerkey` from your config to play as yourself on
 another machine; anyone with it can.
+
+## Lobby
+
+Modelled on CSNZ_Server's layout: channel servers hold channels, and a
+channel's lobby lists rooms. Here a room is a Bulwark game server that sends
+`room_heartbeat` for its channel (`csnz_stdb_channel`, set by the menu's
+Create Room in a database channel) and has a public address
+(`csnz_stdb_address`); rooms drop after 120 s without one. The lobby starts
+with one channel server and one channel, named as CSNZ_Server names them
+("Bulwark [1 / 1]", "Bulwark 1-1"); operators add more with
+`add_channel_server(name, channels)` and `add_channel(server_id, name,
+max_players)`. The procedures `list_channels` and `list_rooms(channel_id)`
+need no token: the CSNZ menu (games/csnz/menu/services.qc) calls them and
+shows the database's servers after "This computer". Joining a room connects
+to its address.
 
 ## Behaviour
 

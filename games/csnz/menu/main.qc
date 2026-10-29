@@ -56,6 +56,8 @@ Room_StartGame(void)
 	Room_SetFromOption("mp_roundtime", "RoundTime");
 	Room_SetFromOption("maxplayers", "MaxPlayer");
 	localcmd(sprintf("set hostname \"%s\"\n", g_roomTitle));
+	/* in a database channel the room registers there (csnz_stdb.qc) */
+	localcmd(sprintf("set csnz_stdb_channel %d\n", g_svcChannelId));
 	localcmd(sprintf("map %s\n", mapName));
 	m_toggle(0);
 }

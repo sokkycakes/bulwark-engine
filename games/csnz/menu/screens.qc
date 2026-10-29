@@ -174,7 +174,7 @@ Rooms_Fill(void)
 		g_lstRooms.SetState(VGUI_LIST_LOADING, "Getting the room list...");
 		return;
 	case SVC_ERROR:
-		g_lstRooms.SetState(VGUI_LIST_ERROR, "Couldn't get the room list (FIXTURE error).");
+		g_lstRooms.SetState(VGUI_LIST_ERROR, Svc_IsFixture() ? "Couldn't get the room list (FIXTURE error)." : "Couldn't get the room list from the lobby database. Press Refresh to try again.");
 		return;
 	}
 
@@ -272,6 +272,7 @@ Servers_Activated(entity listEnt, int row)
 	}
 
 	g_svcServer = i;
+	g_svcServerId = Svc_ServerId(i);
 	Nav_Go(SCR_CHANNELS);
 }
 
@@ -281,10 +282,11 @@ Channels_Activated(entity listEnt, int row)
 	int i = (int)stof(((vguiResList)listEnt).RowKey(row));
 
 	if (Svc_ChannelLoad(i) == 3i) {
-		MsgBox_Show("#CSO_ServerMessage_Title", "This channel is full (FIXTURE data).");
+		MsgBox_Show("#CSO_ServerMessage_Title", Svc_IsFixture() ? "This channel is full (FIXTURE data)." : "This channel is full.");
 		return;
 	}
 
+	g_svcChannelId = Svc_ChannelId(i);
 	Nav_Go(SCR_LOBBY);
 }
 
@@ -843,10 +845,18 @@ Nav_Command(vguiWidget w, string cmd)
 		Create_Open();
 		break;
 	case "enterroom":
-		if (g_lstRooms.GetSelected() < 0i)
+		if (g_lstRooms.GetSelected() < 0i) {
 			MsgBox_Show("#CSO_ServerMessage_Title", "Select a room first.");
-		else
-			MsgBox_Show("#CSO_ServerMessage_Title", "This room is FIXTURE data. Joining another player's room needs the official service.");
+		} else {
+			/* a database room is a game server: join it */
+			string address = Svc_RoomAddress(stof(g_lstRooms.RowKey(g_lstRooms.GetSelected())));
+			if (address != "") {
+				localcmd(sprintf("connect \"%s\"\n", address));
+				m_toggle(0);
+			} else {
+				MsgBox_Show("#CSO_ServerMessage_Title", "This room is FIXTURE data. Joining another player's room needs the official service.");
+			}
+		}
 		break;
 	case "name:findbtn":
 		Rooms_Fill();

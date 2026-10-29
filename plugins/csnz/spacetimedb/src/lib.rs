@@ -15,6 +15,7 @@
 //!
 //! Original code, ISC licence.
 
+pub mod lobby;
 pub mod offline;
 pub mod text;
 
@@ -527,5 +528,6 @@ pub fn drop_stale_servers(ctx: &ReducerContext, _arg: ServerCleanup) -> Result<(
     for a in stale {
         ctx.db.game_server().address().delete(a);
     }
+    lobby::drop_stale_rooms(ctx, cutoff);
     Ok(())
 }
