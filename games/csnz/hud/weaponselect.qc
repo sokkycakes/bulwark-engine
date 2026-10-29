@@ -65,10 +65,13 @@ bool PTN_ConsoleCommand(string);
 bool VK_ConsoleCommand(string);
 bool SHH_ConsoleCommand(string);
 bool VB_ConsoleCommand(string);
+bool VSV_ConsoleCommand(string);
 
 bool
 HUD_ConsoleCommand(string commandString)
 {
+	if (VSV_ConsoleCommand(commandString))
+		return true;
 	if (VB_ConsoleCommand(commandString))
 		return true;
 	if (SHH_ConsoleCommand(commandString))

@@ -7,7 +7,11 @@
 
    In-game menu: resource/res/ingamemainmenu.res (OBSERVED). Its buttons
    have no labelText; the original draws images the client code picks
-   (UNRESOLVED). The text labels here are DESIGN. */
+   (UNRESOLVED). The text labels here are DESIGN.
+   In Studio Create the original adds a VoxelSaveButton (GameUI.dll
+   CInGameMenu: resource/taskbar/btn_save, command "VoxelSave"), listed
+   after Report and before Option (string order, INFERRED as the button
+   order). Here it opens the HUD's Save map dialog (hud/vxsave.qc). */
 
 #define LOCALIZATION_FILES "resource/cso_na_en.utf8.txt resource/gameui_na_en.utf8.txt resource/cstrike_na_en.utf8.txt"
 
@@ -105,6 +109,30 @@ InGame_Control(vguiResLayout res, string path)
 	return btn;
 }
 
+vguiResButton g_btnVoxelSave;
+var float g_inGameStudio = -1;
+
+/* the layout's buttons are 64 apart from y 20; in Studio Create the Save
+   button takes Option's place and the rest move down one */
+void
+InGame_Layout(bool studio)
+{
+	if (!g_winInGame || g_inGameStudio == (float)studio)
+		return;
+	g_inGameStudio = studio;
+
+	string below[3] = {"OptionButton", "ExitButton", "CancelButton"};
+	for (int i = 0i; i < 3i; i++) {
+		vguiWidget w = Panel_Find(g_winInGame, below[i]);
+		if (w)
+			w.SetPos([29, 148 + (i + (studio ? 1i : 0i)) * 64] * g_vpScale);
+	}
+	Panel_Show(g_btnVoxelSave, studio);
+	g_winInGame.SetSize([104, studio ? 428 : 364] * g_vpScale);
+	g_winInGame.csnzResPos = ([VP_WIDTH, VP_HEIGHT] - g_winInGame.GetSize() / g_vpScale) / 2;
+	Panel_Place(g_winInGame);
+}
+
 static void
 InGame_Init(void)
 {
@@ -114,8 +142,13 @@ InGame_Init(void)
 		return;
 
 	g_winInGame.SetStyleMask(vguiWindowBorderless);
-	g_winInGame.csnzResPos = ([VP_WIDTH, VP_HEIGHT] - g_winInGame.GetSize() / g_vpScale) / 2;
-	Panel_Place(g_winInGame);
+	g_btnVoxelSave = spawn(vguiResButton);
+	g_btnVoxelSave.SetImages("resource/taskbar/btn_save@n", "resource/taskbar/btn_save@o", "resource/taskbar/btn_save@c", "");
+	g_btnVoxelSave.SetTextHidden(true);
+	g_btnVoxelSave.m_resCommand = strzone("VoxelSave");
+	Panel_AddAt(g_winInGame, g_btnVoxelSave, [29, 148], [64, 64]);
+	g_inGameStudio = -1;
+	InGame_Layout(false);
 }
 
 /* --- menu progs entry points -------------------------------------------- */
@@ -134,6 +167,8 @@ m_init(void)
 	}
 	Tables_LoadLimits();
 
+	/* Bulwark passes a console command to the menu only when it is registered */
+	registercommand("csnz_menu_cmd");
 	registercvar("csnz_service", "local");
 	registercvar("csnz_fixture_error", "");
 	registercvar("csnz_mode", "8");
@@ -246,6 +281,7 @@ m_draw(vector screensize)
 		/* in a match only the in-game menu (and its popups) show */
 		if (g_winInGame && !g_modal) {
 			if (!g_winInGame.Visible()) {
+				InGame_Layout(cvar_string("g_gametype") == "studio" && cvar("csnz_mode") == 38);
 				for (int i = 0i; i < g_panelCount; i++)
 					g_panels[i].Hide();
 				g_winInGame.Show();

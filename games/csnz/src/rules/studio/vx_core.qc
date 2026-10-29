@@ -42,6 +42,8 @@ hashtable vx_records;		/* "x y z" of every covered cell -> record */
 float vx_blocks;		/* cells in use */
 float vx_costTotal;
 bool vx_dirty;
+bool vx_testing;		/* create mode: a test is running */
+bool vx_unsaved;		/* changed since the last named save (the save alarm) */
 float vx_lastChange;
 
 /* per player */
@@ -218,6 +220,16 @@ VX_Tell(entity p, string msg)
 		print(substring(msg, 0, 7) == "studio:" ? "" : "studio: ", msg, "\n");
 }
 
+/* the world or its records changed. Changes a test makes (doors, pistons)
+   are rolled back when it ends, so they don't count as unsaved. */
+void
+VX_Changed(void)
+{
+	vx_dirty = true;
+	if (!vx_testing)
+		vx_unsaved = true;
+}
+
 /* --- low level cell writes (counted, recorded for undo) --------------------- */
 
 string vx_opBuf;		/* undo record being built: "x y z ot or nt nr;" */
@@ -245,7 +257,7 @@ VX_SetCell(vector c, float type, float rot)
 		vx_opRev = strcat(item, vx_opRev);
 	}
 	vx_opCells++;
-	vx_dirty = true;
+	VX_Changed();
 	vx_lastChange = time;
 }
 
@@ -360,7 +372,7 @@ VX_SetProp(entity r, string key, string value)
 	if (r.vb_props)
 		strunzone(r.vb_props);
 	r.vb_props = strzone(out);
-	vx_dirty = true;
+	VX_Changed();
 }
 
 /* --- placement --------------------------------------------------------------- */

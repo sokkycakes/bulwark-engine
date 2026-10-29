@@ -25,7 +25,6 @@
  * from the server console as "sv vx as <player> <command>" for tests. */
 
 float studio_kind;		/* 38 create, 39 play, 49 hide and seek, 52 shelter, 53 scenario TX */
-bool vx_testing;		/* create mode: a test is running */
 entity vx_tester;
 float vx_playedMarked;
 bool sm_ownRules;		/* the plain Studio play rules run (not a regular mode) */
@@ -172,6 +171,7 @@ SM_StartTest(entity p)
 		return;
 	}
 	vx_testing = true;
+	serverinfo.SetString("vx_testing", "1");
 	vx_tester = p;
 	VE_Activate();
 	/* OBSERVED: a bot is added when the tester is alone; SOURCE-CONFIRMED
@@ -193,6 +193,7 @@ SM_EndTest(string why)
 		return;
 	VE_Deactivate();
 	vx_testing = false;
+	serverinfo.SetString("vx_testing", "");
 	localcmd("set bot_pause 0\n");
 	/* pistons, explosions, doors: back to the map as it was saved */
 	if (!VX_LoadFile(VX_SnapshotPath()))
@@ -260,7 +261,7 @@ VX_Link(entity p, vector from, vector to)
 	if (s.vb_links)
 		strunzone(s.vb_links);
 	s.vb_links = strzone(links);
-	vx_dirty = true;
+	VX_Changed();
 	printf("studio %.1f: linked %s -> %s\n", time, VX_Key(s.vb_cell), key);
 	return true;
 }
@@ -274,7 +275,7 @@ VX_Unlink(entity p, vector from)
 	if (s.vb_links)
 		strunzone(s.vb_links);
 	s.vb_links = "";
-	vx_dirty = true;
+	VX_Changed();
 }
 
 /* everything after "vx"; p is the player (world for the console) */
@@ -548,7 +549,7 @@ VX_Command(entity p, string line)
 		VX_SetText(mkey, substring(line, strstrofs(line, mkey) + strlen(mkey) + 1, -1));
 		if (mkey == "mode" && VX_ModeId(vx_mapMode) == -2)
 			VX_Tell(p, "That mode has no rules here yet; the map will play with the Studio play rules.");
-		vx_dirty = true;
+		VX_Changed();
 		return true;
 	case "tool":
 		/* VxlEditor, VxlConnector, VxlMarker, VxlScanner (OBSERVED names) */
@@ -598,7 +599,7 @@ VX_Command(entity p, string line)
 			q2.vx_undoPos = q2.vx_undoTop = 0;
 		VX_SetText("title", "");
 		VX_SetText("desc", "");
-		vx_dirty = true;
+		VX_Changed();
 		return true;
 	}
 	VX_Tell(p, "studio: unknown command (status scan list rate code select place remove pick rotate mark1 mark2 fill clear copy paste undo redo link unlink prop meta tool allow deny save load recover publish new test edit)");
@@ -612,8 +613,10 @@ SM_CreateEquip(entity p)
 {
 	ents.ChangeToClass(p, "csm_builder");
 	VXT_Equip(p);
-	if (vx_owner == "" && clienttype(p) != CLIENTTYPE_BOT)
+	if (vx_owner == "" && clienttype(p) != CLIENTTYPE_BOT) {
 		vx_owner = strzone(p.netname);
+		serverinfo.SetString("vx_owner", vx_owner);
+	}
 }
 
 float
@@ -635,6 +638,7 @@ SM_CreateFrame(void)
 	} else {
 		VX_AutosaveFrame();
 	}
+	VX_SaveAlarmFrame();
 }
 
 void
@@ -643,6 +647,10 @@ SM_CreateStart(void)
 	/* a fresh world for this room unless the map file came with the map */
 	if (autocvar_studio_map != "" && VX_ValidName(autocvar_studio_map))
 		VX_LoadMap(world, autocvar_studio_map);
+	/* the room's map file: the one it was started with (the lobby's map
+	   slots set studio_map), else the one named after the BSP */
+	serverinfo.SetString("vx_map", vx_mapName);
+	serverinfo.SetString("vx_testing", "");
 	VX_Rescan();
 	vx_nextAutosave = time + autocvar_studio_autosave;
 	if (fexists(strcat("data/", VX_AutosavePath())))
