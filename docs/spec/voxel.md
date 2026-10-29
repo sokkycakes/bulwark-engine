@@ -127,6 +127,7 @@ order is kept and nothing is lost.
 | `VXN_DEF` | varuint type, u8 shape, i32 contents, 4 u8 colour, u8 flags, string name, string texture | type defined, signon |
 | `VXN_CHUNK` | 3 varuint chunk, varuint length, chunk runs | `voxel_fill`, `voxel_load`, signon |
 | `VXN_SET` | 3 varuint cell, u16 type, u8 rot | `voxel_set` |
+| `VXN_LIGHT` | varuint type, u8 light type, 3 u8 colour (0..15) | `voxel_setlight`, signon |
 
 A client that connects later gets INIT, every DEF and every non-empty chunk
 during signon (`SV_VoxelSignon`). The client checks every message: a world
@@ -141,9 +142,40 @@ with a developer message.
 faces hidden by an opaque full neighbour, and rebuilds only chunks that
 changed. Faces are grouped by image; translucent types (alpha below 255) are
 drawn in the translucent pass after opaque ones. Textured types use the
-named image on every face, others the flat colour. Light is a fixed shade
-per face direction times the block colour: there are no lightmaps and no
-dynamic lights on blocks yet.
+named image on every face, others the flat colour, both shaded by the light
+below.
+
+## Light
+
+`voxel_setlight(type, lighttype, '<r g b>')` gives a block type a light
+type and an emitted colour (0..15 per channel). Light types: 0 none,
+1 blocked, 2 slope-blocked, 3 point light, 4 sky light, 5 water-blocked,
+6 slab-blocked. Types with no call are treated as blocked when they are
+solid full cubes, else as none.
+
+The client keeps one light cell per voxel cell and rebuilds it when the
+world changes:
+
+1. Sky: every column is walked from the top down; open cells get sky level
+   7 until the first blocked, slope-blocked, water-blocked or slab-blocked
+   cell.
+2. Spread: point-light cells (their colour) and sky cells are seeds. Light
+   flows to the six neighbours, losing 1 per channel per step, keeping the
+   per-channel maximum. It never enters blocked cells; slope-blocked light
+   only flows into slope-blocked cells; slab-blocked light does not flow up
+   or down.
+3. Vertex: each face vertex averages the light of the cell in front of the
+   face and of the side and corner cells around the vertex that are not
+   blocked (the corner only when a side is open), clamped to 7. Darkness is
+   `(7 - avg) * 0.6 / 7` per channel, taking the lesser of block and sky
+   darkness. Corner darkening subtracts 0.1 per blocked side cell, 0.3 when
+   both are blocked. The face shade (top 1.0, bottom 0.7, +y 0.925,
+   -y 0.775, ±x 0.85, slope top 0.97, slope underside 0.73) is tinted by
+   `r_voxel_daylight` ("r g b", default "255 255 255").
+
+`r_voxel_light 0` turns this off (face shade only). Fullbright types are
+never darkened. The behaviour is matched to Counter-Strike Online's Studio
+lighting from observation of its game data; see the CSNZ studio trace notes.
 
 ## Void maps
 
