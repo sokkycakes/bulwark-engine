@@ -604,9 +604,23 @@ static void physics_toss(int e, int movetype)
 		VectorClear(vel);
 		return;
 	}
-	clip_velocity(vel, tr.normal, vel, (movetype == MOVETYPE_BOUNCE) ? 1.5f : 1.0f);
+	/* MOVETYPE_BOUNCE keeps half the speed into the surface, or the
+	 * entity's .bouncefactor of it, and comes to rest on a floor below
+	 * 60 units/s upward, or .bouncestop times the gravity it falls with
+	 * (the DarkPlaces/FTE extension fields; 0 means unset) */
+	float bounce = 0.5f, stop = 60;
+	if (movetype == MOVETYPE_BOUNCE) {
+		float bf = PF.bouncefactor >= 0 ? QC_EFloat(pv, e, PF.bouncefactor) : 0;
+		float bs = PF.bouncestop >= 0 ? QC_EFloat(pv, e, PF.bouncestop) : 0;
+		float grav = PF.gravity >= 0 && QC_EFloat(pv, e, PF.gravity) ? QC_EFloat(pv, e, PF.gravity) : 1;
+		if (bf > 0)
+			bounce = bf;
+		if (bs > 0)
+			stop = bs * grav * pgrav;
+	}
+	clip_velocity(vel, tr.normal, vel, (movetype == MOVETYPE_BOUNCE) ? 1.0f + bounce : 1.0f);
 	if (tr.normal[2] > 0.7f && movetype != MOVETYPE_FLY && movetype != MOVETYPE_FLYMISSILE) {
-		if (vel[2] < 60 || movetype != MOVETYPE_BOUNCE) {
+		if (vel[2] < stop || movetype != MOVETYPE_BOUNCE) {
 			QC_SetEFloat(pv, e, PF.flags, (float)((int)QC_EFloat(pv, e, PF.flags) | FL_ONGROUND));
 			QC_SetEInt(pv, e, PF.groundentity, tr.ent);
 			VectorClear(vel);
