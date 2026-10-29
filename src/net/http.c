@@ -28,6 +28,10 @@ struct http_s {
 	char error[256];
 	strbuf_t body;
 	FILE *f;
+	/* HTTP_Request: NULL method for a plain download */
+	char *method, *ctype, *headers;
+	char *reqbody;
+	size_t reqlen;
 };
 
 /* --- the body sink -------------------------------------------------------- */
@@ -61,6 +65,10 @@ static bool sink(http_t *h, const void *data, size_t len)
 #define BW_CURLOPT_XFERINFOFUNCTION 20219
 #define BW_CURLOPT_XFERINFODATA 10057
 #define BW_CURLOPT_NOPROGRESS 43
+#define BW_CURLOPT_POSTFIELDS 10015
+#define BW_CURLOPT_HTTPHEADER 10023
+#define BW_CURLOPT_CUSTOMREQUEST 10036
+#define BW_CURLOPT_POSTFIELDSIZE_LARGE 30120
 #define BW_CURLINFO_RESPONSE_CODE 0x200002
 #define BW_CURL_GLOBAL_ALL 3
 
@@ -73,6 +81,8 @@ static struct {
 	int (*easy_getinfo)(void *, int, ...);
 	const char *(*easy_strerror)(int);
 	int (*global_init)(long);
+	void *(*slist_append)(void *, const char *);
+	void (*slist_free_all)(void *);
 } curl;
 static pthread_mutex_t curl_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -97,8 +107,10 @@ static bool load_curl(void)
 		*(void **)&curl.easy_getinfo = dlsym(lib, "curl_easy_getinfo");
 		*(void **)&curl.easy_strerror = dlsym(lib, "curl_easy_strerror");
 		*(void **)&curl.global_init = dlsym(lib, "curl_global_init");
+		*(void **)&curl.slist_append = dlsym(lib, "curl_slist_append");
+		*(void **)&curl.slist_free_all = dlsym(lib, "curl_slist_free_all");
 		curl.ok = curl.easy_init && curl.easy_setopt && curl.easy_perform && curl.easy_cleanup && curl.easy_getinfo &&
-		          curl.global_init;
+		          curl.global_init && curl.slist_append && curl.slist_free_all;
 		if (curl.ok)
 			curl.global_init(BW_CURL_GLOBAL_ALL);
 	}
@@ -126,6 +138,7 @@ static bool fetch_curl(http_t *h)
 {
 	char err[256] = "";
 	void *c = curl.easy_init();
+	void *hdrs = NULL;
 	int rc;
 	long code = 0;
 	if (!c) {
@@ -135,7 +148,31 @@ static bool fetch_curl(http_t *h)
 	curl.easy_setopt(c, BW_CURLOPT_URL, h->url);
 	curl.easy_setopt(c, BW_CURLOPT_WRITEFUNCTION, curl_write);
 	curl.easy_setopt(c, BW_CURLOPT_WRITEDATA, h);
-	curl.easy_setopt(c, BW_CURLOPT_FOLLOWLOCATION, 1L);
+	curl.easy_setopt(c, BW_CURLOPT_FOLLOWLOCATION, h->method ? 0L : 1L);
+	if (h->method) {
+		char line[512];
+		curl.easy_setopt(c, BW_CURLOPT_CUSTOMREQUEST, h->method);
+		if (h->reqbody) {
+			curl.easy_setopt(c, BW_CURLOPT_POSTFIELDS, h->reqbody);
+			curl.easy_setopt(c, BW_CURLOPT_POSTFIELDSIZE_LARGE, (int64_t)h->reqlen);
+			snprintf(line, sizeof(line), "Content-Type: %s", h->ctype);
+			hdrs = curl.slist_append(hdrs, line);
+		}
+		/* one list entry per "Name: value" line */
+		for (const char *l = h->headers; l && *l;) {
+			size_t n = strcspn(l, "\r\n");
+			if (n) {
+				char *one = Mem_Alloc(n + 1);
+				memcpy(one, l, n);
+				hdrs = curl.slist_append(hdrs, one);
+				Mem_Free(one);
+			}
+			l += n;
+			l += strspn(l, "\r\n");
+		}
+		if (hdrs)
+			curl.easy_setopt(c, BW_CURLOPT_HTTPHEADER, hdrs);
+	}
 	curl.easy_setopt(c, BW_CURLOPT_NOSIGNAL, 1L);
 	curl.easy_setopt(c, BW_CURLOPT_USERAGENT, "Bulwark/" BULWARK_VERSION);
 	curl.easy_setopt(c, BW_CURLOPT_ERRORBUFFER, err);
@@ -145,6 +182,8 @@ static bool fetch_curl(http_t *h)
 	rc = curl.easy_perform(c);
 	curl.easy_getinfo(c, BW_CURLINFO_RESPONSE_CODE, &code);
 	curl.easy_cleanup(c);
+	if (hdrs)
+		curl.slist_free_all(hdrs);
 	h->code = (int)code;
 	if (rc) {
 		if (!h->error[0])
@@ -251,7 +290,8 @@ static const char *header_value(const char *head, const char *key, char *out, si
 /* one request; *redirect gets a Location to follow */
 static bool fetch_once(http_t *h, const char *url, char *redirect, size_t rsize)
 {
-	char host[256], path[1024], req[2048], v[1024], proxyhost[256], proxypath[16];
+	char host[256], path[1024], v[1024], proxyhost[256], proxypath[16];
+	strbuf_t req = {0};
 	const char *proxy = getenv("http_proxy");
 	int port, s, pport;
 	strbuf_t buf = {0};
@@ -275,21 +315,27 @@ static bool fetch_once(http_t *h, const char *url, char *redirect, size_t rsize)
 		snprintf(h->error, sizeof(h->error), "can't connect to %.200s", proxy ? proxy : host);
 		return false;
 	}
-	snprintf(req, sizeof(req),
-	         "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Bulwark/" BULWARK_VERSION "\r\nConnection: close\r\n\r\n",
-	         proxy ? url : path, host);
-	if (!send_all(s, req, strlen(req)) || !read_headers(s, &buf, &headlen)) {
+	SB_Printf(&req, "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Bulwark/" BULWARK_VERSION "\r\nConnection: close\r\n",
+	          h->method ? h->method : "GET", proxy ? url : path, host);
+	if (h->headers)
+		SB_AppendStr(&req, h->headers);
+	if (h->reqbody)
+		SB_Printf(&req, "Content-Type: %s\r\nContent-Length: %zu\r\n", h->ctype, h->reqlen);
+	SB_AppendStr(&req, "\r\n");
+	if (h->reqbody)
+		SB_Append(&req, h->reqbody, h->reqlen);
+	if (!send_all(s, req.data, req.len) || !read_headers(s, &buf, &headlen)) {
 		snprintf(h->error, sizeof(h->error), "no answer from %.200s", host);
 		goto done;
 	}
 	buf.data[headlen - 2] = 0;
 	h->code = atoi(strchr(buf.data, ' ') ? strchr(buf.data, ' ') + 1 : "0");
-	if (h->code >= 300 && h->code < 400 && header_value(buf.data, "Location", v, sizeof(v))) {
+	if (!h->method && h->code >= 300 && h->code < 400 && header_value(buf.data, "Location", v, sizeof(v))) {
 		Str_Copy(redirect, v, rsize);
 		ok = true;
 		goto done;
 	}
-	if (h->code != 200) {
+	if (h->code != 200 && !h->method) {
 		snprintf(h->error, sizeof(h->error), "HTTP %d", h->code);
 		goto done;
 	}
@@ -363,6 +409,7 @@ static bool fetch_once(http_t *h, const char *url, char *redirect, size_t rsize)
 		SB_Free(&body);
 	}
 done:
+	SB_Free(&req);
 	SB_Free(&buf);
 	close(s);
 	return ok;
@@ -424,11 +471,8 @@ static void *worker(void *ctx)
 	return NULL;
 }
 
-http_t *HTTP_Get(const char *url, const char *savepath)
+static http_t *start(http_t *h)
 {
-	http_t *h = Mem_Alloc(sizeof(*h));
-	Str_Copy(h->url, url, sizeof(h->url));
-	h->savepath = savepath ? Mem_Strdup(savepath) : NULL;
 	h->state = HTTP_RUNNING;
 	if (pthread_create(&h->thread, NULL, worker, h)) {
 		Str_Copy(h->error, "can't start a download thread", sizeof(h->error));
@@ -436,6 +480,30 @@ http_t *HTTP_Get(const char *url, const char *savepath)
 		h->thread = 0;
 	}
 	return h;
+}
+
+http_t *HTTP_Get(const char *url, const char *savepath)
+{
+	http_t *h = Mem_Alloc(sizeof(*h));
+	Str_Copy(h->url, url, sizeof(h->url));
+	h->savepath = savepath ? Mem_Strdup(savepath) : NULL;
+	return start(h);
+}
+
+http_t *HTTP_Request(const char *method, const char *url, const char *ctype, const void *body, size_t len,
+                     const char *headers)
+{
+	http_t *h = Mem_Alloc(sizeof(*h));
+	Str_Copy(h->url, url, sizeof(h->url));
+	h->method = Mem_Strdup(method && *method ? method : "GET");
+	h->ctype = Mem_Strdup(ctype && *ctype ? ctype : "application/octet-stream");
+	h->headers = headers && *headers ? Mem_Strdup(headers) : NULL;
+	if (body) {
+		h->reqbody = Mem_Alloc(len + 1);
+		memcpy(h->reqbody, body, len);
+		h->reqlen = len;
+	}
+	return start(h);
 }
 
 int HTTP_State(const http_t *h) { return h->state; }
@@ -468,5 +536,9 @@ void HTTP_Free(http_t *h)
 		pthread_join(h->thread, NULL);
 	SB_Free(&h->body);
 	Mem_Free(h->savepath);
+	Mem_Free(h->method);
+	Mem_Free(h->ctype);
+	Mem_Free(h->headers);
+	Mem_Free(h->reqbody);
 	Mem_Free(h);
 }
