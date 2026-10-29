@@ -72,6 +72,11 @@
 
 #define VXT_SLOTS 5
 #define VXT_DEFAULTS "300 335 301 334 0"
+#define VXT_MARKSPAN 9	/* FUN_11258af0: 9, or 39 (0x27) in one mode */
+
+bool VXT_AimsAtArea(entity p, float reach);
+void VXT_FillArea(entity p);
+void VXT_ClearClip(entity p);
 
 .string vxt_slots;		/* "id id id id id" */
 .float vxt_cur, vxt_last;
@@ -201,6 +206,21 @@ VXT_Place(entity p, float reach, bool inAir)
 		VXT_Fail(p, CS_Text("CSO_Script_ImpossibleOnTest", "You can't do that while testing the script"));
 		return;
 	}
+	if (!inAir && VXT_AimsAtArea(p, reach)) {
+		VXT_FillArea(p);
+		return;
+	}
+	/* SOURCE-CONFIRMED (FUN_11257d50 -> FUN_10a8deb0): with a copied area
+	   the shot pastes it at the cell instead of placing one block */
+	if (!inAir && p.vx_clip != "" && VX_AimReach(p, reach) && vx_aimFront[0] >= 0) {
+		float pn = VX_Paste(p, vx_aimFront);
+		if (pn > 0)
+			sound(p, CHAN_WEAPON, "weapons/vxllonggun-1.wav", 1, ATTN_NORM);
+		else
+			VXT_Fail(p, CS_Text("CSO_Voxel_CantPlaceVoxel", "Block cannot be placed."));
+		printf("studio %.1f: %s pasted %g blocks at %s\n", time, p.netname, pn, VX_Key(vx_aimFront));
+		return;
+	}
 	if (t <= 0 || !vx_placeable[VX_T(t)]) {
 		VXT_Fail(p, CS_Text("CSO_Voxel_CantPlaceVoxel", "Block cannot be placed."));
 		return;
@@ -239,6 +259,14 @@ VXT_Remove(entity p, float reach)
 {
 	if (vx_testing) {
 		VXT_Fail(p, CS_Text("CSO_Script_ImpossibleOnTest", "You can't do that while testing the script"));
+		return;
+	}
+	/* SOURCE-CONFIRMED (FUN_11258360 -> FUN_10a8d7b0): the long gun and
+	   the minigun clear the marked area they hit (not the short gun) */
+	if (reach > 100 && VXT_AimsAtArea(p, reach)) {
+		float n = VX_Fill(p, 0, 0);
+		sound(p, CHAN_WEAPON, "weapons/vxllonggun-2.wav", 1, ATTN_NORM);
+		printf("studio %.1f: %s cleared the area (%g)\n", time, p.netname, n);
 		return;
 	}
 	if (!VX_AimReach(p, reach))
@@ -307,6 +335,14 @@ VXT_Spinner(entity p, float d)
 	if (!VX_AimReach(p, 200))
 		return;
 	vector c = vx_aimCell;
+	/* INFERRED from voxelprop's shape names (BOX next to BOX_ROT and
+	   BOX_ROT_LATER): a plain box has no direction to turn */
+	entity rr = VX_RecordAt(c);
+	float rt = rr ? rr.vb_type : voxel_get(c);
+	if (rt > 0 && rt < VX_MAXTYPE && vx_display[rt] == "BOX") {
+		VXT_Fail(p, CS_Text("CSO_Voxel_CantRotateVoxel", "Block cannot be rotated."));
+		return;
+	}
 	if (VX_RotateBy(p, c, d))
 		printf("studio %.1f: %s rotated %s by %g\n", time, p.netname, VX_Key(c), d);
 	else
@@ -316,8 +352,24 @@ VXT_Spinner(entity p, float d)
 void
 VXT_Scanner(entity p, bool withProps)
 {
+	/* SOURCE-CONFIRMED (FUN_1125a1a0 -> FUN_10a8d410): scanning the marked
+	   area copies its blocks ("Vxl_NoBlockInMarkerArea" when empty) */
+	if (VXT_AimsAtArea(p, 1000)) {
+		float n = VX_Copy(p);
+		if (n <= 0) {
+			VXT_ClearClip(p);
+			VXT_Fail(p, CS_Text("Vxl_NoBlockInMarkerArea", "There are no blocks to copy inside the area."));
+			return;
+		}
+		userinfo.SetInteger(p, "vx_clip", (int)n);
+		CS_Tell(p, sprintf("%d", n));
+		printf("studio %.1f: %s copied %g blocks\n", time, p.netname, n);
+		return;
+	}
 	if (!VX_AimReach(p, 1000))
 		return;
+	/* INFERRED: a plain scan drops a copied area */
+	VXT_ClearClip(p);
 	entity r = VX_RecordAt(vx_aimCell);
 	float t = r ? r.vb_type : voxel_get(vx_aimCell);
 	if (t <= 0 || !vx_placeable[VX_T(t)])
@@ -337,14 +389,143 @@ VXT_Scanner(entity p, bool withProps)
 	printf("studio %.1f: %s scanned %s%s\n", time, p.netname, voxel_typename(t), withProps ? " with rotation and properties" : "");
 }
 
+/* --- Build Marker and its area --------------------------------------------------- */
+
+/* the marks go to the HUD as userinfo vx_marks: "" , "x y z" or
+   "x y z x y z" (cells), for hud/vxworld.qc to draw */
+void
+VXT_PublishMarks(entity p)
+{
+	string m = "";
+	if (p.vx_marks >= 1)
+		m = sprintf("%d %d %d", p.vx_mark1[0], p.vx_mark1[1], p.vx_mark1[2]);
+	if (p.vx_marks >= 2)
+		m = strcat(m, sprintf(" %d %d %d", p.vx_mark2[0], p.vx_mark2[1], p.vx_mark2[2]));
+	userinfo.SetString(p, "vx_marks", m);
+}
+
+/* SOURCE-CONFIRMED (mp.dll CVxlMarker, FUN_11258df0 / FUN_11258af0 /
+   FUN_11258f80): left click places the start marker, then the end marker,
+   along the aim at 100 units; the end is pulled to within 9 cells of the
+   start on each axis (39 in a mode we don't have) and may not be the start
+   cell ("Vxl_Cant_Install_Marker_OverlapFrom"); with both placed the click
+   does nothing. Right click takes back the last one placed. 0.5 s between
+   shots. INFERRED: which cell the engine's marker trace gives; here the
+   cell in front of a block hit within reach, else the cell at the reach
+   (a marker can stand in the air, "create an area at close range"). */
 void
 VXT_Marker(entity p, float which)
 {
-	if (!VX_AimReach(p, 2000))
+	if (which == 2) {
+		if (p.vx_marks <= 0)
+			return;
+		p.vx_marks = (p.vx_marks >= 2) ? 1 : 0;
+		/* INFERRED: taking a marker back also drops the copied area, else
+		   the long gun could only paste from then on */
+		VXT_ClearClip(p);
+		VXT_PublishMarks(p);
+		sound(p, CHAN_WEAPON, "weapons/vxlbuildmarker-1.wav", 1, ATTN_NORM);
 		return;
-	VX_Command(p, sprintf("mark%g %g %g %g", which, vx_aimCell[0], vx_aimCell[1], vx_aimCell[2]));
+	}
+	if (p.vx_marks >= 2)
+		return;
+	sound(p, CHAN_WEAPON, "weapons/vxlbuildmarker-1.wav", 1, ATTN_NORM);
+	vector cell;
+	if (VX_AimReach(p, 100) && vx_aimFront[0] >= 0) {
+		cell = vx_aimFront;
+	} else {
+		makevectors(p.v_angle);
+		cell = voxel_cellforpoint(p.origin + p.view_ofs + v_forward * 100);
+	}
+	if (!VX_InBounds(cell)) {
+		VXT_Fail(p, CS_Text("Vxl_Cant_Install_Marker", "You cannot place a marker."));
+		return;
+	}
+	if (p.vx_marks <= 0) {
+		p.vx_mark1 = cell;
+		p.vx_marks = 1;
+	} else {
+		for (float a = 0; a < 3; a++)
+			cell[a] = bound(p.vx_mark1[a] - VXT_MARKSPAN, cell[a], p.vx_mark1[a] + VXT_MARKSPAN);
+		if (cell == p.vx_mark1) {
+			VXT_Fail(p, CS_Text("Vxl_Cant_Install_Marker_OverlapFrom", "You cannot place this so that it overlaps with the starting marker."));
+			return;
+		}
+		p.vx_mark2 = cell;
+		p.vx_marks = 2;
+	}
+	VXT_PublishMarks(p);
+	printf("studio %.1f: %s marker %g at %s\n", time, p.netname, p.vx_marks, VX_Key(cell));
 }
 
+/* whether p's aim reaches its marked area before any block, or hits a
+   block inside it. SOURCE-CONFIRMED (FUN_11257d50, FUN_11258360,
+   FUN_1125a1a0): the long gun, the minigun and the scanner pass the
+   player to the voxel trace, which then stops at that player's area
+   (FUN_10a8de20 tests the cell against it). The ray/box test is ours. */
+bool
+VXT_AimsAtArea(entity p, float reach)
+{
+	if (p.vx_marks < 2)
+		return false;
+	vector lo, hi;
+	VX_SortMarks(p, lo, hi);
+	vector bmin = voxel_cellorigin(lo), bmax = voxel_cellorigin(hi) + [VX_BLOCK, VX_BLOCK, VX_BLOCK];
+	makevectors(p.v_angle);
+	vector src = p.origin + p.view_ofs, dir = v_forward;
+	float t0 = 0, t1 = reach;
+	for (float a = 0; a < 3; a++) {
+		if (fabs(dir[a]) < 0.00001) {
+			if (src[a] < bmin[a] || src[a] > bmax[a])
+				return false;
+			continue;
+		}
+		float ta = (bmin[a] - src[a]) / dir[a], tb = (bmax[a] - src[a]) / dir[a];
+		if (ta > tb) {
+			float sw = ta;
+			ta = tb;
+			tb = sw;
+		}
+		t0 = max(t0, ta);
+		t1 = min(t1, tb);
+		if (t0 > t1)
+			return false;
+	}
+	/* a block in front of the area takes the shot */
+	if (VX_AimReach(p, reach)) {
+		vector c = vx_aimCell;
+		bool inside = c[0] >= lo[0] && c[0] <= hi[0] && c[1] >= lo[1] && c[1] <= hi[1] && c[2] >= lo[2] && c[2] <= hi[2];
+		if (!inside && vlen(voxel_cellorigin(c) + [VX_BLOCK, VX_BLOCK, VX_BLOCK] * 0.5 - src) < t0)
+			return false;
+	}
+	return true;
+}
+
+void
+VXT_ClearClip(entity p)
+{
+	if (p.vx_clip)
+		strunzone(p.vx_clip);
+	p.vx_clip = "";
+	p.vx_clipSize = '0 0 0';
+	userinfo.SetInteger(p, "vx_clip", 0i);
+}
+
+/* SOURCE-CONFIRMED (FUN_10a8dba0, "Vxl_CantFillBlockInMarkerArea"): only
+   1x1x1 blocks of cost 0 fill an area */
+void
+VXT_FillArea(entity p)
+{
+	float t = p.vx_select;
+	if (t <= 0 || !vx_placeable[VX_T(t)] || VX_GroupCount(t) > 1 || vx_cost[t] != 0) {
+		VXT_Fail(p, CS_Text("Vxl_CantFillBlockInMarkerArea", "You can only fill the area with blocks that are 1x1x1 in size and have a block cost of 0."));
+		return;
+	}
+	float rot = (p.vxt_copyRot >= 0) ? p.vxt_copyRot : VXT_YawRot(p.v_angle[1]);
+	float n = VX_Fill(p, t, rot);
+	sound(p, CHAN_WEAPON, "weapons/vxllonggun-1.wav", 1, ATTN_NORM);
+	printf("studio %.1f: %s filled the area with %s (%g)\n", time, p.netname, voxel_typename(t), n);
+}
 
 void
 VXT_PlayerFrame(entity p)
@@ -413,7 +594,7 @@ VXT_PlayerFrame(entity p)
 	case 485:	/* marker */
 		if (a1 || a2) {
 			VXT_Marker(p, a1 ? 1 : 2);
-			p.vxt_next = time + 0.3;
+			p.vxt_next = time + 0.5;
 		}
 		return;
 	}
