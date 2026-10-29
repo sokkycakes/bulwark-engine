@@ -157,7 +157,7 @@ VX_LoadCatalog(void)
 			tokenize(argv(22));
 			vector lrgb = [stof(argv(0)), stof(argv(1)), stof(argv(2))];
 			if (ent == "LIGHT_ONOFF" && lrgb != '0 0 0') {
-				hash_add(vx_switchLight, ftos(id), vtos(lrgb), EV_STRING);
+				hash_add(vx_switchLight, ftos(id), vtos(lrgb), EV_STRING | HASH_REPLACE);
 				lrgb = '0 0 0';
 			}
 			voxel_setlight(id, lt, lrgb);

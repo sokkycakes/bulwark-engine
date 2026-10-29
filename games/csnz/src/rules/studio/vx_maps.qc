@@ -108,7 +108,10 @@ VX_OptSet(string key, string value)
 	if (value == "")
 		hash_delete(vx_optTab, key);
 	else
-		hash_add(vx_optTab, key, value, EV_STRING);
+		/* the table's HASH_REPLACE is only its default type: without the
+		   flag here an existing key keeps its first value (so a setting
+		   changed a second time never took) */
+		hash_add(vx_optTab, key, value, EV_STRING | HASH_REPLACE);
 	serverinfo.SetString(strcat("vxo_", key), value);
 }
 
