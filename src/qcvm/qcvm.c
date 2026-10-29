@@ -588,6 +588,7 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	vm->edict_words += 256;	/* multiprogs rules (Nuclide) add their own fields */
 
 	vm->max_edicts = max_edicts > 0 ? max_edicts : 1;
+	vm->quick_reuse_before = 2;
 	globals_bytes = ((size_t)p->globalslots * 4 + 63) & ~(size_t)63;
 	edict_bytes = (size_t)vm->edict_words * 4 * vm->max_edicts;
 	vm->edicts_ofs = globals_bytes;
@@ -743,7 +744,7 @@ int QC_SpawnEdict(qcvm_t *vm)
 		vm->num_edicts = vm->reserved_edicts + 1;
 	for (e = vm->reserved_edicts + 1; e < vm->num_edicts; e++) {
 		qcedict_t *ed = &vm->edicts[e];
-		if (ed->free && (ed->freetime < 2 || now - ed->freetime > 0.5f)) {
+		if (ed->free && (ed->freetime < vm->quick_reuse_before || now - ed->freetime > 0.5f)) {
 			QC_ClearEdict(vm, e);
 			return e;
 		}

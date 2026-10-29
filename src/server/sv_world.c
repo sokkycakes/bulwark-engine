@@ -241,7 +241,7 @@ int SV_PointContentsBits(const float *p)
 
 /* sweeps a box against an axis aligned box (another entity's bounds) */
 static void trace_aabb(const float *start, const float *mins, const float *maxs, const float *end,
-                       const float *bmin, const float *bmax, svtrace_t *tr, int ent, int contents)
+                       const float *bmin, const float *bmax, svtrace_t *tr, int ent, int contents, bool trigger)
 {
 	float enter = -1, leave = 1, n[3] = {0, 0, 0};
 	bool startout = false;
@@ -272,6 +272,15 @@ static void trace_aabb(const float *start, const float *mins, const float *maxs,
 		}
 	}
 	if (!startout) {
+		if (trigger) {
+			/* starting inside a trigger volume is noted but doesn't stop
+			   the trace: a +use line from inside a big trigger still has
+			   to reach the button in front of it */
+			tr->startsolid = true;
+			if (tr->ent < 0)
+				tr->ent = ent;
+			return;
+		}
 		if (!tr->startsolid || tr->ent < 0) {
 			tr->startsolid = tr->allsolid = true;
 			tr->fraction = 0;
@@ -430,6 +439,13 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 			trace_brush_entity(e, &m, start, mins, maxs, end, emask, &bt);
 			if (skinbits)
 				bt.contents = skinbits;
+			if (solid == SOLID_BSPTRIGGER && bt.startsolid) {
+				/* same as a box trigger: note it, keep tracing */
+				tr->startsolid = true;
+				if (tr->ent < 0)
+					tr->ent = e;
+				continue;
+			}
 			merge_bsp(tr, &bt, m.bsp, e);
 		} else {
 			float bmin[3], bmax[3], *org = evec(e, F.origin), *emin = evec(e, F.mins), *emax = evec(e, F.maxs);
@@ -440,7 +456,7 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 				bmin[i] = org[i] + emin[i];
 				bmax[i] = org[i] + emax[i];
 			}
-			trace_aabb(start, mins, maxs, end, bmin, bmax, tr, e, c);
+			trace_aabb(start, mins, maxs, end, bmin, bmax, tr, e, c, solid == SOLID_TRIGGER);
 		}
 	}
 	for (int i = 0; i < 3; i++)

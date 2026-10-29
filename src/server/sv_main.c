@@ -482,6 +482,11 @@ bool SV_SpawnServer(const char *mapname)
 		spawn_map_entities(sv.world->entities);
 	}
 	sv.spawning = false;
+	/* only slots freed while the map loaded skip the reuse delay; the
+	   server clock starts at 1, so a fixed "before 2 seconds" would also
+	   let a client that joins quickly reuse a slot some stale reference
+	   still points at */
+	vm->quick_reuse_before = (float)sv.time + 0.001f;
 	sv_spawncount++;
 	Script_LevelSpawned();
 	SV_ClientsMapChanged();

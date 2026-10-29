@@ -176,6 +176,7 @@ struct qcvm_s {
 	int max_edicts;
 	int num_edicts; /* highest slot in use + 1 */
 	int reserved_edicts; /* slots 1..reserved are never handed out by spawn() (player slots) */
+	float quick_reuse_before; /* slots freed before this time can be reused at once (map load) */
 	qcedict_t *edicts;
 	size_t heap_ofs, heap_size;
 
