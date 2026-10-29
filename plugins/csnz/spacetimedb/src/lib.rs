@@ -15,6 +15,7 @@
 //!
 //! Original code, ISC licence.
 
+pub mod offline;
 pub mod text;
 
 use spacetimedb::{
