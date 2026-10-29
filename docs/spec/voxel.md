@@ -150,8 +150,8 @@ below.
 `voxel_setlight(type, lighttype, '<r g b>')` gives a block type a light
 type and an emitted colour (0..15 per channel). Light types: 0 none,
 1 blocked, 2 slope-blocked, 3 point light, 4 sky light, 5 water-blocked,
-6 slab-blocked. Types with no call are treated as blocked when they are
-solid full cubes, else as none.
+6 slab-blocked. A type with no call has light type none, so light passes
+through it (as in CSO, where a block with no light type is not an occluder).
 
 The client keeps one light cell per voxel cell and rebuilds it when the
 world changes:
