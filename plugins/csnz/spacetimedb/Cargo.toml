@@ -1,0 +1,14 @@
+[package]
+name = "csnz-spacetimedb"
+version = "0.1.0"
+edition = "2021"
+license = "ISC"
+description = "Persistent CSNZ backend for Bulwark servers: players, inventory, progression, achievements, stats, servers, matches"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+spacetimedb = "=2.13.0"
+log = "0.4"

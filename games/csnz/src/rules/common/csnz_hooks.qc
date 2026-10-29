@@ -27,6 +27,7 @@ CSNZ_PlayerSpawned(entity p)
 	if (p.prog_level <= 0) {
 		INV_PlayerConnect(p);
 		ACH_PlayerConnect(p);
+		STDB_LoadProfile(p);
 	}
 }
 
@@ -144,6 +145,7 @@ CSNZ_Frame(void)
 	CA_Frame();
 	ZA_Frame();
 	VK_Frame();
+	STDB_Frame();
 
 	for (entity p = world; (p = next.Player(p));) {
 		float fired = p.stat_shotsFired - p.ach_seenShotsFired;

@@ -9,6 +9,7 @@ common/csnz_protos.qc
 common/csnz_hudinfo.qc
 common/csnz_common.qc
 common/csnz_voxel.qc
+common/csnz_stdb.qc
 common/csnz_stats.qc
 common/csnz_progression.qc
 common/csnz_inventory.qc

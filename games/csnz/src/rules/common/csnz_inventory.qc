@@ -47,6 +47,21 @@ INV_SavePath(entity p)
 	return sprintf("data/csnz/players/%s_inventory.txt", safe);
 }
 
+/* one "key value" line of the save file (or of the SpacetimeDB profile) */
+void
+INV_ParseLine(entity p, string line)
+{
+	float n = tokenize(line);
+	if (n < 2) return;
+	string key = argv(0);
+	string val = substring(line, strlen(key) + 1, -1);
+
+	if (key == "items") p.inv_items = val;
+	else if (key == "char") p.inv_equipped_char = val;
+	else if (key == "primary") p.inv_equipped_primary = val;
+	else if (key == "secondary") p.inv_equipped_secondary = val;
+}
+
 void
 INV_Load(entity p)
 {
@@ -64,17 +79,8 @@ INV_Load(entity p)
 	}
 
 	string line;
-	while ((line = fgets(f))) {
-		float n = tokenize(line);
-		if (n < 2) continue;
-		string key = argv(0);
-		string val = substring(line, strlen(key) + 1, -1);
-
-		if (key == "items") p.inv_items = val;
-		else if (key == "char") p.inv_equipped_char = val;
-		else if (key == "primary") p.inv_equipped_primary = val;
-		else if (key == "secondary") p.inv_equipped_secondary = val;
-	}
+	while ((line = fgets(f)))
+		INV_ParseLine(p, line);
 	fclose(f);
 	print(sprintf("inventory: loaded %s (%d items)\n",
 		p.netname, (float)INV_Count(p)));
@@ -85,15 +91,22 @@ INV_Save(entity p)
 {
 	if (clienttype(p) == CLIENTTYPE_BOT) return;
 
+	string text = INV_Text(p);
+	STDB_SaveSection(p, "save_inventory", text);
+
 	string path = INV_SavePath(p);
 	filestream f = fopen(path, FILE_WRITE);
 	if (f < 0) return;
-
-	fputs(f, sprintf("items %s\n", p.inv_items));
-	fputs(f, sprintf("char %s\n", p.inv_equipped_char));
-	fputs(f, sprintf("primary %s\n", p.inv_equipped_primary));
-	fputs(f, sprintf("secondary %s\n", p.inv_equipped_secondary));
+	fputs(f, text);
 	fclose(f);
+}
+
+/* the save file's text */
+string
+INV_Text(entity p)
+{
+	return sprintf("items %s\nchar %s\nprimary %s\nsecondary %s\n",
+		p.inv_items, p.inv_equipped_char, p.inv_equipped_primary, p.inv_equipped_secondary);
 }
 
 /* --- inventory queries --- */
@@ -341,8 +354,13 @@ INV_PlayerConnect(entity p)
 {
 	PROG_Load(p);
 	INV_Load(p);
+	INV_Publish(p);
+}
 
-	/* publish initial state to HUD */
+/* publish the saved state to the HUD (again when SpacetimeDB answers) */
+void
+INV_Publish(entity p)
+{
 	userinfo.SetInteger(p, "csnz_level", (int)p.prog_level);
 	userinfo.SetInteger(p, "csnz_rank", (int)p.prog_rank);
 	userinfo.SetInteger(p, "csnz_money", (int)p.prog_money);

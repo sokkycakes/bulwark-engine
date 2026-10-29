@@ -230,7 +230,7 @@ ACH_SavePath(entity p)
 }
 
 void
-ACH_Load(entity p)
+ACH_Reset(entity p)
 {
 	/* zero everything */
 	for (float i = 0; i < ACH_MAX; i++) {
@@ -256,6 +256,47 @@ ACH_Load(entity p)
 	p.ach_shots_hit = 0;
 	p.ach_damage_taken_round = 0;
 	p.ach_zombie_kills_match = 0;
+}
+
+/* one line of the save file (or of the SpacetimeDB profile) */
+void
+ACH_ParseLine(entity p, string line)
+{
+	float n = tokenize(line);
+	if (n < 2) return;
+	string key = argv(0);
+	string val = argv(1);
+
+	/* achievement progress/completion lines: "ach <id> <progress> <completed>" */
+	if (key == "ach") {
+		if (n >= 4) {
+			float id = stof(val);
+			if (id >= 0 && id < ACH_MAX) {
+				ach_progress(p, id) = stof(argv(2));
+				ach_completed(p, id) = stof(argv(3));
+			}
+		}
+		return;
+	}
+
+	/* cumulative stat counters */
+	if (key == "kills") p.ach_kills = stof(val);
+	else if (key == "headshots") p.ach_headshots = stof(val);
+	else if (key == "zombie_kills") p.ach_zombie_kills = stof(val);
+	else if (key == "rounds_survived") p.ach_rounds_survived = stof(val);
+	else if (key == "bombs_planted") p.ach_bombs_planted = stof(val);
+	else if (key == "bombs_defused") p.ach_bombs_defused = stof(val);
+	else if (key == "hostages_rescued") p.ach_hostages_rescued = stof(val);
+	else if (key == "modes_played") p.ach_modes_played = stof(val);
+	else if (key == "matches_won") p.ach_matches_won = stof(val);
+	else if (key == "damage_dealt") p.ach_damage_dealt = stof(val);
+	else if (key == "damage_healed") p.ach_damage_healed = stof(val);
+}
+
+void
+ACH_Load(entity p)
+{
+	ACH_Reset(p);
 
 	string path = ACH_SavePath(p);
 	filestream f = fopen(path, FILE_READ);
@@ -265,35 +306,8 @@ ACH_Load(entity p)
 	}
 
 	string line;
-	while ((line = fgets(f))) {
-		float n = tokenize(line);
-		if (n < 2) continue;
-		string key = argv(0);
-		string val = argv(1);
-
-		/* achievement progress/completion lines: "ach <id> <progress> <completed>" */
-		if (key == "ach" && n >= 4) {
-			float id = stof(val);
-			if (id >= 0 && id < ACH_MAX) {
-				ach_progress(p, id) = stof(argv(2));
-				ach_completed(p, id) = stof(argv(3));
-			}
-			continue;
-		}
-
-		/* cumulative stat counters */
-		if (key == "kills") p.ach_kills = stof(val);
-		else if (key == "headshots") p.ach_headshots = stof(val);
-		else if (key == "zombie_kills") p.ach_zombie_kills = stof(val);
-		else if (key == "rounds_survived") p.ach_rounds_survived = stof(val);
-		else if (key == "bombs_planted") p.ach_bombs_planted = stof(val);
-		else if (key == "bombs_defused") p.ach_bombs_defused = stof(val);
-		else if (key == "hostages_rescued") p.ach_hostages_rescued = stof(val);
-		else if (key == "modes_played") p.ach_modes_played = stof(val);
-		else if (key == "matches_won") p.ach_matches_won = stof(val);
-		else if (key == "damage_dealt") p.ach_damage_dealt = stof(val);
-		else if (key == "damage_healed") p.ach_damage_healed = stof(val);
-	}
+	while ((line = fgets(f)))
+		ACH_ParseLine(p, line);
 	fclose(f);
 
 	float completed = 0;
@@ -304,10 +318,34 @@ ACH_Load(entity p)
 		p.netname, completed, (float)ACH_MAX));
 }
 
+/* the save file's text */
+string
+ACH_Text(entity p)
+{
+	string s = "";
+	for (float i = 0; i < ACH_MAX; i++)
+		s = strcat(s, sprintf("ach %g %g %g\n", i, ach_progress(p, i), ach_completed(p, i)));
+	s = strcat(s, sprintf("kills %g\n", p.ach_kills));
+	s = strcat(s, sprintf("headshots %g\n", p.ach_headshots));
+	s = strcat(s, sprintf("zombie_kills %g\n", p.ach_zombie_kills));
+	s = strcat(s, sprintf("rounds_survived %g\n", p.ach_rounds_survived));
+	s = strcat(s, sprintf("bombs_planted %g\n", p.ach_bombs_planted));
+	s = strcat(s, sprintf("bombs_defused %g\n", p.ach_bombs_defused));
+	s = strcat(s, sprintf("hostages_rescued %g\n", p.ach_hostages_rescued));
+	s = strcat(s, sprintf("modes_played %g\n", p.ach_modes_played));
+	s = strcat(s, sprintf("matches_won %g\n", p.ach_matches_won));
+	s = strcat(s, sprintf("damage_dealt %g\n", p.ach_damage_dealt));
+	s = strcat(s, sprintf("damage_healed %g\n", p.ach_damage_healed));
+	return s;
+}
+
 void
 ACH_Save(entity p)
 {
 	if (clienttype(p) == CLIENTTYPE_BOT) return;
+
+	string text = ACH_Text(p);
+	STDB_SaveSection(p, "save_achievements", text);
 
 	string path = ACH_SavePath(p);
 	filestream f = fopen(path, FILE_WRITE);
@@ -315,25 +353,7 @@ ACH_Save(entity p)
 		print(sprintf("achievements: ERROR saving %s\n", path));
 		return;
 	}
-
-	/* write each achievement */
-	for (float i = 0; i < ACH_MAX; i++) {
-		fputs(f, sprintf("ach %g %g %g\n",
-			i, ach_progress(p, i), ach_completed(p, i)));
-	}
-
-	/* write cumulative stats */
-	fputs(f, sprintf("kills %g\n", p.ach_kills));
-	fputs(f, sprintf("headshots %g\n", p.ach_headshots));
-	fputs(f, sprintf("zombie_kills %g\n", p.ach_zombie_kills));
-	fputs(f, sprintf("rounds_survived %g\n", p.ach_rounds_survived));
-	fputs(f, sprintf("bombs_planted %g\n", p.ach_bombs_planted));
-	fputs(f, sprintf("bombs_defused %g\n", p.ach_bombs_defused));
-	fputs(f, sprintf("hostages_rescued %g\n", p.ach_hostages_rescued));
-	fputs(f, sprintf("modes_played %g\n", p.ach_modes_played));
-	fputs(f, sprintf("matches_won %g\n", p.ach_matches_won));
-	fputs(f, sprintf("damage_dealt %g\n", p.ach_damage_dealt));
-	fputs(f, sprintf("damage_healed %g\n", p.ach_damage_healed));
+	fputs(f, text);
 	fclose(f);
 }
 

@@ -108,6 +108,7 @@ CS_StatsRecordMatch(float winnerTeam, entity ffaWinner)
 {
 	int n = 0;
 
+	STDB_RecordMatch(winnerTeam, ffaWinner, cs_teams, !cs_noStats);
 	if (cs_noStats) {
 		print("csnz: this mode does not record statistics\n");
 		return;

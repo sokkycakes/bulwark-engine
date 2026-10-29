@@ -85,12 +85,8 @@ PROG_SavePath(entity p)
 }
 
 void
-PROG_Load(entity p)
+PROG_Defaults(entity p)
 {
-	string path = PROG_SavePath(p);
-	filestream f = fopen(path, FILE_READ);
-
-	/* defaults */
 	p.prog_level = 1;
 	p.prog_xp = 0;
 	p.prog_xp_total = 0;
@@ -101,20 +97,18 @@ PROG_Load(entity p)
 	p.prog_matches_total = 0;
 	p.prog_playtime = 0;
 	p.prog_money = 10000;	/* DESIGN: starting money */
+}
 
-	if (f < 0) {
-		print(sprintf("progression: new player %s\n", p.netname));
-		return;
-	}
+/* one "key value" line of the save file (or of the SpacetimeDB profile) */
+void
+PROG_ParseLine(entity p, string line)
+{
+	float n = tokenize(line);
+	if (n < 2) return;
+	string key = argv(0);
+	string val = argv(1);
 
-	string line;
-	while ((line = fgets(f))) {
-		float n = tokenize(line);
-		if (n < 2) continue;
-		string key = argv(0);
-		string val = argv(1);
-
-		if (key == "level") p.prog_level = stof(val);
+	if (key == "level") p.prog_level = stof(val);
 		else if (key == "xp") p.prog_xp = stof(val);
 		else if (key == "xp_total") p.prog_xp_total = stof(val);
 		else if (key == "rank") p.prog_rank = stof(val);
@@ -123,11 +117,36 @@ PROG_Load(entity p)
 		else if (key == "wins") p.prog_wins_total = stof(val);
 		else if (key == "matches") p.prog_matches_total = stof(val);
 		else if (key == "playtime") p.prog_playtime = stof(val);
-		else if (key == "money") p.prog_money = stof(val);
+	else if (key == "money") p.prog_money = stof(val);
+}
+
+void
+PROG_Load(entity p)
+{
+	string path = PROG_SavePath(p);
+	filestream f = fopen(path, FILE_READ);
+
+	PROG_Defaults(p);
+	if (f < 0) {
+		print(sprintf("progression: new player %s\n", p.netname));
+		return;
 	}
+
+	string line;
+	while ((line = fgets(f)))
+		PROG_ParseLine(p, line);
 	fclose(f);
 	print(sprintf("progression: loaded %s (level %g, rank %s)\n",
 		p.netname, p.prog_level, PROG_RankName((int)p.prog_rank)));
+}
+
+/* the save file's text */
+string
+PROG_Text(entity p)
+{
+	return strcat(sprintf("level %g\nxp %g\nxp_total %g\nrank %g\n", p.prog_level, p.prog_xp, p.prog_xp_total, p.prog_rank),
+		sprintf("kills %g\ndeaths %g\nwins %g\n", p.prog_kills_total, p.prog_deaths_total, p.prog_wins_total),
+		sprintf("matches %g\nplaytime %g\nmoney %g\n", p.prog_matches_total, p.prog_playtime, p.prog_money));
 }
 
 void
@@ -135,23 +154,16 @@ PROG_Save(entity p)
 {
 	if (clienttype(p) == CLIENTTYPE_BOT) return;
 
+	string text = PROG_Text(p);
+	STDB_SaveSection(p, "save_progression", text);
+
 	string path = PROG_SavePath(p);
 	filestream f = fopen(path, FILE_WRITE);
 	if (f < 0) {
 		print(sprintf("progression: ERROR saving %s\n", path));
 		return;
 	}
-
-	fputs(f, sprintf("level %g\n", p.prog_level));
-	fputs(f, sprintf("xp %g\n", p.prog_xp));
-	fputs(f, sprintf("xp_total %g\n", p.prog_xp_total));
-	fputs(f, sprintf("rank %g\n", p.prog_rank));
-	fputs(f, sprintf("kills %g\n", p.prog_kills_total));
-	fputs(f, sprintf("deaths %g\n", p.prog_deaths_total));
-	fputs(f, sprintf("wins %g\n", p.prog_wins_total));
-	fputs(f, sprintf("matches %g\n", p.prog_matches_total));
-	fputs(f, sprintf("playtime %g\n", p.prog_playtime));
-	fputs(f, sprintf("money %g\n", p.prog_money));
+	fputs(f, text);
 	fclose(f);
 }
 
