@@ -60,6 +60,7 @@ with nothing to list, the line shows what it is.
 | What | Where | Notes |
 |---|---|---|
 | Config | `config.cfg`, or `configs/<name>.cfg` for `cfg_save <name>` | Same layout as FTE, which writes `fte.cfg` and `configs/<name>.cfg`. `cfg_load <name>` falls back to `<name>.cfg` at the top level. Saved on quit when a setting or bind changed (`cfg_save_auto`). |
+| Startup | `quake.rc` if the game has one, else `default.cfg` or `default_controls.cfg`; then the config and `autoexec.cfg` unless `quake.rc` already runs them | Nuclide games put their defaults in files only `quake.rc` runs (Rad-Therapy's movement cvars are in `default_cvar.cfg`), as FTE runs it. |
 | Bans | `banned_ip.cfg` | `addip`/`banid` lines, run at startup. |
 | Saved games | `saves/<name>.sav` | See below. |
 | Demos | `<name>.dem`; `easyrecord` uses `demos/<date>-<map>.dem` | See below. |
