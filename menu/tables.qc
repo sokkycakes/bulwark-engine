@@ -145,6 +145,27 @@ Tables_FillMaps(vguiComboBox combo, string modeId)
 
 	combo.Clear();
 
+	/* DESIGN: a Studio room plays on a voxel world (maps/*.vxmap, a map with
+	   no BSP); its map file is picked afterwards in Select map (studio.qc) */
+	if (modeId == "38" || modeId == "39") {
+		if (fh >= 0)
+			fclose(fh);
+		float sh = search_begin("maps/*.vxmap", TRUE, TRUE);
+		if (sh < 0)
+			return;
+		for (float k = 0; k < search_getsize(sh); k++) {
+			string vf = search_getfilename(sh, k);
+			vf = substring(vf, 5, strlen(vf) - 11);
+			if ((float)hash_get(seen, vf, 0, EV_FLOAT))
+				continue;
+			hash_add(seen, vf, 1, EV_FLOAT);
+			combo.AddItem(vf, vf);
+		}
+		search_end(sh);
+		hash_destroytab(seen);
+		return;
+	}
+
 	if (fh < 0)
 		return;
 

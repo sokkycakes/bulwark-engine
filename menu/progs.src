@@ -49,6 +49,7 @@ tables.qc
 screens.qc
 options.qc
 loading.qc
+studio.qc
 main.qc
 ../src/nuclide/client/font.qc
 #endlist

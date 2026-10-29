@@ -56,11 +56,14 @@ int g_chatShown;
 void Options_Open(void);
 bool Options_Command(string);
 void Room_StartGame(void);
+bool MapSel_Command(string);
+vguiWidget MapSel_Control(vguiResLayout, string);
+vguiWindow g_winMapSel;
 void Nav_Go(float);
 
 /* --- lists ---------------------------------------------------------------- */
 
-static void
+void
 List_Setup(vguiResList list, string columns)
 {
 	float alpha;
@@ -356,6 +359,9 @@ Screens_Control(vguiResLayout res, string path)
 {
 	string ctl = strtolower(res.GetString(strcat(path, "/ControlName")));
 	string name = substring(path, strstrofs(path, "/") + 1, -1);
+
+	if (g_panelFile == "resource/voxel/popup_voxeloutui_mapselectdlg.res")
+		return MapSel_Control(res, path);
 
 	/* web pages (CEF); the original loads them from Nexon */
 	if (ctl == "html") {
@@ -812,6 +818,8 @@ Nav_Command(vguiWidget w, string cmd)
 
 	if (MsgBox_Command(cmd))
 		return;
+	if (MapSel_Command(cmd))
+		return;
 
 	switch (strtolower(cmd)) {
 	/* server and channel lists */
@@ -869,6 +877,8 @@ Nav_Command(vguiWidget w, string cmd)
 			g_winCreate.Hide();
 			g_modal = __NULL__;
 		}
+		if (g_modal == g_winMapSel)
+			MapSel_Command("ms_cancel");
 		break;
 
 	/* game room */

@@ -644,9 +644,45 @@ SM_CreateFrame(void)
 void
 SM_CreateStart(void)
 {
-	/* a fresh world for this room unless the map file came with the map */
-	if (autocvar_studio_map != "" && VX_ValidName(autocvar_studio_map))
-		VX_LoadMap(world, autocvar_studio_map);
+	/* the room's map file (menu/studio.qc picks it): an existing one is
+	   loaded; a new name starts from the booted world or from a copy, and
+	   is saved at once so the map exists, as a CSO slot does */
+	string want = autocvar_studio_map;
+	string from = autocvar_studio_copyfrom;
+	if (want != "" && VX_ValidName(want)) {
+		if (fexists(strcat("data/", VX_MapPath(want)))) {
+			VX_LoadMap(world, want);
+		} else {
+			if (from != "" && VX_ValidName(from))
+				if (!VX_LoadFile(VX_MapPath(from)))
+					printf("studio: %s could not be copied; the new map starts empty\n", from);
+			if (from == "") {
+				VX_SetText("title", "");
+				VX_SetText("desc", "");
+			}
+			/* the room starts before anyone joins: the host's name (DESIGN) */
+			VX_SetText("author", cvar_string("name"));
+			if (vx_mapName)
+				strunzone(vx_mapName);
+			vx_mapName = strzone(want);
+			if (autocvar_studio_settitle != "")
+				VX_SetText("title", autocvar_studio_settitle);
+			VX_SaveMap(world, want);
+			printf("studio: new map %s%s\n", want, from != "" ? strcat(" (a copy of ", from, ")") : "");
+		}
+	}
+	/* details edited in the map selection: changes to save */
+	if (autocvar_studio_settitle != "" && autocvar_studio_settitle != vx_title) {
+		VX_SetText("title", autocvar_studio_settitle);
+		VX_Changed();
+	}
+	if (autocvar_studio_setdesc != "" && autocvar_studio_setdesc != vx_desc) {
+		VX_SetText("desc", autocvar_studio_setdesc);
+		VX_Changed();
+	}
+	cvar_set("studio_copyfrom", "");
+	cvar_set("studio_settitle", "");
+	cvar_set("studio_setdesc", "");
 	/* the room's map file: the one it was started with (the lobby's map
 	   slots set studio_map), else the one named after the BSP */
 	serverinfo.SetString("vx_map", vx_mapName);

@@ -44,6 +44,9 @@ Room_StartGame(void)
 		MsgBox_Show("#CSO_ServerMessage_Title", "No map for this mode is installed.");
 		return;
 	}
+	/* a Studio room picks its map file first (studio.qc) */
+	if (MapSel_Needed(mode))
+		return;
 
 	localcmd(sprintf("set csnz_mode %s\n", mode));
 	/* the rules progs for the mode (INTERFACES.md section 2): Zombi has its
@@ -210,6 +213,7 @@ Menu_Build(vector screen)
 	InGame_Init();
 	Options_Init();
 	MsgBox_Init();
+	MapSel_Init();
 	Nav_Go(SCR_SERVERS);
 }
 
@@ -278,6 +282,11 @@ m_draw(vector screensize)
 	Screens_Frame();
 
 	if (inGame) {
+		/* the client progs set the cursor each frame (CSQC_SyncCursor) and
+		   Bulwark keeps one cursor state for every progs; the menu draws
+		   after them, so claiming it here keeps the mouse free while the
+		   in-game menu is up */
+		setcursormode(TRUE);
 		/* in a match only the in-game menu (and its popups) show */
 		if (g_winInGame && !g_modal) {
 			if (!g_winInGame.Visible()) {
