@@ -132,3 +132,23 @@ backing up the local file). A snapshot is chunk 0 (schema and
 means a broken upload never replaces the stored snapshot. Tested 2026-10-29 on
 Maincloud under Wine: upload, an up-to-date start, and a restore that matched
 the original in all 46 tables.
+
+## Shared rooms (the real client)
+
+`src/rooms.rs` lets every player's `csnzserver.dll` share one lobby without
+anyone hosting a server. Each adapter keeps its own SpacetimeDB identity (no
+operator token) and writes only its own rows:
+
+- `peer_update(account, name, user_info, public_ip, public_port, lan_ip,
+  lan_port, nat_type)`: the adapter's presence and its STUN-mapped UDP
+  endpoint, also its heartbeat (dropped after 60 s without one).
+  `global_id` (FNV-1a 32 of the account) is the user id every adapter shows
+  for that player.
+- `room_open`, `room_update`, `room_join`, `room_leave`, `member_update`,
+  `room_start(nonce)`, `room_end`, `peer_leave`.
+- Public tables `csnz_peer`, `csnz_room`, `csnz_room_member`; adapters
+  subscribe to them. Passwords sit in the private `csnz_room_secret`.
+
+Match traffic never passes through the database: after `room_start` the
+adapters punch a UDP path to each other using the published endpoints and
+the room's `punch_nonce`.

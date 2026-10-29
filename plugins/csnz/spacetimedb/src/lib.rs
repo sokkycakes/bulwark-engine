@@ -17,6 +17,7 @@
 
 pub mod lobby;
 pub mod offline;
+pub mod rooms;
 pub mod text;
 
 use spacetimedb::{
@@ -529,5 +530,6 @@ pub fn drop_stale_servers(ctx: &ReducerContext, _arg: ServerCleanup) -> Result<(
         ctx.db.game_server().address().delete(a);
     }
     lobby::drop_stale_rooms(ctx, cutoff);
+    rooms::drop_stale_peers(ctx);
     Ok(())
 }
