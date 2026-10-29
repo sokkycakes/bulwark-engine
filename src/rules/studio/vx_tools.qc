@@ -77,6 +77,7 @@
 bool VXT_AimsAtArea(entity p, float reach);
 void VXT_FillArea(entity p);
 void VXT_ClearClip(entity p);
+float VXT_PlaceRot(entity p, float t);
 
 .string vxt_slots;		/* "id id id id id" */
 .float vxt_cur, vxt_last;
@@ -233,7 +234,7 @@ VXT_Place(entity p, float reach, bool inAir)
 	} else {
 		return;
 	}
-	float rot = (p.vxt_copyRot >= 0) ? p.vxt_copyRot : VXT_YawRot(p.v_angle[1]);
+	float rot = (p.vxt_copyRot >= 0) ? p.vxt_copyRot : VXT_PlaceRot(p, t);
 	string why = VX_CheckPlace(t, rot, cell, world);
 	if (why != "") {
 		VXT_Fail(p, why);
@@ -324,8 +325,84 @@ VXT_Connector(entity p)
 	p.vxt_from = 0;
 }
 
+/* SOURCE-CONFIRMED (hw.dll FUN_0223f140): whether the spinner may turn a
+   block. Never the area kinds; SLAB always (an unknown per-block flag at
+   +0x184 can forbid it, UNRESOLVED here); else multi-cell blocks, the
+   entity kinds below, and the display types below. A plain BOX can't. */
+bool
+VXT_CanSpin(float t)
+{
+	t = VX_T(t);
+	switch (vx_entity[t]) {
+	case "AREA": case "REPEATABLE_AREA": case "MONSTER_AREA": case "WEAPON_REMOVER":
+	case "ZOMBIE_SAFETY_ZONE": case "GRAVITY_AREA": case "ESCAPE_GOAL":
+		return false;
+	case "DOOR": case "SWITCH": case "BUTTON": case "PUSH": case "PISTON":
+	case "HIT_TARGET": case "HIT_BUTTON": case "TRANSIT": case "SPIKE_PISTON":
+	case "QUEST_NPC": case "SHELTER_RESOURCE_DECORATION":
+		return true;
+	}
+	if (vx_display[t] == "SLAB" || vx_dims[t] != '1 1 1')
+		return true;
+	switch (vx_display[t]) {
+	case "BOX_ROT": case "SLOPE": case "LADDER": case "MDL": case "REVERSED_SLOPE":
+	case "FENCE_A0": case "FENCE_A1": case "FENCE_B0": case "FENCE_B1":
+	case "BOX_LINE_DIR": case "BOX_ROT_LATER": case "MDL_AND_BILLBOARD":
+		return true;
+	}
+	return false;
+}
+
+/* SOURCE-CONFIRMED (hw.dll FUN_021fbe80): the rotation a new block gets.
+   Turnable kinds face the player (FUN_01eca9c0, our yaw quarters); pistons
+   also aim up or down past 45 degrees of pitch (FUN_01eca910 then the flip
+   table DAT_02ba2a0c, so they push the way the player looks); SLAB and
+   BOX_ROT_LATER start at 0 (the low third for a slab). UNRESOLVED: the
+   per-block default rotation (+0x20) of every other block; 0 here. */
+float
+VXT_PlaceRot(entity p, float t)
+{
+	t = VX_T(t);
+	switch (vx_entity[t]) {
+	case "PISTON": case "SPIKE_PISTON":
+		if (p.v_angle[0] > 45)
+			return 5;	/* down */
+		if (p.v_angle[0] < -45)
+			return 4;	/* up */
+		return VXT_YawRot(p.v_angle[1]);
+	case "COIN_FARM":
+		return 0;
+	case "BREAKABLE": case "LINK_EXPLOSIVE": case "HIT_EXPLOSIVE": case "DOOR":
+	case "SWITCH": case "BUTTON": case "PUSH": case "HIT_TARGET": case "HIT_BUTTON":
+	case "TRANSIT": case "SPIKE_WALL": case "QUEST_NPC": case "SHELTER_RESOURCE_DECORATION":
+	case "SHELTER_BASEBUILDING": case "LIGHT_ONOFF":
+		return VXT_YawRot(p.v_angle[1]);
+	}
+	if (vx_display[t] == "SLAB" || vx_display[t] == "BOX_ROT_LATER")
+		return 0;
+	if (vx_dims[t] != '1 1 1')
+		return VXT_YawRot(p.v_angle[1]);
+	switch (vx_display[t]) {
+	case "BOX_ROT": case "SLOPE": case "WATER_SLOPE": case "LADDER": case "MDL":
+	case "MDL_AND_BILLBOARD": case "REVERSED_SLOPE": case "FENCE_A0": case "FENCE_A1":
+	case "FENCE_B0": case "FENCE_B1": case "BOX_LINE_DIR":
+		return VXT_YawRot(p.v_angle[1]);
+	}
+	return 0;
+}
+
+/* SOURCE-CONFIRMED (mp.dll CVxlEditor FUN_112560d0: primary passes 1,
+   secondary 0; reach 200; hw.dll FUN_0224a2d0):
+   - SLAB: primary raises the height state 0..4 and wraps to 0, secondary
+     lowers it and wraps to 4 (thirds: low 1/3, low 2/3, whole, high 2/3,
+     high 1/3; "Adjusts the number of rows")
+   - pistons: primary turns a level piston clockwise or lays an upright
+     one down facing +Y; secondary stands it up, then flips up and down
+   - multi-cell blocks with a non-square footprint only turn half way
+   - anything else turns a quarter, primary clockwise seen from above
+   (CSO's direction cycle DAT_02babff8 0 +Y > 2 +X > 1 -Y > 3 -X). */
 void
-VXT_Spinner(entity p, float d)
+VXT_Spinner(entity p, float primary)
 {
 	if (vx_testing) {
 		VXT_Fail(p, CS_Text("CSO_Script_ImpossibleOnTest", "You can't do that while testing the script"));
@@ -335,18 +412,32 @@ VXT_Spinner(entity p, float d)
 	if (!VX_AimReach(p, 200))
 		return;
 	vector c = vx_aimCell;
-	/* INFERRED from voxelprop's shape names (BOX next to BOX_ROT and
-	   BOX_ROT_LATER): a plain box has no direction to turn */
 	entity rr = VX_RecordAt(c);
-	float rt = rr ? rr.vb_type : voxel_get(c);
-	if (rt > 0 && rt < VX_MAXTYPE && vx_display[rt] == "BOX") {
+	float rt = VX_T(rr ? rr.vb_type : voxel_get(c));
+	float rot = rr ? rr.vb_rot : voxel_getrot(c);
+	if (!rt || !VXT_CanSpin(rt)) {
 		VXT_Fail(p, CS_Text("CSO_Voxel_CantRotateVoxel", "Block cannot be rotated."));
 		return;
 	}
-	if (VX_RotateBy(p, c, d))
-		printf("studio %.1f: %s rotated %s by %g\n", time, p.netname, VX_Key(c), d);
-	else
-		VXT_Fail(p, CS_Text("CSO_Voxel_CantRotateVoxel", "Cannot rotate the block."));
+	float to;
+	if (vx_display[rt] == "SLAB" && vx_dims[rt] == '1 1 1') {
+		to = primary ? rot + 1 : rot - 1;
+		if (to > 4)
+			to = 0;
+		if (to < 0)
+			to = 4;
+	} else if ((vx_entity[rt] == "PISTON" || vx_entity[rt] == "SPIKE_PISTON") && vx_dims[rt] == '1 1 1') {
+		if (primary)
+			to = (rot >= 4) ? 1 : mod((rot & 3) + 3, 4);
+		else
+			to = (rot == 4) ? 5 : 4;
+	} else if (vx_dims[rt][0] != vx_dims[rt][1]) {
+		to = mod((rot & 3) + 2, 4);
+	} else {
+		to = mod((rot & 3) + (primary ? 3 : 1), 4);
+	}
+	if (VX_RotateTo(p, c, to))
+		printf("studio %.1f: %s spun %s from %g to %g\n", time, p.netname, VX_Key(c), rot, to);
 }
 
 void
@@ -532,7 +623,7 @@ VXT_FillArea(entity p)
 		VXT_Fail(p, CS_Text("Vxl_CantFillBlockInMarkerArea", "You can only fill the area with blocks that are 1x1x1 in size and have a block cost of 0."));
 		return;
 	}
-	float rot = (p.vxt_copyRot >= 0) ? p.vxt_copyRot : VXT_YawRot(p.v_angle[1]);
+	float rot = (p.vxt_copyRot >= 0) ? p.vxt_copyRot : VXT_PlaceRot(p, t);
 	float n = VX_Fill(p, t, rot);
 	sound(p, CHAN_WEAPON, "weapons/vxllonggun-1.wav", 1, ATTN_NORM);
 	printf("studio %.1f: %s filled the area with %s (%g)\n", time, p.netname, voxel_typename(t), n);
@@ -592,7 +683,7 @@ VXT_PlayerFrame(entity p)
 		return;
 	case 334:	/* spinner */
 		if (a1 || a2) {
-			VXT_Spinner(p, a1 ? -1 : 1);
+			VXT_Spinner(p, a1);
 			p.vxt_next = time + 0.2;
 		}
 		return;
