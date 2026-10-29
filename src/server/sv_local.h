@@ -260,6 +260,7 @@ bool SV_SaveTakeRestored(client_t *c);
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);
 void SV_Shutdown(void);
+void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);
 int SV_ModelIndex(const char *name, bool precache);
 int SV_SoundIndex(const char *name, bool precache);
@@ -334,6 +335,7 @@ void W_bi_checkpvs(qcvm_t *vm);
 /* sv_uri.c: uri_get for every module, finished requests are delivered by QC_URIFrame */
 extern const qc_builtin_t qc_uri_builtins[];
 void QC_URIFrame(void);
+void QC_URIDrain(double seconds);
 void W_bi_getsurfacenearpoint(qcvm_t *vm);
 void W_bi_getsurfacetexture(qcvm_t *vm);
 

@@ -243,7 +243,10 @@ int main(int argc, char **argv)
 	CL_Disconnect("quit");
 	MQC_Shutdown();
 	Plug_Shutdown();
+	if (sv.active)
+		SV_DropClients("server shut down");
 	SV_Shutdown();
+	QC_URIDrain(3);
 	UI_Shutdown();
 	S_Shutdown();
 	R_Shutdown();
