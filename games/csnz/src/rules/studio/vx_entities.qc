@@ -318,7 +318,16 @@ VE_DefineVariants(void)
 			if (t == "DOOR")
 				voxel_define(VX_OPEN_BASE + ct, strcat("OPEN_", voxel_typename(ct)), VXS_FIELD, 0, [0.6, 0.6, 0.6], 0.15, "", 0);
 			else if (t == "LIGHT_ONOFF")
+			{
 				voxel_define(VX_OPEN_BASE + ct, strcat("LIT_", voxel_typename(ct)), VXS_FIELD, 0, [1, 0.95, 0.7], 0.6, "", VXF_FULLBRIGHT);
+				/* switched on: the light the block's own type gives (hw.dll
+				   keeps a switch block's light at 0 until its on bit is set) */
+				string sl = hash_get(vx_switchLight, ftos(ct), "", EV_STRING);
+				if (sl == "")
+					sl = hash_get(vx_switchLight, ftos(r.vb_type), "", EV_STRING);
+				if (sl != "" && checkbuiltin(voxel_setlight))
+					voxel_setlight(VX_OPEN_BASE + ct, VXL_POINT, stov(sl));
+			}
 		}
 	}
 }
