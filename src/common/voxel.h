@@ -21,7 +21,8 @@
 #define VX_FILE_VERSION 1
 
 /* collision shapes; the comments give the solid part of a unit cell for
- * rotation 0 (rotations turn it about +Z by 90 degrees each) */
+ * rotation 0 (rotations 0..3 turn it about +Z by 90 degrees each; a cell
+ * keeps rotations 0..7, the upper bit is a state some games use) */
 typedef enum {
 	VXS_EMPTY,     /* nothing */
 	VXS_BOX,       /* the whole cell */
@@ -32,6 +33,8 @@ typedef enum {
 	VXS_THIN,      /* panel: x >= 0.875 (fences, doors, hatches) */
 	VXS_FIELD,     /* the whole cell, but with no solid bit by default
 	                  (water, ladders, trigger volumes) */
+	VXS_SLAB3,     /* CSO's SLAB: the rotation is a height state, not a
+	                  turn; see Vox_Slab3 */
 	VXS_COUNT
 } vxshape_t;
 
@@ -95,6 +98,13 @@ bool Vox_InBounds(const vxworld_t *w, int x, int y, int z);
 int Vox_Get(const vxworld_t *w, int x, int y, int z, int *rot);
 /* false when out of range or the type is not defined (0 always works) */
 bool Vox_Set(vxworld_t *w, int x, int y, int z, int type, int rot);
+
+/* the solid z range of a VXS_SLAB3 cell in state rot: thirds of a cell,
+ * 0 low third, 1 low two thirds, 2 whole, 3 high two thirds, 4 high third
+ * (CSO hw.dll bounds for display type SLAB); states above 4 read as 0 */
+void Vox_Slab3(int rot, float *z0, float *z1);
+/* the quarter turns a shape takes from a rotation (0 for VXS_SLAB3) */
+int Vox_Turns(int shape, int rot);
 
 /* world <-> cell coordinates */
 void Vox_CellForPoint(const vxworld_t *w, const float p[3], int out[3]);

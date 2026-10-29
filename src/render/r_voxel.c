@@ -347,8 +347,9 @@ static int box_polys(float x0, float x1, float z0, float z1, vxpoly_t *out)
 	return 6;
 }
 
-static int shape_polys(int shape, vxpoly_t *out)
+static int shape_polys(int shape, int rot, vxpoly_t *out)
 {
+	float z0, z1;
 	switch (shape) {
 	case VXS_BOX:
 	case VXS_FIELD:
@@ -359,6 +360,9 @@ static int shape_polys(int shape, vxpoly_t *out)
 		return box_polys(0, 1, 0.5f, 1, out);
 	case VXS_THIN:
 		return box_polys(0.875f, 1, 0, 1, out);
+	case VXS_SLAB3:
+		Vox_Slab3(rot, &z0, &z1);
+		return box_polys(0, 1, z0, z1, out);
 	case VXS_SLOPE: {
 		vxpoly_t p[5] = {
 			{4, {{1, 0, 0}, {1, 1, 0}, {1, 1, 1}, {1, 0, 1}}, 0},
@@ -423,7 +427,15 @@ static bool hides(const vxworld_t *w, int x, int y, int z)
 	if (!t)
 		return false;
 	d = &w->defs[t];
-	return d->shape == VXS_BOX && d->color[3] == 255 && !(d->flags & VXF_NODRAW);
+	if (d->color[3] != 255 || (d->flags & VXF_NODRAW))
+		return false;
+	if (d->shape == VXS_SLAB3) {
+		/* state 2 is the whole cell (hw.dll FUN_02141f90) */
+		int rot;
+		Vox_Get(w, x, y, z, &rot);
+		return (rot & 7) == 2;
+	}
+	return d->shape == VXS_BOX;
 }
 
 static image_t *type_image(const vxworld_t *w, int t)
@@ -439,10 +451,15 @@ static image_t *type_image(const vxworld_t *w, int t)
 }
 
 /* a point inside each shape (rotation 0), to turn every face outwards */
-static void shape_interior(int shape, float out[3])
+static void shape_interior(int shape, int rot, float out[3])
 {
+	float z0, z1;
 	out[0] = out[1] = out[2] = 0.5f;
 	switch (shape) {
+	case VXS_SLAB3:
+		Vox_Slab3(rot, &z0, &z1);
+		out[2] = (z0 + z1) * 0.5f;
+		break;
 	case VXS_SLAB_LOW: out[2] = 0.25f; break;
 	case VXS_SLAB_HIGH: out[2] = 0.75f; break;
 	case VXS_THIN: out[0] = 0.9375f; break;
@@ -457,7 +474,8 @@ static void emit_poly(vxbuild_t *b, const vxworld_t *w, const vxpoly_t *p, int r
 {
 	float pts[4][3], n[3], e1[3], e2[3], len, shade, inside[3], cen[3] = {0, 0, 0};
 	int base = b->nv;
-	shape_interior(d->shape, inside);
+	shape_interior(d->shape, rot, inside);
+	rot = Vox_Turns(d->shape, rot);
 	rotate_point(inside, rot);
 	for (int i = 0; i < p->n; i++) {
 		memcpy(pts[i], p->v[i], sizeof(pts[i]));
@@ -602,9 +620,9 @@ static void build_mesh(const vxworld_t *w, int cx, int cy, int cz, vxmesh_t *m)
 			m->numbatches++;
 		}
 		Vox_CellMins(w, x, y, z, org);
-		np = shape_polys(d->shape, polys);
+		np = shape_polys(d->shape, rot, polys);
 		for (int p = 0; p < np; p++) {
-			int side = polys[p].side < 6 ? rotate_side(polys[p].side, rot) : 6;
+			int side = polys[p].side < 6 ? rotate_side(polys[p].side, Vox_Turns(d->shape, rot)) : 6;
 			if (side < 6 && hides(w, x + dir[side][0], y + dir[side][1], z + dir[side][2]))
 				continue;
 			/* water and glass do not draw faces against the same block */
