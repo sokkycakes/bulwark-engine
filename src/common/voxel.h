@@ -43,7 +43,21 @@ typedef struct {
 	uint8_t flags;       /* VXF_* */
 	char name[48];       /* stable name used in save files */
 	char texture[96];    /* image for all faces, "" for a flat colour */
+	uint8_t lighttype;   /* VXL_*: how the block passes or gives light */
+	uint8_t light[3];    /* light it gives, per channel 0..15 (VXL_POINT) */
 } vxdef_t;
+
+/* light kinds, the order of CSO's VoxelLightType (voxelprop.json) */
+enum {
+	VXL_NONE,          /* light passes */
+	VXL_BLOCKED,       /* opaque to light */
+	VXL_SLOPE_BLOCKED, /* stops sky light; light inside only spreads to slopes */
+	VXL_POINT,         /* gives its light[] */
+	VXL_SKY,           /* open sky (set by the light pass, not by blocks) */
+	VXL_WATER_BLOCKED, /* stops sky light, passes the rest */
+	VXL_SLAB_BLOCKED,  /* stops sky light; light inside does not go up or down */
+	VXL_COUNT
+};
 
 #define VXF_NODRAW 1     /* collides but is not drawn (clip, triggers in play) */
 #define VXF_FULLBRIGHT 2
@@ -73,6 +87,7 @@ void Vox_Free(vxworld_t *w);
 void Vox_Clear(vxworld_t *w); /* empties every cell, keeps the type table */
 
 bool Vox_Define(vxworld_t *w, int type, const vxdef_t *def);
+void Vox_TouchAll(vxworld_t *w); /* every chunk needs redrawing (a type's look or light changed) */
 int Vox_TypeForName(const vxworld_t *w, const char *name); /* -1 if none */
 
 /* cells; out of range reads give type 0 */

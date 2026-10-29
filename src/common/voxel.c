@@ -83,6 +83,17 @@ bool Vox_Define(vxworld_t *w, int type, const vxdef_t *def)
 	return true;
 }
 
+void Vox_TouchAll(vxworld_t *w)
+{
+	if (!w)
+		return;
+	for (int i = 0; i < numchunks(w); i++)
+		if (w->chunks[i])
+			w->chunks[i]->dirty = true;
+	w->anydirty = true;
+	w->revision++;
+}
+
 int Vox_TypeForName(const vxworld_t *w, const char *name)
 {
 	if (!w || !name)

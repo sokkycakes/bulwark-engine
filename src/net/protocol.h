@@ -57,7 +57,8 @@ enum {
 	VXN_FREE,  /* no voxel world any more */
 	VXN_DEF,   /* varuint type, byte shape, long contents, byte rgba x4, byte flags, string name, string texture */
 	VXN_CHUNK, /* varuint cx, cy, cz, varuint length, run-length bytes (Vox_EncodeChunk) */
-	VXN_SET    /* varuint x, y, z, short type, byte rot */
+	VXN_SET,   /* varuint x, y, z, short type, byte rot */
+	VXN_LIGHT  /* varuint type, byte lighttype, byte r g b: a type's light (after its DEF) */
 };
 /* svc_download ops: START string name, long size; DATA long offset, short
  * length, bytes; DONE string sha256 hex; REFUSED string name, string why */

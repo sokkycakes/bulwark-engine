@@ -575,6 +575,19 @@ static void parse_voxel(msg_t *m)
 			Con_DPrintf("voxel: bad cell update %u %u %u\n", x, y, z);
 		break;
 	}
+	case VXN_LIGHT: {
+		uint32_t type = MSG_ReadVarUInt(m);
+		int lt = MSG_ReadByte(m), rgb[3];
+		for (int i = 0; i < 3; i++)
+			rgb[i] = MSG_ReadByte(m);
+		if (m->badread || !w || type == 0 || type >= VX_MAX_TYPES || !w->defs[type].defined || lt >= VXL_COUNT)
+			break;
+		w->defs[type].lighttype = (uint8_t)lt;
+		for (int i = 0; i < 3; i++)
+			w->defs[type].light[i] = (uint8_t)BW_MIN(15, rgb[i]);
+		Vox_TouchAll(w);
+		break;
+	}
 	default:
 		Con_Printf("^1bad voxel message %d\n", sub);
 		m->badread = true;
