@@ -53,13 +53,24 @@ void SV_LinkEdict(int e, bool touch_triggers)
 	float *amin = evec(e, F.absmin), *amax = evec(e, F.absmax), *size = evec(e, F.size);
 	if (e <= 0 || !org || !mins || !maxs)
 		return;
+	const float *ang = evec(e, F.angles);
+	float radius = 0;
+	/* a turned brush entity can reach anywhere within its farthest corner */
+	if (ang && (ang[0] != 0 || ang[1] != 0 || ang[2] != 0) &&
+	    (int)QC_EFloat(cur()->vm, e, F.solid) == SOLID_BSP) {
+		for (int i = 0; i < 3; i++) {
+			float c = BW_MAX(fabsf(mins[i]), fabsf(maxs[i]));
+			radius += c * c;
+		}
+		radius = sqrtf(radius);
+	}
 	for (int i = 0; i < 3; i++) {
 		if (size)
 			size[i] = maxs[i] - mins[i];
 		if (amin)
-			amin[i] = org[i] + mins[i] - 1;
+			amin[i] = org[i] + (radius > 0 ? -radius : mins[i]) - 1;
 		if (amax)
-			amax[i] = org[i] + maxs[i] + 1;
+			amax[i] = org[i] + (radius > 0 ? radius : maxs[i]) + 1;
 	}
 	if (touch_triggers && QC_EFloat(cur()->vm, e, F.solid) != SOLID_NOT)
 		SV_TouchTriggers(e);
@@ -97,6 +108,93 @@ static bool ent_brush_model(int e, brushref_t *out)
 	return true;
 }
 
+/* A rotated brush entity is tested in its own frame: points are moved there
+ * (relative to the origin, then onto the model's forward, left and up axes),
+ * and hit normals are turned back into the world. The box being moved keeps
+ * its world alignment, so against a turned model it is an approximation, but
+ * a close one for the small boxes of players and monsters. */
+typedef struct {
+	bool rotated;
+	float origin[3];
+	float axis[3][3]; /* forward, left, up */
+} brushframe_t;
+
+static void brush_frame(int e, brushframe_t *f)
+{
+	const float *org = evec(e, F.origin), *ang = evec(e, F.angles);
+	float right[3];
+	VectorCopy(org, f->origin);
+	f->rotated = ang && (ang[0] != 0 || ang[1] != 0 || ang[2] != 0);
+	if (!f->rotated)
+		return;
+	AngleVectors(ang, f->axis[0], right, f->axis[2]);
+	for (int i = 0; i < 3; i++)
+		f->axis[1][i] = -right[i];
+}
+
+/* world point to the model's space */
+static void frame_to_local(const brushframe_t *f, const float *p, float *out)
+{
+	float d[3];
+	for (int i = 0; i < 3; i++)
+		d[i] = p[i] - f->origin[i];
+	if (!f->rotated) {
+		VectorCopy(d, out);
+		return;
+	}
+	for (int i = 0; i < 3; i++)
+		out[i] = d[0] * f->axis[i][0] + d[1] * f->axis[i][1] + d[2] * f->axis[i][2];
+}
+
+/* direction in the model's space back to the world */
+static void frame_dir_to_world(const brushframe_t *f, const float *v, float *out)
+{
+	if (!f->rotated) {
+		VectorCopy(v, out);
+		return;
+	}
+	for (int i = 0; i < 3; i++)
+		out[i] = v[0] * f->axis[0][i] + v[1] * f->axis[1][i] + v[2] * f->axis[2][i];
+}
+
+static void trace_brush_entity(int e, const brushref_t *m, const float *start, const float *mins, const float *maxs,
+                               const float *end, int mask, bsptrace_t *bt)
+{
+	float zero[3] = {0, 0, 0}, ls[3], le[3], n[3];
+	brushframe_t f;
+	brush_frame(e, &f);
+	if (!f.rotated) {
+		BSP_TraceModel(m->bsp, m->submodel, f.origin, start, mins, maxs, end, mask, bt);
+		return;
+	}
+	frame_to_local(&f, start, ls);
+	frame_to_local(&f, end, le);
+	BSP_TraceModel(m->bsp, m->submodel, zero, ls, mins, maxs, le, mask, bt);
+	frame_dir_to_world(&f, bt->normal, n);
+	VectorCopy(n, bt->normal);
+	for (int i = 0; i < 3; i++)
+		bt->endpos[i] = start[i] + (end[i] - start[i]) * bt->fraction;
+	bt->dist = n[0] * bt->endpos[0] + n[1] * bt->endpos[1] + n[2] * bt->endpos[2];
+}
+
+static int brush_entity_contents(int e, const brushref_t *m, const float *p)
+{
+	float zero[3] = {0, 0, 0}, lp[3];
+	brushframe_t f;
+	brush_frame(e, &f);
+	frame_to_local(&f, p, lp);
+	return BSP_PointContents(m->bsp, m->submodel, zero, lp);
+}
+
+/* A brush entity with a negative .skin takes that Quake content value for all
+ * of its brushes, as in FTE: a func_ladder sets CONTENT_LADDER, which leaves
+ * it climbable but not solid. Returns 0 for brush entities without one. */
+static int skin_contents(int e)
+{
+	int skin = F.skin >= 0 ? (int)QC_EFloat(cur()->vm, e, F.skin) : 0;
+	return skin < 0 ? BSP_QuakeContentsToBits(skin) : 0;
+}
+
 /* e's box, where e is now, overlaps the brushes of the brush entity pusher */
 bool SV_InsideBrushEntity(int pusher, int e)
 {
@@ -105,8 +203,8 @@ bool SV_InsideBrushEntity(int pusher, int e)
 	float *org = evec(e, F.origin), *mins = evec(e, F.mins), *maxs = evec(e, F.maxs);
 	if (!org || !mins || !maxs || !ent_brush_model(pusher, &m))
 		return false;
-	BSP_TraceModel(m.bsp, m.submodel, evec(pusher, F.origin), org, mins, maxs, org,
-	               CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_MONSTERCLIP, &bt);
+	trace_brush_entity(pusher, &m, org, mins, maxs, org,
+	                   CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_MONSTERCLIP, &bt);
 	return bt.startsolid;
 }
 
@@ -133,7 +231,10 @@ int SV_PointContentsBits(const float *p)
 		}
 		if (!ent_brush_model(e, &m))
 			continue;
-		bits |= BSP_PointContents(m.bsp, m.submodel, evec(e, F.origin), p);
+		{
+			int c = brush_entity_contents(e, &m, p), skinbits = skin_contents(e);
+			bits |= skinbits && c ? skinbits : c;
+		}
 	}
 	return bits;
 }
@@ -319,7 +420,16 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 			continue;
 		if ((solid == SOLID_BSP || solid == SOLID_BSPTRIGGER) && ent_brush_model(e, &m)) {
 			int emask = (solid == SOLID_BSPTRIGGER) ? -1 : mask;
-			BSP_TraceModel(m.bsp, m.submodel, evec(e, F.origin), start, mins, maxs, end, emask, &bt);
+			int skinbits = skin_contents(e);
+			if (skinbits) {
+				/* every brush counts as the skin's contents */
+				if (!(skinbits & mask) && solid != SOLID_BSPTRIGGER)
+					continue;
+				emask = -1;
+			}
+			trace_brush_entity(e, &m, start, mins, maxs, end, emask, &bt);
+			if (skinbits)
+				bt.contents = skinbits;
 			merge_bsp(tr, &bt, m.bsp, e);
 		} else {
 			float bmin[3], bmax[3], *org = evec(e, F.origin), *emin = evec(e, F.mins), *emax = evec(e, F.maxs);

@@ -146,6 +146,8 @@ typedef struct {
 
 /* sweeps the box mins/maxs from start to end through one model's brushes,
  * offset by origin; only brushes whose contents intersect mask are hit */
+/* a Quake CONTENT_ value (-2 solid, -16 ladder, ...) as CONTENTS_ bits */
+int BSP_QuakeContentsToBits(int contents);
 void BSP_TraceModel(const bspmap_t *map, int model, const float *origin, const float *start,
                     const float *mins, const float *maxs, const float *end, int mask, bsptrace_t *tr);
 int BSP_PointContents(const bspmap_t *map, int model, const float *origin, const float *p);
