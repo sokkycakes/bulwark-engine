@@ -177,7 +177,7 @@ static void resolve_fields(qcvm_t *vm)
 	FLD(avelocity); FLD(mins); FLD(maxs); FLD(size); FLD(absmin); FLD(absmax); FLD(solid);
 	FLD(movetype); FLD(nextthink); FLD(think); FLD(touch); FLD(use); FLD(blocked); FLD(frame);
 	FLD(skin); FLD(flags); FLD(owner); FLD(chain); FLD(health); FLD(ltime); FLD(effects);
-	FLD(colormap); FLD(gravity); FLD(groundentity); FLD(customphysics); FLD(predraw);
+	FLD(colormap); FLD(gravity); FLD(groundentity); FLD(bouncefactor); FLD(bouncestop); FLD(customphysics); FLD(predraw);
 	FLD(drawmask); FLD(renderflags); FLD(alpha); FLD(scale); FLD(pvsflags); FLD(dimension_solid);
 	FLD(dimension_hit); FLD(hitcontentsmaski); FLD(v_angle); FLD(fixangle); FLD(button0);
 	FLD(button2); FLD(impulse); FLD(waterlevel); FLD(watertype); FLD(view_ofs); FLD(netname);

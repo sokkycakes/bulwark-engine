@@ -64,6 +64,7 @@ typedef struct {
 	int classname, model, modelindex, origin, angles, velocity, avelocity, mins, maxs, size;
 	int absmin, absmax, solid, movetype, nextthink, think, touch, use, blocked, frame, skin;
 	int flags, owner, chain, health, ltime, effects, colormap, gravity, groundentity;
+	int bouncefactor, bouncestop;
 	int customphysics, predraw, drawmask, renderflags, alpha, scale, sendentity, sendflags;
 	int pvsflags, dimension_solid, dimension_hit, hitcontentsmaski, nextthink_lerp;
 	int v_angle, fixangle, button0, button2, impulse, waterlevel, watertype, view_ofs, netname;
