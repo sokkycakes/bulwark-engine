@@ -492,6 +492,24 @@ char *FS_LoadFile(const char *path, size_t *len)
 	return NULL;
 }
 
+int FS_WhichGameDir(const char *path)
+{
+	char ospath[2048];
+	struct stat st;
+	pack_t *pk;
+	if (!FS_SafeName(path))
+		return -1;
+	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
+		if (os_path(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
+			return i;
+		if (os_path_lower(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
+			return i;
+		if (find_in_packs(i, path, &pk))
+			return i;
+	}
+	return -1;
+}
+
 const char *FS_WhichPath(const char *path)
 {
 	char ospath[2048];
