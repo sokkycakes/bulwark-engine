@@ -380,13 +380,16 @@ VE_Piston(entity r, bool out)
 {
 	float len = bound(1, VE_PropF(r, "len", 1), 8);
 	vector dir = [1, 0, 0];
-	switch ((int)r.vb_rot & 3) {
+	/* 4 and 5 push up and down (hw.dll direction table DAT_02ba9df8) */
+	switch ((int)r.vb_rot) {
 	case 0: dir = [1, 0, 0]; break;
 	case 1: dir = [0, 1, 0]; break;
 	case 2: dir = [-1, 0, 0]; break;
+	case 4: dir = [0, 0, 1]; break;
+	case 5: dir = [0, 0, -1]; break;
 	default: dir = [0, -1, 0]; break;
 	}
-	vector tip = r.vb_cell + [dir[0] > 0 ? r.vb_dims[0] - 1 : 0, dir[1] > 0 ? r.vb_dims[1] - 1 : 0, 0];
+	vector tip = r.vb_cell + [dir[0] > 0 ? r.vb_dims[0] - 1 : 0, dir[1] > 0 ? r.vb_dims[1] - 1 : 0, dir[2] > 0 ? r.vb_dims[2] - 1 : 0];
 	for (float i = 1; i <= len; i++) {
 		vector c = tip + dir * i;
 		if (!VX_InBounds(c))

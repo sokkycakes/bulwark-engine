@@ -131,8 +131,15 @@ VX_LoadCatalog(void)
 		if (tex == "-")
 			tex = "";
 
-		if (!voxel_define(id, nm, shape, contents, rgb, alpha, tex, flags))
-			continue;
+		/* SOURCE-CONFIRMED (hw.dll display-type bounds, FUN_02141xxx):
+		   SLAB blocks are thirds of a cell, the rotation bits holding the
+		   height; engines without VXS_SLAB3 keep the old half slab */
+		bool defined = false;
+		if (disp == "SLAB" && shape != VXS_FIELD)
+			defined = voxel_define(id, nm, VXS_SLAB3, contents, rgb, alpha, tex, flags);
+		if (!defined)	/* fteqcc's && does not short-circuit */
+			if (!voxel_define(id, nm, shape, contents, rgb, alpha, tex, flags))
+				continue;
 
 		vx_cost[id] = cost;
 		vx_category[id] = cat;

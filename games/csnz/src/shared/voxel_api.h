@@ -12,6 +12,7 @@
 #define VXS_SLAB_HIGH	5
 #define VXS_THIN	6	/* panel on the +X side at rotation 0 */
 #define VXS_FIELD	7	/* full cell, contents only (water, ladders, volumes) */
+#define VXS_SLAB3	8	/* CSO SLAB: rotation 0..4 is the height in thirds (newer engines) */
 
 /* light kinds (CSO VoxelLightType) */
 #define VXL_NONE	0

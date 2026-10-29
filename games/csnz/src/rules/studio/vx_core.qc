@@ -472,25 +472,24 @@ VX_Remove(entity p, vector c, bool record)
 	return true;
 }
 
-/* rotates the block in place; refused if the rotated block overlaps (OBSERVED) */
-/* d: +1 a quarter turn counter-clockwise (seen from above), -1 clockwise */
+/* sets the block's rotation (0..7) in place; refused if the turned block
+   overlaps (OBSERVED) */
 bool
-VX_RotateBy(entity p, vector c, float d)
+VX_RotateTo(entity p, vector c, float rot)
 {
 	entity r = VX_RecordAt(c);
-	float type, rot;
+	float type;
 	vector base;
 
 	if (voxel_get(c) == 0)
 		return false;
 	if (!r) {
 		VX_BeginOp();
-		VX_SetCell(c, voxel_get(c), mod(voxel_getrot(c) + d + 4, 4));
+		VX_SetCell(c, voxel_get(c), rot);
 		VX_EndOp(p);
 		return true;
 	}
 	type = r.vb_type;
-	rot = mod(r.vb_rot + d + 4, 4);
 	base = r.vb_cell;
 	string why = VX_CheckPlace(type, rot, base, r);
 	if (why != "") {
@@ -510,6 +509,15 @@ VX_RotateBy(entity p, vector c, float d)
 	VX_IndexRecord(r, true);
 	VX_EndOp(p);
 	return true;
+}
+
+/* d: +1 a quarter turn counter-clockwise (seen from above), -1 clockwise */
+bool
+VX_RotateBy(entity p, vector c, float d)
+{
+	entity r = VX_RecordAt(c);
+	float rot = r ? r.vb_rot : voxel_getrot(c);
+	return VX_RotateTo(p, c, mod((rot & 3) + d + 4, 4));
 }
 
 bool
