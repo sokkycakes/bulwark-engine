@@ -104,6 +104,7 @@ void MQC_Shutdown(void)
 		set_time();
 		call(M.shutdown, 0);
 	}
+	R_ResetCursorMode(M.vm);
 	QC_Free(M.vm);
 	for (int i = 0; i < M.numregistered; i++)
 		Mem_Free(M.registered[i]);

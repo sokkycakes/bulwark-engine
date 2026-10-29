@@ -398,6 +398,7 @@ void CSQC_Shutdown(void)
 	WC_ClientGameShutdown();
 	if (CS.Shutdown)
 		QC_Execute(cl.csqc, CS.Shutdown);
+	R_ResetCursorMode(cl.csqc);
 	QC_Free(cl.csqc);
 	cl.csqc = NULL;
 	cl.csqc_initialised = false;
