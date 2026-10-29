@@ -159,7 +159,7 @@ bool Vox_Set(vxworld_t *w, int x, int y, int z, int type, int rot)
 	int i;
 	if (!Vox_InBounds(w, x, y, z) || type < 0 || type >= VX_MAX_TYPES || !w->defs[type].defined)
 		return false;
-	rot &= 3;
+	rot &= 7;
 	slot = chunk_slot(w, x / VX_CHUNK, y / VX_CHUNK, z / VX_CHUNK);
 	c = *slot;
 	if (!c) {
@@ -207,11 +207,26 @@ void Vox_CellMins(const vxworld_t *w, int x, int y, int z, float out[3])
 
 /* --- shapes ----------------------------------------------------------------- */
 
+void Vox_Slab3(int rot, float *z0, float *z1)
+{
+	int s = rot & 7;
+	if (s > 4)
+		s = 0;
+	*z0 = (s > 2 ? s - 2 : 0) / 3.0f;
+	*z1 = 1 - (s < 2 ? 2 - s : 0) / 3.0f;
+}
+
+int Vox_Turns(int shape, int rot)
+{
+	return shape == VXS_SLAB3 ? 0 : (rot & 3);
+}
+
 int Vox_ShapePlanes(int shape, int rot, float planes[][4])
 {
 	static const float box[6][4] = {{1, 0, 0, 1}, {-1, 0, 0, 0}, {0, 1, 0, 1}, {0, -1, 0, 0}, {0, 0, 1, 1}, {0, 0, -1, 0}};
 	const float r2 = 0.70710678f;
 	int n = 6;
+	float z0, z1;
 	if (shape == VXS_EMPTY || shape >= VXS_COUNT)
 		return 0;
 	memcpy(planes, box, sizeof(box));
@@ -233,12 +248,17 @@ int Vox_ShapePlanes(int shape, int rot, float planes[][4])
 	case VXS_THIN:
 		planes[1][3] = -0.875f;
 		break;
+	case VXS_SLAB3:
+		Vox_Slab3(rot, &z0, &z1);
+		planes[4][3] = z1;
+		planes[5][3] = -z0;
+		break;
 	default:
 		break;
 	}
 	/* turn about the cell's vertical centre line: (x, y) -> (1 - y, x) per
 	 * step, which turns normals by +90 degrees about +Z */
-	for (int k = 0; k < (rot & 3); k++) {
+	for (int k = 0; k < Vox_Turns(shape, rot); k++) {
 		for (int p = 0; p < n; p++) {
 			float nx = planes[p][0], ny = planes[p][1];
 			float cdot_old = nx * 0.5f + ny * 0.5f;
@@ -633,7 +653,7 @@ static bool decode_into(vxworld_t *w, int cx, int cy, int cz, rbuf_t *r, const i
 	while (i < VX_CHUNKCELLS) {
 		uint32_t run = rb_var(r);
 		unsigned type = rb_u16(r), rot = rb_u8(r);
-		if (r->bad || run == 0 || run > (uint32_t)(VX_CHUNKCELLS - i) || rot > 3)
+		if (r->bad || run == 0 || run > (uint32_t)(VX_CHUNKCELLS - i) || rot > 7)
 			return false;
 		if (remap) {
 			if (type >= (unsigned)nremap)

@@ -214,7 +214,7 @@ static void bi_voxel_setlight(qcvm_t *vm)
 /* float voxel_set(vector cell, float type, float rot) */
 static void bi_voxel_set(qcvm_t *vm)
 {
-	int c[3], type = (int)QC_PFLOAT(vm, 1), rot = (int)QC_PFLOAT(vm, 2) & 3, oldrot, old;
+	int c[3], type = (int)QC_PFLOAT(vm, 1), rot = (int)QC_PFLOAT(vm, 2) & 7, oldrot, old;
 	uint8_t buf[64];
 	msg_t m;
 	if (!cell_arg(vm, 0, c)) {
@@ -244,7 +244,7 @@ static void bi_voxel_set(qcvm_t *vm)
 static void bi_voxel_fill(qcvm_t *vm)
 {
 	const float *a = QC_PVEC(vm, 0), *b = QC_PVEC(vm, 1);
-	int lo[3], hi[3], type = (int)QC_PFLOAT(vm, 2), rot = (int)QC_PFLOAT(vm, 3) & 3, changed = 0;
+	int lo[3], hi[3], type = (int)QC_PFLOAT(vm, 2), rot = (int)QC_PFLOAT(vm, 3) & 7, changed = 0;
 	vxworld_t *w = sv.voxel;
 	if (!w || type < 0 || type >= VX_MAX_TYPES || !w->defs[type].defined) {
 		QC_ReturnFloat(vm, 0);
