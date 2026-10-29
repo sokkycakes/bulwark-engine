@@ -639,7 +639,7 @@ VS_Init(void)
 	VS_Add("weather", "l", "Vxl_Fullbrowser_Weather", "Weather", "0 #Vxl_Fullbrowser_Weather_None|1 #Vxl_Fullbrowser_Weather_Rain|2 #Vxl_Fullbrowser_Weather_Snow", "0", 1);
 	VS_Add("daylight", "rgb", "Vxl_Fullbrowser_Light", "Color (day)", "", "255 255 255", 1);
 	VS_Add("remove_dim_light", "c", "Vxl_Fullbrowser_RemoveDimLight", "Remove default key light effects", "", "0", 1);
-	VS_Add("invlight", "rgb", "Vxl_Fullbrowser_InvLight", "Color (Back)", "", "128 128 128", 1);
+	VS_Add("invlight", "rgb", "Vxl_Fullbrowser_InvLight", "Color (Back)", "", "255 255 255", 1);
 	VS_Add("fogcolor", "rgb", "Vxl_Fullbrowser_Fog", "Fog color", "", "128 128 128", 1);
 	VS_Add("fogdensity", "s", "Vxl_Fullbrowser_FogDensity", "Fog Amount", "", "0.5", 1);
 	VS_Add("visdist", "s", "Vxl_Fullbrowser_VisDist", "Visibility range", "", "0.5", 1);
@@ -708,6 +708,32 @@ VS_ListValue(int i, float k)
 	return substring(it, 0, strstrofs(it, " "));
 }
 
+/* SOURCE-CONFIRMED (client.dll, the World settings skybox handler at
+   02b180xx): picking a sky also loads that row's FOG_COLOR, INV_COLOR and
+   BRIGHT columns of voxel/voxel_skybox.csv into the settings (FUN_02d00230
+   twice, FUN_02d00470). INFERRED: they land on Fog color, Color (Back) and
+   the day share (Color (day)), the only fields of those shapes. */
+void
+VS_SkyPreset(string sky)
+{
+	filestream fh = fopen("voxel/voxel_skybox.csv", FILE_READ);
+	string s;
+
+	if (fh < 0)
+		return;
+	while ((s = fgets(fh))) {
+		/* NAME,ENV,ICON,"r,g,b","r,g,b",BRIGHT */
+		if (tokenizebyseparator(strreplace("\"", "", s), ",") < 10 || argv(1) != sky)
+			continue;
+		string fog = sprintf("%d %d %d", stof(argv(3)), stof(argv(4)), stof(argv(5)));
+		string inv = sprintf("%d %d %d", stof(argv(6)), stof(argv(7)), stof(argv(8)));
+		float b = stof(argv(9));
+		localcmd(sprintf("cmd vxl_fogcolor %s\ncmd vxl_invlight %s\ncmd vxl_daylight %d %d %d\n", fog, inv, b, b, b));
+		break;
+	}
+	fclose(fh);
+}
+
 void
 VS_Send(int i, string v)
 {
@@ -721,6 +747,8 @@ VS_Send(int i, string v)
 	} else {
 		localcmd(sprintf("cmd vxl_%s %s\n", k, v));
 	}
+	if (k == "skyname")
+		VS_SkyPreset(v);
 	localsound("events/on mouse.wav");
 }
 

@@ -51,6 +51,9 @@ void
 HUD_Draw(void)
 {
 	Art_Frame();
+	/* first: project() answers for the last scene drawn, and the radar
+	   draws its own top-down one */
+	VXW_Draw();
 
 	if (player.GetHealth() > 0) {
 		Crosshair_Draw();
