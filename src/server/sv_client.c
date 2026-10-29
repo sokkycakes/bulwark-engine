@@ -191,9 +191,15 @@ void SV_BroadcastServerinfo(const char *key, const char *value)
 	broadcast_reliable(&m, false);
 }
 
+/* an empty key sends the whole info string, without its private keys */
 static void broadcast_playerinfo(client_t *c, const char *key, const char *value)
 {
+	char pub[2048];
 	LOCALMSG(m, 4096);
+	if (key[0] == '_')
+		return;
+	if (!key[0])
+		value = SV_InfoPublic(value, pub, sizeof(pub));
 	MSG_WriteByte(&m, svc_playerinfo);
 	MSG_WriteByte(&m, client_slot(c));
 	MSG_WriteString(&m, key);
@@ -611,13 +617,14 @@ static void send_serverdata(client_t *c)
 	/* everyone's player info, as whole info strings (empty key) */
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *o = &svs.clients[i];
+		char pub[2048];
 		LOCALMSG(p, 2200);
 		if (o->state == CS_FREE)
 			continue;
 		MSG_WriteByte(&p, svc_playerinfo);
 		MSG_WriteByte(&p, i);
 		MSG_WriteString(&p, "");
-		MSG_WriteString(&p, o->userinfo);
+		MSG_WriteString(&p, SV_InfoPublic(o->userinfo, pub, sizeof(pub)));
 		client_reliable(c, &p);
 		for (int k = 0; k < MAX_INFOBLOBS; k++) {
 			const infoblob_t *b = &o->blobs[k];
