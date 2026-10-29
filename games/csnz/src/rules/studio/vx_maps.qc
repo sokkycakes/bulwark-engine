@@ -23,6 +23,10 @@
 var float autocvar_studio_autosave = 120;	/* seconds; 0 = off */
 var float autocvar_studio_savealarm = 300;	/* seconds; 0 = off. hw.dll DAT_02dfabd8 */
 var string autocvar_studio_map = "";		/* VxlPlay / prop hunt: map to load */
+/* set by the menu's map selection (menu/studio.qc) for a Create room */
+var string autocvar_studio_copyfrom = "";	/* start from a copy of this map */
+var string autocvar_studio_settitle = "";	/* edited details to apply */
+var string autocvar_studio_setdesc = "";
 
 #define VX_MAPDIR "studio/maps/"
 #define VX_SAVEDIR "studio/saves/"
@@ -244,6 +248,22 @@ VX_SaveAlarmFrame(void)
 	printf("studio %.1f: save alarm\n", time);
 }
 
+/* the details beside the map, for the menu's map selection: "key value"
+   lines (DESIGN). The map file itself stays the only source for loading. */
+void
+VX_WriteInfo(string n)
+{
+	filestream fh = fopen(strcat(VX_MAPDIR, n, ".txt"), FILE_WRITE);
+	if (fh < 0)
+		return;
+	fputs(fh, strcat("title ", vx_title, "\n"));
+	fputs(fh, strcat("author ", vx_author, "\n"));
+	fputs(fh, strcat("desc ", vx_desc, "\n"));
+	fputs(fh, strcat("mode ", vx_mapMode, "\n"));
+	fputs(fh, strcat("saved ", strftime(true, "%Y-%m-%d %H:%M"), "\n"));
+	fclose(fh);
+}
+
 bool
 VX_SaveMap(entity p, string n)
 {
@@ -276,6 +296,7 @@ VX_SaveMap(entity p, string n)
 	vx_dirty = false;
 	vx_unsaved = false;
 	vx_saveAlarm = 0;
+	VX_WriteInfo(n);
 	VX_SaveResult("ok");
 	printf("studio %.1f: saved %s (%g blocks, cost %g)\n", time, n, vx_blocks, vx_costTotal);
 	VX_Tell(p, sprintf("Saved %s.", n));
