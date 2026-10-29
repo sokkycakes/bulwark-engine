@@ -361,6 +361,12 @@ VXT_Scanner(entity p, bool withProps)
 			VXT_Fail(p, CS_Text("Vxl_NoBlockInMarkerArea", "There are no blocks to copy inside the area."));
 			return;
 		}
+		/* SOURCE-CONFIRMED (FUN_10a8d410 clears +0x4a): an area copy drops
+		   the single block's copied rotation and properties */
+		p.vxt_copyRot = -1;
+		if (p.vxt_copyProps)
+			strunzone(p.vxt_copyProps);
+		p.vxt_copyProps = "";
 		userinfo.SetInteger(p, "vx_clip", (int)n);
 		CS_Tell(p, sprintf("%d", n));
 		printf("studio %.1f: %s copied %g blocks\n", time, p.netname, n);
@@ -368,7 +374,8 @@ VXT_Scanner(entity p, bool withProps)
 	}
 	if (!VX_AimReach(p, 1000))
 		return;
-	/* INFERRED: a plain scan drops a copied area */
+	/* SOURCE-CONFIRMED: a plain scan (hw.dll FUN_021f3980) calls
+	   FUN_021f3b90, which drops the copied area */
 	VXT_ClearClip(p);
 	entity r = VX_RecordAt(vx_aimCell);
 	float t = r ? r.vb_type : voxel_get(vx_aimCell);
@@ -410,9 +417,14 @@ VXT_PublishMarks(entity p)
    start on each axis (39 in a mode we don't have) and may not be the start
    cell ("Vxl_Cant_Install_Marker_OverlapFrom"); with both placed the click
    does nothing. Right click takes back the last one placed. 0.5 s between
-   shots. INFERRED: which cell the engine's marker trace gives; here the
-   cell in front of a block hit within reach, else the cell at the reach
-   (a marker can stand in the air, "create an area at close range"). */
+   shots. SOURCE-CONFIRMED (hw.dll): the marker trace (CVoxelAdapter +0xac,
+   FUN_0212e8d0 -> FUN_022410c0) runs the create guns' ray tool
+   (CVoxelCollideRayCreateTool, vtable 0x2bac1ec) with its air flag
+   (+0xd0) set to the marker's 1. Its cell callback FUN_02256640 stops at
+   the first block and gives the empty cell in front of it; the end
+   callback FUN_02255d90 gives the empty cell at the end of the reach when
+   nothing was hit and the flag is set; FUN_02255bf0 skips the cells the
+   player stands in. */
 void
 VXT_Marker(entity p, float which)
 {
@@ -420,9 +432,8 @@ VXT_Marker(entity p, float which)
 		if (p.vx_marks <= 0)
 			return;
 		p.vx_marks = (p.vx_marks >= 2) ? 1 : 0;
-		/* INFERRED: taking a marker back also drops the copied area, else
-		   the long gun could only paste from then on */
-		VXT_ClearClip(p);
+		/* SOURCE-CONFIRMED: FUN_11258f80 only steps the marker state back;
+		   the copied area stays */
 		VXT_PublishMarks(p);
 		sound(p, CHAN_WEAPON, "weapons/vxlbuildmarker-1.wav", 1, ATTN_NORM);
 		return;
@@ -717,6 +728,9 @@ VXT_Command(entity p, string cmd)
 		if (t <= 0 || !vx_placeable[VX_T(t)])
 			return true;
 		p.vx_select = t;
+		/* SOURCE-CONFIRMED: picking a block calls FUN_021f3b90, which
+		   drops the copied area as well as the copied rotation */
+		VXT_ClearClip(p);
 		p.vxt_copyRot = -1;
 		if (p.vxt_copyProps)
 			strunzone(p.vxt_copyProps);
