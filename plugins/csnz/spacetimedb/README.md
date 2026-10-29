@@ -8,13 +8,14 @@ keeps working when the database is down.
 
 | Table | What it holds | Visibility |
 |---|---|---|
-| `player` | key (today the player's name), display name, first and last seen | private |
+| `player` | key (see Players below), display name, first and last seen | private |
 | `progression` | level, xp, rank, kill/death/win/match totals, playtime, money | private |
 | `inventory_item`, `loadout` | owned items, equipped character and weapons | private |
 | `achievement`, `achievement_counter` | the 30 achievements and their counters | private |
 | `mode_stats` | per player and CSO mode: matches, wins, kills, deaths | private |
 | `game_server` | live servers (heartbeat every 30 s, dropped after 120 s) | public |
 | `match_record`, `match_player` | every finished match and its players | public |
+| `offline_account`, `offline_chunk` | the real client's offline server database, as snapshots (see Offline server below) | private |
 | `operator` | identities allowed to write | private |
 
 Reducers: `player_seen`, `save_progression`, `save_inventory`,
@@ -54,6 +55,22 @@ any of them. The publisher becomes the first operator.
 `csnz_stdb_debug 1` prints every call and answer. `csnz_stdb_heartbeat`
 sets the server-list interval in seconds.
 
+## Players
+
+Each Bulwark client makes a random `_playerkey` once and keeps it in its
+config, like ElDewrito's player key. Servers keep `_` userinfo keys to
+themselves (other clients never see them, and `user` prints "(private)").
+The QC keys a player by `k` plus 31 hex digits of a SHA-256 of that key
+(`CSNZ_PlayerId`), so the secret itself never reaches file names or this
+database. Clients without a key (bots, older engines) are keyed by the
+letters and digits of their name, as before.
+
+On the first load, a keyed player with no saves of their own takes over the
+saves of their name (`data/csnz/players/<name>*.txt`). Only one key may do
+that per name: `<name>.claimed` records which. The name's files and rows stay
+as they were. Copy `_playerkey` from your config to play as yourself on
+another machine; anyone with it can.
+
 ## Behaviour
 
 - On a player's first spawn the local files load as before, then
@@ -84,3 +101,18 @@ sets the server-list interval in seconds.
   Observed answer shapes: a procedure's `Result<String, String>` is HTTP 200
   with `[0,"..."]` (Ok) or `[1,"..."]` (Err). A reducer's `Err` is HTTP 530
   with the message as plain text. The QC handles both.
+
+## Offline server (the real client)
+
+The real CSNZ client's offline mode (`CSOLauncher -offline`, in sokky's local
+csnz-offline project) hosts its own server, csnzserver.dll, which keeps its
+data in a SQLite file (`OfflineData/UserDatabase.db3`). With an
+`OfflineData/stdb.cfg` (`url=`, `database=`, `token=`, `account=`) that server
+uploads the whole database to `offline_stage`/`offline_commit` when it stops,
+and before it opens the file it downloads the account's snapshot with
+`offline_pull` if that is newer than the last one the machine synced (after
+backing up the local file). A snapshot is chunk 0 (schema and
+`user_version`) plus row chunks of about 256 KiB; staging then committing
+means a broken upload never replaces the stored snapshot. Tested 2026-10-29 on
+Maincloud under Wine: upload, an up-to-date start, and a restore that matched
+the original in all 46 tables.

@@ -36,15 +36,7 @@ string INV_DEFAULT_ITEMS = "weapon_knife weapon_usp weapon_glock18 weapon_m4a1 w
 string
 INV_SavePath(entity p)
 {
-	string id = p.netname;
-	string safe = "";
-	for (float i = 0; i < strlen(id) && i < 32; i++) {
-		float ch = str2chr(id, i);
-		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
-			safe = strcat(safe, chr2str(ch));
-	}
-	if (safe == "") safe = "default";
-	return sprintf("data/csnz/players/%s_inventory.txt", safe);
+	return CSNZ_PlayerFile(p, "_inventory.txt", FALSE);
 }
 
 /* one "key value" line of the save file (or of the SpacetimeDB profile) */
@@ -65,7 +57,7 @@ INV_ParseLine(entity p, string line)
 void
 INV_Load(entity p)
 {
-	string path = INV_SavePath(p);
+	string path = CSNZ_PlayerFile(p, "_inventory.txt", TRUE);
 	filestream f = fopen(path, FILE_READ);
 
 	if (f < 0) {

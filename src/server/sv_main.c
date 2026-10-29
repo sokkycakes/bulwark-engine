@@ -45,6 +45,31 @@ const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outs
 	return out;
 }
 
+/* The info string other clients may see: keys starting with '_' are private
+ * to the server (passwords, the player key), as in QuakeWorld. */
+const char *SV_InfoPublic(const char *info, char *out, size_t outsize)
+{
+	const char *p = info;
+	out[0] = 0;
+	while (*p == '\\') {
+		const char *k = p + 1, *ke = strchr(k, '\\'), *ve;
+		if (!ke)
+			break;
+		ve = strchr(ke + 1, '\\');
+		if (!ve)
+			ve = ke + 1 + strlen(ke + 1);
+		if (*k != '_') {
+			size_t l = strlen(out), n = (size_t)(ve - p);
+			if (l + n < outsize) {
+				memcpy(out + l, p, n);
+				out[l + n] = 0;
+			}
+		}
+		p = ve;
+	}
+	return out;
+}
+
 void SV_InfoSet(char *info, size_t size, const char *key, const char *value)
 {
 	char rebuilt[8192];

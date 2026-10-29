@@ -266,6 +266,7 @@ int SV_ModelIndex(const char *name, bool precache);
 int SV_SoundIndex(const char *name, bool precache);
 void SV_InfoSet(char *info, size_t size, const char *key, const char *value);
 const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outsize);
+const char *SV_InfoPublic(const char *info, char *out, size_t outsize);
 int SV_Spawn(void);
 bool SV_ConsoleCommand(const char *line);
 /* "say" from the server console; false when no server is running */

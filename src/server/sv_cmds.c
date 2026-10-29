@@ -184,7 +184,7 @@ static void User_f(int argc, const char **argv)
 		n = strcspn(++p, "\\");
 		snprintf(value, sizeof(value), "%.*s", (int)n, p);
 		p += n;
-		Con_Printf("  %-20s %s\n", key, value);
+		Con_Printf("  %-20s %s\n", key, key[0] == '_' ? "(private)" : value);
 	}
 }
 

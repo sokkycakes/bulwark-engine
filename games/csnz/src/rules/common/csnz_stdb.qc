@@ -22,8 +22,8 @@
  * asked for again with backoff. A save made in the moment between the
  * local load and the answer is replaced by the stored data.
  *
- * Players are keyed by STDB_PlayerKey (their name today, as the local
- * files are).
+ * Players are keyed by CSNZ_PlayerId (a hash of their private player key,
+ * or their name without one), as the local files are.
  *
  * Original code (ISC). */
 
@@ -69,10 +69,86 @@ STDB_Enabled(void)
 	return autocvar_csnz_stdb && autocvar_csnz_stdb_db != "" && cvar_string("stdb_url") != "";
 }
 
+/* The letters and digits of the player's name: how saves were keyed before
+ * player keys, and still are for clients that send none (bots, old engines). */
+string
+CSNZ_NameId(entity p)
+{
+	string id = p.netname;
+	string safe = "";
+	for (float i = 0; i < strlen(id) && i < 32; i++) {
+		float ch = str2chr(id, i);
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+			safe = strcat(safe, chr2str(ch));
+	}
+	if (safe == "")
+		safe = "default";
+	return safe;
+}
+
+/* The player's id for saves and the database: "k" and 31 hex digits of a
+ * hash of their _playerkey userinfo (a random secret the engine makes once
+ * and keeps in the player's config; servers don't pass '_' keys on to other
+ * clients), else CSNZ_NameId. The hash keeps the secret itself out of file
+ * names and the database. */
+string
+CSNZ_PlayerId(entity p)
+{
+	string key = infokey(p, "_playerkey");
+	if (strlen(key) == 32)
+		return strcat("k", substring(digest_hex("SHA256", strcat("csnz:", key)), 0, 31));
+	return CSNZ_NameId(p);
+}
+
+float
+CSNZ_FileExists(string path)
+{
+	filestream f = fopen(path, FILE_READ);
+	if (f < 0)
+		return FALSE;
+	fclose(f);
+	return TRUE;
+}
+
+/* data/csnz/players/<id><suffix>. For a load, a keyed player with no file of
+ * their own yet takes over the file saved under their name, so saves from
+ * before player keys carry over. Only one key may do that per name:
+ * <name>.claimed records which. The name's file is left as it was. */
+string
+CSNZ_PlayerFile(entity p, string suffix, float forLoad)
+{
+	string id = CSNZ_PlayerId(p);
+	string path = sprintf("data/csnz/players/%s%s", id, suffix);
+	if (!forLoad || substring(id, 0, 1) != "k" || CSNZ_FileExists(path))
+		return path;
+
+	string name = CSNZ_NameId(p);
+	string old = sprintf("data/csnz/players/%s%s", name, suffix);
+	if (!CSNZ_FileExists(old))
+		return path;
+
+	string claim = sprintf("data/csnz/players/%s.claimed", name);
+	filestream f = fopen(claim, FILE_READ);
+	if (f >= 0) {
+		string who = fgets(f);
+		fclose(f);
+		if (who != id)
+			return path;
+	} else {
+		f = fopen(claim, FILE_WRITE);
+		if (f < 0)
+			return path;
+		fputs(f, strcat(id, "\n"));
+		fclose(f);
+		print(sprintf("csnz: %s takes over the saves of the name '%s'\n", id, name));
+	}
+	return old;
+}
+
 string
 STDB_PlayerKey(entity p)
 {
-	return p.netname;
+	return CSNZ_PlayerId(p);
 }
 
 /* a JSON string literal for s */

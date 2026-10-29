@@ -218,15 +218,7 @@ ACH_Idx(entity pl, float n)
 string
 ACH_SavePath(entity p)
 {
-	string id = p.netname;
-	string safe = "";
-	for (float i = 0; i < strlen(id) && i < 32; i++) {
-		float ch = str2chr(id, i);
-		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
-			safe = strcat(safe, chr2str(ch));
-	}
-	if (safe == "") safe = "default";
-	return sprintf("data/csnz/players/%s_achievements.txt", safe);
+	return CSNZ_PlayerFile(p, "_achievements.txt", FALSE);
 }
 
 void
@@ -298,7 +290,7 @@ ACH_Load(entity p)
 {
 	ACH_Reset(p);
 
-	string path = ACH_SavePath(p);
+	string path = CSNZ_PlayerFile(p, "_achievements.txt", TRUE);
 	filestream f = fopen(path, FILE_READ);
 	if (f < 0) {
 		print(sprintf("achievements: new player %s\n", p.netname));

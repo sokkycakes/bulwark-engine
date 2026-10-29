@@ -4,6 +4,7 @@
 #include "console.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/digest.h"
 #include "../common/fs.h"
 #include "../render/render.h"
 #include "../sound/sound.h"
@@ -13,6 +14,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 clstate_t cl;
 
@@ -117,8 +119,37 @@ static void CL_ServerMeshPitch(void)
 		Cvar_Set("r_meshpitch", buf);
 }
 
+/* _playerkey: a random secret that identifies this player to servers that
+ * keep player data (the name can be changed or copied). Made once and kept
+ * in the config; '_' keeps it from other clients. */
+static void ensure_playerkey(void)
+{
+	static cvar_t *key;
+	uint8_t seed[64], hash[32];
+	char hex[65];
+	FILE *f;
+	size_t got = 0;
+	if (!key)
+		key = Cvar_Get("_playerkey", "", CVAR_ARCHIVE | CVAR_USERINFO, "This player's private key for servers that keep player data");
+	if (strlen(key->string) == 32 && strspn(key->string, "0123456789abcdef") == 32)
+		return;
+	if ((f = fopen("/dev/urandom", "rb"))) {
+		got = fread(seed, 1, 32, f);
+		fclose(f);
+	}
+	/* without urandom, fall back to clocks and addresses: unique, not secret */
+	snprintf((char *)seed + 32, 32, "%lx%lx%p", (unsigned long)time(NULL), (unsigned long)clock(), (void *)&got);
+	Digest_SHA256(seed, sizeof(seed), hash);
+	for (int i = 0; i < 16; i++)
+		snprintf(hex + i * 2, 3, "%02x", hash[i]);
+	Cvar_Set("_playerkey", hex);
+	if (got != 32)
+		Con_Printf("warning: no /dev/urandom; _playerkey is guessable\n");
+}
+
 static void build_userinfo(char *out, size_t size)
 {
+	ensure_playerkey();
 	out[0] = 0;
 	for (cvar_t *v = Cvar_First(); v; v = v->next)
 		if (v->flags & CVAR_USERINFO)

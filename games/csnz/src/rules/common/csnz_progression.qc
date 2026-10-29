@@ -1,8 +1,8 @@
 /* csnz_progression: local player progression system.
  *
  * Provides offline XP, leveling, rank, and basic unlock tracking.
- * All data persisted to data/csnz/players/<steamid>.txt or a hash of
- * the player's name when no Steam ID is available.
+ * All data persisted to data/csnz/players/<id>.txt, the id being a hash
+ * of the player's private key or, without one, their name (CSNZ_PlayerId).
  *
  * Original code (ISC). DESIGN numbers throughout - CSNZ's real progression
  * was server-authoritative and these are approximations. */
@@ -71,17 +71,7 @@ PROG_RankForLevel(int level)
 string
 PROG_SavePath(entity p)
 {
-	/* use netname hash as fallback ID */
-	string id = p.netname;
-	/* sanitize: only keep alphanumeric */
-	string safe = "";
-	for (float i = 0; i < strlen(id) && i < 32; i++) {
-		float ch = str2chr(id, i);
-		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
-			safe = strcat(safe, chr2str(ch));
-	}
-	if (safe == "") safe = "default";
-	return sprintf("data/csnz/players/%s.txt", safe);
+	return CSNZ_PlayerFile(p, ".txt", FALSE);
 }
 
 void
@@ -123,7 +113,7 @@ PROG_ParseLine(entity p, string line)
 void
 PROG_Load(entity p)
 {
-	string path = PROG_SavePath(p);
+	string path = CSNZ_PlayerFile(p, ".txt", TRUE);
 	filestream f = fopen(path, FILE_READ);
 
 	PROG_Defaults(p);
