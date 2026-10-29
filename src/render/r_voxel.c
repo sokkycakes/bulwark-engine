@@ -1,8 +1,9 @@
 /* Bulwark engine - drawing the voxel world. Each chunk is meshed into its
  * own vertex buffer when it changes: block faces hidden by an opaque full
- * neighbour are skipped, faces are grouped by texture, and light is a fixed
- * per-face shade times the block's colour (no lightmaps; see
- * docs/spec/voxel.md). ISC licence, see LICENSE. */
+ * neighbour are skipped, faces are grouped by texture, and each vertex is
+ * lit from a per-cell light grid (block light and sky light spread cell by
+ * cell, with corner darkening; see docs/spec/voxel.md "Light").
+ * ISC licence, see LICENSE. */
 #include "r_local.h"
 #include "../common/voxel.h"
 #include "../server/sv_local.h"
@@ -31,9 +32,15 @@ static struct {
 	int nummeshes;
 	image_t *images[VX_MAX_TYPES];
 	bool imagesdone[VX_MAX_TYPES];
+	/* the light grid: per cell R G B sky (0..15, sky 0..7) and its VXL_ kind */
+	uint8_t (*light)[4];
+	uint8_t *lkind;
+	uint32_t *lightsum;     /* per chunk, to find chunks whose light changed */
+	uint32_t lightrev;      /* world revision + 1 the grid was built for */
+	float daylight[3];      /* r_voxel_daylight the meshes were built with */
 } rv;
 
-cvar_t *r_drawvoxels;
+cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight;
 
 static void free_mesh(vxmesh_t *m)
 {
@@ -52,8 +59,218 @@ void R_FreeVoxels(void)
 	for (int i = 0; i < rv.nummeshes; i++)
 		free_mesh(&rv.meshes[i]);
 	Mem_Free(rv.meshes);
+	Mem_Free(rv.light);
+	Mem_Free(rv.lkind);
+	Mem_Free(rv.lightsum);
 	memset(&rv, 0, sizeof(rv));
 }
+
+/* --- light ------------------------------------------------------------------ */
+
+/* CSO's voxel light (hw.dll, the "LightChunk" code): every cell holds red,
+ * green, blue (0..15) and sky (0..7) light and a kind. Open cells from the
+ * top of each column down to the first sky-stopping block get sky 7
+ * (FUN_02247510); then light spreads to the six neighbours losing one step
+ * per cell in every channel, keeping the brightest per channel
+ * (FUN_02248d20). Grids above this many cells are not lit (fixed shade). */
+#define VXL_MAXCELLS (8 * 1024 * 1024)
+
+static int cell_index(const vxworld_t *w, int x, int y, int z)
+{
+	return (z * w->size[1] + y) * w->size[0] + x;
+}
+
+static bool stops_sky(int kind)
+{
+	return kind == VXL_BLOCKED || kind == VXL_SLOPE_BLOCKED || kind == VXL_WATER_BLOCKED ||
+	       kind == VXL_SLAB_BLOCKED;
+}
+
+static void build_light(const vxworld_t *w)
+{
+	static const int dir[6][3] = {{0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0}};
+	size_t n = (size_t)w->size[0] * w->size[1] * w->size[2];
+	int *queue, head = 0, tail = 0, pending;
+	uint8_t *inq;
+	if (!rv.light) {
+		rv.light = Mem_Alloc(sizeof(*rv.light) * n);
+		rv.lkind = Mem_Alloc(n);
+	}
+	memset(rv.light, 0, sizeof(*rv.light) * n);
+	for (int z = 0; z < w->size[2]; z++)
+		for (int y = 0; y < w->size[1]; y++)
+			for (int x = 0; x < w->size[0]; x++) {
+				int i = cell_index(w, x, y, z), t = Vox_Get(w, x, y, z, NULL);
+				const vxdef_t *d = &w->defs[t];
+				rv.lkind[i] = t ? d->lighttype : VXL_NONE;
+				if (t && d->lighttype == VXL_POINT)
+					for (int k = 0; k < 3; k++)
+						rv.light[i][k] = d->light[k];
+			}
+	for (int y = 0; y < w->size[1]; y++)
+		for (int x = 0; x < w->size[0]; x++)
+			for (int z = w->size[2] - 1; z >= 0; z--) {
+				int i = cell_index(w, x, y, z);
+				if (stops_sky(rv.lkind[i]))
+					break;
+				if (rv.lkind[i] == VXL_NONE) {
+					rv.lkind[i] = VXL_SKY;
+					rv.light[i][3] = 7;
+				}
+			}
+	/* a ring of cells to spread from; a cell is in it at most once and is
+	 * added again only after it got brighter, so it never overflows and
+	 * the pass ends (values only go up) */
+	queue = Mem_Alloc(sizeof(int) * n);
+	inq = Mem_Alloc(n);
+	for (size_t i = 0; i < n; i++)
+		if ((rv.lkind[i] == VXL_POINT || rv.lkind[i] == VXL_SKY) &&
+		    (rv.light[i][0] | rv.light[i][1] | rv.light[i][2] | rv.light[i][3])) {
+			queue[tail++] = (int)i;
+			inq[i] = 1;
+		}
+	tail %= (int)n;
+	pending = 0;
+	for (size_t i = 0; i < n; i++)
+		pending += inq[i];
+	while (pending > 0) {
+		int i = queue[head], x = i % w->size[0], y = (i / w->size[0]) % w->size[1],
+		    z = i / (w->size[0] * w->size[1]);
+		uint8_t next[4];
+		bool any = false;
+		head = (head + 1) % (int)n;
+		pending--;
+		inq[i] = 0;
+		for (int k = 0; k < 4; k++) {
+			next[k] = rv.light[i][k] ? rv.light[i][k] - 1 : 0;
+			any |= next[k] != 0;
+		}
+		if (!any)
+			continue;
+		for (int dd = 0; dd < 6; dd++) {
+			int nx = x + dir[dd][0], ny = y + dir[dd][1], nz = z + dir[dd][2], j;
+			bool brighter = false;
+			if (!Vox_InBounds(w, nx, ny, nz))
+				continue;
+			j = cell_index(w, nx, ny, nz);
+			if (rv.lkind[j] == VXL_BLOCKED)
+				continue;
+			if (rv.lkind[i] == VXL_SLOPE_BLOCKED && rv.lkind[j] != VXL_SLOPE_BLOCKED)
+				continue;
+			if (rv.lkind[i] == VXL_SLAB_BLOCKED && dd < 2)
+				continue;
+			for (int k = 0; k < 4; k++)
+				if (next[k] > rv.light[j][k]) {
+					rv.light[j][k] = next[k];
+					brighter = true;
+				}
+			if (brighter && !inq[j]) {
+				queue[tail] = j;
+				tail = (tail + 1) % (int)n;
+				inq[j] = 1;
+				pending++;
+			}
+		}
+	}
+	Mem_Free(queue);
+	Mem_Free(inq);
+}
+
+/* marks the chunks whose light (with a one-cell border, which their faces
+ * sample) changed since the last build */
+static void touch_lit_chunks(vxworld_t *w)
+{
+	int nc = w->nchunks[0] * w->nchunks[1] * w->nchunks[2];
+	if (!rv.lightsum)
+		rv.lightsum = Mem_Alloc(sizeof(uint32_t) * nc);
+	for (int ci = 0; ci < nc; ci++) {
+		int cx = ci % w->nchunks[0], cy = (ci / w->nchunks[0]) % w->nchunks[1], cz = ci / (w->nchunks[0] * w->nchunks[1]);
+		uint32_t sum = 2166136261u;
+		if (!w->chunks[ci])
+			continue;
+		for (int z = cz * VX_CHUNK - 1; z <= (cz + 1) * VX_CHUNK; z++)
+			for (int y = cy * VX_CHUNK - 1; y <= (cy + 1) * VX_CHUNK; y++)
+				for (int x = cx * VX_CHUNK - 1; x <= (cx + 1) * VX_CHUNK; x++) {
+					uint32_t v = 0;
+					if (Vox_InBounds(w, x, y, z)) {
+						const uint8_t *l = rv.light[cell_index(w, x, y, z)];
+						v = (uint32_t)l[0] | (uint32_t)l[1] << 4 | (uint32_t)l[2] << 8 | (uint32_t)l[3] << 12;
+					}
+					sum = (sum ^ v) * 16777619u;
+				}
+		if (sum != rv.lightsum[ci]) {
+			rv.lightsum[ci] = sum;
+			w->chunks[ci]->dirty = true;
+		}
+	}
+}
+
+static bool lit(const vxworld_t *w)
+{
+	return rv.light && r_voxel_light && r_voxel_light->ivalue &&
+	       (size_t)w->size[0] * w->size[1] * w->size[2] <= VXL_MAXCELLS;
+}
+
+/* the face shade by CSO face (FUN_022534c0: base DAT_02e024d8, tinted by the
+ * day colour with weight DAT order 0,7,2,5,3,4,1,6 sevenths):
+ * 0 +z, 1 -z, 2 +y, 3 -y, 4 +x, 5 -x, 6 slope top, 7 slope underside */
+static float face_shade(int face, int ch)
+{
+	static const float base[8] = {1.0f, 0.7f, 0.925f, 0.775f, 0.85f, 0.85f, 0.97f, 0.73f};
+	static const float weight[8] = {0, 7, 2, 5, 3, 4, 1, 6};
+	float day = rv.daylight[ch] / 255.0f * 0.2f - 0.2f;
+	return base[face] * (1 + day * weight[face] / 7);
+}
+
+static const uint8_t *light_at(const vxworld_t *w, int x, int y, int z, int *kind)
+{
+	if (!Vox_InBounds(w, x, y, z)) {
+		*kind = -1;
+		return NULL;
+	}
+	*kind = rv.lkind[cell_index(w, x, y, z)];
+	return rv.light[cell_index(w, x, y, z)];
+}
+
+/* one vertex's brightness per channel (AddQuad, FUN_02142020): the light of
+ * the cell in front of the face and of the three cells around the vertex
+ * (two sides and the corner, the corner only when a side is open), opaque
+ * cells left out; then (7 - light) * 0.6/7 darkens each channel, using the
+ * brighter of block and sky light, and each opaque side or corner takes
+ * 0.1 off (both sides opaque count as three) */
+static void vertex_light(const vxworld_t *w, const int front[3], int ax, const float p[3], int face, float out[3])
+{
+	int u = (ax + 1) % 3, v = (ax + 2) % 3, du = p[u] < 0.5f ? -1 : 1, dv = p[v] < 0.5f ? -1 : 1;
+	int cells[4][3], kind, blocked[3] = {0, 0, 0};
+	float sum[4] = {0, 0, 0, 0}, count = 0, ao, dark[4];
+	const float k = 0.6f / 7;
+	for (int c = 0; c < 4; c++)
+		memcpy(cells[c], front, sizeof(cells[c]));
+	cells[0][u] += du;
+	cells[1][v] += dv;
+	cells[2][u] += du, cells[2][v] += dv;
+	for (int c = 0; c < 4; c++) {
+		const uint8_t *l = light_at(w, cells[c][0], cells[c][1], cells[c][2], &kind);
+		if (c < 3)
+			blocked[c] = kind == VXL_BLOCKED;
+		if (!l || kind == VXL_BLOCKED || (c == 2 && count <= 0))
+			continue;
+		for (int i = 0; i < 4; i++)
+			sum[i] += l[i];
+		count++;
+	}
+	for (int i = 0; i < 4; i++) {
+		float avg = count > 0 ? sum[i] / count : 0;
+		dark[i] = (7 - (avg < 7 ? avg : 7)) * k;
+	}
+	ao = (blocked[0] && blocked[1] ? 3 : blocked[0] + blocked[1] + blocked[2]) * 0.1f;
+	for (int i = 0; i < 3; i++) {
+		float d = dark[i] < dark[3] ? dark[i] : dark[3];
+		out[i] = face_shade(face, i) - ao - d;
+		out[i] = out[i] < 0 ? 0 : out[i] > 1 ? 1 : out[i];
+	}
+}
+
 
 /* --- geometry per shape --------------------------------------------------- */
 
@@ -194,7 +411,7 @@ static void shape_interior(int shape, float out[3])
 }
 
 static void emit_poly(vxbuild_t *b, const vxworld_t *w, const vxpoly_t *p, int rot, const float org[3],
-                      const vxdef_t *d)
+                      const vxdef_t *d, const int cell[3], int side)
 {
 	float pts[4][3], n[3], e1[3], e2[3], len, shade, inside[3], cen[3] = {0, 0, 0};
 	int base = b->nv;
@@ -227,10 +444,27 @@ static void emit_poly(vxbuild_t *b, const vxworld_t *w, const vxpoly_t *p, int r
 		}
 		n[0] = -n[0], n[1] = -n[1], n[2] = -n[2];
 	}
-	/* a fixed sun-like shade: tops bright, bottoms dark, sides in between */
+	/* without the light grid: a fixed sun-like shade, tops bright, bottoms
+	   dark, sides in between */
 	shade = (d->flags & VXF_FULLBRIGHT) ? 1.0f : 0.72f + 0.28f * n[2] + 0.08f * n[0] - 0.04f * n[1];
 	if (shade > 1)
 		shade = 1;
+	/* the face's main axis, its CSO face number and the cell light is read
+	   from: the neighbour for faces on the cell boundary, the cell itself
+	   for faces inside it (slopes, slab tops) */
+	int ax = 2, face, front[3];
+	if (fabsf(n[0]) > fabsf(n[2]) + 0.01f && fabsf(n[0]) >= fabsf(n[1]))
+		ax = 0;
+	else if (fabsf(n[1]) > fabsf(n[2]) + 0.01f)
+		ax = 1;
+	if (ax == 2)
+		face = n[2] > 0 ? (fabsf(n[2]) > 0.99f ? 0 : 6) : (fabsf(n[2]) > 0.99f ? 1 : 7);
+	else
+		face = ax == 1 ? (n[1] > 0 ? 2 : 3) : (n[0] > 0 ? 4 : 5);
+	memcpy(front, cell, sizeof(front));
+	if (side < 6)
+		front[ax] += n[ax] > 0 ? 1 : -1;
+	bool vlit = lit(w) && !(d->flags & VXF_FULLBRIGHT);
 	if (b->nv + 4 > b->cv) {
 		b->cv = b->cv ? b->cv * 2 : 1024;
 		b->v = Mem_Realloc(b->v, sizeof(rvert_t) * b->cv);
@@ -255,8 +489,15 @@ static void emit_poly(vxbuild_t *b, const vxworld_t *w, const vxpoly_t *p, int r
 		v->st[0] = ax;
 		v->st[1] = 1 - ay;
 		memcpy(v->normal, n, sizeof(n));
-		for (int k = 0; k < 3; k++)
-			v->color[k] = (uint8_t)(d->color[k] * shade);
+		if (vlit) {
+			float l[3];
+			vertex_light(w, front, ax, pts[i], face, l);
+			for (int k = 0; k < 3; k++)
+				v->color[k] = (uint8_t)(d->color[k] * l[k]);
+		} else {
+			for (int k = 0; k < 3; k++)
+				v->color[k] = (uint8_t)(d->color[k] * shade);
+		}
 		v->color[3] = d->color[3];
 	}
 	b->idx[b->ni++] = base;
@@ -327,7 +568,7 @@ static void build_mesh(const vxworld_t *w, int cx, int cy, int cz, vxmesh_t *m)
 			/* water and glass do not draw faces against the same block */
 			if (side < 6 && trans && Vox_Get(w, x + dir[side][0], y + dir[side][1], z + dir[side][2], NULL) == t)
 				continue;
-			emit_poly(&b, w, &polys[p], rot, org, d);
+			emit_poly(&b, w, &polys[p], rot, org, d, (const int[3]){x, y, z}, side);
 		}
 		m->batches[m->numbatches - 1].numindexes = b.ni - m->batches[m->numbatches - 1].firstindex;
 	}
@@ -361,8 +602,23 @@ static void update_meshes(const vxworld_t *w)
 		rv.nummeshes = n;
 		rv.meshes = Mem_Alloc(sizeof(vxmesh_t) * n);
 	}
+	{
+		float day[3] = {255, 255, 255};
+		if (r_voxel_daylight)
+			sscanf(r_voxel_daylight->string, "%f %f %f", &day[0], &day[1], &day[2]);
+		if (memcmp(day, rv.daylight, sizeof(day))) {
+			memcpy(rv.daylight, day, sizeof(day));
+			Vox_TouchAll((vxworld_t *)w);
+		}
+	}
 	if (!((vxworld_t *)w)->anydirty)
 		return;
+	if (r_voxel_light && r_voxel_light->ivalue && (size_t)w->size[0] * w->size[1] * w->size[2] <= VXL_MAXCELLS &&
+	    rv.lightrev != w->revision + 1) {
+		build_light(w);
+		touch_lit_chunks((vxworld_t *)w);
+		rv.lightrev = w->revision + 1; /* + 1: a new world at revision 0 still gets lit */
+	}
 	/* a type definition may have changed its texture */
 	for (int i = 0; i < VX_MAX_TYPES; i++)
 		rv.imagesdone[i] = false;
