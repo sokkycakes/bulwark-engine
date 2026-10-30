@@ -139,3 +139,8 @@ how muzzle flashes on view models stay in front of the gun.
 
 `r_viewmodel_mirror` also mirrors the tags `gettaginfo` returns for view
 models, so attachments such as the muzzle stay on the drawn barrel.
+
+The render flag `RF_MIRROR` (65536, Bulwark's own) mirrors one entity left
+to right, model and tags alike. On a view model it flips the
+`r_viewmodel_mirror` result, so a model built for the other hand (Counter-
+Strike Online's are left-handed) is drawn the way the cvar asks.

@@ -12,6 +12,16 @@ rscene_t r_scene;
 rstats_t r_stats;
 static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch, *r_viewmodel_mirror, *r_seqblend;
 
+/* whether an entity with these render flags is drawn mirrored left to right
+ * (r_viewmodel_mirror for view models, RF_MIRROR for any entity) */
+bool R_EntityMirrored(int renderflags)
+{
+	bool mirror = (renderflags & RF_MIRROR) != 0;
+	if ((renderflags & (1 | 4)) && r_viewmodel_mirror && r_viewmodel_mirror->ivalue)
+		mirror = !mirror;
+	return mirror;
+}
+
 /* entity fields addentity reads, looked up once per client game */
 static struct {
 	qcvm_t *vm;
@@ -382,9 +392,11 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 		memcpy(e->axis, axis, sizeof(axis));
 	}
 	/* view models mirrored left to right: Counter-Strike's view models are
-	 * built for the left hand and the game shows them mirrored */
+	 * built for the left hand and the game shows them mirrored. RF_MIRROR
+	 * (65536, Bulwark's own) mirrors one entity, so a game can mirror only
+	 * the view models that need it; with r_viewmodel_mirror it cancels. */
 	e->mirrored = false;
-	if ((e->renderflags & (1 | 4)) && r_viewmodel_mirror && r_viewmodel_mirror->ivalue) {
+	if (R_EntityMirrored(e->renderflags)) {
 		for (int k = 0; k < 3; k++)
 			e->axis[1][k] = -e->axis[1][k];
 		e->mirrored = true;
