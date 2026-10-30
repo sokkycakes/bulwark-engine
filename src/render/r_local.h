@@ -362,6 +362,9 @@ void R_PolygonVertex(const float *org, const float *tc, const float *rgb, float 
 void R_EndPolygon(void);
 void R_EndPolygonRibbon(float radius, const float *tcbias);
 void R_AddEntityFromQC(struct qcvm_s *vm, int ent);
+/* render flag: draw the entity mirrored left to right (Bulwark's own) */
+#define RF_MIRROR 65536
+bool R_EntityMirrored(int renderflags);
 void R_AddEntities(struct qcvm_s *vm, int mask);
 void R_ClearStatics(void);
 int R_AddDynamicLight(const float *org, float radius, const float *color);
