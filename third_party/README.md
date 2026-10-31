@@ -36,6 +36,23 @@ needs no new parameters:
   (then the default one) by nearest weight, and glyph cache keys hold the
   wider value.
 
+Controls and selectors added for the Qt look-alike themes
+(`docs/spec/ui-qt-themes.md`):
+
+- `src/panorama_style.cpp`: the pseudo-classes `:checked` (the `checked`
+  class or a selected panel), `:pressed` (same as `:active`), `:first-child`,
+  `:last-child` and `:only-child`. Rules with the last three count as sibling
+  rules, so siblings don't share computed styles.
+- `src/panorama_dom.cpp`, `src/panorama_layout.cpp`: a `ProgressBar`
+  control with `#ProgressBarLeft` (filled) and `#ProgressBarRight` children,
+  split by `value` / `min` / `max`; scrollbars gain `.ScrollButtonBack` and
+  `.ScrollButtonForward` children at the two ends of the track, with no size
+  unless styled, and the thumb travels between them
+  (`panorama_scrollbar_track`).
+- `src/panorama_input.cpp`, `src/panorama_view.cpp`: pressing a scrollbar
+  button scrolls 20px with the wheel's smooth-scroll spring, and a pointer
+  change keeps the scroll animation walk running.
+
 ### Changes to nanosvg
 
 nanosvg ignores `<mask>`, so masked art drew its mask shapes as ordinary

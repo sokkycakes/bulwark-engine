@@ -1011,9 +1011,34 @@ bool simple_matches(const PanoramaNode& node, const PanoramaSimpleSelector& simp
                 return false;
             }
         }
-        else if (pseudo == "active")
+        else if (pseudo == "active" || pseudo == "pressed")
         {
+            // `:pressed` is Qt's name for it (QSS themes).
             if (!node.active)
+            {
+                return false;
+            }
+        }
+        else if (pseudo == "checked")
+        {
+            // Toggle/radio state: the `checked` class the controls keep, or
+            // a selected panel.
+            if (!node.selected && std::find(node.classes.begin(), node.classes.end(), "checked") == node.classes.end())
+            {
+                return false;
+            }
+        }
+        else if (pseudo == "first-child" || pseudo == "last-child" || pseudo == "only-child")
+        {
+            if (node.parent == nullptr)
+            {
+                return false;
+            }
+            const auto& siblings = node.parent->children;
+            const bool first = !siblings.empty() && siblings.front().get() == &node;
+            const bool last = !siblings.empty() && siblings.back().get() == &node;
+            if ((pseudo == "first-child" && !first) || (pseudo == "last-child" && !last) ||
+                (pseudo == "only-child" && !(first && last)))
             {
                 return false;
             }
@@ -1389,6 +1414,18 @@ SelectorAncestorFilter& selector_ancestor_filter()
 // does not contain. Drives compute_invalidated's widened sibling recompute.
 bool selector_uses_sibling_combinator(const PanoramaSelector& selector)
 {
+    // Structural pseudo-classes depend on siblings the same way, so they need
+    // the same invalidation and must not share styles between siblings.
+    for (const PanoramaSimpleSelector& compound : selector.compounds)
+    {
+        for (const std::string& pseudo : compound.pseudos)
+        {
+            if (pseudo == "first-child" || pseudo == "last-child" || pseudo == "only-child")
+            {
+                return true;
+            }
+        }
+    }
     for (const PanoramaCombinator combinator : selector.combinators)
     {
         if (combinator == PanoramaCombinator::AdjacentSibling || combinator == PanoramaCombinator::GeneralSibling)

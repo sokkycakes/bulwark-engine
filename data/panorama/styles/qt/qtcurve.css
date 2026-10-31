@@ -1,0 +1,480 @@
+/*
+	QtCurve look-alike for Panorama (QtCurve 1.9 defaults).
+
+	Put class="QtCurve" on any panel; everything inside it takes the look.
+	Colours come from the palette variables below, so another colour scheme
+	is a new block of variables. Values were measured from screenshots of the
+	QtCurve Qt 5 style with its standard palette (tools/qtref/gallery.py); no
+	QtCurve code was used.
+
+	Same widget set and structure as fusion.css; see docs/spec/ui-qt-themes.md.
+	QtCurve draws widgets 1px inside their rectangle, with a 1px etch line
+	below (light) or a glow around them when hovered or default.
+*/
+
+.QtCurve
+{
+	--window: #eff0f1;
+	--window-text: #232629;
+	--base: #ffffff;
+	--button-text: #232629;
+	--text: #232629;
+	--highlight: #3daee9;
+	--highlighted-text: #ffffff;
+	--disabled-text: #a8a9aa;
+	--outline: #bdbdbd;
+	--outline-disabled: #b4b4b4;
+	--sunken-outline: #b0b4b8;
+	--etch: #e2e3e4;
+	--focus-outline: #326686;
+	--hover-glow: #74b5de;
+	--default-glow: #91c3e2;
+	--button-top: #ffffff;
+	--button-bottom: #f7f7f7;
+	--button-pressed-top: #dbdbdb;
+	--button-pressed-bottom: #d0d0d0;
+	--groove-outline: #b3b3b3;
+	--groove-top: #d1d1d1;
+	--groove-bottom: #dddddd;
+	--fill-outline: #2995ce;
+	--fill-top: #44b3ed;
+	--fill-mid: #32a5e1;
+	--fill-bottom: #3cade8;
+	--slider-fill-top: #3591cb;
+	--slider-fill-bottom: #3286ba;
+	--thumb-top: #ffffff;
+	--thumb-bottom: #ebebeb;
+	--trough-top: #cacaca;
+	--trough-bottom: #dfdfdf;
+	--frame-top: #e7e8e9;
+	--frame-bottom: #eff0f1;
+	--tab-inactive-top: #dee0e2;
+	--tab-inactive-bottom: #d6d8da;
+	--tab-active-bottom: #f0f1f2;
+
+	background-color: var(--window);
+	color: var(--window-text);
+	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
+	font-size: 12px;
+}
+
+.QtCurve Label
+{
+	color: var(--window-text);
+	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
+	font-size: 12px;
+}
+
+/* ---- Push buttons --------------------------------------------------------- */
+
+.QtCurve Button
+{
+	margin: 1px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--button-top) ), to( var(--button-bottom) ) );
+	border: 1px solid var(--outline);
+	border-radius: 4px;
+	box-shadow: 0px 1px 0px 0px var(--etch);
+}
+
+.QtCurve Button > Label
+{
+	color: var(--button-text);
+	horizontal-align: center;
+	vertical-align: center;
+}
+
+.QtCurve Button:hover,
+.QtCurve Button.default
+{
+	border-color: var(--focus-outline);
+	box-shadow: 0px 0px 0px 1px var(--hover-glow);
+}
+
+.QtCurve Button.default
+{
+	box-shadow: 0px 0px 0px 1px var(--default-glow);
+}
+
+.QtCurve Button:active,
+.QtCurve Button:checked
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--button-pressed-top) ), to( var(--button-pressed-bottom) ) );
+	border-color: var(--outline);
+	box-shadow: 0px 1px 0px 0px #fefefe;
+}
+
+.QtCurve Button:disabled
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #fdfdfd ), to( #ececec ) );
+	border-color: var(--outline-disabled);
+}
+
+.QtCurve Button:disabled > Label
+{
+	color: var(--disabled-text);
+}
+
+/* ---- Check boxes and radio buttons ---------------------------------------- */
+
+.QtCurve ToggleButton,
+.QtCurve RadioButton
+{
+	flow-children: right;
+}
+
+.QtCurve ToggleButton > Label,
+.QtCurve RadioButton > Label
+{
+	vertical-align: center;
+	margin-left: 5px;
+}
+
+.QtCurve .TickBox
+{
+	width: 15px;
+	height: 15px;
+	margin-left: 1px;
+	vertical-align: center;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+	box-shadow: 0px 1px 0px 0px var(--etch);
+	background-size: 14px 14px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve ToggleButton:hover > .TickBox
+{
+	border-color: var(--focus-outline);
+	box-shadow: 0px 0px 0px 1px var(--hover-glow);
+}
+
+.QtCurve ToggleButton:checked > .TickBox
+{
+	background-image: url( "file://{images}/qt/qtcurve-check.png" );
+}
+
+.QtCurve ToggleButton:disabled > .TickBox
+{
+	background-color: #f3f3f3;
+	border-color: var(--outline-disabled);
+}
+
+.QtCurve ToggleButton:disabled:checked > .TickBox
+{
+	background-image: url( "file://{images}/qt/qtcurve-check-disabled.png" );
+}
+
+.QtCurve ToggleButton:disabled > Label,
+.QtCurve RadioButton:disabled > Label
+{
+	color: var(--disabled-text);
+}
+
+.QtCurve .RadioBox
+{
+	width: 15px;
+	height: 15px;
+	margin-left: 1px;
+	vertical-align: center;
+	background-color: #fafafa;
+	border: 1px solid #c7c7c7;
+	border-radius: 50%;
+	background-size: 15px 15px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve RadioButton:hover > .RadioBox
+{
+	border-color: var(--focus-outline);
+}
+
+.QtCurve RadioButton:checked > .RadioBox
+{
+	background-image: url( "file://{images}/qt/qtcurve-radio-dot.png" );
+}
+
+/* ---- Line edits ------------------------------------------------------------ */
+
+.QtCurve TextEntry
+{
+	background-color: var(--base);
+	border: 1px solid var(--sunken-outline);
+	border-bottom-color: #dadbdd;
+	border-radius: 2px;
+	color: var(--text);
+	padding: 5px 2px 0px 3px;
+	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
+	font-size: 12px;
+}
+
+.QtCurve TextEntry:focus
+{
+	border-color: var(--focus-outline);
+}
+
+.QtCurve TextEntry:disabled
+{
+	background-color: #f3f3f3;
+	border-color: #a7acb0;
+	border-bottom-color: #d7d8db;
+	color: var(--disabled-text);
+}
+
+/* ---- Combo boxes ----------------------------------------------------------- */
+
+.QtCurve DropDown
+{
+	margin: 1px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--button-top) ), to( var(--button-bottom) ) );
+	border: 1px solid var(--outline);
+	border-radius: 4px;
+	box-shadow: 0px 1px 0px 0px var(--etch);
+	background-image: url( "file://{images}/qt/qtcurve-combo-arrow.png" );
+	background-size: 22px 8px;
+	background-position: 100% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve DropDown:hover
+{
+	border-color: var(--focus-outline);
+	box-shadow: 0px 0px 0px 1px var(--hover-glow);
+}
+
+.QtCurve DropDown > Label
+{
+	color: var(--button-text);
+	vertical-align: center;
+	margin-left: 2px;
+}
+
+/* ---- Sliders --------------------------------------------------------------- */
+
+.QtCurve Slider #SliderTrack
+{
+	overflow: noclip;
+	width: 100%;
+	height: 5px;
+	vertical-align: center;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--groove-top) ), to( var(--groove-bottom) ) );
+	border: 1px solid var(--groove-outline);
+	border-radius: 2px;
+}
+
+.QtCurve Slider #SliderTrackProgress
+{
+	height: 5px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--slider-fill-top) ), to( var(--slider-fill-bottom) ) );
+	border: 1px solid var(--focus-outline);
+	border-radius: 2px;
+}
+
+.QtCurve Slider #SliderThumb
+{
+	width: 21px;
+	height: 13px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--thumb-top) ), to( var(--thumb-bottom) ) );
+	border: 1px solid var(--groove-outline);
+	border-radius: 4px;
+	background-image: url( "file://{images}/qt/qtcurve-grip-v.png" );
+	background-size: 7px 5px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve Slider:hover #SliderThumb
+{
+	border-color: var(--focus-outline);
+}
+
+/* ---- Progress bars --------------------------------------------------------- */
+
+.QtCurve ProgressBar
+{
+	margin: 1px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--trough-top) ), to( var(--trough-bottom) ) );
+	border: 1px solid var(--sunken-outline);
+	border-radius: 2px;
+	box-shadow: 0px 1px 0px 0px #fefefe;
+}
+
+.QtCurve ProgressBar #ProgressBarLeft
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--fill-top) ), color-stop( 0.45, var(--fill-mid) ), to( var(--fill-bottom) ) );
+	border: 1px solid var(--fill-outline);
+	border-radius: 2px;
+}
+
+.QtCurve ProgressBar .ProgressBarText
+{
+	horizontal-align: center;
+	vertical-align: center;
+	color: var(--highlighted-text);
+	font-weight: bold;
+}
+
+/* ---- Scroll bars: a thin groove with a slider-style thumb ----------------- */
+
+.QtCurve VerticalScrollBar
+{
+	width: 15px;
+	height: 100%;
+	horizontal-align: right;
+}
+
+.QtCurve HorizontalScrollBar
+{
+	width: 100%;
+	height: 15px;
+	vertical-align: bottom;
+}
+
+.QtCurve VerticalScrollBar .ScrollThumb
+{
+	width: 13px;
+	min-height: 21px;
+	horizontal-align: center;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( var(--thumb-top) ), to( var(--thumb-bottom) ) );
+	border: 1px solid var(--groove-outline);
+	border-radius: 4px;
+	background-image: url( "file://{images}/qt/qtcurve-grip-h.png" );
+	background-size: 5px 7px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve HorizontalScrollBar .ScrollThumb
+{
+	height: 13px;
+	min-width: 21px;
+	vertical-align: center;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--thumb-top) ), to( var(--thumb-bottom) ) );
+	border: 1px solid var(--groove-outline);
+	border-radius: 4px;
+	background-image: url( "file://{images}/qt/qtcurve-grip-v.png" );
+	background-size: 7px 5px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve VerticalScrollBar:hover .ScrollThumb,
+.QtCurve HorizontalScrollBar:hover .ScrollThumb
+{
+	border-color: var(--focus-outline);
+}
+
+/* The groove is drawn by the bar's line, between the two arrow buttons. */
+.QtCurve VerticalScrollBar
+{
+	background-image: url( "file://{images}/qt/qtcurve-groove-v.png" );
+	background-size: 15px 100%;
+	background-repeat: no-repeat;
+	padding: 0px;
+}
+
+.QtCurve HorizontalScrollBar
+{
+	background-image: url( "file://{images}/qt/qtcurve-groove-h.png" );
+	background-size: 100% 15px;
+	background-repeat: no-repeat;
+}
+
+.QtCurve .ScrollButtonBack,
+.QtCurve .ScrollButtonForward
+{
+	background-color: var(--window);
+	background-size: 14px 14px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtCurve VerticalScrollBar .ScrollButtonBack,
+.QtCurve VerticalScrollBar .ScrollButtonForward { height: 14px; }
+.QtCurve HorizontalScrollBar .ScrollButtonBack,
+.QtCurve HorizontalScrollBar .ScrollButtonForward { width: 14px; }
+
+.QtCurve VerticalScrollBar .ScrollButtonBack { background-image: url( "file://{images}/qt/qtcurve-scroll-up.png" ); }
+.QtCurve VerticalScrollBar .ScrollButtonForward { background-image: url( "file://{images}/qt/qtcurve-scroll-down.png" ); }
+.QtCurve HorizontalScrollBar .ScrollButtonBack { background-image: url( "file://{images}/qt/qtcurve-scroll-left.png" ); }
+.QtCurve HorizontalScrollBar .ScrollButtonForward { background-image: url( "file://{images}/qt/qtcurve-scroll-right.png" ); }
+
+/* ---- Group boxes ----------------------------------------------------------- */
+
+.QtCurve .GroupBox
+{
+	flow-children: down;
+}
+
+.QtCurve .GroupBoxTitle
+{
+	font-weight: bold;
+	margin-left: 1px;
+	margin-bottom: 4px;
+}
+
+.QtCurve .GroupBoxFrame
+{
+	width: 100%;
+	height: fill-parent-flow( 1 );
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--frame-top) ), to( var(--frame-bottom) ) );
+	border: 1px solid var(--sunken-outline);
+	border-bottom-width: 0px;
+	border-radius: 4px 4px 0px 0px;
+}
+
+/* ---- Tabs ------------------------------------------------------------------ */
+
+.QtCurve .TabWidget
+{
+	flow-children: down;
+}
+
+.QtCurve .TabBar
+{
+	flow-children: right;
+	height: 22px;
+	margin-left: 1px;
+}
+
+.QtCurve .TabBar .Tab
+{
+	height: 20px;
+	vertical-align: bottom;
+	padding: 0px 5px;
+	margin-right: 2px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--tab-inactive-top) ), to( var(--tab-inactive-bottom) ) );
+	border: 1px solid var(--sunken-outline);
+	border-bottom-width: 0px;
+	border-radius: 4px 4px 0px 0px;
+}
+
+.QtCurve .TabBar .Tab .RadioBox
+{
+	visibility: collapse;
+}
+
+.QtCurve .TabBar .Tab > Label
+{
+	margin-left: 0px;
+	vertical-align: center;
+}
+
+.QtCurve .TabBar .Tab:checked
+{
+	height: 23px;
+	margin-bottom: -1px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( var(--tab-active-bottom) ) );
+	z-index: 1;
+}
+
+.QtCurve .TabPane
+{
+	width: 100%;
+	height: fill-parent-flow( 1 );
+	background-color: var(--window);
+	border: 1px solid var(--sunken-outline);
+	border-radius: 0px 4px 4px 4px;
+}

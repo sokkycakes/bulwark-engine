@@ -1332,6 +1332,34 @@ void ensure_panorama_slider_internals(PanoramaNode& node)
     }
 }
 
+bool panorama_node_is_progressbar(const PanoramaNode& node)
+{
+    return node.tag_lower == "progressbar";
+}
+
+// Valve's ProgressBar: `#ProgressBarLeft` is the filled part and
+// `#ProgressBarRight` the rest; layout splits the content box by
+// panorama_slider_fraction (value/min/max, max defaulting to 1).
+void ensure_panorama_progressbar_internals(PanoramaNode& node)
+{
+    if (!panorama_node_is_progressbar(node) || direct_child_by_id(node, "ProgressBarLeft") != nullptr)
+    {
+        return;
+    }
+    // In front of any authored children (a percentage label), so those paint on top.
+    for (const char* id : {"ProgressBarRight", "ProgressBarLeft"})
+    {
+        auto part = std::make_unique<PanoramaNode>();
+        part->tag = "Panel";
+        part->tag_lower = "panel";
+        part->id = id;
+        part->parent = &node;
+        node.children.insert(node.children.begin(), std::move(part));
+    }
+    panorama_notify_tree_structure_changed(node);
+    node.mark_style_dirty();
+}
+
 void ensure_panorama_settings_slider_internals(PanoramaNode& node)
 {
     if (!panorama_node_is_settings_slider(node))
@@ -1546,6 +1574,19 @@ void append_scrollbar(PanoramaNode& node, const char* tag, const char* tag_lower
     thumb->parent = bar.get();
     bar->children.push_back(std::move(thumb));
 
+    // Line-step buttons at the two ends of the track (Qt/Windows-style arrows).
+    // They have no size unless a style gives them one, so sheets that don't
+    // style them keep the full-length track.
+    for (const char* cls : {"ScrollButtonBack", "ScrollButtonForward"})
+    {
+        auto button = std::make_unique<PanoramaNode>();
+        button->tag = "Panel";
+        button->tag_lower = "panel";
+        button->classes.emplace_back(cls);
+        button->parent = bar.get();
+        bar->children.push_back(std::move(button));
+    }
+
     // Appended last so the chrome paints over the scrolled content.
     node.children.push_back(std::move(bar));
     panorama_notify_tree_structure_changed(node);
@@ -1572,6 +1613,31 @@ void ensure_panorama_scrollbar_internals(PanoramaNode& node)
 bool panorama_node_is_scrollbar(const PanoramaNode& node)
 {
     return node.attributes.count(std::string(kScrollbarAttr)) != 0;
+}
+
+PanoramaNode* panorama_scrollbar_button(const PanoramaNode& bar, bool forward)
+{
+    const char* cls = forward ? "ScrollButtonForward" : "ScrollButtonBack";
+    for (const auto& child : bar.children)
+    {
+        if (child->has_class(cls))
+        {
+            return child.get();
+        }
+    }
+    return nullptr;
+}
+
+void panorama_scrollbar_track(const PanoramaNode& bar, bool vertical, float& track_pos, float& track_len)
+{
+    track_pos = vertical ? bar.layout.content_y : bar.layout.content_x;
+    track_len = vertical ? bar.layout.content_height : bar.layout.content_width;
+    const PanoramaNode* back = panorama_scrollbar_button(bar, false);
+    const PanoramaNode* forward = panorama_scrollbar_button(bar, true);
+    const float back_len = back == nullptr ? 0.0F : (vertical ? back->layout.height : back->layout.width);
+    const float forward_len = forward == nullptr ? 0.0F : (vertical ? forward->layout.height : forward->layout.width);
+    track_pos += back_len;
+    track_len = std::max(0.0F, track_len - back_len - forward_len);
 }
 
 bool panorama_node_scrolls_x(const PanoramaNode& node)

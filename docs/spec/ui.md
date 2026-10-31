@@ -129,6 +129,12 @@ no game is running.
 | `ui_click <x> <y>` / `ui_key <name>` | synthetic input, for tests and headless runs |
 | `ui_stats` | per-frame update and draw times |
 
+## Qt look-alike themes
+
+`styles/qt/fusion.css` and `styles/qt/qtcurve.css` make the standard widgets
+look like Qt's Fusion and QtCurve styles; see
+[ui-qt-themes.md](ui-qt-themes.md).
+
 ## Not done yet
 
 Hit-testing ignores transforms, so a scaled panel is clicked where it would

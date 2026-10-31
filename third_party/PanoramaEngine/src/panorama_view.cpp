@@ -419,6 +419,9 @@ bool PanoramaView::update_pointer(float x, float y, bool down)
     if (changed)
     {
         request_local_style_update();
+        // A press can start a scroll (scrollbar line-step buttons); the
+        // animation walk ends by itself once nothing is moving.
+        scroll_animations_active_ = true;
     }
     return changed;
 }

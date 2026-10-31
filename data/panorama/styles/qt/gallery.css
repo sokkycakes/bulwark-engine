@@ -1,0 +1,23 @@
+/* Layout of the Qt theme gallery (layout/qt/gallery.xml); the look comes
+   from fusion.css / qtcurve.css. */
+#Window
+{
+	width: 100%;
+	height: 100%;
+}
+
+
+.QtScrollV
+{
+	overflow: squish scroll;
+}
+
+.QtScrollH
+{
+	overflow: scroll squish;
+}
+
+.GalleryCaption
+{
+	font-size: 12px;
+}

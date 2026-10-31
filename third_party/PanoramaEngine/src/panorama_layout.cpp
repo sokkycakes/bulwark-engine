@@ -950,12 +950,41 @@ void layout_scrollbars(PanoramaNode& node)
         {
             continue;
         }
+        // Line-step buttons sit at the two ends of the bar's content box, sized
+        // by their own style (zero when unstyled), and shorten the thumb's track.
+        for (const bool forward : {false, true})
+        {
+            PanoramaNode* button = panorama_scrollbar_button(*child, forward);
+            if (button == nullptr)
+            {
+                continue;
+            }
+            const float cw = child->layout.content_width;
+            const float ch = child->layout.content_height;
+            // Across the bar a button spans its thickness; along it, its styled size.
+            button->layout.width = vertical ? cw : provisional_width(*button, cw, ch);
+            button->layout.height = vertical ? provisional_height(*button, cw, ch) : ch;
+            if (vertical)
+            {
+                button->layout.x = child->layout.content_x;
+                button->layout.y = forward ? child->layout.content_y + ch - button->layout.height : child->layout.content_y;
+            }
+            else
+            {
+                button->layout.x = forward ? child->layout.content_x + cw - button->layout.width : child->layout.content_x;
+                button->layout.y = child->layout.content_y;
+            }
+            refresh_content_box(*button);
+        }
+
         const PanoramaComputedStyle& ts = thumb->computed;
-        const float track_x = child->layout.content_x;
-        const float track_y = child->layout.content_y;
-        const float track_w = child->layout.content_width;
-        const float track_h = child->layout.content_height;
-        const float track_len = vertical ? track_h : track_w;
+        float track_along = 0.0F;
+        float track_len = 0.0F;
+        panorama_scrollbar_track(*child, vertical, track_along, track_len);
+        const float track_x = vertical ? child->layout.content_x : track_along;
+        const float track_y = vertical ? track_along : child->layout.content_y;
+        const float track_w = vertical ? child->layout.content_width : track_len;
+        const float track_h = vertical ? track_len : child->layout.content_height;
         const float visible = vertical ? viewport_h : viewport_w;
         const float total = visible + max_scroll;
         const float current = vertical ? node.scroll_offset_y : node.scroll_offset_x;
@@ -1058,6 +1087,37 @@ void layout_sliders(PanoramaNode& node)
         progress->layout.x = track_x;
         progress->layout.y = track->layout.y + (track->layout.height - progress->layout.height) * 0.5F;
         refresh_content_box(*progress);
+    }
+}
+
+// Splits a `ProgressBar`'s content box between `#ProgressBarLeft` (the filled
+// fraction) and `#ProgressBarRight` (the rest), horizontally. Each child keeps
+// its own styled height (full height when unset).
+void layout_progressbars(PanoramaNode& node)
+{
+    if (!panorama_node_is_progressbar(node))
+    {
+        return;
+    }
+    const float fraction = panorama_slider_fraction(node);
+    const float x = node.layout.content_x;
+    const float w = node.layout.content_width;
+    const float h = node.layout.content_height;
+    const float filled = std::round(fraction * w);
+    for (const auto& child : node.children)
+    {
+        const bool left = child->id == "ProgressBarLeft";
+        if (!left && child->id != "ProgressBarRight")
+        {
+            continue;
+        }
+        child->layout.width = left ? filled : w - filled;
+        const PanoramaLengthType ht = child->computed.height.type;
+        child->layout.height =
+            ht == PanoramaLengthType::Pixels || ht == PanoramaLengthType::Percent ? provisional_height(*child, w, h) : h;
+        child->layout.x = left ? x : x + filled;
+        child->layout.y = node.layout.content_y + (h - child->layout.height) * 0.5F;
+        refresh_content_box(*child);
     }
 }
 
@@ -1406,6 +1466,7 @@ void resolve_node(PanoramaNode& node, const PanoramaTextMeasure& tm)
         apply_overflow_scroll(node);
         layout_scrollbars(node);
         layout_sliders(node);
+        layout_progressbars(node);
         position_open_dropdown_popup(node, tm);
         return;
     }
@@ -1416,6 +1477,7 @@ void resolve_node(PanoramaNode& node, const PanoramaTextMeasure& tm)
         apply_overflow_scroll(node);
         layout_scrollbars(node);
         layout_sliders(node);
+        layout_progressbars(node);
         position_open_dropdown_popup(node, tm);
         return;
     }
@@ -1599,6 +1661,7 @@ void resolve_node(PanoramaNode& node, const PanoramaTextMeasure& tm)
     apply_overflow_scroll(node);
     layout_scrollbars(node);
     layout_sliders(node);
+    layout_progressbars(node);
     position_open_dropdown_popup(node, tm);
 }
 
