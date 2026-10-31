@@ -29,6 +29,23 @@ To compare, render the gallery at 640x400 with `+set ui_designheight 400`
 On 2026-10-31 the mean absolute difference per pixel was 3.7 (Fusion) and
 4.9 (QtCurve) out of 255; most of what's left is text antialiasing.
 
+## Running QtCurve's own settings editor
+
+QtCurve's editor was a System Settings module, which current KDE no longer
+hosts. `tools/qtref/qtcurve-config.py` opens it as a plain window. It needs
+PyQt5, QtCurve's Qt 5 style and a D-Bus session (without one the editor
+shows "Already Open" instead of its pages). Ubuntu 24.04 still packages
+QtCurve, so on another distro run it in a distrobox:
+
+```
+distrobox create -n qtcurve -i ubuntu:24.04
+distrobox enter qtcurve -- sudo apt install -y python3-pyqt5 kde-style-qtcurve-qt5
+distrobox enter qtcurve -- python3 tools/qtref/qtcurve-config.py
+```
+
+Save writes `~/.config/qtcurve/stylerc` (the home folder is shared with the
+box); presets can be imported and exported from its first page.
+
 ## Palette
 
 Each theme declares Qt's palette roles as custom properties on its root
