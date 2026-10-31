@@ -60,6 +60,8 @@ Controls and selectors added for the Qt look-alike themes
   side of zero width is left open: the band is drawn past that side and
   clipped back, so the other sides run to the end (a tab's open bottom). Inset box-shadows
   are drawn inside the border (the padding box), as CSS draws them.
+  A single background image smaller than its box no longer takes the box's
+  rounded corners (only a tile that fills the box does).
 - `src/panorama_layout.cpp`: slider thumbs sit on whole pixels, so their
   border and decoration don't blur.
 - `src/panorama_input.cpp`, `src/panorama_view.cpp`: pressing a scrollbar

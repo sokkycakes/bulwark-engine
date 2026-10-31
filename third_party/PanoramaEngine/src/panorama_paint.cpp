@@ -1259,7 +1259,10 @@ public:
         // paints square corners — same approximation as radial gradients;
         // real content does not combine tiling with border-radius.
         const bool single = tx.count == 1 && ty.count == 1;
-        const CornerRadii tile_radii = single ? radii : CornerRadii{};
+        // Bulwark: only a tile that fills the box takes its corners; a small
+        // image inside it (an icon, a corner mark) keeps its own square edges.
+        const bool fills = single && tile_w >= bw - 0.5F && tile_h >= bh - 0.5F;
+        const CornerRadii tile_radii = fills ? radii : CornerRadii{};
         int first_tile_x = 0;
         int first_tile_y = 0;
         int end_tile_x = tx.count;
