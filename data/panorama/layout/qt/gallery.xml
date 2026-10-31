@@ -8,6 +8,7 @@
 	<styles>
 		<include src="file://{resources}/styles/qt/fusion.css" />
 		<include src="file://{resources}/styles/qt/qtcurve.css" />
+		<include src="file://{resources}/styles/qt/qtcurve-sokky.css" />
 		<include src="file://{resources}/styles/qt/gallery.css" />
 	</styles>
 	<scripts>
@@ -60,5 +61,6 @@
 		<Label class="GalleryCaption" text="Theme:" style="x:10px;y:350px;" />
 		<Button class="ThemeButton" onactivate="SetTheme('QtFusion')" style="x:70px;y:342px;width:90px;height:28px;"><Label text="Fusion" /></Button>
 		<Button class="ThemeButton" onactivate="SetTheme('QtCurve')" style="x:170px;y:342px;width:90px;height:28px;"><Label text="QtCurve" /></Button>
+		<Button class="ThemeButton" onactivate="SetTheme('QtCurve Sokky')" style="x:270px;y:342px;width:90px;height:28px;"><Label text="Sokky" /></Button>
 	</Panel>
 </root>

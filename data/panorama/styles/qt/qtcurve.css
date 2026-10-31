@@ -31,52 +31,63 @@
 	--btn-bt: #bdbdbd;
 	--btn-bs: #bdbdbd;
 	--btn-bb: #bdbdbd;
-	--btn-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--btn-shadow: 0px 1px 0px 0px #e2e3e4;
+	--btn-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--btn-radius: 3px;
 	--btn-margin: 1px;
 	--btn-hover-bt: #326686;
 	--btn-hover-bs: #326686;
 	--btn-hover-bb: #326686;
-	--btn-hover-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #fafafa ) );
 	--btn-hover-shadow: 0px 0px 0px 1px #74b5de;
+	--btn-hover-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #fafafa ) );
 	--btn-pressed-bt: #bdbdbd;
 	--btn-pressed-bs: #bdbdbd;
 	--btn-pressed-bb: #bdbdbd;
-	--btn-pressed-bg: gradient( linear, 0% 0%, 0% 100%, from( #dbdbdb ), to( #d0d0d0 ) );
 	--btn-pressed-shadow: 0px 1px 0px 0px #fefefe;
+	--btn-pressed-bg: gradient( linear, 0% 0%, 0% 100%, from( #dbdbdb ), to( #d0d0d0 ) );
 	--btn-default-bt: #326686;
 	--btn-default-bs: #326686;
 	--btn-default-bb: #326686;
-	--btn-default-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--btn-default-shadow: 0px 0px 0px 1px #91c3e2;
+	--btn-default-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--btn-disabled-bt: #b4b4b4;
 	--btn-disabled-bs: #b4b4b4;
 	--btn-disabled-bb: #b4b4b4;
-	--btn-disabled-bg: gradient( linear, 0% 0%, 0% 100%, from( #f8f8f8 ), to( #ececec ) );
 	--btn-disabled-shadow: 0px 1px 0px 0px #e2e3e4;
+	--btn-disabled-bg: gradient( linear, 0% 0%, 0% 100%, from( #f8f8f8 ), to( #ececec ) );
 	--btn-checked-bt: #bdbdbd;
 	--btn-checked-bs: #bdbdbd;
 	--btn-checked-bb: #bdbdbd;
-	--btn-checked-bg: gradient( linear, 0% 0%, 0% 100%, from( #dbdbdb ), to( #d0d0d0 ) );
 	--btn-checked-shadow: 0px 1px 0px 0px #fefefe;
+	--btn-checked-bg: gradient( linear, 0% 0%, 0% 100%, from( #dbdbdb ), to( #d0d0d0 ) );
+	--btn-default-weight: bold;
+	--btn-default-image: none;
+	--btn-default-image-pos: 0px 0px;
+	--btn-default-image-size: 1px 1px;
 	--check-size: 15px;
 	--check-bt: #bdbdbd;
 	--check-bs: #bdbdbd;
 	--check-bb: #bdbdbd;
-	--check-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--check-shadow: 0px 1px 0px 0px #e2e3e4;
+	--check-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--check-radius: 1px;
 	--check-hover-bt: #326686;
 	--check-hover-bs: #326686;
 	--check-hover-bb: #326686;
-	--check-hover-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #fafafa ) );
 	--check-hover-shadow: 0px 0px 0px 1px #74b5de;
+	--check-hover-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #fafafa ) );
 	--check-disabled-bt: #b4b4b4;
 	--check-disabled-bs: #b4b4b4;
 	--check-disabled-bb: #b4b4b4;
-	--check-disabled-bg: #f7f7f7;
 	--check-disabled-shadow: 0px 1px 0px 0px #e2e3e4;
+	--check-disabled-bg: #f7f7f7;
+	--check-checked-bt: #bdbdbd;
+	--check-checked-bs: #bdbdbd;
+	--check-checked-bb: #bdbdbd;
+	--check-checked-shadow: 0px 1px 0px 0px #e2e3e4;
+	--check-checked-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f9f9f9 ) );
+	--check-image: url( "file://{images}/qt/qtcurve-gen/check.png" );
+	--check-disabled-image: url( "file://{images}/qt/qtcurve-gen/check-disabled.png" );
 	--radio-size: 16px;
 	--radio-border: #c7c7c7;
 	--radio-bg: gradient( linear, 0% 0%, 0% 100%, from( #fefefe ), to( #f8f8f8 ) );
@@ -84,32 +95,32 @@
 	--entry-bt: #b0b4b8;
 	--entry-bs: #b0b4b8;
 	--entry-bb: #dadbdd;
-	--entry-bg: #ffffff;
 	--entry-shadow: none;
+	--entry-bg: #ffffff;
 	--entry-radius: 3px;
 	--entry-margin: 0px;
 	--entry-focus-bt: #326686;
 	--entry-focus-bs: #326686;
 	--entry-focus-bb: #326686;
-	--entry-focus-bg: #ffffff;
 	--entry-focus-shadow: none;
+	--entry-focus-bg: #ffffff;
 	--entry-disabled-bt: #a7acb0;
 	--entry-disabled-bs: #a7acb0;
 	--entry-disabled-bb: #d7d8db;
-	--entry-disabled-bg: #f3f3f3;
 	--entry-disabled-shadow: none;
+	--entry-disabled-bg: #f3f3f3;
 	--combo-bt: #bdbdbd;
 	--combo-bs: #bdbdbd;
 	--combo-bb: #bdbdbd;
-	--combo-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--combo-shadow: 0px 1px 0px 0px #e2e3e4;
+	--combo-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
 	--combo-radius: 3px;
 	--combo-margin: 1px;
 	--combo-hover-bt: #326686;
 	--combo-hover-bs: #326686;
 	--combo-hover-bb: #326686;
-	--combo-hover-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #fafafa ) );
 	--combo-hover-shadow: 0px 0px 0px 1px #74b5de;
+	--combo-hover-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #fafafa ) );
 	--groove-border: #b3b3b3;
 	--groove-bg: gradient( linear, 0% 0%, 0% 100%, from( #d1d1d1 ), to( #dddddd ) );
 	--groove-height: 5px;
@@ -123,21 +134,21 @@
 	--thumb-bt: #b3b3b3;
 	--thumb-bs: #b3b3b3;
 	--thumb-bb: #b3b3b3;
-	--thumb-bg: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ebebeb ) );
 	--thumb-shadow: 0px 1px 0px 0px #e2e3e4;
+	--thumb-bg: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ebebeb ) );
 	--thumb-radius: 3px;
 	--trough-bt: #b0b4b8;
 	--trough-bs: #b0b4b8;
 	--trough-bb: #b0b4b8;
-	--trough-bg: gradient( linear, 0% 0%, 0% 100%, from( #cacaca ), to( #dfdfdf ) );
 	--trough-shadow: 0px 1px 0px 0px #fefefe;
+	--trough-bg: gradient( linear, 0% 0%, 0% 100%, from( #cacaca ), to( #dfdfdf ) );
 	--trough-radius: 2px;
 	--trough-margin: 1px;
 	--pfill-bt: #2995ce;
 	--pfill-bs: #2995ce;
 	--pfill-bb: #2995ce;
-	--pfill-bg: gradient( linear, 0% 0%, 0% 100%, from( #4ab7f1 ), color-stop( 0.088, #44b3ed ), color-stop( 0.441, #3cade8 ), color-stop( 0.559, #32a5e1 ), to( #3cade8 ) );
 	--pfill-shadow: 0px 1px 0px 0px #fefefe;
+	--pfill-bg: gradient( linear, 0% 0%, 0% 100%, from( #4ab7f1 ), color-stop( 0.088, #44b3ed ), color-stop( 0.441, #3cade8 ), color-stop( 0.559, #32a5e1 ), to( #3cade8 ) );
 	--pfill-radius: 2px;
 	--scroll-size: 16px;
 	--scroll-button: 14px;
@@ -160,13 +171,19 @@
 	--frame-border: #b0b4b8;
 	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( #e7e8e9 ), to( #eff0f1 ) );
 	--frame-radius: 1px;
-	--group-title-weight: normal;
+	--group-title-weight: bold;
+	--window-image: none;
+	--window-image-size: 1px 1px;
+	--progress-text-weight: bold;
 }
 /* END qtcurve2panorama */
 
 .QtCurve
 {
 	background-color: var(--window);
+	background-image: var(--window-image);
+	background-size: var(--window-image-size);
+	background-repeat: repeat;
 	color: var(--window-text);
 	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
 	font-size: 12px;
@@ -215,6 +232,15 @@
 	border-top-color: var(--btn-default-bt);
 	border-bottom-color: var(--btn-default-bb);
 	box-shadow: var(--btn-default-shadow);
+	background-image: var(--btn-default-image);
+	background-position: var(--btn-default-image-pos);
+	background-size: var(--btn-default-image-size);
+	background-repeat: no-repeat;
+}
+
+.QtCurve Button.default > Label
+{
+	font-weight: var(--btn-default-weight);
 }
 
 .QtCurve Button:checked
@@ -292,7 +318,12 @@
 
 .QtCurve ToggleButton:checked > .TickBox
 {
-	background-image: url( "file://{images}/qt/qtcurve-check.png" );
+	background-color: var(--check-checked-bg);
+	border-color: var(--check-checked-bs);
+	border-top-color: var(--check-checked-bt);
+	border-bottom-color: var(--check-checked-bb);
+	box-shadow: var(--check-checked-shadow);
+	background-image: var(--check-image);
 }
 
 .QtCurve ToggleButton:disabled > .TickBox
@@ -306,7 +337,7 @@
 
 .QtCurve ToggleButton:disabled:checked > .TickBox
 {
-	background-image: url( "file://{images}/qt/qtcurve-check-disabled.png" );
+	background-image: var(--check-disabled-image);
 }
 
 .QtCurve ToggleButton:disabled > Label,
@@ -477,7 +508,7 @@
 	horizontal-align: center;
 	vertical-align: center;
 	color: var(--highlighted-text);
-	font-weight: bold;
+	font-weight: var(--progress-text-weight);
 }
 
 /* ---- Scroll bars: a thin groove with a slider-style thumb ----------------- */

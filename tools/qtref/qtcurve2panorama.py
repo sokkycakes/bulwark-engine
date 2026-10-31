@@ -23,7 +23,23 @@ ap.add_argument('-o', '--output')
 ap.add_argument('--name')
 ap.add_argument('--debug', help='save the probe render here')
 ap.add_argument('--update', help='replace the generated block of this stylesheet (qtcurve.css) in place')
+ap.add_argument('--images', help='where to write this variant\'s glyph images '
+                '(default: data/panorama/images/qt/<name lower-cased>, or qtcurve-gen without --name)')
 args = ap.parse_args()
+
+# A few settings choose a shape rather than a colour (where the arrow
+# buttons go, an X or a tick, a corner triangle on the default button);
+# those are read from the file instead of measured.
+settings = {}
+if args.stylerc:
+    for line in open(args.stylerc, encoding='utf-8', errors='replace'):
+        if '=' in line:
+            k, v = line.split('=', 1)
+            settings[k.strip()] = v.strip()
+
+
+def setting(key, default):
+    return settings.get(key, default).lower()
 
 # QtCurve reads $XDG_CONFIG_HOME/qtcurve/stylerc when the style is created.
 cfg_home = tempfile.mkdtemp(prefix='qtc-')
@@ -115,6 +131,12 @@ g = put('group', QGroupBox('Group box'), 40, 170, 180, 110)
 t = put('tabs', QTabWidget(), 240, 170, 380, 140)
 for n in ('First', 'Second', 'Third'):
     t.addTab(QWidget(), n)
+
+# Text probes: is the default button's label bold?
+put('txt-normal', QPushButton('Default'), 10, 400, 90, 28)
+put('txt-default', QPushButton('Default'), 110, 400, 90, 28).setDefault(True)
+from PyQt5.QtWidgets import QLabel
+put('txt-label', QLabel('Group box'), 220, 400, 120, 28)
 
 root.show()
 app.processEvents()
@@ -232,12 +254,26 @@ def shadow(b):
 V = {}  # variable name -> value
 
 
-def put_box(prefix, b, with_radius=True, with_margin=False):
+def saturated(c):
+    return max(c) - min(c) > 40
+
+
+def put_box(prefix, b, with_radius=True, with_margin=False, ref=None):
     V[prefix + '-bt'] = hexc(b['top'])
     V[prefix + '-bs'] = hexc(b['side'])
     V[prefix + '-bb'] = hexc(b['bottom'])
-    V[prefix + '-bg'] = gradient(b['fill'])
+    fill = b['fill']
     V[prefix + '-shadow'] = shadow(b)
+    # A coloured line just inside the border that the plain state (ref)
+    # doesn't have: QtCurve's "coloured" mouse-over. Panorama takes one
+    # shadow per box, so it becomes an inset ring in place of the etch.
+    if ref is not None and len(fill) > 4:
+        ends = [c for c, r in ((fill[0], ref['fill'][0]), (fill[-1], ref['fill'][-1]))
+                if saturated(c) and dist(c, r) > 30]
+        if ends:
+            V[prefix + '-shadow'] = 'inset 0px 0px 0px 1px %s' % hexc(ends[0])
+            fill = fill[1:-1]
+    V[prefix + '-bg'] = gradient(fill)
     if with_radius:
         V[prefix + '-radius'] = '%dpx' % b['radius']
     if with_margin:
@@ -269,7 +305,66 @@ palette_vars()
 nb = box(wrect('btn-normal'))
 put_box('btn', nb, with_margin=True)
 for st in ('hover', 'pressed', 'default', 'disabled', 'checked'):
-    put_box('btn-' + st, box(wrect('btn-' + st), nb['margin']), with_radius=False)
+    put_box('btn-' + st, box(wrect('btn-' + st), nb['margin']), with_radius=False,
+            ref=nb if st == 'hover' else None)
+
+# ---- images: small glyphs we draw ourselves in measured colours ----------
+from PIL import Image, ImageDraw
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+img_sub = (args.name or 'qtcurve-gen').lower()
+img_dir = args.images or os.path.join(REPO, 'data', 'panorama', 'images', 'qt', img_sub)
+images = {}
+SS = 8
+
+
+def image_var(var, fname, im):
+    images[fname] = im
+    V[var] = 'url( "file://{images}/qt/%s/%s" )' % (os.path.basename(img_dir.rstrip('/')), fname)
+
+
+def rgba(c, a=255):
+    return tuple(c) + (a,)
+
+
+def draw_lines(size, segments, color, width):
+    im = Image.new('RGBA', (size * SS, size * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    for seg in segments:
+        d.line([(x * SS, y * SS) for x, y in seg], fill=rgba(color), width=int(width * SS), joint='curve')
+    return im.resize((size, size), Image.LANCZOS)
+
+
+def bold_text(name):
+    r = wrect(name)
+    return sum(1 for y in range(r.y(), r.bottom()) for x in range(r.x() + 8, r.right() - 8)
+               if sum(px(x, y)) < 300)
+
+
+V['btn-default-weight'] = 'bold' if bold_text('txt-default') > bold_text('txt-normal') * 1.15 else 'normal'
+
+# Default button marked by a corner triangle instead of a recoloured frame.
+V['btn-default-image'] = 'none'
+V['btn-default-image-pos'] = '0px 0px'
+if setting('defBtnIndicator', 'fontcolor') == 'corner':
+    dr, nr = wrect('btn-default'), wrect('btn-normal')
+    m = nb['margin']
+    diff = [(x, y) for y in range(m + 1, 16) for x in range(m + 1, 16)
+            if dist(px(dr.x() + x, dr.y() + y), px(nr.x() + x, nr.y() + y)) > 30]
+    if diff:
+        x0, y0 = min(p[0] for p in diff), min(p[1] for p in diff)
+        x1, y1 = max(p[0] for p in diff), max(p[1] for p in diff)
+        col = max((px(dr.x() + x, dr.y() + y) for x, y in diff), key=lambda c: -sum(c))
+        w, h = x1 - x0 + 1, y1 - y0 + 1
+        im = Image.new('RGBA', (w * SS, h * SS), (0, 0, 0, 0))
+        ImageDraw.Draw(im).polygon([(0, 0), (w * SS, 0), (0, h * SS)], fill=rgba(col))
+        image_var('btn-default-image', 'default-corner.png', im.resize((w, h), Image.LANCZOS))
+        # Panorama places backgrounds inside the border
+        V['btn-default-image-pos'] = '%dpx %dpx' % (x0 - m - 1, y0 - m - 1)
+        V['btn-default-image-size'] = '%dpx %dpx' % (w, h)
+        for k in ('bg', 'bt', 'bs', 'bb', 'shadow'):
+            V['btn-default-' + k] = V['btn-' + k]
+V.setdefault('btn-default-image-size', '1px 1px')
 
 
 def indicator(name, element):
@@ -285,10 +380,33 @@ cn = box(ci)
 V['check-size'] = '%dpx' % (ci.width() - 2 * cn['margin'])
 put_box('check', cn)
 for st in ('hover', 'disabled'):
-    put_box('check-' + st, box(indicator('chk-' + st, QStyle.SE_CheckBoxIndicator), cn['margin']), with_radius=False)
+    put_box('check-' + st, box(indicator('chk-' + st, QStyle.SE_CheckBoxIndicator), cn['margin']), with_radius=False,
+            ref=cn if st == 'hover' else None)
 # Check marks would cover the fill column; the unchecked boxes give the fill.
 di = indicator('chk-disabled', QStyle.SE_CheckBoxIndicator)
 V['check-disabled-bg'] = hexc(px(di.x() + cn['margin'] + 2, di.y() + cn['margin'] + 2))
+# A checked box can have its own fill (crButton/crColor): a column just
+# inside the border, clear of the mark.
+cc = indicator('chk-checked', QStyle.SE_CheckBoxIndicator)
+put_box('check-checked', box(cc, cn['margin'], column_x=cc.x() + cn['margin'] + 2), with_radius=False)
+
+
+def mark_colour(r):
+    inner = [px(x, y) for y in range(r.y() + 3, r.bottom() - 2) for x in range(r.x() + 3, r.right() - 2)]
+    return min(inner, key=sum)
+
+
+mark = mark_colour(cc)
+mark_dis = mark_colour(di)
+size = 14
+if setting('xCheck', 'false') == 'true':
+    segs = [[(3.5, 3.5), (10.5, 10.5)], [(10.5, 3.5), (3.5, 10.5)]]
+    width = 2.6
+else:
+    segs = [[(3.0, 6.8), (5.6, 9.6), (10.6, 3.4)]]
+    width = 2.4
+image_var('check-image', 'check.png', draw_lines(size, segs, mark, width))
+image_var('check-disabled-image', 'check-disabled.png', draw_lines(size, segs, mark_dis, width))
 
 ri = indicator('rad-normal', QStyle.SE_RadioButtonIndicator)
 rn = box(ri)
@@ -305,7 +423,7 @@ for st in ('focus', 'disabled'):
 
 cbn = box(wrect('combo-normal'))
 put_box('combo', cbn, with_margin=True)
-put_box('combo-hover', box(wrect('combo-hover'), cbn['margin']), with_radius=False)
+put_box('combo-hover', box(wrect('combo-hover'), cbn['margin']), with_radius=False, ref=cbn)
 
 
 def slider_parts():
@@ -379,13 +497,7 @@ sw, sthumb, ssub, sadd, sgroove = scroll_parts()
 V['scroll-size'] = '%dpx' % sw.width()
 # Where the arrow buttons go is a setting, not something to measure; Panorama
 # has one button at each end, so every layout but "none" maps to that.
-settings = {}
-if args.stylerc:
-    for line in open(args.stylerc, encoding='utf-8', errors='replace'):
-        if '=' in line:
-            k, v = line.split('=', 1)
-            settings[k.strip()] = v.strip()
-sbtype = settings.get('scrollbarType', 'kde').lower()
+sbtype = setting('scrollbarType', 'kde')
 V['scroll-button'] = '0px' if sbtype == 'none' else '%dpx' % (sw.width() - 2)
 # groove: across the bar below the thumb
 y = (sthumb.bottom() + sgroove.bottom()) // 2
@@ -433,7 +545,41 @@ gb = box(gframe)
 V['frame-border'] = hexc(gb['top'])
 V['frame-bg'] = gradient(gb['fill'])
 V['frame-radius'] = '%dpx' % gb['radius']
-V['group-title-weight'] = 'bold' if gw.font().bold() or 'bold' in font.styleName().lower() else 'normal'
+glabel = style.subControlRect(QStyle.CC_GroupBox, gopt, QStyle.SC_GroupBoxLabel, gw).translated(gw.mapTo(root, gw.rect().topLeft()))
+
+
+def dark_pixels(r):
+    return sum(1 for y in range(r.y(), r.bottom() + 1) for x in range(r.x(), r.right() + 1) if sum(px(x, y)) < 300)
+
+
+V['group-title-weight'] = 'bold' if dark_pixels(glabel) > dark_pixels(wrect('txt-label')) * 1.15 else 'normal'
+
+# Window background: a repeating pattern (bgndAppearance=striped and the
+# like) becomes a small tile of the measured colours.
+def period(seq):
+    for p in range(1, 17):
+        if all(seq[i] == seq[i + p] for i in range(len(seq) - p)):
+            return p
+    return 0
+
+
+cx = root.width() - 6
+colv = [px(cx, y) for y in range(2, 66)]
+rowv = [px(x, root.height() - 6) for x in range(root.width() - 70, root.width() - 6)]
+pv, ph = period(colv), period(rowv)
+V['window-image'] = 'none'
+V['window-image-size'] = '1px 1px'
+if pv and ph and (pv > 1 or ph > 1):
+    # several periods per tile, so a window isn't thousands of tiny quads
+    tw, th = ph * -(-32 // ph), pv * -(-32 // pv)
+    tile = Image.new('RGBA', (tw, th))
+    for yy in range(th):
+        for xx in range(tw):
+            tile.putpixel((xx, yy), rgba(px(root.width() - 70 + xx % ph, yy % pv)))
+    image_var('window-image', 'window.png', tile)
+    V['window-image-size'] = '%dpx %dpx' % (tw, th)
+
+V['progress-text-weight'] = 'bold' if setting('boldProgress', 'true') == 'true' else 'normal'
 
 # ---- output -----------------------------------------------------------------
 
@@ -447,6 +593,11 @@ for k, v in V.items():
 lines.append('}')
 text = '\n'.join(lines) + '\n'
 BEGIN, END = '/* BEGIN qtcurve2panorama */', '/* END qtcurve2panorama */'
+if (args.update or args.output) and images:
+    os.makedirs(img_dir, exist_ok=True)
+    for fname, im in images.items():
+        im.save(os.path.join(img_dir, fname))
+    sys.stderr.write('images: %s\n' % img_dir)
 if args.update:
     css = open(args.update).read()
     a, b = css.index(BEGIN) + len(BEGIN), css.index(END)

@@ -66,12 +66,27 @@ edited by hand. Checked on 2026-10-31 with the defaults (mean difference
 5.0/255) and with appearance=shinyglass, round=slight, defBtnIndicator=tint,
 buttonEffect=none (4.1/255).
 
-What it does not carry over yet: the check mark, radio dot, arrows, grips
-and the scrollbar groove stay our fixed images (`images/qt/qtcurve-*`);
-`scrollbarType` only switches arrows on or off; triangular slider handles
-and other non-rectangular shapes are drawn as rounded boxes; one-pixel inner
-shadow lines are dropped. Settings for widgets the themes don't cover
-(menus, toolbars, window borders, item views) have no effect.
+It also draws a few small images of its own in measured colours, into
+`images/qt/<variant>/` (`qtcurve-gen/` for the default block): the check
+mark (a tick, or an X with `xCheck=true`), the default button's corner
+triangle (`defBtnIndicator=corner`) and a tile for a patterned window
+background (`bgndAppearance=striped` and the like). A coloured mouse-over
+ring inside the frame (`coloredMouseOver`) becomes an inset `box-shadow`,
+which replaces the etch line in that state because Panorama draws one shadow
+per box. Bold labels on default buttons and group boxes are measured too.
+
+`qtcurve-sokky.css` is a variant made this way from sokky's own settings
+(`qtcurve-sokky.stylerc`, 2026-10-31): class="QtCurve Sokky", or the gallery's
+Sokky button. Mean difference from QtCurve with the same stylerc: 5.7/255.
+
+What it does not carry over yet: the radio dot, arrows, grips and the
+scrollbar groove stay our fixed images (`images/qt/qtcurve-*`);
+`scrollbarType` only switches arrows on or off; striped progress fills,
+faded group-box frames, the combo box's split arrow button, triangular
+slider handles and other non-rectangular shapes are drawn as plain rounded
+boxes; one-pixel inner shadow lines are dropped. Settings for widgets the
+themes don't cover (menus, toolbars, window borders, item views) have no
+effect.
 
 ## Palette
 
