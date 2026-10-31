@@ -46,6 +46,33 @@ distrobox enter qtcurve -- python3 tools/qtref/qtcurve-config.py
 Save writes `~/.config/qtcurve/stylerc` (the home folder is shared with the
 box); presets can be imported and exported from its first page.
 
+## Using your own QtCurve settings
+
+`qtcurve.css` reads every colour, gradient, radius, margin and glow from
+custom properties. The block between its `BEGIN qtcurve2panorama` and
+`END` markers holds them for QtCurve's defaults, and
+`tools/qtref/qtcurve2panorama.py` writes that block from any stylerc:
+
+```
+python3 tools/qtref/qtcurve2panorama.py ~/.config/qtcurve/stylerc --update data/panorama/styles/qt/qtcurve.css
+python3 tools/qtref/qtcurve2panorama.py mine.stylerc --name Mine -o mine.css   # a variant: class="QtCurve Mine"
+```
+
+It draws probe widgets with real QtCurve and that stylerc, measures them
+(border colours per side, the fill down each widget as a gradient with only
+the stops it needs, corner radius, etch and glow lines, sizes from Qt's own
+geometry calls) and writes the values. Everything it writes can also be
+edited by hand. Checked on 2026-10-31 with the defaults (mean difference
+5.0/255) and with appearance=shinyglass, round=slight, defBtnIndicator=tint,
+buttonEffect=none (4.1/255).
+
+What it does not carry over yet: the check mark, radio dot, arrows, grips
+and the scrollbar groove stay our fixed images (`images/qt/qtcurve-*`);
+`scrollbarType` only switches arrows on or off; triangular slider handles
+and other non-rectangular shapes are drawn as rounded boxes; one-pixel inner
+shadow lines are dropped. Settings for widgets the themes don't cover
+(menus, toolbars, window borders, item views) have no effect.
+
 ## Palette
 
 Each theme declares Qt's palette roles as custom properties on its root

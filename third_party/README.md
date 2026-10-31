@@ -49,6 +49,10 @@ Controls and selectors added for the Qt look-alike themes
   `.ScrollButtonForward` children at the two ends of the track, with no size
   unless styled, and the thumb travels between them
   (`panorama_scrollbar_track`).
+- `src/panorama_paint.cpp`: a linear, axis-aligned gradient with interior
+  stops on a rounded box is drawn as rounded end caps plus one square band
+  per pixel between them (`add_rounded_gradient_banded`); the single
+  triangle fan smeared such gradients diagonally.
 - `src/panorama_input.cpp`, `src/panorama_view.cpp`: pressing a scrollbar
   button scrolls 20px with the wheel's smooth-scroll spring, and a pointer
   change keeps the scroll animation walk running.

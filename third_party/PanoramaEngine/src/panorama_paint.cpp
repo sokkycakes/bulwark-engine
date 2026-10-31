@@ -1336,6 +1336,56 @@ public:
         }
     }
 
+    // A rounded box filled by an axis-aligned colour field with interior stops
+    // (see emit_background_gradient): rounded caps at the two ends, then square
+    // bands cut at every pixel row/column of the middle, each shaded from the
+    // field at its edges. `vertical` is the gradient axis.
+    template <typename ColorAt>
+    void add_rounded_gradient_banded(float x, float y, float w, float h, const CornerRadii& r, bool vertical,
+        const Matrix2D& matrix, ColorAt&& color_at)
+    {
+        const float len = vertical ? h : w;
+        const float cap0 = vertical ? std::max(r.tl, r.tr) : std::max(r.tl, r.bl);
+        const float cap1 = vertical ? std::max(r.bl, r.br) : std::max(r.tr, r.br);
+        if (cap0 + cap1 >= len)
+        {
+            add_rounded_rect_shaded(x, y, w, h, r, 0, matrix, color_at);
+            return;
+        }
+        if (vertical)
+        {
+            add_rounded_rect_shaded(x, y, w, cap0, CornerRadii{r.tl, r.tr, 0.0F, 0.0F}, 0, matrix, color_at);
+            add_rounded_rect_shaded(x, y + h - cap1, w, cap1, CornerRadii{0.0F, 0.0F, r.br, r.bl}, 0, matrix, color_at);
+        }
+        else
+        {
+            add_rounded_rect_shaded(x, y, cap0, h, CornerRadii{r.tl, 0.0F, 0.0F, r.bl}, 0, matrix, color_at);
+            add_rounded_rect_shaded(x + w - cap1, y, cap1, h, CornerRadii{0.0F, r.tr, r.br, 0.0F}, 0, matrix, color_at);
+        }
+        // One band per pixel keeps every stop sharp without knowing where the
+        // stops fall; boxes are small (controls), so this stays cheap.
+        const float a = cap0;
+        const float b = len - cap1;
+        const int count = std::max(1, static_cast<int>(std::ceil(b - a)));
+        for (int i = 0; i < count; ++i)
+        {
+            const float s0 = a + (b - a) * static_cast<float>(i) / static_cast<float>(count);
+            const float s1 = a + (b - a) * static_cast<float>(i + 1) / static_cast<float>(count);
+            if (vertical)
+            {
+                const PanoramaColor c0 = color_at(x, y + s0);
+                const PanoramaColor c1 = color_at(x, y + s1);
+                add_gradient_quad(x, y + s0, w, s1 - s0, c0, c0, c1, c1, matrix);
+            }
+            else
+            {
+                const PanoramaColor c0 = color_at(x + s0, y);
+                const PanoramaColor c1 = color_at(x + s1, y);
+                add_gradient_quad(x + s0, y, s1 - s0, h, c0, c1, c1, c0, matrix);
+            }
+        }
+    }
+
     // A solid-fill quad with an independent colour at each corner (for gradient edges).
     void add_gradient_quad(float x, float y, float w, float h, PanoramaColor c_tl, PanoramaColor c_tr,
         PanoramaColor c_br, PanoramaColor c_bl, const Matrix2D& matrix)
@@ -1441,7 +1491,17 @@ public:
                 const float t = ((px - p0x) * pdx + (py - p0y) * pdy) / pixel_len_sq;
                 return gradient_color_at(gradient, t, opacity);
             };
-            if (radii.any())
+            if (radii.any() && axis_aligned && gradient.stops.size() > 2)
+            {
+                // Interior stops make the colour field non-affine, which the
+                // rounded-rect fan (one centre vertex) smears diagonally. Cut
+                // the box across the axis: rounded caps as deep as the corner
+                // radii at each end, and between them square bands that start
+                // and end on every stop, so each band is affine.
+                add_rounded_gradient_banded(x, y, w, h, radii.constrained(w, h), std::fabs(dy) > std::fabs(dx),
+                    matrix, color_at);
+            }
+            else if (radii.any())
             {
                 add_rounded_rect_shaded(x, y, w, h, radii, 0, matrix, color_at);
             }
