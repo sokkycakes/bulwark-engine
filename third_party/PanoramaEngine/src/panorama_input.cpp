@@ -732,13 +732,13 @@ bool PanoramaInputController::update_wheel(
 void PanoramaInputController::begin_scrollbar_drag(PanoramaNode& scrollbar, float design_x, float design_y)
 {
     PanoramaNode* scroller = scrollbar.parent;
-    if (scroller == nullptr || scrollbar.children.empty())
+    if (scroller == nullptr || panorama_scrollbar_thumb(scrollbar) == nullptr)
     {
         return;
     }
     const auto axis_it = scrollbar.attributes.find("__scrollbar");
     const bool vertical = axis_it == scrollbar.attributes.end() || axis_it->second != "horizontal";
-    const PanoramaNode& thumb = *scrollbar.children.front();
+    const PanoramaNode& thumb = *panorama_scrollbar_thumb(scrollbar);
 
     float track_pos = 0.0F;
     float track_len = 0.0F;
@@ -769,12 +769,12 @@ bool PanoramaInputController::update_scrollbar_drag(float design_x, float design
 {
     PanoramaNode* scroller = scrollbar_drag_scroller_;
     PanoramaNode* bar = scrollbar_drag_bar_;
-    if (scroller == nullptr || bar == nullptr || bar->children.empty())
+    if (scroller == nullptr || bar == nullptr || panorama_scrollbar_thumb(*bar) == nullptr)
     {
         return false;
     }
     const bool vertical = scrollbar_drag_vertical_;
-    const PanoramaNode& thumb = *bar->children.front();
+    const PanoramaNode& thumb = *panorama_scrollbar_thumb(*bar);
     float track_pos = 0.0F;
     float track_len = 0.0F;
     panorama_scrollbar_track(*bar, vertical, track_pos, track_len);

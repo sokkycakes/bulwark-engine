@@ -48,14 +48,17 @@ Controls and selectors added for the Qt look-alike themes
   split by `value` / `min` / `max`; scrollbars gain `.ScrollButtonBack` and
   `.ScrollButtonForward` children at the two ends of the track, with no size
   unless styled, and the thumb travels between them
-  (`panorama_scrollbar_track`).
+  (`panorama_scrollbar_track`). A `.ScrollTrack` child covers the track
+  between the buttons, under the thumb, so a groove can stop at the arrows;
+  the thumb is found by class (`panorama_scrollbar_thumb`), not position.
 - `src/panorama_paint.cpp`: a linear, axis-aligned gradient with interior
   stops on a rounded box is drawn as rounded end caps plus one square band
   per pixel between them (`add_rounded_gradient_banded`); the single
   triangle fan smeared such gradients diagonally.
 - `src/panorama_paint.cpp`: a rounded border takes its side colour for the
   band and lays a different top or bottom colour over the straight run; a
-  side of zero width is clipped off (a tab's open bottom). Inset box-shadows
+  side of zero width is left open: the band is drawn past that side and
+  clipped back, so the other sides run to the end (a tab's open bottom). Inset box-shadows
   are drawn inside the border (the padding box), as CSS draws them.
 - `src/panorama_layout.cpp`: slider thumbs sit on whole pixels, so their
   border and decoration don't blur.

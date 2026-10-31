@@ -167,7 +167,7 @@
 	--tab-active-radius: 3px;
 	--tab-active-padding: 7px;
 	--tab-top: 2px;
-	--tab-height: 24px;
+	--tab-height: 22px;
 	--tab-border: #b0b4b8;
 	--tab-bs: #b0b4b8;
 	--tab-inner: inset 0px 0px 0px 1px #ffffff;
@@ -177,6 +177,9 @@
 	--tab-bar-height: 26px;
 	--tab-gap: 0px;
 	--pane-border: #b0b4b8;
+	--pane-shift: -2px;
+	--tab-bottom: 2px;
+	--tab-bar-x: 0px;
 	--pane-bg: #fcfcfc;
 	--frame-border: #b0b4b8;
 	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( rgba( 0, 0, 0, 0.031 ) ), color-stop( 0.015, rgba( 0, 0, 0, 0.028 ) ), color-stop( 0.134, rgba( 0, 0, 0, 0.028 ) ), color-stop( 0.252, rgba( 0, 0, 0, 0.025 ) ), color-stop( 0.371, rgba( 0, 0, 0, 0.021 ) ), color-stop( 0.490, rgba( 0, 0, 0, 0.017 ) ), color-stop( 0.609, rgba( 0, 0, 0, 0.013 ) ), color-stop( 0.728, rgba( 0, 0, 0, 0.008 ) ), color-stop( 0.847, rgba( 0, 0, 0, 0.004 ) ), color-stop( 0.965, rgba( 0, 0, 0, 0.000 ) ), to( rgba( 0, 0, 0, 0.000 ) ) );
@@ -191,7 +194,7 @@
 	--frame-side-width: 0px;
 	--frame-side-image: url( "file://{images}/qt/sokky/group-side.png" );
 	--frame-side-size: 1px 102px;
-	--frame-side-top: 8px;
+	--frame-side-top: 7px;
 	--window-image: url( "file://{images}/qt/sokky/window.png" );
 	--window-image-size: 32px 32px;
 	--progress-text-weight: bold;

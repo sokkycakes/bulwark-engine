@@ -372,11 +372,12 @@ if setting('defBtnIndicator', 'fontcolor') == 'corner':
     if diff:
         x0, y0 = min(p[0] for p in diff), min(p[1] for p in diff)
         x1, y1 = max(p[0] for p in diff), max(p[1] for p in diff)
-        col = max((px(dr.x() + x, dr.y() + y) for x, y in diff), key=lambda c: -sum(c))
         w, h = x1 - x0 + 1, y1 - y0 + 1
-        im = Image.new('RGBA', (w * SS, h * SS), (0, 0, 0, 0))
-        ImageDraw.Draw(im).polygon([(0, 0), (w * SS, 0), (0, h * SS)], fill=rgba(col))
-        image_var('btn-default-image', 'default-corner.png', im.resize((w, h), Image.LANCZOS))
+        # the triangle's own pixels, edges included (QtCurve draws it crisp)
+        tri = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        for x, y in diff:
+            tri.putpixel((x - x0, y - y0), rgba(px(dr.x() + x, dr.y() + y)))
+        image_var('btn-default-image', 'default-corner.png', tri)
         # Panorama places backgrounds inside the border
         V['btn-default-image-pos'] = '%dpx %dpx' % (x0 - m - 1, y0 - m - 1)
         V['btn-default-image-size'] = '%dpx %dpx' % (w, h)
@@ -732,6 +733,14 @@ pane_top = off.y() + bar.height()
 pr2 = QRect(tw.mapTo(root, tw.rect().topLeft()).x(), pane_top - 2, tw.width(), tw.height() - bar.height() + 2)
 col = [px(pr2.x() + pr2.width() // 2, yy) for yy in range(pane_top - 2, pane_top + 6)]
 V['pane-border'] = hexc(min(col, key=sum))
+# The pane's top line can run inside the tab bar's height: the active tab
+# then covers it (flush) and the others stop on it.
+line_at = pane_top - 2 + min(range(len(col)), key=lambda i: sum(col[i]))
+overlap = max(0, pane_top - line_at)
+V['pane-shift'] = '%dpx' % -overlap
+V['tab-bottom'] = '%dpx' % overlap
+V['tab-height'] = '%dpx' % (bar.height() - int(V['tab-top'][:-2]) - overlap)
+V['tab-bar-x'] = '%dpx' % (tab_extent['tab-active'][0] - tw.mapTo(root, tw.rect().topLeft()).x()) if 'tab-active' in tab_extent else '0px'
 V['pane-bg'] = hexc(px(pr2.x() + pr2.width() // 2, pane_top + 20))
 
 gw = probes['group']
@@ -787,15 +796,16 @@ V['frame-side-size'] = '1px 1px'
 V['frame-side-top'] = '0px'
 if dist(late, bgc(side_x, line_y + int(frame_h * 0.85))) < dist(border_c, bgc(side_x, line_y + 2)) // 3:
     ink = border_c
+    # from the line's own row, so the rounded corner pixel comes along
     col = Image.new('RGBA', (1, frame_h))
     for i in range(frame_h):
-        y = line_y + 1 + i
+        y = line_y + i
         a = alpha_over_bg(px(side_x, y), bgc(side_x, y), ink)
         col.putpixel((0, i), rgba(ink, round(a * 255)))
     image_var('frame-side-image', 'group-side.png', col)
     V['frame-side-width'] = '0px'
     V['frame-side-size'] = '1px %dpx' % frame_h
-    V['frame-side-top'] = '%dpx' % (title_h + (line_y - (glabel.y() + title_h)) + 1)
+    V['frame-side-top'] = '%dpx' % (title_h + (line_y - (glabel.y() + title_h)))
     # the fill: darkening of whatever is behind, fading out
     stops = []
     for i in range(frame_h - 1):

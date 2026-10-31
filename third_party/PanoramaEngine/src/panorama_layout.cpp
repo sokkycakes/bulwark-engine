@@ -918,13 +918,13 @@ void layout_scrollbars(PanoramaNode& node)
         const auto axis_it = child->attributes.find("__scrollbar");
         const bool vertical = axis_it != child->attributes.end() && axis_it->second == "vertical";
         const float max_scroll = vertical ? node.max_scroll_y : node.max_scroll_x;
-        PanoramaNode* thumb = child->children.empty() ? nullptr : child->children.front().get();
+        PanoramaNode* thumb = panorama_scrollbar_thumb(*child);
         if (max_scroll <= 0.0F)
         {
             child->layout = PanoramaLayoutBox{};
-            if (thumb != nullptr)
+            for (const auto& part : child->children)
             {
-                thumb->layout = PanoramaLayoutBox{};
+                part->layout = PanoramaLayoutBox{};
             }
             continue;
         }
@@ -985,6 +985,17 @@ void layout_scrollbars(PanoramaNode& node)
         const float track_y = vertical ? track_along : child->layout.content_y;
         const float track_w = vertical ? child->layout.content_width : track_len;
         const float track_h = vertical ? track_len : child->layout.content_height;
+        for (const auto& part : child->children)
+        {
+            if (part->has_class("ScrollTrack"))
+            {
+                part->layout.x = track_x;
+                part->layout.y = track_y;
+                part->layout.width = track_w;
+                part->layout.height = track_h;
+                refresh_content_box(*part);
+            }
+        }
         const float visible = vertical ? viewport_h : viewport_w;
         const float total = visible + max_scroll;
         const float current = vertical ? node.scroll_offset_y : node.scroll_offset_x;

@@ -186,7 +186,7 @@
 	--tab-active-radius: 3px;
 	--tab-active-padding: 7px;
 	--tab-top: 2px;
-	--tab-height: 22px;
+	--tab-height: 20px;
 	--tab-border: #b0b4b8;
 	--tab-bs: #c7cace;
 	--tab-inner: none;
@@ -196,6 +196,9 @@
 	--tab-bar-height: 24px;
 	--tab-gap: 1px;
 	--pane-border: #b0b4b8;
+	--pane-shift: -2px;
+	--tab-bottom: 2px;
+	--tab-bar-x: 0px;
 	--pane-bg: #eff0f1;
 	--frame-border: #b0b4b8;
 	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( #e7e8e9 ), to( #eff0f1 ) );
@@ -560,8 +563,13 @@
 	width: var(--scroll-size);
 	height: 100%;
 	horizontal-align: right;
+}
+
+/* the groove runs between the arrow buttons only */
+.QtCurve VerticalScrollBar .ScrollTrack
+{
 	background-image: var(--scroll-groove-v);
-	background-size: var(--scroll-size) 100%;
+	background-size: 100% 100%;
 	background-repeat: no-repeat;
 }
 
@@ -570,8 +578,12 @@
 	width: 100%;
 	height: var(--scroll-size);
 	vertical-align: bottom;
+}
+
+.QtCurve HorizontalScrollBar .ScrollTrack
+{
 	background-image: var(--scroll-groove-h);
-	background-size: 100% var(--scroll-size);
+	background-size: 100% 100%;
 	background-repeat: no-repeat;
 }
 
@@ -612,7 +624,7 @@
 .QtCurve .ScrollButtonBack,
 .QtCurve .ScrollButtonForward
 {
-	background-color: var(--window);
+	/* the arrow images carry their own button look; the window shows around them */
 	background-position: 50% 50%;
 	background-repeat: no-repeat;
 }
@@ -681,13 +693,17 @@
 {
 	flow-children: right;
 	height: var(--tab-bar-height);
-	margin-left: 1px;
+	margin-left: var(--tab-bar-x);
+	/* the active tab reaches over the pane's top line */
+	overflow: noclip;
+	z-index: 1;
 }
 
 .QtCurve .TabBar .Tab
 {
 	vertical-align: bottom;
 	height: var(--tab-height);
+	margin-bottom: var(--tab-bottom);
 	padding: 0px var(--tab-padding);
 	margin-right: var(--tab-gap);
 	background-color: var(--tab-bg);
@@ -712,7 +728,7 @@
 .QtCurve .TabBar .Tab:checked
 {
 	height: var(--tab-active-height);
-	margin-bottom: -1px;
+	margin-bottom: 0px;
 	padding: 0px var(--tab-active-padding);
 	background-color: var(--tab-active-bg);
 	border-color: var(--tab-active-bs);
@@ -726,6 +742,7 @@
 {
 	width: 100%;
 	height: fill-parent-flow( 1 );
+	margin-top: var(--pane-shift);
 	background-color: var(--pane-bg);
 	border: 1px solid var(--pane-border);
 	border-radius: 0px 4px 4px 4px;

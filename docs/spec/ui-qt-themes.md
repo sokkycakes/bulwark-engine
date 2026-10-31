@@ -68,12 +68,13 @@ buttonEffect=none (4.1/255).
 
 It also writes small images into `images/qt/<variant>/` (`qtcurve-gen/` for
 the default block). Some it draws itself in measured colours: the check mark
-(a tick, or an X with `xCheck=true`), the default button's corner triangle
-(`defBtnIndicator=corner`), a tile for a patterned window background
+(a tick, or an X with `xCheck=true`), a tile for a patterned window background
 (`bgndAppearance=striped`) and the fading side line of a faded group box
 (`groupBox=faded`). Others are copied from the QtCurve render as they are:
 thumb grips (`handles`, `sliderThumbs`: lines, dots), one period of a striped
-progress fill (`stripedProgress`) and the scrollbar arrow buttons and groove.
+progress fill (`stripedProgress`), the default button's corner triangle and
+the scrollbar arrow buttons and groove (the groove sits on `.ScrollTrack`, so
+it stops at the arrows and the window shows around them).
 Those are pixels of sokky's own private render, fine for this private work,
 but not something to ship publicly.
 
@@ -84,7 +85,8 @@ which replaces the etch line in that state because Panorama draws one shadow
 per box. A group box title that sits on the frame line gets the window's
 colour and tile behind it to cut the line. Bold labels on default buttons and
 group boxes are measured, and tab sizes, heights, side colours and inner
-highlight lines come from the render.
+highlight lines come from the render; where the pane's top line runs inside
+the tab bar, the active tab covers it so the two join flush.
 
 `qtcurve-sokky.css` is a variant made this way from sokky's own settings
 (`qtcurve-sokky.stylerc`, 2026-10-31): class="QtCurve Sokky", or the gallery's

@@ -2131,26 +2131,30 @@ public:
             const bool cut = bw_top <= 0.0F || bw_bottom <= 0.0F || bw_left <= 0.0F || bw_right <= 0.0F;
             if (cut)
             {
-                ClipRect band_clip = intersect_clip(band_saved, box.x + (bw_left <= 0.0F ? bw : 0.0F),
-                    box.y + (bw_top <= 0.0F ? bw : 0.0F), box.x + box.width - (bw_right <= 0.0F ? bw : 0.0F),
-                    box.y + box.height - (bw_bottom <= 0.0F ? bw : 0.0F));
+                ClipRect band_clip = intersect_clip(band_saved, box.x, box.y, box.x + box.width, box.y + box.height);
                 if (!clip_narrowing_is_patchable())
                 {
                     band_clip.patchable = false;
                 }
                 set_clip(band_clip);
             }
-            const float inner_w = box.width - 2.0F * bw;
-            const float inner_h = box.height - 2.0F * bw;
+            // A zero-width side: the band is drawn on a box pushed out past
+            // that side and clipped back, so the other sides run to the end.
+            const float ring_x = box.x - (bw_left <= 0.0F ? bw : 0.0F);
+            const float ring_y = box.y - (bw_top <= 0.0F ? bw : 0.0F);
+            const float ring_w = box.width + (bw_left <= 0.0F ? bw : 0.0F) + (bw_right <= 0.0F ? bw : 0.0F);
+            const float ring_h = box.height + (bw_top <= 0.0F ? bw : 0.0F) + (bw_bottom <= 0.0F ? bw : 0.0F);
+            const float inner_w = ring_w - 2.0F * bw;
+            const float inner_h = ring_h - 2.0F * bw;
             if (inner_w <= 0.0F || inner_h <= 0.0F)
             {
                 // The border swallows the whole box.
-                add_rounded_rect(box.x, box.y, box.width, box.height, radii, bc, 0, bake_matrix);
+                add_rounded_rect(ring_x, ring_y, ring_w, ring_h, radii, bc, 0, bake_matrix);
             }
             else
             {
-                add_rounded_ring(box.x + bw, box.y + bw, inner_w, inner_h, radii.shrunk(bw), bc,
-                    box.x, box.y, box.width, box.height, radii, bc, bake_matrix);
+                add_rounded_ring(ring_x + bw, ring_y + bw, inner_w, inner_h, radii.shrunk(bw), bc,
+                    ring_x, ring_y, ring_w, ring_h, radii, bc, bake_matrix);
             }
             const auto run = [&](float y, float h, float r_left, float r_right, PanoramaColor color) {
                 const PanoramaColor c = scale_alpha(apply_color_filter(color, s), bake_opacity);

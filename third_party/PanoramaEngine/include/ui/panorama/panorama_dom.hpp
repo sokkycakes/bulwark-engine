@@ -675,6 +675,8 @@ void ensure_panorama_scrollbar_internals(PanoramaNode& node);
 // A scrollbar's `.ScrollButtonBack` / `.ScrollButtonForward` line-step button
 // (created with the bar; sized only by styles), or null.
 [[nodiscard]] PanoramaNode* panorama_scrollbar_button(const PanoramaNode& bar, bool forward);
+// The bar's .ScrollThumb child (nullptr if it has none).
+PanoramaNode* panorama_scrollbar_thumb(const PanoramaNode& bar);
 // The part of a scrollbar's content box the thumb travels in: the content box
 // minus the laid-out length of its two line-step buttons.
 void panorama_scrollbar_track(const PanoramaNode& bar, bool vertical, float& track_pos, float& track_len);

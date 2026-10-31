@@ -1567,6 +1567,15 @@ void append_scrollbar(PanoramaNode& node, const char* tag, const char* tag_lower
     bar->attributes.emplace("hittest", "true");
     bar->parent = &node;
 
+    // The track between the buttons, under the thumb: lets a style draw a
+    // groove that stops at the arrows (Bulwark, for the Qt themes).
+    auto track = std::make_unique<PanoramaNode>();
+    track->tag = "Panel";
+    track->tag_lower = "panel";
+    track->classes.emplace_back("ScrollTrack");
+    track->parent = bar.get();
+    bar->children.push_back(std::move(track));
+
     auto thumb = std::make_unique<PanoramaNode>();
     thumb->tag = "Panel";
     thumb->tag_lower = "panel";
@@ -1613,6 +1622,18 @@ void ensure_panorama_scrollbar_internals(PanoramaNode& node)
 bool panorama_node_is_scrollbar(const PanoramaNode& node)
 {
     return node.attributes.count(std::string(kScrollbarAttr)) != 0;
+}
+
+PanoramaNode* panorama_scrollbar_thumb(const PanoramaNode& bar)
+{
+    for (const auto& child : bar.children)
+    {
+        if (child->has_class("ScrollThumb"))
+        {
+            return child.get();
+        }
+    }
+    return nullptr;
 }
 
 PanoramaNode* panorama_scrollbar_button(const PanoramaNode& bar, bool forward)
