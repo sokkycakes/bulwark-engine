@@ -2116,13 +2116,30 @@ public:
             // region between the outer contour and the inner contour (outer
             // radii minus border width, clamped at 0 — WebCore innerBorder).
             const float bw = std::max(std::max(bw_top, bw_bottom), std::max(bw_left, bw_right));
-            PanoramaColor bc = s.border_top_color();
+            // The band takes the side colour; a top or bottom of another
+            // colour is laid over its straight run afterwards (Bulwark: Qt
+            // styles draw frames lit from above). A side with zero width is
+            // cut off by clipping the band (a tab's open bottom edge).
+            PanoramaColor bc = s.border_left_color();
             if (!bc.visible())
             {
-                bc = s.border_bottom_color().visible() ? s.border_bottom_color()
-                    : s.border_left_color().visible() ? s.border_left_color() : s.border_right_color();
+                bc = s.border_top_color().visible() ? s.border_top_color()
+                    : s.border_bottom_color().visible() ? s.border_bottom_color() : s.border_right_color();
             }
             bc = scale_alpha(apply_color_filter(bc, s), bake_opacity);
+            const ClipRect band_saved = clip_;
+            const bool cut = bw_top <= 0.0F || bw_bottom <= 0.0F || bw_left <= 0.0F || bw_right <= 0.0F;
+            if (cut)
+            {
+                ClipRect band_clip = intersect_clip(band_saved, box.x + (bw_left <= 0.0F ? bw : 0.0F),
+                    box.y + (bw_top <= 0.0F ? bw : 0.0F), box.x + box.width - (bw_right <= 0.0F ? bw : 0.0F),
+                    box.y + box.height - (bw_bottom <= 0.0F ? bw : 0.0F));
+                if (!clip_narrowing_is_patchable())
+                {
+                    band_clip.patchable = false;
+                }
+                set_clip(band_clip);
+            }
             const float inner_w = box.width - 2.0F * bw;
             const float inner_h = box.height - 2.0F * bw;
             if (inner_w <= 0.0F || inner_h <= 0.0F)
@@ -2134,6 +2151,21 @@ public:
             {
                 add_rounded_ring(box.x + bw, box.y + bw, inner_w, inner_h, radii.shrunk(bw), bc,
                     box.x, box.y, box.width, box.height, radii, bc, bake_matrix);
+            }
+            const auto run = [&](float y, float h, float r_left, float r_right, PanoramaColor color) {
+                const PanoramaColor c = scale_alpha(apply_color_filter(color, s), bake_opacity);
+                const float w = box.width - r_left - r_right;
+                if (h > 0.0F && w > 0.0F && color.visible() && !(c.r == bc.r && c.g == bc.g && c.b == bc.b && c.a == bc.a))
+                {
+                    add_rect(box.x + r_left, y, w, h, c, 0, bake_matrix);
+                }
+            };
+            run(box.y, bw_top, std::max(radii.tl, bw_left), std::max(radii.tr, bw_right), s.border_top_color());
+            run(box.y + box.height - bw_bottom, bw_bottom, std::max(radii.bl, bw_left), std::max(radii.br, bw_right),
+                s.border_bottom_color());
+            if (cut)
+            {
+                set_clip(band_saved);
             }
         }
         else if (has_border)
@@ -2156,7 +2188,15 @@ public:
         }
 
         // Inset box-shadow paints over the background/border (clipped to the box).
-        emit_box_shadow(node, box, radii, bake_opacity, bake_matrix, true);
+        // Bulwark: inside the border (the padding box), as CSS draws it.
+        {
+            PanoramaLayoutBox inner = box;
+            inner.x += bw_left;
+            inner.y += bw_top;
+            inner.width -= bw_left + bw_right;
+            inner.height -= bw_top + bw_bottom;
+            emit_box_shadow(node, inner, radii, bake_opacity, bake_matrix, true);
+        }
 
         // WebCore clips contents after painting the background/border (see
         // RenderBox::pushContentsClip / overflowClipRect). Apply the same content

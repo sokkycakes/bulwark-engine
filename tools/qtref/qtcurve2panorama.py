@@ -127,6 +127,10 @@ sb = put('scroll-v', QScrollBar(Qt.Vertical), 10, 170, 16, 200)
 sb.setRange(0, 100)
 sb.setPageStep(30)
 sb.setValue(0)
+sbh = put('scroll-h', QScrollBar(Qt.Horizontal), 400, 440, 200, 16)
+sbh.setRange(0, 100)
+sbh.setPageStep(30)
+sbh.setValue(0)
 g = put('group', QGroupBox('Group box'), 40, 170, 180, 110)
 t = put('tabs', QTabWidget(), 240, 170, 380, 140)
 for n in ('First', 'Second', 'Third'):
@@ -157,6 +161,19 @@ def px(x, y):
 
 def dist(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+
+
+# The window background can be patterned (bgndAppearance=striped): compare
+# against what the window draws at that spot, taken from a column and a row
+# no probe covers, instead of one flat colour.
+BG_X = root.width() - 6
+BG_Y = root.height() - 6
+
+
+def bgc(x, y):
+    a, b, c = px(BG_X, y), px(x, BG_Y), px(BG_X, BG_Y)
+    # horizontal stripes vary down the column, vertical ones along the row
+    return tuple(max(0, min(255, a[k] + b[k] - c[k])) for k in range(3))
 
 
 def hexc(c):
@@ -217,7 +234,7 @@ def box(rect, margin=None, column_x=None):
         margin = 0
         # the border is the first clearly dark line; etch and glow lines
         # (light, or drawn only in some states) sit outside it
-        while margin < min(w, h) // 2 and dist(px(x0 + w // 2, y0 + margin), WIN) <= 20:
+        while margin < min(w, h) // 2 and dist(px(x0 + w // 2, y0 + margin), bgc(x0 + w // 2, y0 + margin)) <= 20:
             margin += 1
     m = margin
     top = px(x0 + w // 2, y0 + m)
@@ -229,10 +246,10 @@ def box(rect, margin=None, column_x=None):
         r += 1
     cx = column_x if column_x is not None else x0 + m + max(r, 1) + 2
     fill = [px(cx, y) for y in range(y0 + m + 1, y0 + h - 1 - m)]
-    above = [px(x0 + w // 2, y) for y in range(y0, y0 + m)]
-    below = [px(x0 + w // 2, y) for y in range(y0 + h - m, y0 + h)]
-    return dict(margin=m, top=top, side=side, bottom=bottom, fill=fill, radius=r,
-                above=[c for c in above if dist(c, WIN) > 3], below=[c for c in below if dist(c, WIN) > 3])
+    xm = x0 + w // 2
+    above = [px(xm, y) for y in range(y0, y0 + m) if dist(px(xm, y), bgc(xm, y)) > 3]
+    below = [px(xm, y) for y in range(y0 + h - m, y0 + h) if dist(px(xm, y), bgc(xm, y)) > 3]
+    return dict(margin=m, top=top, side=side, bottom=bottom, fill=fill, radius=r, above=above, below=below)
 
 
 def shadow(b):
@@ -337,7 +354,8 @@ def draw_lines(size, segments, color, width):
 
 def bold_text(name):
     r = wrect(name)
-    return sum(1 for y in range(r.y(), r.bottom()) for x in range(r.x() + 8, r.right() - 8)
+    # rows clear of the frame, which can be dark itself
+    return sum(1 for y in range(r.y() + 6, r.bottom() - 5) for x in range(r.x() + 8, r.right() - 8)
                if sum(px(x, y)) < 300)
 
 
@@ -441,7 +459,7 @@ def slider_parts():
 def groove_at(x, y0, y1):
     """The drawn run of non-window pixels down column x: its colours."""
     col = [px(x, y) for y in range(y0, y1)]
-    idx = [i for i, c in enumerate(col) if dist(c, WIN) > 3]
+    idx = [i for i, c in enumerate(col) if dist(c, bgc(x, y0 + i)) > 3]
     if not idx:
         return []
     return col[idx[0]:idx[-1] + 1]
@@ -463,11 +481,71 @@ def put_groove(prefix, run, inner=True):
 
 groove, handle = slider_parts()
 put_groove('groove', groove_at(handle.right() + 12, groove.top(), groove.bottom() + 1))
+
+
+def groove_radius(x_mid, y0, y1):
+    # the groove's drawn rows down x_mid; then how far in from the groove's
+    # right end its top border row starts
+    col = [y for y in range(y0, y1) if dist(px(x_mid, y), bgc(x_mid, y)) > 3]
+    if len(col) < 3:
+        return 0
+    yc = (col[0] + col[-1]) // 2
+    x_end = x_mid
+    while dist(px(x_end + 1, yc), bgc(x_end + 1, yc)) > 3:
+        x_end += 1
+    # top border row: darkest of the first two drawn rows
+    yt = min(col[:2], key=lambda y: sum(px(x_mid, y)))
+    border = px(x_mid, yt)
+    r = 0
+    while r < (col[-1] - col[0]) and dist(px(x_end - r, yt), border) > 24:
+        r += 1
+    return r
+
+
+V['groove-radius'] = '%dpx' % groove_radius(handle.right() + 12, groove.top(), groove.bottom() + 1)
 put_groove('slider-fill', groove_at(handle.left() - 12, groove.top(), groove.bottom() + 1))
+def grip(rect, b, along_x, fname, var):
+    """The decoration in the middle of a thumb (lines, dots): every pixel
+    that differs from the thumb's plain fill at the same position across the
+    gradient. Saved as an image the size of the decoration."""
+    m, r = b['margin'], b['radius']
+    # inner box, clear of the border and of the rounded ends
+    x0, y0, x1, y1 = rect.x() + m + 1, rect.y() + m + 1, rect.right() - m, rect.bottom() - m
+    if along_x:
+        x0, x1 = x0 + r, x1 - r
+    else:
+        y0, y1 = y0 + r, y1 - r
+
+    def median(cs):
+        return tuple(sorted(c[k] for c in cs)[len(cs) // 2] for k in range(3))
+
+    hits = []
+    if along_x:  # fill varies down the thumb: compare with the row's median
+        for y in range(y0, y1):
+            ref = median([px(x, y) for x in range(x0, x1)])
+            hits += [(x, y) for x in range(x0, x1) if dist(px(x, y), ref) > 6]
+    else:
+        for x in range(x0, x1):
+            ref = median([px(x, y) for y in range(y0, y1)])
+            hits += [(x, y) for y in range(y0, y1) if dist(px(x, y), ref) > 6]
+    V[var] = 'none'
+    V[var + '-size'] = '1px 1px'
+    if not hits:
+        return
+    gx0, gy0 = min(h[0] for h in hits), min(h[1] for h in hits)
+    gx1, gy1 = max(h[0] for h in hits), max(h[1] for h in hits)
+    im = Image.new('RGBA', (gx1 - gx0 + 1, gy1 - gy0 + 1), (0, 0, 0, 0))
+    for x, y in hits:
+        im.putpixel((x - gx0, y - gy0), rgba(px(x, y)))
+    image_var(var, fname, im)
+    V[var + '-size'] = '%dpx %dpx' % im.size
+
+
 hb = box(handle)
 V['thumb-width'] = '%dpx' % (handle.width() - 2 * hb['margin'])
 V['thumb-height'] = '%dpx' % (handle.height() - 2 * hb['margin'])
 put_box('thumb', hb)
+grip(handle, hb, True, 'slider-grip.png', 'thumb-grip')
 
 pr = wrect('progress')
 pt = box(pr)
@@ -475,6 +553,40 @@ pt = box(pr, pt['margin'], column_x=pr.right() - pt['margin'] - pt['radius'] - 3
 put_box('trough', pt, with_margin=True)
 pf = box(QRect(pr.x(), pr.y(), pr.width() // 2, pr.height()), pt['margin'])
 put_box('pfill', pf)
+# Striped fills (stripedProgress): one period of the stripes, copied as a
+# tile that repeats along the bar under the fill's border.
+V['pfill-image'] = 'none'
+V['pfill-image-size'] = '1px 1px'
+if setting('stripedProgress', 'none') != 'none':
+    fm = pt['margin'] + 1
+    fx0, fx1 = pr.x() + fm + 6, pr.x() + pr.width() // 2 - fm - 6
+    fy0, fy1 = pr.y() + fm, pr.bottom() - fm + 1
+    yc = (fy0 + fy1) // 2
+
+    # The fill also brightens along the bar (glowProgress), so match the
+    # steps between neighbours rather than the colours themselves.
+    def step(x, y):
+        return sum(px(x + 1, y)) - sum(px(x, y))
+
+    rows = range(fy0 + 2, fy1 - 2, 2)
+
+    def mismatch(p):
+        d = [abs(step(x, y) - step(x + p, y)) for y in rows for x in range(fx0, fx1 - p - 1)]
+        return sum(d) / len(d)
+
+    best = min(range(6, min(40, (fx1 - fx0) // 2)), key=mismatch)
+    sys.stderr.write('progress stripe period %d (mismatch %.1f)\n' % (best, mismatch(best)))
+    # one period from the middle, with the brightening along the bar taken out
+    tx0 = (fx0 + fx1) // 2 - best // 2
+    tile = Image.new('RGBA', (best, fy1 - fy0))
+    for y in range(fy0, fy1):
+        slope = [(px(fx1 - best + k, y)[c] - px(fx0 + k, y)[c]) / max(1, fx1 - best - fx0) for k in range(best) for c in range(3)]
+        sl = [sum(slope[c::3]) / best for c in range(3)]
+        for x in range(best):
+            c = px(tx0 + x, y)
+            tile.putpixel((x, y - fy0), tuple(max(0, min(255, round(c[k] - sl[k] * (x - best / 2)))) for k in range(3)) + (255,))
+    image_var('pfill-image', 'progress-stripes.png', tile)
+    V['pfill-image-size'] = '%dpx 100%%' % best
 # the trough's left edge and corners are covered by the fill
 V['trough-bs'] = V['trough-bt']
 V['trough-radius'] = V['pfill-radius']
@@ -494,6 +606,8 @@ def scroll_parts():
 
 
 sw, sthumb, ssub, sadd, sgroove = scroll_parts()
+if args.debug:
+    sys.stderr.write('scrollbar: bar %s thumb %s sub %s add %s groove %s\n' % (wrect('scroll-v'), sthumb, ssub, sadd, sgroove))
 V['scroll-size'] = '%dpx' % sw.width()
 # Where the arrow buttons go is a setting, not something to measure; Panorama
 # has one button at each end, so every layout but "none" maps to that.
@@ -502,7 +616,7 @@ V['scroll-button'] = '0px' if sbtype == 'none' else '%dpx' % (sw.width() - 2)
 # groove: across the bar below the thumb
 y = (sthumb.bottom() + sgroove.bottom()) // 2
 row = [px(x, y) for x in range(sw.x(), sw.x() + sw.width())]
-idx = [i for i, c in enumerate(row) if dist(c, WIN) > 3]
+idx = [i for i, c in enumerate(row) if dist(c, bgc(sw.x() + i, y)) > 3]
 V['scroll-groove'] = ' '.join('%d:%s' % (i, hexc(row[i])) for i in idx)  # read back by the image writer
 tb = box(QRect(sthumb.x(), sthumb.y(), sthumb.width(), sthumb.height()))
 V['sthumb-width'] = '%dpx' % (sthumb.width() - 2 * tb['margin'])
@@ -511,24 +625,109 @@ V['sthumb-bt'] = hexc(tb['side'])
 V['sthumb-bg'] = gradient([px(x, sthumb.y() + tb['margin'] + tb['radius'] + 3)
                            for x in range(sthumb.x() + tb['margin'] + 1, sthumb.right() - tb['margin'])], vertical=False)
 V['sthumb-radius'] = '%dpx' % tb['radius']
+grip(sthumb, tb, False, 'scroll-grip-v.png', 'sthumb-grip-v')
+# the horizontal bar: same thumb turned, with its own fill and grip
+hw = probes['scroll-h']
+hopt = QStyleOptionSlider()
+hopt.initFrom(hw)
+hopt.orientation = Qt.Horizontal
+hopt.minimum, hopt.maximum, hopt.pageStep = 0, 100, 30
+hopt.sliderPosition = hopt.sliderValue = 0
+hthumb = style.subControlRect(QStyle.CC_ScrollBar, hopt, QStyle.SC_ScrollBarSlider, hw).translated(hw.mapTo(root, hw.rect().topLeft()))
+htb = box(hthumb)
+V['sthumb-bg-h'] = gradient([px(hthumb.x() + htb['margin'] + htb['radius'] + 3, y)
+                             for y in range(hthumb.y() + htb['margin'] + 1, hthumb.bottom() - htb['margin'])])
+grip(hthumb, htb, True, 'scroll-grip-h.png', 'sthumb-grip-h')
+
+
+def capture(rect, fname, var):
+    """Everything drawn inside rect that isn't the window behind it."""
+    im = Image.new('RGBA', (rect.width(), rect.height()), (0, 0, 0, 0))
+    for y in range(rect.y(), rect.y() + rect.height()):
+        for x in range(rect.x(), rect.x() + rect.width()):
+            if dist(px(x, y), bgc(x, y)) > 4:
+                im.putpixel((x - rect.x(), y - rect.y()), rgba(px(x, y)))
+    image_var(var, fname, im)
+    V[var + '-size'] = '%dpx %dpx' % im.size
+
+
+# Arrow buttons: copied whole (arrow and any frame QtCurve gives them).
+hget = lambda sc: style.subControlRect(QStyle.CC_ScrollBar, hopt, sc, hw).translated(hw.mapTo(root, hw.rect().topLeft()))
+# Qt's sub-line rect can span the whole bar (the kde layout puts a second
+# back button next to the forward one), so take one button's length at each
+# end, the length of the last (add-line) button.
+vbar, hbar = wrect('scroll-v'), wrect('scroll-h')
+hadd = hget(QStyle.SC_ScrollBarAddLine)
+vl, hl = max(1, sadd.height()), max(1, hadd.width())
+for rect, fname, var in ((QRect(vbar.x(), vbar.y(), vbar.width(), vl), 'scroll-up.png', 'scroll-up'),
+                         (QRect(vbar.x(), vbar.bottom() - vl + 1, vbar.width(), vl), 'scroll-down.png', 'scroll-down'),
+                         (QRect(hbar.x(), hbar.y(), hl, hbar.height()), 'scroll-left.png', 'scroll-left'),
+                         (QRect(hbar.right() - hl + 1, hbar.y(), hl, hbar.height()), 'scroll-right.png', 'scroll-right')):
+    if sbtype == 'none' or rect.width() <= 0 or rect.height() <= 0:
+        V[var] = 'none'
+        V[var + '-size'] = '1px 1px'
+    else:
+        # Qt's last add-line button sits at the very end of the bar
+        capture(rect, fname, var)
+# The groove across the bar, as drawn between the buttons.
+gim = Image.new('RGBA', (sw.width(), 1), (0, 0, 0, 0))
+for i in idx:
+    gim.putpixel((i, 0), rgba(row[i]))
+image_var('scroll-groove-v', 'scroll-groove-v.png', gim)
+image_var('scroll-groove-h', 'scroll-groove-h.png', gim.transpose(Image.TRANSPOSE))
 
 tw = probes['tabs']
 bar = tw.tabBar()
 off = bar.mapTo(root, bar.rect().topLeft())
 ta = box(bar.tabRect(0).translated(off), 0)
 ti = box(bar.tabRect(1).translated(off), 0)
+tab_extent = {}
 for name, b, r in (('tab-active', ta, bar.tabRect(0)), ('tab', ti, bar.tabRect(1))):
     m = 0
-    while m < r.height() // 2 and dist(px(r.translated(off).center().x(), r.translated(off).y() + m), WIN) <= 3:
+    while m < r.height() // 2 and dist(px(r.translated(off).center().x(), r.translated(off).y() + m),
+                                        bgc(r.translated(off).center().x(), r.translated(off).y() + m)) <= 3:
         m += 1
     rr = r.translated(off)
     b = box(rr, m)
-    b = box(rr, m, column_x=rr.x() + m + b['radius'] + 1)
+    # The tab's drawn frame along a middle row clear of the label: from the
+    # centre outwards to the first clearly darker pixel on each side.
+    ym = rr.y() + m + 3
+    fill_c = px(rr.center().x(), ym)
+    xl = rr.center().x()
+    while xl > rr.x() - 3 and sum(px(xl, ym)) > sum(fill_c) - 60:
+        xl -= 1
+    xr = rr.center().x()
+    while xr < rr.right() + 3 and sum(px(xr, ym)) > sum(fill_c) - 60:
+        xr += 1
+    side = px(xl, ym)
+    top_y = rr.y() + m
+    rs = 0
+    while rs < rr.height() // 2 and dist(px(xl, top_y + rs), side) > 24:
+        rs += 1
+    rad = max(b['radius'], rs)
+    b = box(rr, m, column_x=xl + rad + 2)
+    b['side'] = side
+    side_x = xl
+    xs = [xl, xr]
     V[name + '-top'] = '%dpx' % m
+    V[name + '-height'] = '%dpx' % (bar.height() - m)
     V[name + '-border'] = hexc(b['top'])
-    V[name + '-bg'] = gradient(b['fill'])
-    V[name + '-radius'] = '%dpx' % b['radius']
+    V[name + '-bs'] = hexc(b['side'])
+    fill = b['fill']
+    # a lighter line just inside the frame (QtCurve's inner highlight)
+    V[name + '-inner'] = 'none'
+    if len(fill) > 4 and sum(fill[0]) > sum(fill[2]) + 30 and sum(px(side_x + 1, ym + 4)) > sum(px(side_x + 3, ym + 4)) + 30:
+        V[name + '-inner'] = 'inset 0px 0px 0px 1px %s' % hexc(fill[0])
+        fill = fill[1:]
+    V[name + '-bg'] = gradient(fill)
+    V[name + '-radius'] = '%dpx' % rad
+    if xs:
+        text_w = bar.fontMetrics().horizontalAdvance(bar.tabText(0 if name == 'tab-active' else 1))
+        V[name + '-padding'] = '%dpx' % max(0, (xs[-1] - xs[0] + 1 - 2 - text_w) // 2)
+        tab_extent[name] = (xs[0], xs[-1])
 V['tab-bar-height'] = '%dpx' % bar.height()
+if 'tab' in tab_extent and 'tab-active' in tab_extent:
+    V['tab-gap'] = '%dpx' % max(0, tab_extent['tab'][0] - tab_extent['tab-active'][1] - 1)
 pane_top = off.y() + bar.height()
 pr2 = QRect(tw.mapTo(root, tw.rect().topLeft()).x(), pane_top - 2, tw.width(), tw.height() - bar.height() + 2)
 col = [px(pr2.x() + pr2.width() // 2, yy) for yy in range(pane_top - 2, pane_top + 6)]
@@ -553,6 +752,66 @@ def dark_pixels(r):
 
 
 V['group-title-weight'] = 'bold' if dark_pixels(glabel) > dark_pixels(wrect('txt-label')) * 1.15 else 'normal'
+
+# Where the frame's top line runs relative to the title: through its middle
+# (QtCurve's default for gbLabel) or below it. The panel layout is a title
+# of fixed height followed by the frame, pulled up by a negative gap.
+gtop = gw.mapTo(root, gw.rect().topLeft()).y()
+fx = gframe.x() + gframe.width() // 2
+line_y = next((y for y in range(gframe.y(), gframe.bottom()) if dist(px(fx, y), bgc(fx, y)) > 20), gframe.y())
+title_h = glabel.height()
+V['group-title-height'] = '%dpx' % title_h
+V['group-title-x'] = '%dpx' % (glabel.x() - gframe.x())
+V['group-title-gap'] = '%dpx' % (line_y - (glabel.y() + title_h))
+on_line = glabel.y() < line_y < glabel.bottom()
+V['group-title-bg'] = V['window'] if on_line else 'none'
+V['group-title-image'] = 'window' if on_line else 'none'  # filled in once the window tile is known
+V['frame-pad-top'] = '%dpx' % max(0, -(line_y - (glabel.y() + title_h))) if on_line else '0px'
+# A frame that fades out downwards (groupBox=faded): sides and fill become
+# see-through instead of solid colours.
+side_x = next((x for x in range(gframe.x(), gframe.x() + 6) if dist(px(x, line_y + 3), bgc(x, line_y + 3)) > 6), gframe.x())
+frame_h = gframe.bottom() - line_y
+border_c = px(side_x, line_y + 2)
+
+
+def alpha_over_bg(c, bgcol, ink):
+    # c = bg * (1 - a) + ink * a, per channel, averaged
+    vals = [(bgcol[k] - c[k]) / (bgcol[k] - ink[k]) for k in range(3) if abs(bgcol[k] - ink[k]) > 8]
+    return max(0.0, min(1.0, sum(vals) / len(vals))) if vals else 0.0
+
+
+late = px(side_x, line_y + int(frame_h * 0.85))
+V['frame-side-width'] = '1px'
+V['frame-side-image'] = 'none'
+V['frame-side-size'] = '1px 1px'
+V['frame-side-top'] = '0px'
+if dist(late, bgc(side_x, line_y + int(frame_h * 0.85))) < dist(border_c, bgc(side_x, line_y + 2)) // 3:
+    ink = border_c
+    col = Image.new('RGBA', (1, frame_h))
+    for i in range(frame_h):
+        y = line_y + 1 + i
+        a = alpha_over_bg(px(side_x, y), bgc(side_x, y), ink)
+        col.putpixel((0, i), rgba(ink, round(a * 255)))
+    image_var('frame-side-image', 'group-side.png', col)
+    V['frame-side-width'] = '0px'
+    V['frame-side-size'] = '1px %dpx' % frame_h
+    V['frame-side-top'] = '%dpx' % (title_h + (line_y - (glabel.y() + title_h)) + 1)
+    # the fill: darkening of whatever is behind, fading out
+    stops = []
+    for i in range(frame_h - 1):
+        y = line_y + 1 + i
+        c, b = px(fx, y), bgc(fx, y)
+        stops.append(max(0.0, min(1.0, 1 - sum(c) / max(1, sum(b)))))
+    keep = [0, len(stops) - 1]
+    for i in range(1, len(stops) - 1, max(1, len(stops) // 8)):
+        keep.append(i)
+    keep = sorted(set(keep))
+    parts = ['from( rgba( 0, 0, 0, %.3f ) )' % stops[0]]
+    for i in keep[1:-1]:
+        parts.append('color-stop( %.3f, rgba( 0, 0, 0, %.3f ) )' % ((i + 0.5) / len(stops), stops[i]))
+    parts.append('to( rgba( 0, 0, 0, %.3f ) )' % stops[-1])
+    V['frame-bg'] = 'gradient( linear, 0%% 0%%, 0%% 100%%, %s )' % ', '.join(parts)
+    V['frame-border'] = hexc(px(fx, line_y))
 
 # Window background: a repeating pattern (bgndAppearance=striped and the
 # like) becomes a small tile of the measured colours.
@@ -579,6 +838,8 @@ if pv and ph and (pv > 1 or ph > 1):
     image_var('window-image', 'window.png', tile)
     V['window-image-size'] = '%dpx %dpx' % (tw, th)
 
+if V['group-title-image'] == 'window':
+    V['group-title-image'] = V['window-image']
 V['progress-text-weight'] = 'bold' if setting('boldProgress', 'true') == 'true' else 'normal'
 
 # ---- output -----------------------------------------------------------------

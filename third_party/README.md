@@ -53,6 +53,12 @@ Controls and selectors added for the Qt look-alike themes
   stops on a rounded box is drawn as rounded end caps plus one square band
   per pixel between them (`add_rounded_gradient_banded`); the single
   triangle fan smeared such gradients diagonally.
+- `src/panorama_paint.cpp`: a rounded border takes its side colour for the
+  band and lays a different top or bottom colour over the straight run; a
+  side of zero width is clipped off (a tab's open bottom). Inset box-shadows
+  are drawn inside the border (the padding box), as CSS draws them.
+- `src/panorama_layout.cpp`: slider thumbs sit on whole pixels, so their
+  border and decoration don't blur.
 - `src/panorama_input.cpp`, `src/panorama_view.cpp`: pressing a scrollbar
   button scrolls 20px with the wheel's smooth-scroll spring, and a pointer
   change keeps the scroll animation walk running.

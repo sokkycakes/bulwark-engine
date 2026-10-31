@@ -1076,8 +1076,9 @@ void layout_sliders(PanoramaNode& node)
     thumb->layout.width = provisional_width(*thumb, track_w, track_h);
     thumb->layout.height = provisional_height(*thumb, track_w, track_h);
     const float travel = std::max(0.0F, track_w - thumb->layout.width);
-    thumb->layout.x = track_x + fraction * travel;
-    thumb->layout.y = track->layout.y + (track->layout.height - thumb->layout.height) * 0.5F;
+    // Whole pixels, so a thumb's border and decoration don't blur.
+    thumb->layout.x = std::round(track_x + fraction * travel);
+    thumb->layout.y = std::round(track->layout.y + (track->layout.height - thumb->layout.height) * 0.5F);
     refresh_content_box(*thumb);
 
     if (progress != nullptr)

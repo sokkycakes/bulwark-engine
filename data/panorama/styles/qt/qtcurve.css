@@ -60,7 +60,7 @@
 	--btn-checked-bb: #bdbdbd;
 	--btn-checked-shadow: 0px 1px 0px 0px #fefefe;
 	--btn-checked-bg: gradient( linear, 0% 0%, 0% 100%, from( #dbdbdb ), to( #d0d0d0 ) );
-	--btn-default-weight: bold;
+	--btn-default-weight: normal;
 	--btn-default-image: none;
 	--btn-default-image-pos: 0px 0px;
 	--btn-default-image-size: 1px 1px;
@@ -125,6 +125,7 @@
 	--groove-bg: gradient( linear, 0% 0%, 0% 100%, from( #d1d1d1 ), to( #dddddd ) );
 	--groove-height: 5px;
 	--groove-shadow: 0px 1px 0px 0px #fefefe;
+	--groove-radius: 2px;
 	--slider-fill-border: #326686;
 	--slider-fill-bg: gradient( linear, 0% 0%, 0% 100%, from( #3591cb ), to( #3286ba ) );
 	--slider-fill-height: 5px;
@@ -137,6 +138,8 @@
 	--thumb-shadow: 0px 1px 0px 0px #e2e3e4;
 	--thumb-bg: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ebebeb ) );
 	--thumb-radius: 3px;
+	--thumb-grip: url( "file://{images}/qt/qtcurve-gen/slider-grip.png" );
+	--thumb-grip-size: 13px 8px;
 	--trough-bt: #b0b4b8;
 	--trough-bs: #b0b4b8;
 	--trough-bb: #b0b4b8;
@@ -150,6 +153,8 @@
 	--pfill-shadow: 0px 1px 0px 0px #fefefe;
 	--pfill-bg: gradient( linear, 0% 0%, 0% 100%, from( #4ab7f1 ), color-stop( 0.088, #44b3ed ), color-stop( 0.441, #3cade8 ), color-stop( 0.559, #32a5e1 ), to( #3cade8 ) );
 	--pfill-radius: 2px;
+	--pfill-image: none;
+	--pfill-image-size: 1px 1px;
 	--scroll-size: 16px;
 	--scroll-button: 14px;
 	--sthumb-width: 15px;
@@ -157,21 +162,55 @@
 	--sthumb-bt: #b3b3b3;
 	--sthumb-bg: gradient( linear, 0% 0%, 100% 0%, from( #f6f6f6 ), to( #ebebeb ) );
 	--sthumb-radius: 3px;
+	--sthumb-grip-v: url( "file://{images}/qt/qtcurve-gen/scroll-grip-v.png" );
+	--sthumb-grip-v-size: 9px 27px;
+	--sthumb-bg-h: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ebebeb ) );
+	--sthumb-grip-h: url( "file://{images}/qt/qtcurve-gen/scroll-grip-h.png" );
+	--sthumb-grip-h-size: 27px 9px;
+	--scroll-up: url( "file://{images}/qt/qtcurve-gen/scroll-up.png" );
+	--scroll-up-size: 16px 15px;
+	--scroll-down: url( "file://{images}/qt/qtcurve-gen/scroll-down.png" );
+	--scroll-down-size: 16px 15px;
+	--scroll-left: url( "file://{images}/qt/qtcurve-gen/scroll-left.png" );
+	--scroll-left-size: 15px 16px;
+	--scroll-right: url( "file://{images}/qt/qtcurve-gen/scroll-right.png" );
+	--scroll-right-size: 15px 16px;
+	--scroll-groove-v: url( "file://{images}/qt/qtcurve-gen/scroll-groove-v.png" );
+	--scroll-groove-h: url( "file://{images}/qt/qtcurve-gen/scroll-groove-h.png" );
 	--tab-active-top: 0px;
+	--tab-active-height: 24px;
 	--tab-active-border: #b0b4b8;
-	--tab-active-bg: gradient( linear, 0% 0%, 0% 100%, from( #f8f8f8 ), color-stop( 0.068, #f9fafa ), to( #eff0f1 ) );
+	--tab-active-bs: #c7cace;
+	--tab-active-inner: none;
+	--tab-active-bg: gradient( linear, 0% 0%, 0% 100%, from( #f8f9f9 ), to( #eff0f1 ) );
 	--tab-active-radius: 3px;
+	--tab-active-padding: 7px;
 	--tab-top: 2px;
+	--tab-height: 22px;
 	--tab-border: #b0b4b8;
-	--tab-bg: gradient( linear, 0% 0%, 0% 100%, from( #dadcde ), color-stop( 0.083, #dee0e2 ), to( #d6d8db ) );
-	--tab-radius: 2px;
+	--tab-bs: #c7cace;
+	--tab-inner: none;
+	--tab-bg: gradient( linear, 0% 0%, 0% 100%, from( #dee0e2 ), color-stop( 0.361, #dbdee0 ), color-stop( 0.417, #d8dadc ), color-stop( 0.472, #c0c3c6 ), color-stop( 0.528, #d2d4d7 ), color-stop( 0.583, #d9dcde ), color-stop( 0.694, #d8dbdd ), color-stop( 0.750, #c8cacd ), color-stop( 0.806, #c5c9ca ), color-stop( 0.861, #d7d9db ), to( #d6d8db ) );
+	--tab-radius: 3px;
+	--tab-padding: 6px;
 	--tab-bar-height: 24px;
+	--tab-gap: 1px;
 	--pane-border: #b0b4b8;
 	--pane-bg: #eff0f1;
 	--frame-border: #b0b4b8;
 	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( #e7e8e9 ), to( #eff0f1 ) );
 	--frame-radius: 1px;
 	--group-title-weight: bold;
+	--group-title-height: 15px;
+	--group-title-x: 0px;
+	--group-title-gap: 2px;
+	--group-title-bg: none;
+	--group-title-image: none;
+	--frame-pad-top: 0px;
+	--frame-side-width: 1px;
+	--frame-side-image: none;
+	--frame-side-size: 1px 1px;
+	--frame-side-top: 0px;
 	--window-image: none;
 	--window-image-size: 1px 1px;
 	--progress-text-weight: bold;
@@ -448,7 +487,7 @@
 	vertical-align: center;
 	background-color: var(--groove-bg);
 	border: 1px solid var(--groove-border);
-	border-radius: 2px;
+	border-radius: var(--groove-radius);
 	box-shadow: var(--groove-shadow);
 }
 
@@ -457,7 +496,7 @@
 	height: var(--slider-fill-height);
 	background-color: var(--slider-fill-bg);
 	border: 1px solid var(--slider-fill-border);
-	border-radius: 2px;
+	border-radius: var(--groove-radius);
 }
 
 .QtCurve Slider #SliderThumb
@@ -470,8 +509,8 @@
 	border-bottom-color: var(--thumb-bb);
 	border-radius: var(--thumb-radius);
 	box-shadow: var(--thumb-shadow);
-	background-image: url( "file://{images}/qt/qtcurve-grip-v.png" );
-	background-size: 7px 5px;
+	background-image: var(--thumb-grip);
+	background-size: var(--thumb-grip-size);
 	background-position: 50% 50%;
 	background-repeat: no-repeat;
 }
@@ -501,6 +540,9 @@
 	border-top-color: var(--pfill-bt);
 	border-bottom-color: var(--pfill-bb);
 	border-radius: var(--pfill-radius);
+	background-image: var(--pfill-image);
+	background-size: var(--pfill-image-size);
+	background-repeat: repeat-x;
 }
 
 .QtCurve ProgressBar .ProgressBarText
@@ -518,8 +560,8 @@
 	width: var(--scroll-size);
 	height: 100%;
 	horizontal-align: right;
-	background-image: url( "file://{images}/qt/qtcurve-groove-v.png" );
-	background-size: 15px 100%;
+	background-image: var(--scroll-groove-v);
+	background-size: var(--scroll-size) 100%;
 	background-repeat: no-repeat;
 }
 
@@ -528,8 +570,8 @@
 	width: 100%;
 	height: var(--scroll-size);
 	vertical-align: bottom;
-	background-image: url( "file://{images}/qt/qtcurve-groove-h.png" );
-	background-size: 100% 15px;
+	background-image: var(--scroll-groove-h);
+	background-size: 100% var(--scroll-size);
 	background-repeat: no-repeat;
 }
 
@@ -541,8 +583,8 @@
 	background-color: var(--sthumb-bg);
 	border: 1px solid var(--sthumb-bt);
 	border-radius: var(--sthumb-radius);
-	background-image: url( "file://{images}/qt/qtcurve-grip-h.png" );
-	background-size: 5px 7px;
+	background-image: var(--sthumb-grip-v);
+	background-size: var(--sthumb-grip-v-size);
 	background-position: 50% 50%;
 	background-repeat: no-repeat;
 }
@@ -552,11 +594,11 @@
 	height: var(--sthumb-width);
 	min-width: var(--sthumb-length);
 	vertical-align: center;
-	background-color: var(--thumb-bg);
+	background-color: var(--sthumb-bg-h);
 	border: 1px solid var(--sthumb-bt);
 	border-radius: var(--sthumb-radius);
-	background-image: url( "file://{images}/qt/qtcurve-grip-v.png" );
-	background-size: 7px 5px;
+	background-image: var(--sthumb-grip-h);
+	background-size: var(--sthumb-grip-h-size);
 	background-position: 50% 50%;
 	background-repeat: no-repeat;
 }
@@ -571,7 +613,6 @@
 .QtCurve .ScrollButtonForward
 {
 	background-color: var(--window);
-	background-size: 14px 14px;
 	background-position: 50% 50%;
 	background-repeat: no-repeat;
 }
@@ -581,23 +622,35 @@
 .QtCurve HorizontalScrollBar .ScrollButtonBack,
 .QtCurve HorizontalScrollBar .ScrollButtonForward { width: var(--scroll-button); }
 
-.QtCurve VerticalScrollBar .ScrollButtonBack { background-image: url( "file://{images}/qt/qtcurve-scroll-up.png" ); }
-.QtCurve VerticalScrollBar .ScrollButtonForward { background-image: url( "file://{images}/qt/qtcurve-scroll-down.png" ); }
-.QtCurve HorizontalScrollBar .ScrollButtonBack { background-image: url( "file://{images}/qt/qtcurve-scroll-left.png" ); }
-.QtCurve HorizontalScrollBar .ScrollButtonForward { background-image: url( "file://{images}/qt/qtcurve-scroll-right.png" ); }
+.QtCurve VerticalScrollBar .ScrollButtonBack { background-image: var(--scroll-up); background-size: var(--scroll-up-size); }
+.QtCurve VerticalScrollBar .ScrollButtonForward { background-image: var(--scroll-down); background-size: var(--scroll-down-size); }
+.QtCurve HorizontalScrollBar .ScrollButtonBack { background-image: var(--scroll-left); background-size: var(--scroll-left-size); }
+.QtCurve HorizontalScrollBar .ScrollButtonForward { background-image: var(--scroll-right); background-size: var(--scroll-right-size); }
 
 /* ---- Group boxes ----------------------------------------------------------- */
 
 .QtCurve .GroupBox
 {
 	flow-children: down;
+	/* the frame's left side when it fades out (an image; see below) */
+	background-image: var(--frame-side-image);
+	background-size: var(--frame-side-size);
+	background-position: 0px var(--frame-side-top);
+	background-repeat: no-repeat;
 }
 
 .QtCurve .GroupBoxTitle
 {
-	font-weight: bold;
-	margin-left: 1px;
-	margin-bottom: 4px;
+	font-weight: var(--group-title-weight);
+	height: var(--group-title-height);
+	margin-left: var(--group-title-x);
+	margin-bottom: var(--group-title-gap);
+	padding: 0px 2px;
+	z-index: 1;
+	background-color: var(--group-title-bg);
+	background-image: var(--group-title-image);
+	background-size: var(--window-image-size);
+	background-repeat: repeat;
 }
 
 .QtCurve .GroupBoxFrame
@@ -605,9 +658,16 @@
 	width: 100%;
 	height: fill-parent-flow( 1 );
 	background-color: var(--frame-bg);
-	border: 1px solid var(--frame-border);
+	border: var(--frame-side-width) solid var(--frame-border);
+	border-top: 1px solid var(--frame-border);
 	border-bottom-width: 0px;
 	border-radius: var(--frame-radius);
+	padding-top: var(--frame-pad-top);
+	/* the right side when it fades out */
+	background-image: var(--frame-side-image);
+	background-size: var(--frame-side-size);
+	background-position: 100% 0px;
+	background-repeat: no-repeat;
 }
 
 /* ---- Tabs ------------------------------------------------------------------ */
@@ -627,13 +687,15 @@
 .QtCurve .TabBar .Tab
 {
 	vertical-align: bottom;
-	height: 20px;
-	padding: 0px 5px;
-	margin-right: 2px;
+	height: var(--tab-height);
+	padding: 0px var(--tab-padding);
+	margin-right: var(--tab-gap);
 	background-color: var(--tab-bg);
-	border: 1px solid var(--tab-border);
+	border: 1px solid var(--tab-bs);
+	border-top-color: var(--tab-border);
 	border-bottom-width: 0px;
 	border-radius: var(--tab-radius) var(--tab-radius) 0px 0px;
+	box-shadow: var(--tab-inner);
 }
 
 .QtCurve .TabBar .Tab .RadioBox
@@ -649,10 +711,13 @@
 
 .QtCurve .TabBar .Tab:checked
 {
-	height: 23px;
+	height: var(--tab-active-height);
 	margin-bottom: -1px;
+	padding: 0px var(--tab-active-padding);
 	background-color: var(--tab-active-bg);
-	border-color: var(--tab-active-border);
+	border-color: var(--tab-active-bs);
+	border-top-color: var(--tab-active-border);
+	box-shadow: var(--tab-active-inner);
 	border-radius: var(--tab-active-radius) var(--tab-active-radius) 0px 0px;
 	z-index: 1;
 }
