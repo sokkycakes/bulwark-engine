@@ -8,6 +8,7 @@
 #include FT_FREETYPE_H
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -363,6 +364,16 @@ char32_t next_codepoint(std::string_view text, std::size_t& i)
 }
 
 // face_weight is a font key: family * kPanoramaFontFamilyStride + weight (Bulwark).
+// Bulwark: metric generations are unique across every atlas and every reload.
+// Width and geometry caches outside the atlas are keyed by the generation
+// alone, so a reloaded atlas (fonts registered after a view opened) or another
+// atlas a view moves to must never reuse a number already handed out.
+std::uint64_t next_metric_generation()
+{
+    static std::atomic<std::uint64_t> counter{0};
+    return ++counter;
+}
+
 std::uint64_t glyph_key(char32_t codepoint, int pixel_size, int face_weight)
 {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(face_weight & 0x7FFFFFF)) << 37U) |
@@ -513,7 +524,7 @@ struct PanoramaFontAtlas::Impl
     bool counters_enabled = false;
     PanoramaFontAtlasStats counters;
     std::uint64_t cache_clock = 0;
-    std::uint64_t metric_generation = 1;
+    std::uint64_t metric_generation = next_metric_generation();
     std::uint64_t atlas_page_generation = 1;
     std::uint64_t atlas_content_generation = 0;
 
@@ -1428,6 +1439,9 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
 void PanoramaFontAtlas::clear()
 {
     const float ui_scale = impl_->ui_scale;
+    // the new Impl takes a fresh metric generation (next_metric_generation):
+    // restarting at 1 let text measured with the old faces (a view opened
+    // before its fonts were registered) keep those advances
     impl_ = std::make_unique<Impl>();
     impl_->ui_scale = ui_scale;
 }
@@ -1455,7 +1469,7 @@ void PanoramaFontAtlas::set_ui_scale(float ui_scale)
         // the LRU budget evicts them; reclaim the single atlas page immediately
         // so old pixel-size glyphs cannot strand its fixed memory.
         impl_->ui_scale = clamped;
-        ++impl_->metric_generation;
+        impl_->metric_generation = next_metric_generation();
         impl_->reset_atlas_page();
     }
 }
