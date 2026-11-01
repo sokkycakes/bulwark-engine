@@ -135,6 +135,12 @@ no game is running.
 look like Qt's Fusion and QtCurve styles; see
 [ui-qt-themes.md](ui-qt-themes.md).
 
+## GTK 2 Murrine look-alike theme
+
+`styles/gtk/murrine.css` imitates GTK 2 with the Murrine engine, and
+`tools/gtkref/gtkrc2panorama.py` turns any Murrine gtkrc into a variant; see
+[ui-gtk-themes.md](ui-gtk-themes.md).
+
 ## Not done yet
 
 Hit-testing ignores transforms, so a scaled panel is clicked where it would
