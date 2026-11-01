@@ -254,10 +254,23 @@ struct View {
 	/* UI_EMBED views: the size they were last drawn at, in virtual pixels */
 	float embed_w = 0, embed_h = 0;
 	float drawn_scale = 0; /* virtual pixels per design unit the batches were built for */
+	/* the layout's own design height and pixelated look (attributes
+	 * bwdesignheight / bwpixelated on a top-level panel); 0 / -1 follow
+	 * ui_designheight / ui_pixelated */
+	float design = 0;
+	int px = -1;
+	float atlas_key = 0; /* the font atlas scale the view was given */
 };
 
 Backend backend;
-PanoramaFontAtlas fonts;
+/* glyphs are baked for one scale per atlas: views at another scale (their
+ * own design height, or pixelated) get an atlas of their own */
+struct ScaledAtlas {
+	float scale;
+	std::unique_ptr<PanoramaFontAtlas> atlas;
+	bool loaded;
+};
+std::vector<ScaledAtlas> atlases;
 bool fonts_loaded;
 bool fonts_dirty; /* UI_AddFont added a face: reload before the next frame */
 std::vector<std::unique_ptr<View>> views;
@@ -272,7 +285,6 @@ struct ExtraFace {
 std::vector<ExtraFace> extra_faces;
 float mouse_x, mouse_y;
 bool mouse_down;
-double last_frame_scale;
 cvar_t *ui_designheight;
 cvar_t *ui_pixelated;
 /* time spent in UI_Frame and UI_Draw, for ui_stats */
@@ -281,43 +293,47 @@ long stat_frames;
 
 /* design units -> framebuffer pixels; layouts are authored for a fixed
  * height (ui_designheight, 1080 by default) and scale with the window */
-float ui_scale()
+float design_height(const View *v)
+{
+	float design = v && v->design >= 1 ? v->design : ui_designheight ? ui_designheight->value : 1080;
+	return design < 1 ? 1080 : design;
+}
+
+float ui_scale(const View *v = nullptr)
 {
 	int w, h;
 	R_GetSize(&w, &h);
-	float fbh = h * R_Get2DScale();
-	float design = ui_designheight ? ui_designheight->value : 1080;
-	if (design < 1)
-		design = 1080;
-	return fbh / design;
+	return h * R_Get2DScale() / design_height(v);
 }
 
-/* ui_pixelated 1: views are drawn at the design resolution (one pixel
- * per design unit) and blown up to the window with nearest filtering, so
- * text and art keep a low-resolution look; glyphs are then baked at that
- * resolution too */
-bool pixelated() { return ui_pixelated && ui_pixelated->ivalue; }
-float atlas_scale() { return pixelated() ? 1.0f : ui_scale(); }
-
-void viewport_design(float &w, float &h)
+/* pixelated: the view is drawn at its design resolution (one pixel per
+ * design unit) and blown up to the window with nearest filtering, so text
+ * and art keep a low-resolution look; glyphs are then baked at that
+ * resolution too. Embedded views are never pixelated. */
+bool pixelated(const View *v)
 {
-	int vw, vh;
-	R_GetSize(&vw, &vh);
-	float s = R_Get2DScale() / ui_scale();
-	w = vw * s;
-	h = vh * s;
+	if (v->flags & UI_EMBED)
+		return false;
+	return v->px >= 0 ? v->px != 0 : ui_pixelated && ui_pixelated->ivalue;
 }
+float atlas_scale(const View *v) { return pixelated(v) ? 1.0f : ui_scale(v); }
+
+/* layout pixels per virtual pixel */
+float to_layout(const View *v) { return R_Get2DScale() / ui_scale(v); }
 
 /* an embedded view is laid out at the size it is drawn */
 void view_viewport(const View &v, float &w, float &h)
 {
+	float s = to_layout(&v);
 	if ((v.flags & UI_EMBED) && v.embed_w > 0 && v.embed_h > 0) {
-		float s = R_Get2DScale() / ui_scale();
 		w = v.embed_w * s;
 		h = v.embed_h * s;
 		return;
 	}
-	viewport_design(w, h);
+	int vw, vh;
+	R_GetSize(&vw, &vh);
+	w = vw * s;
+	h = vh * s;
 }
 
 int face_weight(const char *name)
@@ -355,7 +371,8 @@ void add_face(const char *name, const char *searchpath, void *ctx)
 
 /* every font in panorama/fonts/ joins one family; weights come from the
  * file names (Bold, Medium, ...) */
-void load_fonts()
+/* loads one atlas, or every atlas when only is null */
+void load_fonts(ScaledAtlas *only = nullptr)
 {
 	PanoramaFontAtlasLoadOptions opts;
 	FS_List("panorama/fonts/*.ttf", true, add_face, &opts.faces);
@@ -364,6 +381,7 @@ void load_fonts()
 		opts.faces.push_back({f.path, f.key});
 	if (opts.faces.empty()) {
 		Con_Printf("^3ui: no fonts in panorama/fonts/; text will not draw\n");
+		fonts_loaded = false;
 		return;
 	}
 	opts.resource_root = "/nonexistent-bulwark-ui-root";
@@ -375,10 +393,56 @@ void load_fonts()
 			return std::vector<unsigned char>(); /* handled: never look on disk */
 		return bytes;
 	};
-	fonts.clear();
-	fonts_loaded = fonts.load(opts);
+	fonts_loaded = true;
+	for (ScaledAtlas &a : atlases) {
+		if (only && &a != only)
+			continue;
+		a.atlas->clear();
+		a.loaded = a.atlas->load(opts);
+		a.atlas->set_ui_scale(a.scale);
+		fonts_loaded = fonts_loaded && a.loaded;
+	}
 	if (!fonts_loaded)
 		Con_Printf("^3ui: couldn't load the fonts in panorama/fonts/\n");
+}
+
+/* the atlas baked at this scale, made (and loaded) on first use */
+PanoramaFontAtlas *atlas_for(float scale)
+{
+	scale = std::clamp(scale, 0.1f, 8.0f);
+	for (ScaledAtlas &a : atlases)
+		if (fabsf(a.scale - scale) < 1e-4f)
+			return a.loaded ? a.atlas.get() : nullptr;
+	atlases.push_back({scale, std::make_unique<PanoramaFontAtlas>(), false});
+	load_fonts(&atlases.back());
+	ScaledAtlas &a = atlases.back();
+	return a.loaded ? a.atlas.get() : nullptr;
+}
+
+/* atlases no open view uses any more */
+void drop_unused_atlases()
+{
+	atlases.erase(std::remove_if(atlases.begin(), atlases.end(),
+	                             [](const ScaledAtlas &a) {
+		                             for (auto &v : views)
+			                             if (!v->dead && v->atlas_key == a.scale)
+				                             return false;
+		                             return true;
+	                             }),
+	              atlases.end());
+}
+
+/* gives the view the atlas for its current scale; true when that changed */
+bool update_view_atlas(View &v)
+{
+	float scale = std::clamp(atlas_scale(&v), 0.1f, 8.0f);
+	if (v.atlas_key == scale)
+		return false;
+	PanoramaFontAtlas *a = atlas_for(scale);
+	v.atlas_key = scale;
+	if (a)
+		v.pv.set_font_atlas(a);
+	return true;
 }
 
 /* url("file://{images}/x.png") and friends -> a game file path */
@@ -523,7 +587,7 @@ void reap_views()
 void host_action(View *v, const std::string &action, const std::string &arg)
 {
 	if (action == "__size") {
-		float w, h, s = R_Get2DScale() / ui_scale();
+		float w, h, s = to_layout(v);
 		view_viewport(*v, w, h);
 		if (PanoramaNode *root = v->pv.root()) {
 			root->attributes["bwwidth"] = std::to_string(w);
@@ -567,7 +631,7 @@ int blend_for(PanoramaBlendMode m)
 
 void build_batches(View &v)
 {
-	float to_virtual = ui_scale() / R_Get2DScale();
+	float to_virtual = 1 / to_layout(&v);
 	v.batches.clear();
 	for (const PanoramaDrawCommand &cmd : v.pv.draw_list().commands) {
 		if (cmd.vertices.empty() || cmd.indices.empty())
@@ -788,12 +852,41 @@ void UI_Init(void)
 void UI_Shutdown(void)
 {
 	views.clear();
-	fonts.abandon_gpu_resources();
+	for (ScaledAtlas &a : atlases)
+		a.atlas->abandon_gpu_resources();
+	atlases.clear();
 	set_panorama_render_backend(nullptr);
 }
 
 void UI_SetActionHandler(ui_action_fn fn) { action_handler = fn; }
 void UI_SetQueryHandler(ui_query_fn fn) { query_handler = fn; }
+
+/* a top-level panel can carry bwdesignheight="540" and bwpixelated="1":
+ * that view then keeps its own design height and look whatever
+ * ui_designheight / ui_pixelated say. True when the layout set either. */
+bool read_view_options(View &v)
+{
+	PanoramaNode *root = v.pv.root();
+	if (!root)
+		return false;
+	bool set = false;
+	std::vector<PanoramaNode *> top = {root};
+	for (auto &c : root->children)
+		top.push_back(c.get());
+	for (PanoramaNode *n : top) {
+		auto d = n->attributes.find("bwdesignheight");
+		if (d != n->attributes.end() && atof(d->second.c_str()) >= 1) {
+			v.design = (float)atof(d->second.c_str());
+			set = true;
+		}
+		auto p = n->attributes.find("bwpixelated");
+		if (p != n->attributes.end()) {
+			v.px = atoi(p->second.c_str()) != 0;
+			set = true;
+		}
+	}
+	return set;
+}
 
 bool UI_LayoutExists(const char *layout) { return FS_FileExists(ui_path(layout).c_str()); }
 
@@ -811,12 +904,9 @@ int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 	v->flags = flags;
 	v->layout = layout;
 	float w, h;
-	viewport_design(w, h);
+	view_viewport(*v, w, h);
 	v->pv.set_viewport(w, h);
-	if (fonts_loaded) {
-		fonts.set_ui_scale(atlas_scale());
-		v->pv.set_font_atlas(&fonts);
-	}
+	update_view_atlas(*v);
 	v->pv.resources().add_provider(std::make_unique<FsProvider>());
 	v->pv.runtime().add_bootstrap_script({"bulwark://prelude", bulwark_prelude});
 	if (bootstrap && *bootstrap)
@@ -828,6 +918,15 @@ int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 	if (!v->pv.load(layout, std::move(opts))) {
 		Con_Printf("ui: couldn't load %s\n", ui_path(layout).c_str());
 		return 0;
+	}
+	if (read_view_options(*v)) {
+		/* the layout has its own design height or look: lay it out again */
+		view_viewport(*v, w, h);
+		v->pv.set_viewport(w, h);
+		if (update_view_atlas(*v)) {
+			v->pv.invalidate_style();
+			v->pv.invalidate_visual();
+		}
 	}
 	next_view++;
 	views.push_back(std::move(v));
@@ -872,7 +971,7 @@ void UI_ViewSize(int num, float *w, float *h)
 	float dw = 0, dh = 0;
 	if (v) {
 		view_viewport(*v, dw, dh);
-		float s = ui_scale() / R_Get2DScale();
+		float s = 1 / to_layout(v);
 		dw *= s;
 		dh *= s;
 	}
@@ -968,7 +1067,7 @@ bool UI_KeyEvent(int key, bool down, int unicode)
 	View *v = input_view();
 	if (!v)
 		return false;
-	float s = R_Get2DScale() / ui_scale();
+	float s = to_layout(v);
 	if (key == K_MOUSE1) {
 		mouse_down = down;
 		v->pv.update_pointer(mouse_x * s, mouse_y * s, mouse_down);
@@ -1006,7 +1105,7 @@ void UI_MouseMove(float x, float y)
 	mouse_x = x;
 	mouse_y = y;
 	if (View *v = input_view()) {
-		float s = R_Get2DScale() / ui_scale();
+		float s = to_layout(v);
 		v->pv.update_pointer(x * s, y * s, mouse_down);
 	}
 }
@@ -1015,14 +1114,13 @@ void UI_Frame(double dt)
 {
 	double start = Sys_Seconds();
 	reap_views();
+	drop_unused_atlases();
 	if (fonts_dirty) {
 		fonts_dirty = false;
 		load_fonts();
-		if (fonts_loaded)
-			fonts.set_ui_scale(atlas_scale());
 		for (auto &v : views) {
-			if (fonts_loaded)
-				v->pv.set_font_atlas(&fonts);
+			v->atlas_key = 0;
+			update_view_atlas(*v);
 			/* font-family names that weren't registered yet resolve now */
 			v->pv.invalidate_style();
 			v->pv.invalidate_visual();
@@ -1030,14 +1128,15 @@ void UI_Frame(double dt)
 		}
 	}
 	float w, h;
-	viewport_design(w, h);
-	double scale = ui_scale() * (pixelated() ? -1 : 1);
-	if (scale != last_frame_scale) {
-		last_frame_scale = scale;
-		if (fonts_loaded)
-			fonts.set_ui_scale(atlas_scale());
-		for (auto &v : views)
+	for (auto &v : views) {
+		/* window size or cvars changed: rebake glyphs, rebuild geometry */
+		float scale = 1 / to_layout(v.get()) * (pixelated(v.get()) ? -1 : 1);
+		if (scale != v->drawn_scale) {
+			v->drawn_scale = scale;
 			v->batches_dirty = true;
+			if (update_view_atlas(*v))
+				v->pv.invalidate_visual();
+		}
 	}
 	/* a script can close views (Bulwark.Cmd("ui_close ...") runs later from
 	 * the command buffer, so iterating here is safe) */
@@ -1066,18 +1165,18 @@ void UI_Frame(double dt)
 void UI_Draw(void)
 {
 	double start = Sys_Seconds();
-	bool lowres = pixelated() && !views.empty();
-	if (lowres) {
-		int w, h;
-		R_GetSize(&w, &h);
-		float s = R_Get2DScale() / ui_scale();
-		R_BeginPixelated2D((int)lroundf(w * s), (int)lroundf(h * s));
-	}
 	for (auto &v : views) {
 		if ((v->flags & UI_EMBED) || v->dead)
 			continue;
 		if (v->batches_dirty)
 			build_batches(*v);
+		bool lowres = pixelated(v.get());
+		if (lowres) {
+			int w, h;
+			R_GetSize(&w, &h);
+			float s = to_layout(v.get());
+			R_BeginPixelated2D((int)lroundf(w * s), (int)lroundf(h * s));
+		}
 		for (const View::Batch &b : v->batches) {
 			if (b.clip)
 				R_Set2DClip(b.cx, b.cy, b.cw, b.ch);
@@ -1087,9 +1186,9 @@ void UI_Draw(void)
 			                  b.blend);
 		}
 		R_Reset2DClip();
+		if (lowres)
+			R_EndPixelated2D();
 	}
-	if (lowres)
-		R_EndPixelated2D();
 	if (!views.empty())
 		stat_draw += Sys_Seconds() - start;
 }
