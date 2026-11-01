@@ -74,6 +74,10 @@ float R_Get2DScale(void); /* framebuffer pixels per virtual pixel: lay out at R_
 void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const uint16_t *idx, int numidx,
                        int blend);      /* image 0 draws untextured */
 void R_Set2DClip(float x, float y, float w, float h);
+/* 2D drawing between these lands in an off-screen w x h target that End
+ * scales over the whole screen with nearest filtering (chunky pixels) */
+void R_BeginPixelated2D(int w, int h);
+void R_EndPixelated2D(void);
 void R_Reset2DClip(void);
 
 /* simple 2D drawing in virtual pixels, for the engine's own menus: text

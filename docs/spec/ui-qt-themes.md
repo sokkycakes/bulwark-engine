@@ -122,7 +122,13 @@ variant's window tile inside, and QtCurve's frame edges (a dark line, a
 lighter line inside it) following the outline, anti-aliased. The JTF main
 menu (`layout/qt/jtf-menu.xml`, opened by `exec panorama/jtf-menu.cfg`) uses
 it for the outline of sokky's Figma group, `tools/qtref/shapes/jtf-menu.svg`
-(paths copied verbatim); its tiles are QtCurve push buttons. The cfg
+(paths copied verbatim). Each Figma square is itself a square QtCurve push
+button, with its turned label beside it. The menu is laid out at 960x540
+(Figma's 1080p values halved) and drawn with `ui_pixelated 1`, so the
+window stripes and frame lines come out 2 screen pixels thick on 1080p; the
+frame image is painted with `qtshape.py --scale 0.5 --x0 99` (geometry
+scaled, lines and tile kept 1 pixel; `--x0` crops the part of the tab that
+hangs off screen). The cfg sets those two cvars, which are global. It also
 registers the Figma fonts (Iceberg, Kode Mono, SIL OFL, in
 `panorama/fonts-jtf/`) before opening the view, because a family must exist
 when the styles are read.

@@ -133,6 +133,7 @@ int R_SpriteFormat(const char *name);
 void GL_SetDepth(bool test, bool write);
 void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);
+void GL_SetCoverageAlpha(bool on);
 void GL_DeleteTextures(int n, const GLuint *tex);
 
 /* --- models -------------------------------------------------------------- */
