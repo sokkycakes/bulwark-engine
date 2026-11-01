@@ -1103,6 +1103,24 @@ static bool load_sprite(rmodel_t *mod, const uint8_t *d, size_t size)
 	return true;
 }
 
+/* a sprite's frame for particles: its material, and its rectangle about the
+ * sprite's centre as left, right, top, bottom; NULL for a bad frame */
+int R_SpriteFrameCount(const rmodel_t *m)
+{
+	return (m && m->type == MOD_SPRITE && m->sprite) ? m->sprite->numframes : 0;
+}
+
+material_t *R_SpriteFrame(const rmodel_t *m, int frame, float *rect)
+{
+	const spriteframe_t *f;
+	if (!m || m->type != MOD_SPRITE || !m->sprite || m->sprite->numframes <= 0)
+		return NULL;
+	frame = BW_MAX(0, BW_MIN(m->sprite->numframes - 1, frame));
+	f = &m->sprite->frames[frame];
+	rect[0] = f->left, rect[1] = f->right, rect[2] = f->top, rect[3] = f->bottom;
+	return f->material;
+}
+
 /* sprites face the camera, always in the translucent pass. Additive sprites
  * (texture format 1, EF_ADDITIVE or RF_ADDITIVE) add onto the scene */
 static void draw_sprite(rentity_t *e, const float *viewproj)
