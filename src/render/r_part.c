@@ -65,6 +65,13 @@ typedef struct ptype_s {
 	char sound[128];
 	float soundvol, soundattn, soundpitch;
 	float beamtexstep, beamtexspeed;
+	float countextra; /* count's third value: spawned every time, whatever the count asked for */
+	/* "model": each particle is drawn as a frame of this sprite instead */
+	char modelname[128];
+	struct rmodel_s *model;
+	bool modeltried, modeladditive;
+	int modelframe, modelframes;
+	float modelrate, modelscale[2], modelrgb[3];
 } ptype_t;
 
 typedef struct {
@@ -317,6 +324,7 @@ static void parse_property(ptype_t *t, const ptok_t *a, int n)
 	} else if (IS("count")) {
 		t->count[0] = argf(a, n, 1, 1);
 		t->count[1] = argf(a, n, 2, t->count[0]);
+		t->countextra = argf(a, n, 3, 0);
 	} else if (IS("alpha"))
 		t->alpha = argf(a, n, 1, 1);
 	else if (IS("alpharand"))
@@ -507,7 +515,42 @@ static void parse_property(ptype_t *t, const ptok_t *a, int n)
 				t->soundpitch = (float)atof(o);
 		}
 	}
-	/* not done: model, spawnstain, stains, rainfrequency, flurry, viewspace,
+	else if (IS("model") && n > 1) {
+		/* model <sprite> [framestart=N] [framecount=N | frameend=N]
+		 * [framerate=N] [scalemin=N] [scalemax=N] [r=N g=N b=N] [additive] */
+		Str_Copy(t->modelname, a[1].text, sizeof(t->modelname));
+		t->model = NULL;
+		t->modeltried = false;
+		t->modelframe = 0, t->modelframes = 0, t->modelrate = 10;
+		t->modelscale[0] = t->modelscale[1] = 1;
+		t->modelrgb[0] = t->modelrgb[1] = t->modelrgb[2] = 1;
+		t->modeladditive = false;
+		for (int i = 2; i < n; i++) {
+			const char *o = a[i].text, *eq = strchr(o, '=');
+			float v = eq ? (float)atof(eq + 1) : 0;
+			if (!Str_NICmp(o, "framestart=", 11))
+				t->modelframe = (int)v;
+			else if (!Str_NICmp(o, "framecount=", 11))
+				t->modelframes = (int)v;
+			else if (!Str_NICmp(o, "frameend=", 9))
+				t->modelframes = (int)v - t->modelframe + 1;
+			else if (!Str_NICmp(o, "framerate=", 10))
+				t->modelrate = v;
+			else if (!Str_NICmp(o, "scalemin=", 9))
+				t->modelscale[0] = v;
+			else if (!Str_NICmp(o, "scalemax=", 9))
+				t->modelscale[1] = v;
+			else if (!Str_NICmp(o, "r=", 2))
+				t->modelrgb[0] = v;
+			else if (!Str_NICmp(o, "g=", 2))
+				t->modelrgb[1] = v;
+			else if (!Str_NICmp(o, "b=", 2))
+				t->modelrgb[2] = v;
+			else if (!Str_ICmp(o, "additive"))
+				t->modeladditive = true;
+		}
+	}
+	/* not done: spawnstain, stains, rainfrequency, flurry, viewspace,
 	 * underwater, notunderwater, inwater, light cubemaps and coronas */
 #undef IS
 }
@@ -758,6 +801,18 @@ static particle_t *new_particle(ptype_t *t)
 		p->life = 0.001f;
 	p->nextemit = t->emitstart;
 	pick_tc(t, p->tc);
+	if (t->model) {
+		/* sprite particles: sized and tinted by the model line, and gone
+		 * once the animation has played */
+		p->scale = rrange(t->modelscale[0], t->modelscale[1]);
+		for (int k = 0; k < 3; k++)
+			p->rgba[k] = t->modelrgb[k];
+		if (t->modelrate > 0) {
+			int frames = t->modelframes > 0 ? t->modelframes : R_SpriteFrameCount(t->model) - t->modelframe;
+			if (frames > 0)
+				p->life = BW_MIN(p->life, frames / t->modelrate);
+		}
+	}
 	return p;
 }
 
@@ -824,6 +879,22 @@ static void spawn_decal(ptype_t *t, const float *org, const float *dir)
 	}
 }
 
+/* the sprite a "model" type draws with, loaded on first use; NULL when it
+ * isn't one or failed to load (then the type draws as ordinary particles) */
+static struct rmodel_s *type_model(ptype_t *t)
+{
+	if (!t->modelname[0])
+		return NULL;
+	if (!t->modeltried) {
+		rmodel_t *m = R_LoadModel(t->modelname);
+		t->modeltried = true;
+		t->model = (m && m->type == MOD_SPRITE) ? m : NULL;
+		if (!t->model)
+			Con_DPrintf("particle model %s: not a sprite\n", t->modelname);
+	}
+	return t->model;
+}
+
 static void spawn_point(ptype_t *t, const float *org, const float *dir, float count, int depth)
 {
 	int n;
@@ -838,8 +909,9 @@ static void spawn_point(ptype_t *t, const float *org, const float *dir, float co
 			spawn_decal(t, org, dir);
 		return;
 	}
-	n = (int)(rrange(t->count[0], t->count[1]) * count * density + frand());
+	n = (int)(rrange(t->count[0], t->count[1]) * count * density + frand()) + (int)t->countextra;
 	type_material(t);
+	type_model(t);
 	for (int i = 0, prev = -1; i < n; i++) {
 		particle_t *p = new_particle(t);
 		float r[3], h = t->spawnorg[0], v = t->spawnorg[1], sv = t->spawnvel[0], svv = t->spawnvel[1];
@@ -1166,16 +1238,24 @@ static rvert_t batchv[BATCH_QUADS * 4];
 static uint16_t batchi[BATCH_QUADS * 6];
 static int batchn;
 
+static material_t *batchmat; /* a sprite frame's, when the batch holds sprite particles */
+
 static void flush(const ptype_t *t)
 {
 	int b;
 	GLenum s, d;
-	if (!batchn || !t)
+	material_t *m = batchmat ? batchmat : (t ? t->mat : NULL);
+	if (!batchn || !t || !m || !m->diffuse)
 		return;
-	R_PickBlend(t->mat, t->blend, t->src, t->dst, &b, &s, &d);
-	if (b == BLEND_OPAQUE)
-		s = GL_SRC_ALPHA, d = GL_ONE_MINUS_SRC_ALPHA;
-	GL_BindTexture(0, GL_TEXTURE_2D, t->mat->diffuse->tex);
+	if (batchmat) {
+		s = GL_SRC_ALPHA;
+		d = t->modeladditive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA;
+	} else {
+		R_PickBlend(t->mat, t->blend, t->src, t->dst, &b, &s, &d);
+		if (b == BLEND_OPAQUE)
+			s = GL_SRC_ALPHA, d = GL_ONE_MINUS_SRC_ALPHA;
+	}
+	GL_BindTexture(0, GL_TEXTURE_2D, m->diffuse->tex);
 	GL_SetBlend(BLEND_CUSTOM, s, d);
 	R_StreamDraw(GL_TRIANGLES, batchv, batchn * 4, batchi, batchn * 6);
 	batchn = 0;
@@ -1190,7 +1270,7 @@ static void put_quad(const ptype_t *t, const float corners[4][3], const float *t
 		flush(t);
 	v = &batchv[batchn * 4];
 	R_BlendColor(t->src, rgba, c);
-	if (t->mat->fromfile && t->mat->blend != BLEND_OPAQUE)
+	if (!batchmat && t->mat->fromfile && t->mat->blend != BLEND_OPAQUE)
 		R_BlendColor(t->mat->src, rgba, c);
 	for (int i = 0; i < 4; i++) {
 		VectorCopy(corners[i], v[i].xyz);
@@ -1213,6 +1293,38 @@ static void draw_particle(const particle_t *p)
 	dist = DotProduct(d, r_scene.forward);
 	if (dist < 0 && t->kind != PT_BEAM)
 		return;
+	if (t->model) {
+		/* a sprite frame, by age, facing the view and turned by rotation */
+		static const float fulltc[4] = {0, 0, 1, 1};
+		float rect[4], a = p->rot * (float)M_PI / 180, cs = cosf(a), sn = sinf(a), r[3], u[3];
+		int frame = t->modelframe + (int)(p->age * t->modelrate);
+		material_t *m;
+		if (t->modelframes > 0)
+			frame = BW_MIN(frame, t->modelframe + t->modelframes - 1);
+		m = R_SpriteFrame(t->model, frame, rect);
+		if (!m || !m->diffuse)
+			return;
+		if (m != batchmat) {
+			flush(t);
+			batchmat = m;
+		}
+		for (int k = 0; k < 3; k++) {
+			r[k] = (r_scene.right[k] * cs + r_scene.up[k] * sn) * p->scale;
+			u[k] = (r_scene.up[k] * cs - r_scene.right[k] * sn) * p->scale;
+		}
+		for (int k = 0; k < 3; k++) {
+			corners[0][k] = p->org[k] + r[k] * rect[0] + u[k] * rect[3];
+			corners[1][k] = p->org[k] + r[k] * rect[0] + u[k] * rect[2];
+			corners[2][k] = p->org[k] + r[k] * rect[1] + u[k] * rect[2];
+			corners[3][k] = p->org[k] + r[k] * rect[1] + u[k] * rect[3];
+		}
+		put_quad(t, corners, fulltc, p->rgba);
+		return;
+	}
+	if (batchmat) {
+		flush(t);
+		batchmat = NULL;
+	}
 	size = p->scale * 0.5f;
 	/* scalefactor 0 keeps a constant size on screen, as at 256 units */
 	if (sf < 1)
@@ -1295,10 +1407,12 @@ void R_DrawParticles(void)
 	GL_SetDepth(true, false);
 	GL_SetCull(false);
 	batchn = 0;
+	batchmat = NULL;
 	for (int i = 0; i < numparts; i++) {
 		const particle_t *p = &parts[i];
 		if (p->t != cur) {
 			flush(cur);
+			batchmat = NULL;
 			cur = p->t;
 		}
 		if (p->rgba[3] <= 0)
@@ -1306,6 +1420,7 @@ void R_DrawParticles(void)
 		draw_particle(p);
 	}
 	flush(cur);
+	batchmat = NULL;
 	GL_SetCull(true);
 	GL_SetDepth(true, true);
 	r_stats.particles = numparts;

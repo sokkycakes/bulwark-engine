@@ -170,6 +170,8 @@ typedef struct rmodel_s {
 
 rmodel_t *R_ModelForIndex(int index);
 rmodel_t *R_LoadModel(const char *name); /* cached by name */
+int R_SpriteFrameCount(const rmodel_t *m);
+material_t *R_SpriteFrame(const rmodel_t *m, int frame, float *rect); /* rect: left right top bottom */
 void R_FreeModels(void);
 int R_ModelNumFrames(rmodel_t *m);
 
