@@ -861,6 +861,78 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 }
 
 void R_Set2DClip(float x, float y, float w, float h) { R_SetClip(x, y, w, h); }
+
+/* --- pixelated 2D (UI drawn at a low resolution and blown up) ----------- */
+
+static GLuint px_fb, px_tex;
+static int px_w, px_h, px_savedpw, px_savedph;
+static GLint px_savedfb;
+static bool px_on;
+
+void R_BeginPixelated2D(int w, int h)
+{
+	if (px_on || !in2d || !R_Active() || w < 1 || h < 1)
+		return;
+	R_Flush2D();
+	if (!px_fb) {
+		qglGenFramebuffers(1, &px_fb);
+		qglGenTextures(1, &px_tex);
+	}
+	GL_BindTexture(0, GL_TEXTURE_2D, px_tex);
+	if (w != px_w || h != px_h) {
+		qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		px_w = w;
+		px_h = h;
+	}
+	qglGetIntegerv(GL_FRAMEBUFFER_BINDING, &px_savedfb);
+	qglBindFramebuffer(GL_FRAMEBUFFER, px_fb);
+	qglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, px_tex, 0);
+	if (qglCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)px_savedfb);
+		return;
+	}
+	px_on = true;
+	/* the same virtual 2D space, rasterised at w x h; clips scale with it */
+	px_savedpw = r_pwidth;
+	px_savedph = r_pheight;
+	r_pwidth = w;
+	r_pheight = h;
+	qglViewport(0, 0, w, h);
+	qglDisable(GL_SCISSOR_TEST);
+	qglClearColor(0, 0, 0, 0);
+	qglClear(GL_COLOR_BUFFER_BIT);
+	GL_SetCoverageAlpha(true);
+	apply_clip();
+}
+
+void R_EndPixelated2D(void)
+{
+	static const float white[4] = {1, 1, 1, 1};
+	bool wasclipping;
+	if (!px_on)
+		return;
+	R_Flush2D();
+	px_on = false;
+	GL_SetCoverageAlpha(false);
+	qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)px_savedfb);
+	r_pwidth = px_savedpw;
+	r_pheight = px_savedph;
+	qglViewport(0, 0, r_pwidth, r_pheight);
+	wasclipping = clipping;
+	clipping = false;
+	apply_clip();
+	/* premultiplied target; its rows run bottom up */
+	set_state(px_tex, BLEND_CUSTOM, GL_ONE, GL_ONE_MINUS_SRC_ALPHA, NULL, 0);
+	quad(0, 0, (float)r_vwidth, (float)r_vheight, 0, 1, 1, 0, white);
+	R_Flush2D();
+	cur_blend = -1;
+	clipping = wasclipping;
+	apply_clip();
+}
 void R_Reset2DClip(void) { R_ResetClip(); }
 
 /* a loaded font: false for a free slot */

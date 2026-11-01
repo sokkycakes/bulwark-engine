@@ -3,6 +3,12 @@
 # Panorama panels whose shape CSS can't express (a slanted tab, say).
 #
 #   qtshape.py shape.svg out.png --tile window.png --border #282828 --light #3d3d3d
+#              [--scale 0.5] [--x0 99]
+#
+# --scale sizes the outline for a layout authored at another resolution
+# (0.5 for a 540-high layout from a 1080p design); the tile and the frame
+# lines stay one output pixel each, as QtCurve draws them at any size.
+# --x0 drops the part of the shape left of that x (off screen).
 #
 # The inside is the theme's window background (the tile qtcurve2panorama.py
 # measured, e.g. images/qt/<variant>/window.png), and the outline gets the
@@ -14,7 +20,7 @@ import xml.etree.ElementTree as ET
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtCore import Qt, QPointF, QRectF
-from PyQt5.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap, QTransform
 
 ap = argparse.ArgumentParser()
 ap.add_argument('shape')
@@ -24,6 +30,7 @@ ap.add_argument('--fill', default='#353535')
 ap.add_argument('--border', default='#282828')
 ap.add_argument('--light', default='#3d3d3d', help="line inside the border ('none' to skip)")
 ap.add_argument('--scale', type=float, default=1.0)
+ap.add_argument('--x0', type=float, default=0.0)
 args = ap.parse_args()
 
 app = QGuiApplication(['qtshape'])
@@ -71,11 +78,12 @@ for el in root.iter():
         shape = shape.united(parse_path(el.get('d')))
 shape = shape.simplified()
 
-img = QImage(round(w * args.scale), round(h * args.scale), QImage.Format_ARGB32_Premultiplied)
+sc = args.scale
+shape = QTransform().scale(sc, sc).translate(-args.x0, 0).map(shape)
+img = QImage(round((w - args.x0) * sc), round(h * sc), QImage.Format_ARGB32_Premultiplied)
 img.fill(Qt.transparent)
 p = QPainter(img)
 p.setRenderHint(QPainter.Antialiasing)
-p.scale(args.scale, args.scale)
 brush = QBrush(QPixmap(args.tile)) if args.tile else QBrush(QColor(args.fill))
 p.fillPath(shape, brush)
 # frame lines: strokes centred on the outline, clipped to the inside, so a

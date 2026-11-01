@@ -1,6 +1,8 @@
 /* Layout of the JTF main menu (layout/qt/jtf-menu.xml). Sizes and places
-   are the Figma frame's, in 1080p pixels; the look comes from qtcurve.css
-   and the variant's custom properties. */
+   are the Figma frame's halved: the menu is laid out at 960x540 and drawn
+   pixelated (ui_designheight 540, ui_pixelated 1), so on a 1080p screen
+   every design pixel is a 2x2 block. The look comes from qtcurve.css and
+   the variant's custom properties. */
 
 #JtfScreen
 {
@@ -10,68 +12,63 @@
 
 /* The menu is a QtCurve window whose outline is the Figma shape: the
    variant's window background and frame edges, painted into that outline
-   (QtCurve can only frame rectangles). The shape is 2019px wide because its
-   tab hangs 99px off the left of the screen; the panel is the on-screen
-   part, so child positions below are screen x and menu-relative y. */
+   (QtCurve can only frame rectangles). The shape's tab hangs off the left
+   of the screen, so the image is only the on-screen part (painted by
+   tools/qtref/qtshape.py --scale 0.5 --x0 99). */
 #JtfMenu
 {
 	x: 0px;
-	y: 682px;
-	width: 1920px;
-	height: 398px;
+	y: 341px;
+	width: 960px;
+	height: 199px;
 	background-color: transparent;
 	background-image: url( "file://{images}/qt/sokkydark/jtf-menu-frame.png" );
-	background-size: 2019px 398px;
-	background-position: -99px 0px;
+	background-size: 960px 199px;
+	background-position: 0px 0px;
 	background-repeat: no-repeat;
 }
 
 #JtfTitle
 {
-	x: 17px;
-	y: 4px;
+	x: 8px;
+	y: 2px;
 	font-family: "Iceberg";
-	font-size: 60px;
-	letter-spacing: 3px;
+	font-size: 30px;
+	letter-spacing: 1.5px;
 	color: var(--window-text);
 }
 
-/* A tile is a QtCurve push button around the Figma square and its label:
-   the square at (61, 106) and the label's box at (213, 83) 72x203,
-   with the button about 10px outside them. */
-.QtCurve Button.JtfTile
+/* A tile holds the Figma square and its label. */
+.JtfTile
 {
-	y: 76px;
-	width: 244px;
-	height: 220px;
+	y: 53px;
+	width: 140px;
+	height: 110px;
+}
+
+/* the Figma square is itself the button: a square QtCurve push button
+   (it takes the .QtCurve Button look, hover and pressed states) */
+.QtCurve Button.JtfSquare
+{
+	x: 0px;
+	y: 0px;
+	width: 76px;
+	height: 76px;
 	margin: 0px;
 }
 
-/* the Figma square: an icon slot, drawn as a QtCurve sunken (entry) frame */
-.QtCurve .JtfIcon
+/* Kode Mono, turned a quarter clockwise (reads top to bottom) beside the
+   square, its first letter level with the square's top edge (as in Figma) */
+.QtCurve Label.JtfTileLabel
 {
-	x: 9px;
-	y: 29px;
-	width: 152px;
-	height: 152px;
-	background-color: var(--entry-bg);
-	border: 1px solid var(--entry-bs);
-	border-top-color: var(--entry-bt);
-	border-bottom-color: var(--entry-bb);
-	border-radius: var(--entry-radius);
-	box-shadow: var(--entry-shadow);
-}
-
-/* Kode Mono 60px, turned a quarter clockwise (reads top to bottom) */
-.QtCurve Button > Label.JtfTileLabel
-{
-	x: 95.5px;
-	y: 71.5px;
-	width: 203px;
-	height: 72px;
+	x: 45px;
+	y: 33px;
+	width: 102px;
+	height: 36px;
 	font-family: "Kode Mono";
-	font-size: 60px;
-	letter-spacing: 3px;
+	font-size: 30px;
+	letter-spacing: 1.5px;
+	color: var(--window-text);
 	horizontal-align: left;
 	vertical-align: top;
 	transform-origin: 50% 50%;
@@ -81,12 +78,12 @@
 /* the JTF logo (Figma layer 13:147): white at half strength */
 #JtfLogo
 {
-	x: 1428px;
-	y: 131px;
-	width: 425px;
-	height: 109px;
+	x: 714px;
+	y: 65px;
+	width: 213px;
+	height: 55px;
 	background-image: url( "file://{images}/qt/jtf/logo.png" );
-	background-size: 425px 109px;
+	background-size: 213px 55px;
 	background-repeat: no-repeat;
 	opacity: 0.5;
 }

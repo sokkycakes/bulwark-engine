@@ -48,6 +48,16 @@ archived). The UI scale is framebuffer height ÷ design height, so a layout
 fills the same share of the screen at any resolution. Widths follow the aspect
 ratio, so percentage positions are the safe way to place things horizontally.
 
+`ui_pixelated 1` (archived, default 0) gives a low-resolution look: each
+frame the views are drawn into an offscreen target of design height
+(`ui_designheight` lines, width by aspect), with the font atlas at scale 1,
+and that target is stretched over the screen with nearest filtering
+(`R_BeginPixelated2D` / `R_EndPixelated2D` in `src/render/r_draw.c`). The
+target keeps premultiplied coverage alpha (blend factors for alpha are
+`ONE, ONE_MINUS_SRC_ALPHA` while it is bound), so translucent UI composites
+over the game correctly. A design height that divides the screen height
+(540 on 1080p) gives square, even pixel blocks.
+
 ## QuakeC builtins (CSQC and the menu progs)
 
 ```

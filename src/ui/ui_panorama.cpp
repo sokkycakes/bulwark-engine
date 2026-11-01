@@ -274,6 +274,7 @@ float mouse_x, mouse_y;
 bool mouse_down;
 double last_frame_scale;
 cvar_t *ui_designheight;
+cvar_t *ui_pixelated;
 /* time spent in UI_Frame and UI_Draw, for ui_stats */
 double stat_update, stat_draw;
 long stat_frames;
@@ -290,6 +291,13 @@ float ui_scale()
 		design = 1080;
 	return fbh / design;
 }
+
+/* ui_pixelated 1: views are drawn at the design resolution (one pixel
+ * per design unit) and blown up to the window with nearest filtering, so
+ * text and art keep a low-resolution look; glyphs are then baked at that
+ * resolution too */
+bool pixelated() { return ui_pixelated && ui_pixelated->ivalue; }
+float atlas_scale() { return pixelated() ? 1.0f : ui_scale(); }
 
 void viewport_design(float &w, float &h)
 {
@@ -762,6 +770,8 @@ void UI_Init(void)
 {
 	ui_designheight = Cvar_Get("ui_designheight", "1080", CVAR_ARCHIVE,
 	                           "screen height, in layout pixels, that UI layouts are authored for");
+	ui_pixelated = Cvar_Get("ui_pixelated", "0", CVAR_ARCHIVE,
+	                         "1: draw UI views at ui_designheight pixels and scale them up unfiltered (a low-resolution look)");
 	set_panorama_render_backend(&backend);
 	load_fonts();
 	Cmd_Add("ui_open", cmd_ui_open);
@@ -804,7 +814,7 @@ int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 	viewport_design(w, h);
 	v->pv.set_viewport(w, h);
 	if (fonts_loaded) {
-		fonts.set_ui_scale(ui_scale());
+		fonts.set_ui_scale(atlas_scale());
 		v->pv.set_font_atlas(&fonts);
 	}
 	v->pv.resources().add_provider(std::make_unique<FsProvider>());
@@ -1009,7 +1019,7 @@ void UI_Frame(double dt)
 		fonts_dirty = false;
 		load_fonts();
 		if (fonts_loaded)
-			fonts.set_ui_scale(ui_scale());
+			fonts.set_ui_scale(atlas_scale());
 		for (auto &v : views) {
 			if (fonts_loaded)
 				v->pv.set_font_atlas(&fonts);
@@ -1021,11 +1031,11 @@ void UI_Frame(double dt)
 	}
 	float w, h;
 	viewport_design(w, h);
-	double scale = ui_scale();
+	double scale = ui_scale() * (pixelated() ? -1 : 1);
 	if (scale != last_frame_scale) {
 		last_frame_scale = scale;
 		if (fonts_loaded)
-			fonts.set_ui_scale((float)scale);
+			fonts.set_ui_scale(atlas_scale());
 		for (auto &v : views)
 			v->batches_dirty = true;
 	}
@@ -1056,6 +1066,13 @@ void UI_Frame(double dt)
 void UI_Draw(void)
 {
 	double start = Sys_Seconds();
+	bool lowres = pixelated() && !views.empty();
+	if (lowres) {
+		int w, h;
+		R_GetSize(&w, &h);
+		float s = R_Get2DScale() / ui_scale();
+		R_BeginPixelated2D((int)lroundf(w * s), (int)lroundf(h * s));
+	}
 	for (auto &v : views) {
 		if ((v->flags & UI_EMBED) || v->dead)
 			continue;
@@ -1071,6 +1088,8 @@ void UI_Draw(void)
 		}
 		R_Reset2DClip();
 	}
+	if (lowres)
+		R_EndPixelated2D();
 	if (!views.empty())
 		stat_draw += Sys_Seconds() - start;
 }
