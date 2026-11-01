@@ -244,12 +244,18 @@ def box(rect, margin=None, column_x=None):
     r = 0
     while r < min(w, h) // 2 and dist(px(x0 + m + r, y0 + m), top) > 24:
         r += 1
+    # the radius to draw: Panorama anti-aliases curves, so the corner runs
+    # as far as any pixel still differs from the border (fine), while the
+    # coarse radius only keeps measuring columns clear of the corner
+    fine = r
+    while fine < min(w, h) // 2 and dist(px(x0 + m + fine, y0 + m), top) > 8:
+        fine += 1
     cx = column_x if column_x is not None else x0 + m + max(r, 1) + 2
     fill = [px(cx, y) for y in range(y0 + m + 1, y0 + h - 1 - m)]
     xm = x0 + w // 2
     above = [px(xm, y) for y in range(y0, y0 + m) if dist(px(xm, y), bgc(xm, y)) > 3]
     below = [px(xm, y) for y in range(y0 + h - m, y0 + h) if dist(px(xm, y), bgc(xm, y)) > 3]
-    return dict(margin=m, top=top, side=side, bottom=bottom, fill=fill, radius=r, above=above, below=below)
+    return dict(margin=m, top=top, side=side, bottom=bottom, fill=fill, radius=r, fine_radius=fine, above=above, below=below)
 
 
 def shadow(b):
@@ -292,7 +298,7 @@ def put_box(prefix, b, with_radius=True, with_margin=False, ref=None):
             fill = fill[1:-1]
     V[prefix + '-bg'] = gradient(fill)
     if with_radius:
-        V[prefix + '-radius'] = '%dpx' % b['radius']
+        V[prefix + '-radius'] = '%dpx' % b['fine_radius']
     if with_margin:
         V[prefix + '-margin'] = '%dpx' % b['margin']
 
@@ -783,7 +789,7 @@ gframe = style.subControlRect(QStyle.CC_GroupBox, gopt, QStyle.SC_GroupBoxFrame,
 gb = box(gframe)
 V['frame-border'] = hexc(gb['top'])
 V['frame-bg'] = gradient(gb['fill'])
-V['frame-radius'] = '%dpx' % gb['radius']
+V['frame-radius'] = '%dpx' % gb['fine_radius']
 glabel = style.subControlRect(QStyle.CC_GroupBox, gopt, QStyle.SC_GroupBoxLabel, gw).translated(gw.mapTo(root, gw.rect().topLeft()))
 
 
@@ -811,7 +817,8 @@ V['frame-pad-top'] = '%dpx' % max(0, -(line_y - (glabel.y() + title_h))) if on_l
 # see-through instead of solid colours.
 side_x = next((x for x in range(gframe.x(), gframe.x() + 6) if dist(px(x, line_y + 3), bgc(x, line_y + 3)) > 6), gframe.x())
 frame_h = gframe.bottom() - line_y
-border_c = px(side_x, line_y + 2)
+# the side's own colour, below the rounded corner's blended pixels
+border_c = min((px(side_x, line_y + k) for k in range(2, 9)), key=sum)
 
 
 def alpha_over_bg(c, bgcol, ink):
@@ -827,11 +834,14 @@ V['frame-side-size'] = '1px 1px'
 V['frame-side-top'] = '0px'
 if dist(late, bgc(side_x, line_y + int(frame_h * 0.85))) < dist(border_c, bgc(side_x, line_y + 2)) // 3:
     ink = border_c
-    # from the line's own row, so the rounded corner pixel comes along
+    # from the line's own row, so it lines up with the frame's top
     col = Image.new('RGBA', (1, frame_h))
     for i in range(frame_h):
         y = line_y + i
         a = alpha_over_bg(px(side_x, y), bgc(side_x, y), ink)
+        # the frame's own (anti-aliased) corner draws the rows of the arc
+        if i < gb['fine_radius']:
+            a = 0.0
         col.putpixel((0, i), rgba(ink, round(a * 255)))
     image_var('frame-side-image', 'group-side.png', col)
     V['frame-side-width'] = '0px'

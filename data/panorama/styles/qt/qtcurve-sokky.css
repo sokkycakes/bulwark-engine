@@ -14,7 +14,7 @@
 	--btn-bb: #bdbdbd;
 	--btn-shadow: 0px 1px 0px 0px #dee0e1;
 	--btn-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), color-stop( 0.438, #f9f9f9 ), color-stop( 0.521, #e5e5e5 ), to( #ffffff ) );
-	--btn-radius: 2px;
+	--btn-radius: 3px;
 	--btn-margin: 1px;
 	--btn-hover-bt: #bdbdbd;
 	--btn-hover-bs: #bdbdbd;
@@ -51,7 +51,7 @@
 	--check-bb: #bdbdbd;
 	--check-shadow: 0px 1px 0px 0px #e2e3e4;
 	--check-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), color-stop( 0.423, #f8f8f8 ), color-stop( 0.500, #e5e5e5 ), to( #ffffff ) );
-	--check-radius: 1px;
+	--check-radius: 3px;
 	--check-hover-bt: #bdbdbd;
 	--check-hover-bs: #bdbdbd;
 	--check-hover-bb: #bdbdbd;
@@ -78,7 +78,7 @@
 	--entry-bb: #b0b4b8;
 	--entry-shadow: 0px -1px 0px 0px #d6d7d9;
 	--entry-bg: #ffffff;
-	--entry-radius: 2px;
+	--entry-radius: 3px;
 	--entry-margin: 1px;
 	--entry-focus-bt: #326686;
 	--entry-focus-bs: #326686;
@@ -95,7 +95,7 @@
 	--combo-bb: #bdbdbd;
 	--combo-shadow: 0px 1px 0px 0px #dee0e1;
 	--combo-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), color-stop( 0.432, #f9f9f9 ), color-stop( 0.523, #e5e5e5 ), to( #ffffff ) );
-	--combo-radius: 2px;
+	--combo-radius: 3px;
 	--combo-margin: 1px;
 	--combo-hover-bt: #bdbdbd;
 	--combo-hover-bs: #bdbdbd;
@@ -118,7 +118,7 @@
 	--thumb-bb: #b3b3b3;
 	--thumb-shadow: none;
 	--thumb-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), color-stop( 0.136, #f7f7f7 ), color-stop( 0.409, #ededed ), color-stop( 0.500, #dadada ), color-stop( 0.864, #f4f4f4 ), to( #ffffff ) );
-	--thumb-radius: 5px;
+	--thumb-radius: 6px;
 	--thumb-grip: url( "file://{images}/qt/sokky/slider-grip.png" );
 	--thumb-grip-size: 9px 11px;
 	--trough-bt: #b0b4b8;
@@ -184,7 +184,7 @@
 	--pane-bg: #fcfcfc;
 	--frame-border: #b0b4b8;
 	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( rgba( 0, 0, 0, 0.031 ) ), color-stop( 0.015, rgba( 0, 0, 0, 0.028 ) ), color-stop( 0.134, rgba( 0, 0, 0, 0.028 ) ), color-stop( 0.252, rgba( 0, 0, 0, 0.025 ) ), color-stop( 0.371, rgba( 0, 0, 0, 0.021 ) ), color-stop( 0.490, rgba( 0, 0, 0, 0.017 ) ), color-stop( 0.609, rgba( 0, 0, 0, 0.013 ) ), color-stop( 0.728, rgba( 0, 0, 0, 0.008 ) ), color-stop( 0.847, rgba( 0, 0, 0, 0.004 ) ), color-stop( 0.965, rgba( 0, 0, 0, 0.000 ) ), to( rgba( 0, 0, 0, 0.000 ) ) );
-	--frame-radius: 2px;
+	--frame-radius: 3px;
 	--group-title-weight: bold;
 	--group-title-height: 15px;
 	--group-title-x: 6px;

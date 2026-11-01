@@ -33,7 +33,7 @@
 	--btn-bb: #bdbdbd;
 	--btn-shadow: 0px 1px 0px 0px #e2e3e4;
 	--btn-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
-	--btn-radius: 3px;
+	--btn-radius: 4px;
 	--btn-margin: 1px;
 	--btn-hover-bt: #326686;
 	--btn-hover-bs: #326686;
@@ -70,7 +70,7 @@
 	--check-bb: #bdbdbd;
 	--check-shadow: 0px 1px 0px 0px #e2e3e4;
 	--check-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
-	--check-radius: 1px;
+	--check-radius: 3px;
 	--check-hover-bt: #326686;
 	--check-hover-bs: #326686;
 	--check-hover-bb: #326686;
@@ -97,7 +97,7 @@
 	--entry-bb: #dadbdd;
 	--entry-shadow: none;
 	--entry-bg: #ffffff;
-	--entry-radius: 3px;
+	--entry-radius: 4px;
 	--entry-margin: 0px;
 	--entry-focus-bt: #326686;
 	--entry-focus-bs: #326686;
@@ -114,7 +114,7 @@
 	--combo-bb: #bdbdbd;
 	--combo-shadow: 0px 1px 0px 0px #e2e3e4;
 	--combo-bg: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
-	--combo-radius: 3px;
+	--combo-radius: 4px;
 	--combo-margin: 1px;
 	--combo-hover-bt: #326686;
 	--combo-hover-bs: #326686;
@@ -137,7 +137,7 @@
 	--thumb-bb: #b3b3b3;
 	--thumb-shadow: 0px 1px 0px 0px #e2e3e4;
 	--thumb-bg: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ebebeb ) );
-	--thumb-radius: 3px;
+	--thumb-radius: 4px;
 	--thumb-grip: url( "file://{images}/qt/qtcurve-gen/slider-grip.png" );
 	--thumb-grip-size: 13px 8px;
 	--trough-bt: #b0b4b8;
@@ -145,14 +145,14 @@
 	--trough-bb: #b0b4b8;
 	--trough-shadow: 0px 1px 0px 0px #fefefe;
 	--trough-bg: gradient( linear, 0% 0%, 0% 100%, from( #cacaca ), to( #dfdfdf ) );
-	--trough-radius: 2px;
+	--trough-radius: 3px;
 	--trough-margin: 1px;
 	--pfill-bt: #2995ce;
 	--pfill-bs: #2995ce;
 	--pfill-bb: #2995ce;
 	--pfill-shadow: 0px 1px 0px 0px #fefefe;
 	--pfill-bg: gradient( linear, 0% 0%, 0% 100%, from( #4ab7f1 ), color-stop( 0.088, #44b3ed ), color-stop( 0.441, #3cade8 ), color-stop( 0.559, #32a5e1 ), to( #3cade8 ) );
-	--pfill-radius: 2px;
+	--pfill-radius: 3px;
 	--pfill-image: none;
 	--pfill-image-size: 1px 1px;
 	--scroll-size: 16px;
@@ -202,8 +202,8 @@
 	--tab-bar-x: 0px;
 	--pane-bg: #eff0f1;
 	--frame-border: #b0b4b8;
-	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( #e7e8e9 ), to( #eff0f1 ) );
-	--frame-radius: 1px;
+	--frame-bg: gradient( linear, 0% 0%, 0% 100%, from( rgba( 0, 0, 0, 0.033 ) ), color-stop( 0.016, rgba( 0, 0, 0, 0.029 ) ), color-stop( 0.137, rgba( 0, 0, 0, 0.029 ) ), color-stop( 0.258, rgba( 0, 0, 0, 0.025 ) ), color-stop( 0.379, rgba( 0, 0, 0, 0.021 ) ), color-stop( 0.500, rgba( 0, 0, 0, 0.017 ) ), color-stop( 0.621, rgba( 0, 0, 0, 0.012 ) ), color-stop( 0.742, rgba( 0, 0, 0, 0.008 ) ), color-stop( 0.863, rgba( 0, 0, 0, 0.004 ) ), color-stop( 0.984, rgba( 0, 0, 0, 0.000 ) ), to( rgba( 0, 0, 0, 0.000 ) ) );
+	--frame-radius: 2px;
 	--group-title-weight: bold;
 	--group-title-height: 15px;
 	--group-title-x: 0px;
@@ -211,10 +211,10 @@
 	--group-title-bg: none;
 	--group-title-image: none;
 	--frame-pad-top: 0px;
-	--frame-side-width: 1px;
-	--frame-side-image: none;
-	--frame-side-size: 1px 1px;
-	--frame-side-top: 0px;
+	--frame-side-width: 0px;
+	--frame-side-image: url( "file://{images}/qt/qtcurve-gen/group-side.png" );
+	--frame-side-size: 1px 92px;
+	--frame-side-top: 17px;
 	--window-image: none;
 	--window-image-size: 1px 1px;
 	--progress-text-weight: bold;
@@ -681,7 +681,7 @@
 	/* the right side when it fades out */
 	background-image: var(--frame-side-image);
 	background-size: var(--frame-side-size);
-	background-position: 100% 0px;
+	background-position: 100% -1px; /* from the frame's top line, like the left side */
 	background-repeat: no-repeat;
 }
 

@@ -792,6 +792,15 @@ void rounded_contour_points(
     }
 }
 
+// Bulwark: the contour of a rounded rect grown (d > 0) or shrunk (d < 0) by
+// d on every side. Rounded corners change radius by d; sharp corners stay
+// sharp, so offset contours never fold over themselves (anti-alias fringes).
+void offset_contour_points(float x, float y, float w, float h, const CornerRadii& radii, float d, int segments,
+    std::vector<std::pair<float, float>>& out)
+{
+    rounded_contour_points(x - d, y - d, w + 2.0F * d, h + 2.0F * d, radii.constrained(w, h).expanded(d), segments, out);
+}
+
 // ---- clip: radial(...) wedge clipping -----------------------------------------
 //
 // `clip: radial(cx cy, start, sweep)` hides the wedge swept clockwise from
@@ -1018,7 +1027,8 @@ public:
         }
 
         constexpr float kPi = 3.1415926535F;
-        const int segments = std::clamp(static_cast<int>(std::ceil(r.max_radius() / 2.0F)), 2, 16);
+        const int segments = aa_ ? std::clamp(static_cast<int>(std::ceil(r.max_radius())), 3, 24)
+                                 : std::clamp(static_cast<int>(std::ceil(r.max_radius() / 2.0F)), 2, 16);
         if (stats_ != nullptr)
         {
             stats_->maximum_rounded_corner_segments = std::max(
@@ -1037,6 +1047,46 @@ public:
             {x + w - r.br, y + h - r.br, 0.0F, r.br},        // bottom-right:   0 ->  90
             {x + r.bl, y + h - r.bl, 0.5F * kPi, r.bl},      // bottom-left:   90 -> 180
         };
+        // Bulwark: with anti-aliasing on, the solid fan stops half a pixel
+        // inside the edge and a fringe fades to nothing half a pixel outside
+        // it, so curves get coverage-like edges while edges on whole pixels
+        // stay as crisp as before.
+        if (aa_ && w > 1.0F && h > 1.0F)
+        {
+            std::vector<std::pair<float, float>> core_pts;
+            std::vector<std::pair<float, float>> edge_pts;
+            offset_contour_points(x, y, w, h, r, -0.5F, segments, core_pts);
+            offset_contour_points(x, y, w, h, r, 0.5F, segments, edge_pts);
+            const int count = static_cast<int>(core_pts.size());
+            const int first_core = center_index + 1;
+            for (const auto& p : core_pts)
+            {
+                push(p.first, p.second);
+            }
+            const int first_edge = static_cast<int>(cmd.vertices.size());
+            for (const auto& p : edge_pts)
+            {
+                PanoramaColor c = color_at(p.first, p.second);
+                c.a = 0;
+                const float u = u0 + (p.first - x) / w * (u1 - u0);
+                const float v = v0 + (p.second - y) / h * (v1 - v0);
+                cmd.vertices.push_back(transform_vertex(p.first, p.second, u, v, c, matrix));
+            }
+            for (int k = 0; k < count; ++k)
+            {
+                const int t = (k + 1) % count;
+                cmd.indices.push_back(center_index);
+                cmd.indices.push_back(first_core + k);
+                cmd.indices.push_back(first_core + t);
+                cmd.indices.push_back(first_core + k);
+                cmd.indices.push_back(first_edge + k);
+                cmd.indices.push_back(first_edge + t);
+                cmd.indices.push_back(first_core + k);
+                cmd.indices.push_back(first_edge + t);
+                cmd.indices.push_back(first_core + t);
+            }
+            return;
+        }
         int ring_count = 0;
         for (const auto& corner : corners)
         {
@@ -1181,8 +1231,9 @@ public:
         {
             return;
         }
-        const int segments =
-            std::clamp(static_cast<int>(std::ceil(std::max(iradii.max_radius(), oradii.max_radius()) / 2.0F)), 2, 16);
+        const float max_r = std::max(iradii.max_radius(), oradii.max_radius());
+        const int segments = aa_ ? std::clamp(static_cast<int>(std::ceil(max_r)), 3, 24)
+                                 : std::clamp(static_cast<int>(std::ceil(max_r / 2.0F)), 2, 16);
         if (stats_ != nullptr)
         {
             stats_->maximum_rounded_corner_segments = std::max(
@@ -1196,25 +1247,59 @@ public:
 
         PanoramaDrawCommand& cmd = current_command(0);
         const int base = static_cast<int>(cmd.vertices.size());
-        for (const auto& p : inner_pts)
-        {
-            cmd.vertices.push_back(transform_vertex(p.first, p.second, 0.0F, 0.0F, inner_color, matrix));
-        }
-        for (const auto& p : outer_pts)
-        {
-            cmd.vertices.push_back(transform_vertex(p.first, p.second, 0.0F, 0.0F, outer_color, matrix));
-        }
         const int n = static_cast<int>(inner_pts.size());
-        for (int i = 0; i < n; ++i)
+        const auto strip = [&](int a, int b) {
+            for (int i = 0; i < n; ++i)
+            {
+                const int j = (i + 1) % n;
+                cmd.indices.push_back(a + i);
+                cmd.indices.push_back(b + i);
+                cmd.indices.push_back(b + j);
+                cmd.indices.push_back(a + i);
+                cmd.indices.push_back(b + j);
+                cmd.indices.push_back(a + j);
+            }
+        };
+        if (!aa_)
         {
-            const int j = (i + 1) % n;
-            cmd.indices.push_back(base + i);
-            cmd.indices.push_back(base + n + i);
-            cmd.indices.push_back(base + n + j);
-            cmd.indices.push_back(base + i);
-            cmd.indices.push_back(base + n + j);
-            cmd.indices.push_back(base + j);
+            for (const auto& p : inner_pts)
+            {
+                cmd.vertices.push_back(transform_vertex(p.first, p.second, 0.0F, 0.0F, inner_color, matrix));
+            }
+            for (const auto& p : outer_pts)
+            {
+                cmd.vertices.push_back(transform_vertex(p.first, p.second, 0.0F, 0.0F, outer_color, matrix));
+            }
+            strip(base, base + n);
+            return;
         }
+        // Bulwark: anti-aliased band (uniform width): a fringe fading out
+        // half a pixel past each edge, and a solid core half a pixel in from
+        // each (or, for a band thinner than a pixel, a line at its middle
+        // with partial alpha).
+        const float d = std::max(0.0F, std::min(std::min(ix - ox, iy - oy),
+            std::min((ox + ow) - (ix + iw), (oy + oh) - (iy + ih))));
+        const float core = std::min(0.5F, d * 0.5F);
+        const float cover = std::min(1.0F, d);
+        const auto faded = [](PanoramaColor c, float f) {
+            c.a = static_cast<std::uint8_t>(std::clamp(static_cast<float>(c.a) * f + 0.5F, 0.0F, 255.0F));
+            return c;
+        };
+        const auto row = [&](float x, float y, float w, float h, const CornerRadii& rr, float delta, PanoramaColor c) {
+            std::vector<std::pair<float, float>> pts;
+            offset_contour_points(x, y, w, h, rr, delta, segments, pts);
+            for (const auto& p : pts)
+            {
+                cmd.vertices.push_back(transform_vertex(p.first, p.second, 0.0F, 0.0F, c, matrix));
+            }
+        };
+        row(ox, oy, ow, oh, oradii, 0.5F, faded(outer_color, 0.0F));
+        row(ox, oy, ow, oh, oradii, -core, faded(outer_color, cover));
+        row(ix, iy, iw, ih, iradii, core, faded(inner_color, cover));
+        row(ix, iy, iw, ih, iradii, -0.5F, faded(inner_color, 0.0F));
+        strip(base + n, base);
+        strip(base + n, base + 2 * n);
+        strip(base + 3 * n, base + 2 * n);
     }
 
     // Draws a node's background texture into the box [bx,by,bw,bh] honoring
@@ -1715,6 +1800,21 @@ public:
                 inset_clip.patchable = false;
             }
             set_clip(inset_clip);
+            // Bulwark: a sharp, centred inset ring in a rounded box (a Qt
+            // style's light line inside the frame) follows the corners,
+            // anti-aliased like the border.
+            const CornerRadii hole = radii.shrunk(shadow.spread);
+            if (b <= 0.5F && shadow.offset_x == 0.0F && shadow.offset_y == 0.0F && radii.any() &&
+                box.width > 2.0F * shadow.spread && box.height > 2.0F * shadow.spread)
+            {
+                aa_ = true;
+                add_rounded_ring(box.x + shadow.spread, box.y + shadow.spread, box.width - 2.0F * shadow.spread,
+                    box.height - 2.0F * shadow.spread, hole, full, box.x, box.y, box.width, box.height,
+                    radii.constrained(box.width, box.height), full, matrix);
+                aa_ = false;
+                set_clip(saved);
+                return;
+            }
             // side: 0 = top, 1 = bottom, 2 = left, 3 = right.
             const auto edge = [&](float dist, int side) {
                 const float solid = std::max(0.0F, dist - b);
@@ -2104,6 +2204,7 @@ public:
         // outer and inner rounded rects (paintBorderSides clips out the inner
         // border). Painting the border as a full backdrop instead would tint
         // every translucent background with the border colour.
+        aa_ = true; // Bulwark: the box's own fill and border are anti-aliased
         emit_background_fill(s, box.x, box.y, box.width, box.height, radii, bake_opacity, bake_matrix);
         if (node.background_texture != 0)
         {
@@ -2149,23 +2250,81 @@ public:
                 }
                 set_clip(band_clip);
             }
-            // A zero-width side: the band is drawn on a box pushed out past
-            // that side and clipped back, so the other sides run to the end.
-            const float ring_x = box.x - (bw_left <= 0.0F ? bw : 0.0F);
-            const float ring_y = box.y - (bw_top <= 0.0F ? bw : 0.0F);
-            const float ring_w = box.width + (bw_left <= 0.0F ? bw : 0.0F) + (bw_right <= 0.0F ? bw : 0.0F);
-            const float ring_h = box.height + (bw_top <= 0.0F ? bw : 0.0F) + (bw_bottom <= 0.0F ? bw : 0.0F);
-            const float inner_w = ring_w - 2.0F * bw;
-            const float inner_h = ring_h - 2.0F * bw;
+            const float inner_w = box.width - 2.0F * bw;
+            const float inner_h = box.height - 2.0F * bw;
             if (inner_w <= 0.0F || inner_h <= 0.0F)
             {
                 // The border swallows the whole box.
-                add_rounded_rect(ring_x, ring_y, ring_w, ring_h, radii, bc, 0, bake_matrix);
+                add_rounded_rect(box.x, box.y, box.width, box.height, radii, bc, 0, bake_matrix);
+            }
+            else if (!cut)
+            {
+                add_rounded_ring(box.x + bw, box.y + bw, inner_w, inner_h, radii.shrunk(bw), bc,
+                    box.x, box.y, box.width, box.height, radii, bc, bake_matrix);
             }
             else
             {
-                add_rounded_ring(ring_x + bw, ring_y + bw, inner_w, inner_h, radii.shrunk(bw), bc,
-                    ring_x, ring_y, ring_w, ring_h, radii, bc, bake_matrix);
+                // Bulwark: a side of zero width is left open. A rounded
+                // corner next to a drawn side keeps its full arc (a Qt group
+                // box frame whose sides fade out below the corners); a square
+                // corner lets the drawn side run on to the end (a tab's open
+                // bottom). Each rounded corner is the ring clipped to its
+                // corner square; the straight runs are plain rects.
+                const CornerRadii cr = radii.constrained(box.width, box.height);
+                const float x0 = box.x;
+                const float y0 = box.y;
+                const float x1 = box.x + box.width;
+                const float y1 = box.y + box.height;
+                const bool arc_tl = cr.tl > 0.0F && (bw_top > 0.0F || bw_left > 0.0F);
+                const bool arc_tr = cr.tr > 0.0F && (bw_top > 0.0F || bw_right > 0.0F);
+                const bool arc_br = cr.br > 0.0F && (bw_bottom > 0.0F || bw_right > 0.0F);
+                const bool arc_bl = cr.bl > 0.0F && (bw_bottom > 0.0F || bw_left > 0.0F);
+                const ClipRect corner_saved = clip_;
+                const auto corner = [&](bool on, float cx0, float cy0, float cx1, float cy1) {
+                    if (!on)
+                    {
+                        return;
+                    }
+                    ClipRect c = intersect_clip(corner_saved, cx0, cy0, cx1, cy1);
+                    if (!clip_narrowing_is_patchable())
+                    {
+                        c.patchable = false;
+                    }
+                    set_clip(c);
+                    add_rounded_ring(box.x + bw, box.y + bw, inner_w, inner_h, radii.shrunk(bw), bc,
+                        box.x, box.y, box.width, box.height, radii, bc, bake_matrix);
+                };
+                corner(arc_tl, x0, y0, x0 + std::max(cr.tl, bw), y0 + std::max(cr.tl, bw));
+                corner(arc_tr, x1 - std::max(cr.tr, bw), y0, x1, y0 + std::max(cr.tr, bw));
+                corner(arc_br, x1 - std::max(cr.br, bw), y1 - std::max(cr.br, bw), x1, y1);
+                corner(arc_bl, x0, y1 - std::max(cr.bl, bw), x0 + std::max(cr.bl, bw), y1);
+                set_clip(corner_saved);
+                // top and bottom runs span between the arcs (or to the ends);
+                // the sides fit between them
+                if (bw_top > 0.0F)
+                {
+                    const float a = arc_tl ? x0 + std::max(cr.tl, bw) : x0;
+                    const float b = arc_tr ? x1 - std::max(cr.tr, bw) : x1;
+                    add_rect(a, y0, b - a, bw, bc, 0, bake_matrix);
+                }
+                if (bw_bottom > 0.0F)
+                {
+                    const float a = arc_bl ? x0 + std::max(cr.bl, bw) : x0;
+                    const float b = arc_br ? x1 - std::max(cr.br, bw) : x1;
+                    add_rect(a, y1 - bw, b - a, bw, bc, 0, bake_matrix);
+                }
+                if (bw_left > 0.0F)
+                {
+                    const float a = arc_tl ? y0 + std::max(cr.tl, bw) : y0 + bw_top;
+                    const float b = arc_bl ? y1 - std::max(cr.bl, bw) : y1 - bw_bottom;
+                    add_rect(x0, a, bw, b - a, bc, 0, bake_matrix);
+                }
+                if (bw_right > 0.0F)
+                {
+                    const float a = arc_tr ? y0 + std::max(cr.tr, bw) : y0 + bw_top;
+                    const float b = arc_br ? y1 - std::max(cr.br, bw) : y1 - bw_bottom;
+                    add_rect(x1 - bw, a, bw, b - a, bc, 0, bake_matrix);
+                }
             }
             const auto run = [&](float y, float h, float r_left, float r_right, PanoramaColor color) {
                 const PanoramaColor c = scale_alpha(apply_color_filter(color, s), bake_opacity);
@@ -2202,6 +2361,7 @@ public:
                 s.border_right_color());
         }
 
+        aa_ = false;
         // Inset box-shadow paints over the background/border (clipped to the box).
         // Bulwark: inside the border (the padding box), as CSS draws it.
         {
@@ -2210,7 +2370,8 @@ public:
             inner.y += bw_top;
             inner.width -= bw_left + bw_right;
             inner.height -= bw_top + bw_bottom;
-            emit_box_shadow(node, inner, radii, bake_opacity, bake_matrix, true);
+            const float inner_bw = std::max(std::max(bw_top, bw_bottom), std::max(bw_left, bw_right));
+            emit_box_shadow(node, inner, radii.shrunk(inner_bw), bake_opacity, bake_matrix, true);
         }
 
         // WebCore clips contents after painting the background/border (see
@@ -3355,6 +3516,7 @@ private:
     std::vector<PanoramaPaintVertex> radial_polygon_;
     std::vector<PanoramaPaintVertex> radial_polygon_scratch_;
     ClipRect clip_;
+    bool aa_ = false; // Bulwark: anti-alias rounded fills and bands
     PanoramaBlendMode blend_ = PanoramaBlendMode::Normal;
     const PanoramaNode* document_root_ = nullptr;
 

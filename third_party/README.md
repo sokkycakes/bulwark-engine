@@ -62,6 +62,13 @@ Controls and selectors added for the Qt look-alike themes
   are drawn inside the border (the padding box), as CSS draws them.
   A single background image smaller than its box no longer takes the box's
   rounded corners (only a tile that fills the box does).
+- `src/panorama_paint.cpp`: a box's own rounded fill, rounded border and
+  sharp inset ring are anti-aliased: a solid core half a pixel inside each
+  edge and a fringe fading out half a pixel outside it (contours offset with
+  sharp corners kept sharp), so edges on whole pixels stay crisp. A rounded
+  border with an open (zero-width) side keeps the full arc at a rounded
+  corner next to a drawn side, and lets the drawn side run to the end at a
+  square corner.
 - `src/panorama_layout.cpp`: slider and scrollbar thumbs sit on whole
   pixels, so their border and decoration don't blur.
 - `src/panorama_paint.cpp`: a background image drawn at its natural size is
