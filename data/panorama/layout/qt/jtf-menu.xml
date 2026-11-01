@@ -4,8 +4,9 @@
 	with GTK 3 Adwaita-dark colours). The frame keeps the Figma outline
 	exactly (tools/qtref/shapes/jtf-menu.svg, painted by tools/qtref/qtshape.py);
 	positions are the Figma ones halved: the menu is laid out at 960x540
-	and drawn pixelated (ui_designheight 540, ui_pixelated 1, set by
-	panorama/jtf-menu.cfg), so 1080p shows it at exactly 2x.
+	and drawn pixelated (bwdesignheight="540" bwpixelated="1" below: this
+	view only, whatever ui_designheight / ui_pixelated say), so 1080p shows
+	it at exactly 2x.
 -->
 <root>
 	<styles>
@@ -16,7 +17,7 @@
 	<scripts>
 		<include src="file://{resources}/scripts/qt/jtf-menu.js" />
 	</scripts>
-	<Panel id="JtfScreen">
+	<Panel id="JtfScreen" bwdesignheight="540" bwpixelated="1">
 		<Panel id="JtfMenu" class="QtCurve SokkyDark">
 			<Label id="JtfTitle" text="main menu" />
 			<Panel class="JtfTile" style="x:30px;">

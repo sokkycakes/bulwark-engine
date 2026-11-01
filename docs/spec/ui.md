@@ -58,6 +58,11 @@ target keeps premultiplied coverage alpha (blend factors for alpha are
 over the game correctly. A design height that divides the screen height
 (540 on 1080p) gives square, even pixel blocks.
 
+A layout can fix both for its own view: `bwdesignheight="540"` and
+`bwpixelated="1"` on the root or a top-level panel override the cvars for
+that view only, so a pixelated title menu and normal 1080-line pages can be
+open together. Glyphs are baked per scale (one font atlas per scale in use).
+
 ## QuakeC builtins (CSQC and the menu progs)
 
 ```

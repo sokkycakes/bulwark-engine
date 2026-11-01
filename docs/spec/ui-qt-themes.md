@@ -128,7 +128,8 @@ button, with its turned label beside it. The menu is laid out at 960x540
 window stripes and frame lines come out 2 screen pixels thick on 1080p; the
 frame image is painted with `qtshape.py --scale 0.5 --x0 99` (geometry
 scaled, lines and tile kept 1 pixel; `--x0` crops the part of the tab that
-hangs off screen). The cfg sets those two cvars, which are global. It also
+hangs off screen). The layout asks for that itself (`bwdesignheight="540"
+bwpixelated="1"` on `#JtfScreen`), so other views are unaffected. The cfg
 registers the Figma fonts (Iceberg, Kode Mono, SIL OFL, in
 `panorama/fonts-jtf/`) before opening the view, because a family must exist
 when the styles are read.
