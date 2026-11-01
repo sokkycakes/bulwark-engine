@@ -1092,6 +1092,11 @@ static void ctr_glDepthRange(double n, double f) { st.depthnear = (float)n, st.d
 static void ctr_glCullFace(GLenum m) { st.cullface = m; }
 static void ctr_glPolygonOffset(GLfloat factor, GLfloat units) { (void)factor, st.offsetunits = units; }
 static void ctr_glLineWidth(GLfloat w) { (void)w; }
+/* no stencil state yet: outlines (the only user) are skipped on this platform */
+static void ctr_glStencilFunc(GLenum f, GLint r, GLuint m) { (void)f, (void)r, (void)m; }
+static void ctr_glStencilOp(GLenum a, GLenum b, GLenum c) { (void)a, (void)b, (void)c; }
+static void ctr_glStencilMask(GLuint m) { (void)m; }
+static void ctr_glClearStencil(GLint s) { (void)s; }
 static void ctr_glPixelStorei(GLenum p, GLint v) { (void)p, (void)v; }
 static void ctr_glFinish(void) {}
 

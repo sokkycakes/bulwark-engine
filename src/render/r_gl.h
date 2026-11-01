@@ -41,7 +41,12 @@ typedef ptrdiff_t GLintptr;
 #define GL_EQUAL 0x0202
 #define GL_LEQUAL 0x0203
 #define GL_GREATER 0x0204
+#define GL_NOTEQUAL 0x0205
 #define GL_ALWAYS 0x0207
+#define GL_STENCIL_TEST 0x0B90
+#define GL_VIEWPORT 0x0BA2
+#define GL_KEEP 0x1E00
+#define GL_REPLACE 0x1E01
 #define GL_SRC_COLOR 0x0300
 #define GL_ONE_MINUS_SRC_COLOR 0x0301
 #define GL_SRC_ALPHA 0x0302
@@ -131,6 +136,10 @@ typedef ptrdiff_t GLintptr;
 	X(void, glColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a))                                 \
 	X(void, glPolygonOffset, (GLfloat factor, GLfloat units))                                                  \
 	X(void, glLineWidth, (GLfloat w))                                                                          \
+	X(void, glStencilFunc, (GLenum func, GLint ref, GLuint mask))                                              \
+	X(void, glStencilOp, (GLenum sfail, GLenum dpfail, GLenum dppass))                                         \
+	X(void, glStencilMask, (GLuint mask))                                                                      \
+	X(void, glClearStencil, (GLint s))                                                                         \
 	X(void, glPixelStorei, (GLenum pname, GLint param))                                                        \
 	X(void, glReadPixels, (GLint x, GLint y, GLsizei w, GLsizei h, GLenum f, GLenum t, void *p))               \
 	X(void, glFinish, (void))                                                                                  \
