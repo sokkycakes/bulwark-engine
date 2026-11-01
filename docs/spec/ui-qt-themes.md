@@ -102,6 +102,31 @@ title don't line up exactly; `scrollbarType` layouts with two buttons at one
 end show one button at each end. Settings for widgets the themes don't cover
 (menus, toolbars, window borders, item views) have no effect.
 
+## Dark palettes and shaped windows
+
+`qtcurve2panorama.py --palette FILE` draws the probes with a Qt palette
+given as `Role=#rrggbb` lines (`Group:Role=` for one colour group), read by
+`tools/qtref/qtpalette.py`; `gallery.py <style> <out> [palette]` takes the
+same file for the reference render. `styles/qt/adwaita-dark.palette` holds
+GTK 3 Adwaita-dark's colours. A dark palette draws frames with much smaller
+colour steps, so the converter scales its edge thresholds by how far the
+palette's Dark role sits from Window, relative to QtCurve's own palette
+(1 for light palettes, so their output is unchanged). Variant `SokkyDark`
+(`qtcurve-sokky-dark.css`, class `QtCurve SokkyDark`) is sokky's stylerc
+with that palette.
+
+QtCurve frames only rectangles. For a panel with another outline,
+`tools/qtref/qtshape.py shape.svg out.png --tile <variant>/window.png
+--border <c> --light <c>` paints the SVG paths' union as a window: the
+variant's window tile inside, and QtCurve's frame edges (a dark line, a
+lighter line inside it) following the outline, anti-aliased. The JTF main
+menu (`layout/qt/jtf-menu.xml`, opened by `exec panorama/jtf-menu.cfg`) uses
+it for the outline of sokky's Figma group, `tools/qtref/shapes/jtf-menu.svg`
+(paths copied verbatim); its tiles are QtCurve push buttons. The cfg
+registers the Figma fonts (Iceberg, Kode Mono, SIL OFL, in
+`panorama/fonts-jtf/`) before opening the view, because a family must exist
+when the styles are read.
+
 ## Palette
 
 Each theme declares Qt's palette roles as custom properties on its root
@@ -132,6 +157,10 @@ shades are not computed from the roles; set them too.
 Bulwark's PanoramaEngine for these themes (`third_party/README.md`).
 
 ## Known differences
+
+- SokkyDark: the inactive tabs measure as white (the converter's fill
+  column lands on QtCurve's light edge line), and the default button's bold
+  label isn't detected.
 
 - QtCurve's default scrollbars have a second up arrow next to the down one
   (KDE layout); Panorama scrollbars have one button at each end.

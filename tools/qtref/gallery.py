@@ -3,10 +3,17 @@ import sys
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
+# gallery.py <style> <out.png> [palette file, see qtpalette.py]
 style, out = sys.argv[1], sys.argv[2]
 app = QApplication(['x', '-platform', 'offscreen'])
 app.setStyle(QStyleFactory.create(style))
-app.setPalette(app.style().standardPalette())
+pal = app.style().standardPalette()
+if len(sys.argv) > 3:
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from qtpalette import load_palette
+    pal = load_palette(sys.argv[3], pal)
+app.setPalette(pal)
 f = QFont('DejaVu Sans'); f.setPixelSize(12); app.setFont(f)
 w = QWidget(); w.resize(640, 400)
 def place(widget, x, y, ww, hh): widget.setParent(w); widget.setGeometry(x, y, ww, hh); return widget

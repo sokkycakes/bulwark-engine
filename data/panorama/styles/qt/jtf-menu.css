@@ -1,0 +1,92 @@
+/* Layout of the JTF main menu (layout/qt/jtf-menu.xml). Sizes and places
+   are the Figma frame's, in 1080p pixels; the look comes from qtcurve.css
+   and the variant's custom properties. */
+
+#JtfScreen
+{
+	width: 100%;
+	height: 100%;
+}
+
+/* The menu is a QtCurve window whose outline is the Figma shape: the
+   variant's window background and frame edges, painted into that outline
+   (QtCurve can only frame rectangles). The shape is 2019px wide because its
+   tab hangs 99px off the left of the screen; the panel is the on-screen
+   part, so child positions below are screen x and menu-relative y. */
+#JtfMenu
+{
+	x: 0px;
+	y: 682px;
+	width: 1920px;
+	height: 398px;
+	background-color: transparent;
+	background-image: url( "file://{images}/qt/sokkydark/jtf-menu-frame.png" );
+	background-size: 2019px 398px;
+	background-position: -99px 0px;
+	background-repeat: no-repeat;
+}
+
+#JtfTitle
+{
+	x: 17px;
+	y: 4px;
+	font-family: "Iceberg";
+	font-size: 60px;
+	letter-spacing: 3px;
+	color: var(--window-text);
+}
+
+/* A tile is a QtCurve push button around the Figma square and its label:
+   the square at (61, 106) and the label's box at (213, 83) 72x203,
+   with the button about 10px outside them. */
+.QtCurve Button.JtfTile
+{
+	y: 76px;
+	width: 244px;
+	height: 220px;
+	margin: 0px;
+}
+
+/* the Figma square: an icon slot, drawn as a QtCurve sunken (entry) frame */
+.QtCurve .JtfIcon
+{
+	x: 9px;
+	y: 29px;
+	width: 152px;
+	height: 152px;
+	background-color: var(--entry-bg);
+	border: 1px solid var(--entry-bs);
+	border-top-color: var(--entry-bt);
+	border-bottom-color: var(--entry-bb);
+	border-radius: var(--entry-radius);
+	box-shadow: var(--entry-shadow);
+}
+
+/* Kode Mono 60px, turned a quarter clockwise (reads top to bottom) */
+.QtCurve Button > Label.JtfTileLabel
+{
+	x: 95.5px;
+	y: 71.5px;
+	width: 203px;
+	height: 72px;
+	font-family: "Kode Mono";
+	font-size: 60px;
+	letter-spacing: 3px;
+	horizontal-align: left;
+	vertical-align: top;
+	transform-origin: 50% 50%;
+	transform: rotateZ( 90deg );
+}
+
+/* the JTF logo (Figma layer 13:147): white at half strength */
+#JtfLogo
+{
+	x: 1428px;
+	y: 131px;
+	width: 425px;
+	height: 109px;
+	background-image: url( "file://{images}/qt/jtf/logo.png" );
+	background-size: 425px 109px;
+	background-repeat: no-repeat;
+	opacity: 0.5;
+}

@@ -23,6 +23,8 @@ ap.add_argument('-o', '--output')
 ap.add_argument('--name')
 ap.add_argument('--debug', help='save the probe render here')
 ap.add_argument('--update', help='replace the generated block of this stylesheet (qtcurve.css) in place')
+ap.add_argument('--palette', help='Qt palette to draw with (Role=#rrggbb lines, e.g. '
+                'data/panorama/styles/qt/adwaita-dark.palette); default: QtCurve\'s standard palette')
 ap.add_argument('--images', help='where to write this variant\'s glyph images '
                 '(default: data/panorama/images/qt/<name lower-cased>, or qtcurve-gen without --name)')
 args = ap.parse_args()
@@ -62,7 +64,29 @@ if style is None:
     sys.exit('QtCurve style not found: install kde-style-qtcurve-qt5')
 app.setStyle(style)
 pal = style.standardPalette()
+if args.palette:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from qtpalette import load_palette
+    pal = load_palette(args.palette, pal)
 app.setPalette(pal)
+
+
+# Edges are found by colour steps. A dark palette draws every frame with
+# far smaller steps than QtCurve's light default, so the step thresholds
+# (tuned on the light palette) shrink in proportion to how far the
+# palette's Dark role sits from its Window role.
+def _pdist(p, a, b):
+    ca, cb = p.color(a), p.color(b)
+    return max(abs(ca.red() - cb.red()), abs(ca.green() - cb.green()), abs(ca.blue() - cb.blue()))
+
+
+_std = style.standardPalette()
+CONTRAST = min(1.0, _pdist(pal, QPalette.Window, QPalette.Dark) /
+               max(1, _pdist(_std, QPalette.Window, QPalette.Dark)))
+
+
+def T(n):
+    return max(2, round(n * CONTRAST))
 font = QFont('DejaVu Sans')
 font.setPixelSize(12)
 app.setFont(font)
@@ -234,7 +258,7 @@ def box(rect, margin=None, column_x=None):
         margin = 0
         # the border is the first clearly dark line; etch and glow lines
         # (light, or drawn only in some states) sit outside it
-        while margin < min(w, h) // 2 and dist(px(x0 + w // 2, y0 + margin), bgc(x0 + w // 2, y0 + margin)) <= 20:
+        while margin < min(w, h) // 2 and dist(px(x0 + w // 2, y0 + margin), bgc(x0 + w // 2, y0 + margin)) <= T(20):
             margin += 1
     m = margin
     top = px(x0 + w // 2, y0 + m)
@@ -242,13 +266,13 @@ def box(rect, margin=None, column_x=None):
     side = px(x0 + m, cy)
     # radius: along the top border row, how far in the border colour starts
     r = 0
-    while r < min(w, h) // 2 and dist(px(x0 + m + r, y0 + m), top) > 24:
+    while r < min(w, h) // 2 and dist(px(x0 + m + r, y0 + m), top) > T(24):
         r += 1
     # the radius to draw: Panorama anti-aliases curves, so the corner runs
     # as far as any pixel still differs from the border (fine), while the
     # coarse radius only keeps measuring columns clear of the corner
     fine = r
-    while fine < min(w, h) // 2 and dist(px(x0 + m + fine, y0 + m), top) > 8:
+    while fine < min(w, h) // 2 and dist(px(x0 + m + fine, y0 + m), top) > T(8):
         fine += 1
     cx = column_x if column_x is not None else x0 + m + max(r, 1) + 2
     fill = [px(cx, y) for y in range(y0 + m + 1, y0 + h - 1 - m)]
@@ -261,7 +285,7 @@ def box(rect, margin=None, column_x=None):
 def shadow(b):
     if b['above'] and b['below']:
         a, c = b['above'][-1], b['below'][0]
-        if dist(a, c) <= 12:
+        if dist(a, c) <= T(12):
             return '0px 0px 0px 1px %s' % hexc(a)
         # different lines above and below: keep the stronger one
         if dist(a, WIN) >= dist(c, WIN):
@@ -292,7 +316,7 @@ def put_box(prefix, b, with_radius=True, with_margin=False, ref=None):
     # shadow per box, so it becomes an inset ring in place of the etch.
     if ref is not None and len(fill) > 4:
         ends = [c for c, r in ((fill[0], ref['fill'][0]), (fill[-1], ref['fill'][-1]))
-                if saturated(c) and dist(c, r) > 30]
+                if saturated(c) and dist(c, r) > T(30)]
         if ends:
             V[prefix + '-shadow'] = 'inset 0px 0px 0px 1px %s' % hexc(ends[0])
             fill = fill[1:-1]
@@ -374,7 +398,7 @@ if setting('defBtnIndicator', 'fontcolor') == 'corner':
     dr, nr = wrect('btn-default'), wrect('btn-normal')
     m = nb['margin']
     diff = [(x, y) for y in range(m + 1, 16) for x in range(m + 1, 16)
-            if dist(px(dr.x() + x, dr.y() + y), px(nr.x() + x, nr.y() + y)) > 30]
+            if dist(px(dr.x() + x, dr.y() + y), px(nr.x() + x, nr.y() + y)) > T(30)]
     if diff:
         x0, y0 = min(p[0] for p in diff), min(p[1] for p in diff)
         x1, y1 = max(p[0] for p in diff), max(p[1] for p in diff)
@@ -504,7 +528,7 @@ def groove_radius(x_mid, y0, y1):
     yt = min(col[:2], key=lambda y: sum(px(x_mid, y)))
     border = px(x_mid, yt)
     r = 0
-    while r < (col[-1] - col[0]) and dist(px(x_end - r, yt), border) > 24:
+    while r < (col[-1] - col[0]) and dist(px(x_end - r, yt), border) > T(24):
         r += 1
     return r
 
@@ -530,11 +554,11 @@ def grip(rect, b, along_x, fname, var):
     if along_x:  # fill varies down the thumb: compare with the row's median
         for y in range(y0, y1):
             ref = median([px(x, y) for x in range(x0, x1)])
-            hits += [(x, y) for x in range(x0, x1) if dist(px(x, y), ref) > 6]
+            hits += [(x, y) for x in range(x0, x1) if dist(px(x, y), ref) > T(6)]
     else:
         for x in range(x0, x1):
             ref = median([px(x, y) for y in range(y0, y1)])
-            hits += [(x, y) for y in range(y0, y1) if dist(px(x, y), ref) > 6]
+            hits += [(x, y) for y in range(y0, y1) if dist(px(x, y), ref) > T(6)]
     V[var] = 'none'
     V[var + '-size'] = '1px 1px'
     if not hits:
@@ -653,7 +677,7 @@ def thumb_corner(r, b):
     gradient)."""
     m = b['margin']
     rad = 0
-    while rad < min(r.width(), r.height()) // 2 and dist(px(r.x() + m + rad, r.y() + m), b['top']) > 8:
+    while rad < min(r.width(), r.height()) // 2 and dist(px(r.x() + m + rad, r.y() + m), b['top']) > T(8):
         rad += 1
     cy = r.y() + r.height() // 2
     ring = px(r.x() + m + 1, cy)
@@ -740,7 +764,7 @@ for name, b, r in (('tab-active', ta, bar.tabRect(0)), ('tab', ti, bar.tabRect(1
     side = px(xl, ym)
     top_y = rr.y() + m
     rs = 0
-    while rs < rr.height() // 2 and dist(px(xl, top_y + rs), side) > 24:
+    while rs < rr.height() // 2 and dist(px(xl, top_y + rs), side) > T(24):
         rs += 1
     rad = max(b['radius'], rs)
     b = box(rr, m, column_x=xl + rad + 2)
@@ -804,7 +828,7 @@ V['group-title-weight'] = 'bold' if dark_pixels(glabel) > dark_pixels(wrect('txt
 # of fixed height followed by the frame, pulled up by a negative gap.
 gtop = gw.mapTo(root, gw.rect().topLeft()).y()
 fx = gframe.x() + gframe.width() // 2
-line_y = next((y for y in range(gframe.y(), gframe.bottom()) if dist(px(fx, y), bgc(fx, y)) > 20), gframe.y())
+line_y = next((y for y in range(gframe.y(), gframe.bottom()) if dist(px(fx, y), bgc(fx, y)) > T(20)), gframe.y())
 title_h = glabel.height()
 V['group-title-height'] = '%dpx' % title_h
 V['group-title-x'] = '%dpx' % (glabel.x() - gframe.x())
@@ -815,7 +839,7 @@ V['group-title-image'] = 'window' if on_line else 'none'  # filled in once the w
 V['frame-pad-top'] = '%dpx' % max(0, -(line_y - (glabel.y() + title_h))) if on_line else '0px'
 # A frame that fades out downwards (groupBox=faded): sides and fill become
 # see-through instead of solid colours.
-side_x = next((x for x in range(gframe.x(), gframe.x() + 6) if dist(px(x, line_y + 3), bgc(x, line_y + 3)) > 6), gframe.x())
+side_x = next((x for x in range(gframe.x(), gframe.x() + 6) if dist(px(x, line_y + 3), bgc(x, line_y + 3)) > T(6)), gframe.x())
 frame_h = gframe.bottom() - line_y
 # the side's own colour, below the rounded corner's blended pixels
 border_c = min((px(side_x, line_y + k) for k in range(2, 9)), key=sum)

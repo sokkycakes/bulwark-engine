@@ -9,6 +9,7 @@
 		<include src="file://{resources}/styles/qt/fusion.css" />
 		<include src="file://{resources}/styles/qt/qtcurve.css" />
 		<include src="file://{resources}/styles/qt/qtcurve-sokky.css" />
+		<include src="file://{resources}/styles/qt/qtcurve-sokky-dark.css" />
 		<include src="file://{resources}/styles/qt/gallery.css" />
 	</styles>
 	<scripts>

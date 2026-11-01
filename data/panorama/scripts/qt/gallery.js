@@ -1,6 +1,6 @@
 // Qt theme gallery: theme switching and the focused text entry.
 // A theme is one or more classes: 'QtCurve Sokky' is a QtCurve variant.
-var kClasses = [ 'QtFusion', 'QtCurve', 'Sokky' ];
+var kClasses = [ 'QtFusion', 'QtCurve', 'Sokky', 'SokkyDark' ];
 
 function SetTheme( name )
 {

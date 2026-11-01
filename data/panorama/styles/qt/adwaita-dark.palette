@@ -1,0 +1,31 @@
+# Qt palette roles for qtcurve2panorama.py --palette: GTK 3 Adwaita-dark's
+# named colours (bg #353535, fg #eeeeec, base #2d2d2d, selection #15539e,
+# borders #1b1b1b, insensitive text #919190). Role=#rrggbb, optionally
+# Group:Role=... with Group = Active, Inactive or Disabled.
+Window=#353535
+WindowText=#eeeeec
+Base=#2d2d2d
+AlternateBase=#323232
+Text=#eeeeec
+Button=#353535
+ButtonText=#eeeeec
+BrightText=#ffffff
+Highlight=#15539e
+HighlightedText=#ffffff
+Link=#3584e4
+LinkVisited=#1b6acb
+ToolTipBase=#262626
+ToolTipText=#ffffff
+Light=#454545
+Midlight=#3d3d3d
+Mid=#282828
+Dark=#1b1b1b
+Shadow=#0d0d0d
+PlaceholderText=#919190
+Disabled:WindowText=#919190
+Disabled:Text=#919190
+Disabled:ButtonText=#919190
+Disabled:Base=#323232
+Disabled:Button=#323232
+Disabled:Highlight=#353535
+Inactive:Highlight=#15539e
