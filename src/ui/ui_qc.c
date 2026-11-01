@@ -71,8 +71,19 @@ static void ui_post(qcvm_t *vm)
 	UI_Post((int)QC_PFLOAT(vm, 0), QC_PSTR(vm, 1), vm->argc > 2 ? QC_PSTR(vm, 2) : NULL);
 }
 
-const qc_builtin_t ui_builtins[] = {
-	{"ui_open", ui_open}, {"ui_close", ui_close}, {"ui_isopen", ui_isopen}, {"ui_post", ui_post}, {NULL, NULL}};
+/* ui_draw(view, pos, size, alpha): draws a view opened with flag 2
+ * (UI_EMBED) now, into a rectangle of the progs' 2D space, laid out at that
+ * size. A HUD view drawn this way shows only on the frames the game draws
+ * its HUD, and in the order of the game's other 2D. */
+static void ui_draw(qcvm_t *vm)
+{
+	const float *pos = QC_PVEC(vm, 1), *size = QC_PVEC(vm, 2);
+	float alpha = vm->argc > 3 ? QC_PFLOAT(vm, 3) : 1;
+	UI_DrawAt((int)QC_PFLOAT(vm, 0), pos[0], pos[1], size[0], size[1], NULL, alpha);
+}
+
+const qc_builtin_t ui_builtins[] = {{"ui_open", ui_open},     {"ui_close", ui_close}, {"ui_isopen", ui_isopen},
+                                    {"ui_post", ui_post},     {"ui_draw", ui_draw},   {NULL, NULL}};
 
 static void action_to_qc(int view, const char *action, const char *arg)
 {

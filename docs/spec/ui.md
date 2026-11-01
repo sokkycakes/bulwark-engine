@@ -70,7 +70,13 @@ float(string layout, float flags) ui_open;            // flags: 1 = takes input;
 void(float view) ui_close;
 float(float view) ui_isopen;
 void(float view, string event, string json) ui_post;  // json may be "" for no value
+void(float view, vector pos, vector size, float alpha) ui_draw;
 ```
+
+`ui_draw` draws a view opened with flag 2 (embedded) right away, into a
+rectangle of the progs' 2D space, laid out at that size. Embedded views are
+not drawn with the others, so a HUD view drawn from the HUD code shows only
+while the game draws its HUD, between the game's other 2D.
 
 Scripts call back into the client game with
 
