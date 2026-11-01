@@ -62,8 +62,10 @@ Controls and selectors added for the Qt look-alike themes
   are drawn inside the border (the padding box), as CSS draws them.
   A single background image smaller than its box no longer takes the box's
   rounded corners (only a tile that fills the box does).
-- `src/panorama_layout.cpp`: slider thumbs sit on whole pixels, so their
-  border and decoration don't blur.
+- `src/panorama_layout.cpp`: slider and scrollbar thumbs sit on whole
+  pixels, so their border and decoration don't blur.
+- `src/panorama_paint.cpp`: a background image drawn at its natural size is
+  placed on whole pixels, so small pixel art (grip dots) stays crisp.
 - `src/panorama_input.cpp`, `src/panorama_view.cpp`: pressing a scrollbar
   button scrolls 20px with the wheel's smooth-scroll spring, and a pointer
   change keeps the scroll animation walk running.

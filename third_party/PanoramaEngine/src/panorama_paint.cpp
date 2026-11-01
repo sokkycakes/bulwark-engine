@@ -1239,8 +1239,16 @@ public:
         }
 
         const PanoramaBackgroundPosition& pos = s.background_position;
-        const float ax = background_axis_offset(tile_w, bw, pos.x_percent, pos.x_from_end, pos.x_side_offset, pos.x);
-        const float ay = background_axis_offset(tile_h, bh, pos.y_percent, pos.y_from_end, pos.y_side_offset, pos.y);
+        float ax = background_axis_offset(tile_w, bw, pos.x_percent, pos.x_from_end, pos.x_side_offset, pos.x);
+        float ay = background_axis_offset(tile_h, bh, pos.y_percent, pos.y_from_end, pos.y_side_offset, pos.y);
+        // Bulwark: an image drawn at its natural size lands on whole pixels
+        // (centring an odd size in an even box gave half-pixel blur).
+        if (std::abs(tile_w - node.background_texture_natural_width) < 0.01F &&
+            std::abs(tile_h - node.background_texture_natural_height) < 0.01F)
+        {
+            ax = std::round(bx + ax) - bx;
+            ay = std::round(by + ay) - by;
+        }
 
         const PanoramaBackgroundRepeatXY repeat = s.background_repeat;
         const BackgroundAxisTiles tx = compute_background_axis_tiles(repeat.x, bw, tile_w, ax);

@@ -1018,16 +1018,17 @@ void layout_scrollbars(PanoramaNode& node)
             thumb->layout.width = provisional_width(*thumb, track_w, track_h);
             thumb->layout.height = thumb_len;
             const float avail = track_w - ts.margin.left - ts.margin.right - thumb->layout.width;
-            thumb->layout.x = track_x + ts.margin.left + halign_offset(ts.halign, avail);
-            thumb->layout.y = track_y + thumb_pos;
+            // whole pixels, so the thumb's border and grip don't blur
+            thumb->layout.x = std::floor(track_x + ts.margin.left + halign_offset(ts.halign, avail));
+            thumb->layout.y = std::round(track_y + thumb_pos);
         }
         else
         {
             thumb->layout.width = thumb_len;
             thumb->layout.height = provisional_height(*thumb, track_w, track_h);
             const float avail = track_h - ts.margin.top - ts.margin.bottom - thumb->layout.height;
-            thumb->layout.x = track_x + thumb_pos;
-            thumb->layout.y = track_y + ts.margin.top + valign_offset(ts.valign, avail);
+            thumb->layout.x = std::round(track_x + thumb_pos);
+            thumb->layout.y = std::floor(track_y + ts.margin.top + valign_offset(ts.valign, avail));
         }
         refresh_content_box(*thumb);
     }

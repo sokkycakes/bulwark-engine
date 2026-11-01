@@ -613,7 +613,7 @@ V['scroll-size'] = '%dpx' % sw.width()
 # Where the arrow buttons go is a setting, not something to measure; Panorama
 # has one button at each end, so every layout but "none" maps to that.
 sbtype = setting('scrollbarType', 'kde')
-V['scroll-button'] = '0px' if sbtype == 'none' else '%dpx' % (sw.width() - 2)
+V['scroll-button'] = '0px' if sbtype == 'none' else '%dpx' % max(1, sadd.height())  # one button's length
 # groove: across the bar below the thumb
 y = (sthumb.bottom() + sgroove.bottom()) // 2
 row = [px(x, y) for x in range(sw.x(), sw.x() + sw.width())]
@@ -636,8 +636,39 @@ hopt.minimum, hopt.maximum, hopt.pageStep = 0, 100, 30
 hopt.sliderPosition = hopt.sliderValue = 0
 hthumb = style.subControlRect(QStyle.CC_ScrollBar, hopt, QStyle.SC_ScrollBarSlider, hw).translated(hw.mapTo(root, hw.rect().topLeft()))
 htb = box(hthumb)
-V['sthumb-bg-h'] = gradient([px(hthumb.x() + htb['margin'] + htb['radius'] + 3, y)
-                             for y in range(hthumb.y() + htb['margin'] + 1, hthumb.bottom() - htb['margin'])])
+hfill = [px(hthumb.x() + htb['margin'] + htb['radius'] + 3, y)
+         for y in range(hthumb.y() + htb['margin'] + 1, hthumb.bottom() - htb['margin'])]
+
+
+def thumb_corner(r, b):
+    """The thumb's corner radius, counting the anti-aliased pixels that a
+    coarse 24-level test treats as border, and QtCurve's one-pixel light ring
+    inside the border (drawn as an inset shadow, so the fill stays a plain
+    gradient)."""
+    m = b['margin']
+    rad = 0
+    while rad < min(r.width(), r.height()) // 2 and dist(px(r.x() + m + rad, r.y() + m), b['top']) > 8:
+        rad += 1
+    cy = r.y() + r.height() // 2
+    ring = px(r.x() + m + 1, cy)
+    inner = None
+    if sum(ring) > sum(px(r.x() + m + 3, cy)) + 24 and dist(ring, px(r.x() + r.width() // 2, r.y() + m + 1)) <= 6:
+        inner = ring
+    return rad, inner
+
+
+hrad, hinner = thumb_corner(hthumb, htb)
+V['sthumb-radius'] = '%dpx' % hrad
+V['sthumb-inner'] = 'none'
+if hinner is not None:
+    V['sthumb-inner'] = 'inset 0px 0px 0px 1px %s' % hexc(hinner)
+    hfill = hfill[1:-1]
+    V['sthumb-bg'] = gradient([px(x, sthumb.y() + tb['margin'] + tb['radius'] + 3)
+                               for x in range(sthumb.x() + tb['margin'] + 2, sthumb.right() - tb['margin'] - 1)],
+                              vertical=False)
+if args.debug:
+    sys.stderr.write('hthumb %s radius %d inner %s\n' % (hthumb, hrad, hinner))
+V['sthumb-bg-h'] = gradient(hfill)
 grip(hthumb, htb, True, 'scroll-grip-h.png', 'sthumb-grip-h')
 
 

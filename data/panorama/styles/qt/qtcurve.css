@@ -156,15 +156,16 @@
 	--pfill-image: none;
 	--pfill-image-size: 1px 1px;
 	--scroll-size: 16px;
-	--scroll-button: 14px;
+	--scroll-button: 15px;
 	--sthumb-width: 15px;
 	--sthumb-length: 35px;
 	--sthumb-bt: #b3b3b3;
-	--sthumb-bg: gradient( linear, 0% 0%, 100% 0%, from( #f6f6f6 ), to( #ebebeb ) );
-	--sthumb-radius: 3px;
+	--sthumb-bg: gradient( linear, 0% 0%, 100% 0%, from( #f6f6f6 ), to( #ececec ) );
+	--sthumb-radius: 4px;
 	--sthumb-grip-v: url( "file://{images}/qt/qtcurve-gen/scroll-grip-v.png" );
 	--sthumb-grip-v-size: 9px 27px;
-	--sthumb-bg-h: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ebebeb ) );
+	--sthumb-inner: inset 0px 0px 0px 1px #ffffff;
+	--sthumb-bg-h: gradient( linear, 0% 0%, 0% 100%, from( #f6f6f6 ), to( #ececec ) );
 	--sthumb-grip-h: url( "file://{images}/qt/qtcurve-gen/scroll-grip-h.png" );
 	--sthumb-grip-h-size: 27px 9px;
 	--scroll-up: url( "file://{images}/qt/qtcurve-gen/scroll-up.png" );
@@ -595,6 +596,7 @@
 	background-color: var(--sthumb-bg);
 	border: 1px solid var(--sthumb-bt);
 	border-radius: var(--sthumb-radius);
+	box-shadow: var(--sthumb-inner);
 	background-image: var(--sthumb-grip-v);
 	background-size: var(--sthumb-grip-v-size);
 	background-position: 50% 50%;
@@ -609,6 +611,7 @@
 	background-color: var(--sthumb-bg-h);
 	border: 1px solid var(--sthumb-bt);
 	border-radius: var(--sthumb-radius);
+	box-shadow: var(--sthumb-inner);
 	background-image: var(--sthumb-grip-h);
 	background-size: var(--sthumb-grip-h-size);
 	background-position: 50% 50%;
