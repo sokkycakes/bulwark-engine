@@ -144,3 +144,15 @@ The render flag `RF_MIRROR` (65536, Bulwark's own) mirrors one entity left
 to right, model and tags alike. On a view model it flips the
 `r_viewmodel_mirror` result, so a model built for the other hand (Counter-
 Strike Online's are left-handed) is drawn the way the cvar asks.
+
+The render flag `RF_OUTLINE` (131072, Bulwark's own) draws a teammate outline
+like Counter-Strike Online's (`cl_outline_tdm`) around an alias or skeletal
+model, after the scene's entities and through walls. Its colour is the
+entity's `.outlinecolor` (0 to 1; unset is CSO's green, 76 208 113). As in
+CSO it is about 7 pixels wide close up, 4.5 from 150 units on, its alpha is
+0.2 plus distance squared / 100000 (at most 0.8), and it fades out towards
+the bottom of the entity's `mins`/`maxs` box. View models cover it. CSO draws
+thick wireframe lines masked by the model in the stencil; Bulwark pushes the
+model out along its normals by half that width on screen instead, also
+masked by the stencil. `r_outline 0` turns outlines off and `r_outline_width`
+scales them.

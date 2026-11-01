@@ -206,6 +206,29 @@ static const char *fs_model =
 	"  o_color = vec4(c, d.a) * u_color;\n"
 	"}\n";
 
+/* outlines (RF_OUTLINE): the model pushed out along its normals by a fixed
+ * number of pixels on screen, in one colour that fades towards the feet */
+static const char *vs_outline =
+	"layout(location=0) in vec3 a_pos;\n"
+	"layout(location=3) in vec3 a_normal;\n"
+	"uniform mat4 u_mvp; uniform mat4 u_model; uniform vec4 u_outline;\n"
+	"out float v_z;\n"
+	"void main() {\n"
+	"  vec4 c = u_mvp * vec4(a_pos, 1.0);\n"
+	"  vec2 n = (u_mvp * vec4(a_normal, 0.0)).xy; float l = length(n);\n"
+	"  if (l > 1e-6) c.xy += n / l * u_outline.x * u_outline.yz * c.w;\n"
+	"  gl_Position = c; v_z = (u_model * vec4(a_pos, 1.0)).z;\n"
+	"}\n";
+static const char *fs_outline =
+	"in float v_z;\n"
+	"uniform vec4 u_color; uniform vec4 u_outline_z;\n"
+	"out vec4 o_color;\n"
+	"void main() {\n"
+	"  float a = u_color.a;\n"
+	"  if (u_outline_z.y > 0.0) a = min(a, max((v_z - u_outline_z.x) / u_outline_z.y, 0.0));\n"
+	"  o_color = vec4(u_color.rgb, a);\n"
+	"}\n";
+
 static const char *vs_unlit =
 	"layout(location=0) in vec3 a_pos;\n"
 	"layout(location=1) in vec2 a_tc;\n"
@@ -268,6 +291,7 @@ static bool build(glprog_t *p, const char *vs, const char *fs, const char *what)
 	U(u_mvp); U(u_model); U(u_tex); U(u_lightmap); U(u_cube); U(u_color); U(u_lmscale); U(u_vieworg);
 	U(u_light_ambient); U(u_light_dir); U(u_light_diffuse); U(u_tcmod); U(u_alphatest); U(u_fog); U(u_time);
 	U(u_dlights); U(u_numdlights); U(u_dlightcolors); U(u_fullbright); U(u_usefullbright);
+	U(u_outline); U(u_outline_z);
 #undef U
 	qglUseProgram(p->prog);
 	if (p->u_tex >= 0)
@@ -292,6 +316,7 @@ bool R_InitPrograms(void)
 	ok &= build(&r_progs[PROG_MODEL], vs_model, fs_model, "model");
 	ok &= build(&r_progs[PROG_UNLIT], vs_unlit, fs_2d, "unlit");
 	ok &= build(&r_progs[PROG_SKY], vs_sky, fs_sky, "sky");
+	ok &= build(&r_progs[PROG_OUTLINE], vs_outline, fs_outline, "outline");
 	gs.prog = -1;
 	return ok;
 }
@@ -488,7 +513,7 @@ bool Mat4_Invert(float *out, const float *m)
 /* a program's GLSL, for r_dumpshaders */
 bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs)
 {
-	static const char *const names[PROG_COUNT] = {"2d", "world", "model", "unlit", "sky"};
+	static const char *const names[PROG_COUNT] = {"2d", "world", "model", "unlit", "sky", "outline"};
 	const char *const v[PROG_COUNT] = {vs_2d, vs_world, vs_model, vs_unlit, vs_sky};
 	const char *const f[PROG_COUNT] = {fs_2d, fs_world, fs_model, fs_2d, fs_sky};
 	if (p < 0 || p >= PROG_COUNT)

@@ -26,7 +26,7 @@ static struct {
 	qcvm_t *vm;
 	int modelindex, origin, angles, frame, frame2, lerpfrac, frame1time, frame2time, skin, scale, alpha;
 	int colormod, glowmod, renderflags, effects, drawmask, predraw, forceshader, entnum, drawflags;
-	int skeletonindex;
+	int skeletonindex, outlinecolor, mins, maxs;
 } EF;
 
 static void lookup_fields(qcvm_t *vm)
@@ -38,7 +38,7 @@ static void lookup_fields(qcvm_t *vm)
 	FLD(modelindex); FLD(origin); FLD(angles); FLD(frame); FLD(frame2); FLD(lerpfrac); FLD(frame1time);
 	FLD(frame2time); FLD(skin); FLD(scale); FLD(alpha); FLD(colormod); FLD(glowmod); FLD(renderflags);
 	FLD(effects); FLD(drawmask); FLD(predraw); FLD(forceshader); FLD(entnum); FLD(drawflags);
-	FLD(skeletonindex);
+	FLD(skeletonindex); FLD(outlinecolor); FLD(mins); FLD(maxs);
 #undef FLD
 }
 
@@ -305,6 +305,18 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 			e->colormod[0] = e->colormod[1] = e->colormod[2] = 1;
 	}
 	e->renderflags = (int)efloat(vm, ent, EF.renderflags, 0);
+	if (e->renderflags & RF_OUTLINE) {
+		/* without a colour, Counter-Strike Online's teammate green */
+		static const float green[3] = {76 / 255.0f, 208 / 255.0f, 113 / 255.0f};
+		if (EF.outlinecolor >= 0)
+			memcpy(e->outline, &f[EF.outlinecolor], sizeof(float) * 3);
+		if (!e->outline[0] && !e->outline[1] && !e->outline[2])
+			memcpy(e->outline, green, sizeof(green));
+		if (EF.mins >= 0 && EF.maxs >= 0) {
+			memcpy(e->mins, &f[EF.mins], sizeof(float) * 3);
+			memcpy(e->maxs, &f[EF.maxs], sizeof(float) * 3);
+		}
+	}
 	e->effects = (int)efloat(vm, ent, EF.effects, 0);
 	e->entnum = (int)efloat(vm, ent, EF.entnum, 0);
 	if (EF.forceshader >= 0 && f[EF.forceshader].f > 0)
@@ -616,6 +628,7 @@ void R_RenderScene(void)
 		qsort(sorted, nsorted, sizeof(sorted[0]), dist_cmp);
 		for (int i = 0; i < nsorted; i++)
 			R_DrawModelEntity(sorted[i], true);
+		R_DrawOutlines();
 	}
 	R_DrawParticles();
 	R_DrawClipBrushes();

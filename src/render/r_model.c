@@ -1304,6 +1304,34 @@ static int alias_pose(alias_t *a, int frame, float t)
 	}
 }
 
+/* an alias model's vertices for the entity's frames, lerped */
+static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
+{
+	static rvert_t *buf;
+	static int bufsize;
+	int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
+	float lerp = e->lerpfrac;
+	const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
+	const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
+	if (a->numoutverts > bufsize) {
+		bufsize = a->numoutverts;
+		buf = Mem_Realloc(buf, sizeof(rvert_t) * bufsize);
+	}
+	/* lerpfrac is how far towards frame2 the entity is */
+	for (int i = 0; i < a->numoutverts; i++) {
+		int v = a->remap[i];
+		rvert_t *o = &buf[i];
+		for (int k = 0; k < 3; k++) {
+			o->xyz[k] = pa[v * 3 + k] + (pb[v * 3 + k] - pa[v * 3 + k]) * lerp;
+			o->normal[k] = na[v * 3 + k] + (nb[v * 3 + k] - na[v * 3 + k]) * lerp;
+		}
+		o->st[0] = a->st[i * 2];
+		o->st[1] = a->st[i * 2 + 1];
+		memset(o->color, 255, 4);
+	}
+	return buf;
+}
+
 static void set_model_lighting(const glprog_t *p, rentity_t *e)
 {
 	float amb[3], dif[3], dir[3], pos[8 * 4], col[8 * 3];
@@ -1411,29 +1439,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 	if (m->type == MOD_ALIAS) {
 		alias_t *a = m->alias;
-		static rvert_t *buf;
-		static int bufsize;
-		int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
-		float lerp = e->lerpfrac;
-		const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
-		const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
+		rvert_t *buf = alias_verts(e, a);
 		material_t *skin;
-		if (a->numoutverts > bufsize) {
-			bufsize = a->numoutverts;
-			buf = Mem_Realloc(buf, sizeof(rvert_t) * bufsize);
-		}
-		/* lerpfrac is how far towards frame2 the entity is */
-		for (int i = 0; i < a->numoutverts; i++) {
-			int v = a->remap[i];
-			rvert_t *o = &buf[i];
-			for (int k = 0; k < 3; k++) {
-				o->xyz[k] = pa[v * 3 + k] + (pb[v * 3 + k] - pa[v * 3 + k]) * lerp;
-				o->normal[k] = na[v * 3 + k] + (nb[v * 3 + k] - na[v * 3 + k]) * lerp;
-			}
-			o->st[0] = a->st[i * 2];
-			o->st[1] = a->st[i * 2 + 1];
-			memset(o->color, 255, 4);
-		}
 		skin = e->forceshader ? e->forceshader
 		       : a->numskins ? a->skins[e->skin >= 0 && e->skin < a->numskins ? e->skin : 0]
 		                     : R_FindMaterial("$default", MATF_MODEL);
@@ -1469,6 +1476,140 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		qglDepthRange(0, 1);
 	if (e->mirrored)
 		qglCullFace(GL_BACK);
+	GL_SetCull(true);
+}
+
+/* --- outlines --------------------------------------------------------------- */
+
+/* RF_OUTLINE: Counter-Strike Online's teammate outline (cl_outline_tdm),
+ * reworked for this renderer. CSO (hw.dll, read in the CSNZ reconstruction)
+ * draws each marked model twice after it has been drawn: first into the
+ * stencil only, then as a wireframe with thick lines (7 pixels, thinning
+ * by distance squared / 10000 to at least 4.5) where the stencil is not
+ * set, so only the part of the lines outside the model shows. Depth is
+ * ignored, so the outline shows through walls. Its alpha is 0.2 + distance
+ * squared / 100000, at most 0.8, and fades to nothing towards the bottom
+ * of the entity's box. Thick lines aren't in core GL, so here the second
+ * pass pushes the model out along its normals by half the line width in
+ * pixels instead. */
+static cvar_t *r_outline, *r_outline_width;
+
+static void outline_geometry(rentity_t *e)
+{
+	rmodel_t *m = e->model;
+	if (m->type == MOD_ALIAS) {
+		alias_t *a = m->alias;
+		R_StreamDraw(GL_TRIANGLES, alias_verts(e, a), a->numoutverts, a->indices, a->numtris * 3);
+	} else if (m->type == MOD_IQM && m->iqm->vao) {
+		iqm_t *q = m->iqm;
+		qglBindVertexArray(q->vao);
+		for (int i = 0; i < q->nummeshes; i++) {
+			if (q->meshes[i].geomgroup >= 0 &&
+			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
+				continue;
+			if (!q->meshes[i].numindexes || q->meshes[i].material->nodraw)
+				continue;
+			qglDrawElements(GL_TRIANGLES, q->meshes[i].numindexes, GL_UNSIGNED_INT,
+			                (void *)(sizeof(uint32_t) * (size_t)q->meshes[i].firstindex));
+		}
+		qglBindVertexArray(0);
+	}
+}
+
+void R_DrawOutlines(void)
+{
+	const glprog_t *p = &r_progs[PROG_OUTLINE];
+	bool any = false;
+	GLint vp[4];
+	if (!r_outline) {
+		r_outline = Cvar_Get("r_outline", "1", CVAR_ARCHIVE, "Draw outlines on entities that ask for one (RF_OUTLINE)");
+		r_outline_width = Cvar_Get("r_outline_width", "1", CVAR_ARCHIVE, "Scales the width of outlines");
+	}
+#if defined(__3DS__) || defined(__NDS__)
+	return; /* no stencil there yet */
+#endif
+	if (!r_outline->ivalue || !p->prog)
+		return;
+	for (int i = 0; i < r_scene.numents && !any; i++)
+		any = (r_scene.ents[i].renderflags & RF_OUTLINE) != 0;
+	if (!any)
+		return;
+	qglGetIntegerv(GL_VIEWPORT, vp);
+	R_UseProgram(PROG_OUTLINE);
+	GL_SetCull(false);
+	qglEnable(GL_STENCIL_TEST);
+	qglStencilMask(0xff);
+	qglClearStencil(0);
+	qglClear(GL_STENCIL_BUFFER_BIT);
+	qglStencilFunc(GL_ALWAYS, 1, 0xff);
+	qglStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+	qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	GL_SetDepth(false, false);
+	GL_SetBlend(BLEND_OPAQUE, 0, 0);
+	qglUniform4f(p->u_outline, 0, 0, 0, 0);
+	qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
+	/* view models cover outlines, as they do in CSO, where each outline is
+	 * drawn with its model, before the view model */
+	for (int i = 0; i < r_scene.numents; i++) {
+		rentity_t *e = &r_scene.ents[i];
+		rmodel_t *m = e->model;
+		float model[16], mvp[16];
+		if (!(e->renderflags & (1 | 4)) || !m || !m->loaded || (m->type != MOD_ALIAS && m->type != MOD_IQM))
+			continue;
+		Mat4_FromAxis(model, e->axis, e->origin, e->scale);
+		Mat4_Multiply(mvp, r_scene.vmviewproj, model);
+		qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
+		qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
+		if (m->type == MOD_IQM && m->iqm->skel)
+			skin_iqm(m->iqm, e);
+		outline_geometry(e);
+	}
+	for (int i = 0; i < r_scene.numents; i++) {
+		rentity_t *e = &r_scene.ents[i];
+		rmodel_t *m = e->model;
+		float model[16], mvp[16], d2 = 0, width, alpha;
+		if (!(e->renderflags & RF_OUTLINE) || (e->renderflags & (1 | 4)) || !m || !m->loaded ||
+		    (m->type != MOD_ALIAS && m->type != MOD_IQM))
+			continue;
+		for (int k = 0; k < 3; k++)
+			d2 += (e->origin[k] - r_scene.origin[k]) * (e->origin[k] - r_scene.origin[k]);
+		width = 7 - d2 * 0.0001f;
+		if (width < 4.5f)
+			width = 4.5f;
+		alpha = d2 * 1e-5f + 0.2f;
+		if (alpha > 0.8f)
+			alpha = 0.8f;
+		Mat4_FromAxis(model, e->axis, e->origin, e->scale);
+		Mat4_Multiply(mvp, r_scene.viewproj, model);
+		qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
+		qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
+		if (m->type == MOD_IQM && m->iqm->skel)
+			skin_iqm(m->iqm, e); /* the buffer holds whichever entity used the model last */
+		/* the model itself, into the stencil only */
+		qglStencilFunc(GL_ALWAYS, 1, 0xff);
+		qglStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+		qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+		GL_SetDepth(false, false);
+		GL_SetBlend(BLEND_OPAQUE, 0, 0);
+		qglUniform4f(p->u_outline, 0, 0, 0, 0);
+		qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
+		outline_geometry(e);
+		/* then the model pushed out, where the stencil isn't set */
+		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		qglStencilFunc(GL_NOTEQUAL, 1, 0xff);
+		qglStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+		GL_SetBlend(BLEND_ALPHA, 0, 0);
+		qglUniform4f(p->u_color, e->outline[0], e->outline[1], e->outline[2], alpha);
+		/* alias normals come from Quake's triangle winding, the other way
+		 * round from GL's, so they point inwards: push those models the other way */
+		qglUniform4f(p->u_outline, (m->type == MOD_ALIAS ? -0.5f : 0.5f) * width * r_outline_width->value,
+		             2.0f / BW_MAX(vp[2], 1), 2.0f / BW_MAX(vp[3], 1), 0);
+		qglUniform4f(p->u_outline_z, e->origin[2] + e->mins[2], e->maxs[2] - e->mins[2], 0, 0);
+		outline_geometry(e);
+	}
+	qglDisable(GL_STENCIL_TEST);
+	GL_SetBlend(BLEND_OPAQUE, 0, 0);
+	GL_SetDepth(true, true);
 	GL_SetCull(true);
 }
 

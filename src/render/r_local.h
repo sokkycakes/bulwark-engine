@@ -101,10 +101,10 @@ typedef struct {
 	GLuint prog;
 	GLint u_mvp, u_model, u_tex, u_lightmap, u_cube, u_color, u_lmscale, u_vieworg, u_light_ambient;
 	GLint u_light_dir, u_light_diffuse, u_tcmod, u_alphatest, u_fog, u_time, u_dlights, u_numdlights;
-	GLint u_dlightcolors, u_fullbright, u_usefullbright;
+	GLint u_dlightcolors, u_fullbright, u_usefullbright, u_outline, u_outline_z;
 } glprog_t;
 
-enum { PROG_2D, PROG_WORLD, PROG_MODEL, PROG_UNLIT, PROG_SKY, PROG_COUNT };
+enum { PROG_2D, PROG_WORLD, PROG_MODEL, PROG_UNLIT, PROG_SKY, PROG_OUTLINE, PROG_COUNT };
 extern glprog_t r_progs[PROG_COUNT];
 bool R_InitPrograms(void);
 void R_ShutdownPrograms(void);
@@ -289,6 +289,8 @@ typedef struct {
 	int qcent;        /* entity in that vm */
 	int skeletonindex; /* a skeleton object of that vm posing the model, 0 for none */
 	const struct rskin_s *customskin; /* setcustomskin: geomsets and surface replacements */
+	float outline[3];  /* RF_OUTLINE: the outline's colour, 0 to 1 */
+	float mins[3], maxs[3]; /* the entity's box, for the outline's fade */
 } rentity_t;
 
 /* custom skins (r_skin.c) */
@@ -366,6 +368,10 @@ void R_EndPolygonRibbon(float radius, const float *tcbias);
 void R_AddEntityFromQC(struct qcvm_s *vm, int ent);
 /* render flag: draw the entity mirrored left to right (Bulwark's own) */
 #define RF_MIRROR 65536
+/* render flag: draw a teammate outline around the entity, seen through walls
+ * (Bulwark's own; the colour is the entity's .outlinecolor) */
+#define RF_OUTLINE 131072
+void R_DrawOutlines(void);
 bool R_EntityMirrored(int renderflags);
 void R_AddEntities(struct qcvm_s *vm, int mask);
 void R_ClearStatics(void);
