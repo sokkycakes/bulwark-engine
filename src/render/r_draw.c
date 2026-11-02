@@ -732,6 +732,19 @@ static void draw_suggestions(int w, int h, float top, float size)
 	}
 }
 
+/* draw engine readouts (fps and the like) in the console's font and size,
+ * not whatever font the client game last drew with; returns the font to
+ * hand back to R_RestoreDrawFont */
+int R_UseConsoleFont(float *size)
+{
+	int saved = r_drawfont;
+	r_drawfont = con_font->string[0] ? R_LoadFont("", con_font->string, "", -1) : 0;
+	*size = con_textsize->value > 0 ? con_textsize->value : 8;
+	return saved;
+}
+
+void R_RestoreDrawFont(int saved) { r_drawfont = saved; }
+
 void R_DrawConsole(int w, int h)
 {
 	static const float white[3] = {1, 1, 1}, dim[3] = {0, 0, 0};
