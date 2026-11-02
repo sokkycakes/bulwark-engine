@@ -148,14 +148,14 @@ Strike Online's are left-handed) is drawn the way the cvar asks.
 The render flag `RF_OUTLINE` (131072, Bulwark's own) draws a teammate outline
 like Counter-Strike Online's (`cl_outline_tdm`) around an alias or skeletal
 model, after the scene's entities and through walls. Its colour is the
-entity's `.outlinecolor` (0 to 1; unset is CSO's green, 76 208 113). As
-CSO's hw.dll does it, the model goes into the stencil, then is drawn again as
-a wireframe (`glPolygonMode` lines) where the stencil is clear, with depth
-ALWAYS, so the outer half of the lines shows around the model, through
-walls. Lines are 7 - d²/10000 pixels wide (at least 4.5), alpha is 0.2 +
-d²/100000 (at most 0.8), and per vertex alpha is at most (z - (origin z +
-mins z)) / (maxs z - mins z), fading it towards the bottom of the box. View
-models cover it. Where GL has no polygon mode or lines that wide (WebGL),
-the model is pushed out along its normals by half the line width instead.
+entity's `.outlinecolor` (0 to 1; unset is CSO's green, 76 208 113). CSO's
+hw.dll draws the model's wireframe with 4.5 to 7 pixel lines, masked by the
+model in the stencil. Bulwark draws the same band in screen space instead,
+which needs no normals, wide lines or stencil: the model goes into a mask
+texture, and pixels outside it within half CSO's line width (7 - d²/10000,
+at least 4.5) get the outline, smoothed at the edge. CSO's alpha is kept:
+0.2 + d²/100000 (at most 0.8), and at most (z - (origin z + mins z)) /
+(maxs z - mins z) of the nearest model pixel, so it fades towards the
+bottom of the box. View models go into the mask too and hide the outline.
 `r_outline 0` turns outlines off and `r_outline_width` scales them (1 is
 CSO's).

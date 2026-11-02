@@ -104,7 +104,7 @@ typedef struct {
 	GLint u_dlightcolors, u_fullbright, u_usefullbright, u_outline, u_outline_z;
 } glprog_t;
 
-enum { PROG_2D, PROG_WORLD, PROG_MODEL, PROG_UNLIT, PROG_SKY, PROG_OUTLINE, PROG_COUNT };
+enum { PROG_2D, PROG_WORLD, PROG_MODEL, PROG_UNLIT, PROG_SKY, PROG_OUTLINE, PROG_OUTLINE2, PROG_COUNT };
 extern glprog_t r_progs[PROG_COUNT];
 bool R_InitPrograms(void);
 void R_ShutdownPrograms(void);

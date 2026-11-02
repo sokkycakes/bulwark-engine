@@ -1618,35 +1618,32 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 /* --- outlines --------------------------------------------------------------- */
 
-/* RF_OUTLINE: Counter-Strike Online's teammate outline (cl_outline_tdm), as
- * hw.dll draws it (read in the CSNZ reconstruction: FUN_023035d0 and
- * FUN_02303190, run for a marked entity right after its model). First the
- * model goes into the stencil only: stencil ALWAYS 1, KEEP/REPLACE/REPLACE,
- * depth ALWAYS without writes, colour writes off. Then it is drawn again as
- * a wireframe (glPolygonMode LINE) in white.spr times the outline colour,
- * alpha blended, where the stencil is not 1, with depth ALWAYS, so only the
- * outer half of the lines around the model shows, through walls. Line width
- * is 7 - d^2 / 10000 pixels, at least 4.5; alpha is 0.2 + d^2 / 100000, at
- * most 0.8, d being the distance from the view to the entity; per vertex the
- * alpha is also at most (z - (origin z + mins z)) / (maxs z - mins z), so
- * the outline fades out towards the bottom of the entity's box. Here the
- * outlines are drawn after the scene's entities, with view models written
- * into the stencil first so they cover outlines as they do in CSO. Where GL
- * has no polygon mode or no lines that wide (WebGL, some core contexts),
- * the model is pushed out along its normals by half the line width instead. */
+/* RF_OUTLINE: Counter-Strike Online's teammate outline (cl_outline_tdm).
+ * CSO's hw.dll (read in the CSNZ reconstruction: FUN_023035d0, FUN_02303190)
+ * puts the model in the stencil and then draws its wireframe with 4.5 to 7
+ * pixel lines where the stencil is clear, through walls; only the outer half
+ * of the lines shows. Wide lines aren't available everywhere and look ragged,
+ * so Bulwark draws the same band in screen space instead: the model goes
+ * into a mask texture, and every pixel outside it within half CSO's line
+ * width (7 - d^2 / 10000 pixels, at least 4.5, d the distance from the view)
+ * gets the outline, smoothed at the outer edge. CSO's alpha is kept: 0.2 +
+ * d^2 / 100000, at most 0.8, and at most (z - (origin z + mins z)) /
+ * (maxs z - mins z) of the nearest model pixel, so it fades out towards the
+ * bottom of the entity's box. View models go into the mask too and hide
+ * outlines, as they do in CSO, where outlines are drawn with their models
+ * before the view model. No normals, lines or stencil are involved. */
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#endif
+#ifndef GL_FRAMEBUFFER_BINDING
+#define GL_FRAMEBUFFER_BINDING 0x8CA6
+#endif
+#ifndef GL_SCISSOR_BOX
+#define GL_SCISSOR_BOX 0x0C10
+#endif
 static cvar_t *r_outline, *r_outline_width;
-static float linerange[2];
-static bool linerange_known;
-
-static void outline_stencil_state(void)
-{
-	qglStencilFunc(GL_ALWAYS, 1, 0xff);
-	qglStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-	qglStencilMask(0xff);
-	qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-	GL_SetDepth(false, false); /* CSO: depth ALWAYS without writes */
-	GL_SetBlend(BLEND_OPAQUE, 0, 0);
-}
+static GLuint outline_fb, outline_tex;
+static int outline_w, outline_h;
 
 static void outline_geometry(rentity_t *e)
 {
@@ -1670,61 +1667,97 @@ static void outline_geometry(rentity_t *e)
 	}
 }
 
+static bool outline_target(void)
+{
+	if (!qglFramebufferTexture2D_opt)
+		return false;
+	if (outline_fb && outline_w == r_pwidth && outline_h == r_pheight)
+		return true;
+	if (!outline_fb) {
+		qglGenFramebuffers(1, &outline_fb);
+		qglGenTextures(1, &outline_tex);
+	}
+	GL_BindTexture(0, GL_TEXTURE_2D, outline_tex);
+	qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, r_pwidth, r_pheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	qglBindFramebuffer(GL_FRAMEBUFFER, outline_fb);
+	qglFramebufferTexture2D_opt(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outline_tex, 0);
+	outline_w = r_pwidth, outline_h = r_pheight;
+	return true;
+}
+
+/* the entity's box on screen, in physical pixels, widened by pad; false if
+ * it is all behind the view. Partly behind: the whole box given */
+static bool outline_rect(const rentity_t *e, const int *box, int pad, int *rect)
+{
+	float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
+	const float *vp = r_scene.viewproj;
+	int behind = 0;
+	for (int c = 0; c < 8; c++) {
+		float p[3], clip[4];
+		for (int k = 0; k < 3; k++)
+			p[k] = e->origin[k] + ((c >> k) & 1 ? e->maxs[k] : e->mins[k]);
+		for (int r = 0; r < 4; r++)
+			clip[r] = vp[r] * p[0] + vp[4 + r] * p[1] + vp[8 + r] * p[2] + vp[12 + r];
+		if (clip[3] <= 0.01f) {
+			behind++;
+			continue;
+		}
+		for (int k = 0; k < 2; k++) {
+			float ndc = clip[k] / clip[3];
+			lo[k] = BW_MIN(lo[k], ndc), hi[k] = BW_MAX(hi[k], ndc);
+		}
+	}
+	if (behind == 8)
+		return false;
+	rect[0] = box[0], rect[1] = box[1], rect[2] = box[0] + box[2], rect[3] = box[1] + box[3];
+	if (!behind) {
+		int x0 = box[0] + (int)((lo[0] * 0.5f + 0.5f) * box[2]) - pad, x1 = box[0] + (int)((hi[0] * 0.5f + 0.5f) * box[2]) + pad;
+		int y0 = box[1] + (int)((lo[1] * 0.5f + 0.5f) * box[3]) - pad, y1 = box[1] + (int)((hi[1] * 0.5f + 0.5f) * box[3]) + pad;
+		rect[0] = BW_MAX(rect[0], x0), rect[1] = BW_MAX(rect[1], y0);
+		rect[2] = BW_MIN(rect[2], x1), rect[3] = BW_MIN(rect[3], y1);
+	}
+	return rect[2] > rect[0] && rect[3] > rect[1];
+}
+
 void R_DrawOutlines(void)
 {
-	const glprog_t *p = &r_progs[PROG_OUTLINE];
+	const glprog_t *p = &r_progs[PROG_OUTLINE], *p2 = &r_progs[PROG_OUTLINE2];
+	static const float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+	static rvert_t quad[4];
+	static const uint16_t quadidx[6] = {0, 1, 2, 0, 2, 3};
 	bool any = false;
-	GLint vp[4];
+	GLint box[4], savedfb;
 	if (!r_outline) {
 		r_outline = Cvar_Get("r_outline", "1", CVAR_ARCHIVE, "Draw outlines on entities that ask for one (RF_OUTLINE)");
 		r_outline_width = Cvar_Get("r_outline_width", "1", CVAR_ARCHIVE, "Scales the width of outlines (1 is CSO's)");
 	}
-#if defined(__3DS__) || defined(__NDS__)
-	return; /* no stencil there yet */
-#endif
-	if (!r_outline->ivalue || !p->prog)
+	if (!r_outline->ivalue || !p->prog || !p2->prog)
 		return;
+	if (!quad[1].xyz[0]) {
+		quad[0].xyz[0] = quad[3].xyz[0] = quad[0].xyz[1] = quad[1].xyz[1] = -1;
+		quad[1].xyz[0] = quad[2].xyz[0] = quad[2].xyz[1] = quad[3].xyz[1] = 1;
+	}
 	for (int i = 0; i < r_scene.numents && !any; i++)
 		any = (r_scene.ents[i].renderflags & RF_OUTLINE) != 0;
 	if (!any)
 		return;
-	qglGetIntegerv(GL_VIEWPORT, vp);
-	if (!linerange_known) {
-		linerange[0] = linerange[1] = 1;
-		if (qglGetFloatv_opt)
-			qglGetFloatv_opt(GL_ALIASED_LINE_WIDTH_RANGE, linerange);
-		linerange_known = true;
+	qglGetIntegerv(GL_SCISSOR_BOX, box);
+	qglGetIntegerv(GL_FRAMEBUFFER_BINDING, &savedfb);
+	if (!outline_target()) {
+		qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedfb);
+		return;
 	}
-	R_UseProgram(PROG_OUTLINE);
-	qglEnable(GL_STENCIL_TEST);
-	qglStencilMask(0xff);
-	qglClearStencil(0);
-	qglClear(GL_STENCIL_BUFFER_BIT);
-	outline_stencil_state();
-	qglUniform4f(p->u_outline, 0, 0, 0, 0);
-	qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
-	/* view models cover outlines, as they do in CSO, where each outline is
-	 * drawn with its model, before the view model */
 	GL_SetCull(false);
-	for (int i = 0; i < r_scene.numents; i++) {
-		rentity_t *e = &r_scene.ents[i];
-		rmodel_t *m = e->model;
-		float model[16], mvp[16];
-		if (!(e->renderflags & (1 | 4)) || !m || !m->loaded || (m->type != MOD_ALIAS && m->type != MOD_IQM))
-			continue;
-		Mat4_FromAxis(model, e->axis, e->origin, e->scale);
-		Mat4_Multiply(mvp, r_scene.vmviewproj, model);
-		qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
-		qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
-		if (m->type == MOD_IQM && m->iqm->skel)
-			skin_iqm(m->iqm, e);
-		outline_geometry(e);
-	}
+	GL_SetDepth(false, false);
 	for (int i = 0; i < r_scene.numents; i++) {
 		rentity_t *e = &r_scene.ents[i];
 		rmodel_t *m = e->model;
 		float model[16], mvp[16], d2 = 0, width, alpha;
-		bool lines;
+		int rect[4];
 		if (!(e->renderflags & RF_OUTLINE) || (e->renderflags & (1 | 4)) || !m || !m->loaded ||
 		    (m->type != MOD_ALIAS && m->type != MOD_IQM))
 			continue;
@@ -1733,54 +1766,66 @@ void R_DrawOutlines(void)
 		width = 7 - d2 * 0.0001f;
 		if (width < 4.5f)
 			width = 4.5f;
-		width *= r_outline_width->value;
+		width *= 0.5f * r_outline_width->value; /* the outer half of CSO's lines */
 		alpha = d2 * 1e-5f + 0.2f;
 		if (alpha > 0.8f)
 			alpha = 0.8f;
-		lines = qglPolygonMode_opt && width <= linerange[1];
+		if (!outline_rect(e, box, (int)ceilf(width) + 2, rect))
+			continue;
+
+		/* the mask */
+		qglBindFramebuffer(GL_FRAMEBUFFER, outline_fb);
+		{
+			/* wider than the band, which looks this far past its own edge */
+			int pad = (int)ceilf(width) + 1;
+			int x0 = BW_MAX(rect[0] - pad, 0), y0 = BW_MAX(rect[1] - pad, 0);
+			int x1 = BW_MIN(rect[2] + pad, outline_w), y1 = BW_MIN(rect[3] + pad, outline_h);
+			qglScissor(x0, y0, x1 - x0, y1 - y0);
+		}
+		qglClearColor(0, 0, 0, 0);
+		qglClear(GL_COLOR_BUFFER_BIT);
+		GL_SetBlend(BLEND_OPAQUE, 0, 0);
+		R_UseProgram(PROG_OUTLINE);
+		qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
+		qglUniform4f(p->u_color, 0, 0, 1, 1); /* view models: hide the outline */
+		for (int j = 0; j < r_scene.numents; j++) {
+			rentity_t *v = &r_scene.ents[j];
+			float vmodel[16], vmvp[16];
+			if (!(v->renderflags & (1 | 4)) || !v->model || !v->model->loaded ||
+			    (v->model->type != MOD_ALIAS && v->model->type != MOD_IQM))
+				continue;
+			Mat4_FromAxis(vmodel, v->axis, v->origin, v->scale);
+			Mat4_Multiply(vmvp, r_scene.vmviewproj, vmodel);
+			qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, vmvp);
+			qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, vmodel);
+			if (v->model->type == MOD_IQM && v->model->iqm->skel)
+				skin_iqm(v->model->iqm, v);
+			outline_geometry(v);
+		}
 		Mat4_FromAxis(model, e->axis, e->origin, e->scale);
 		Mat4_Multiply(mvp, r_scene.viewproj, model);
 		qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 		qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
+		qglUniform4f(p->u_color, 1, 0, 0, 1);
+		qglUniform4f(p->u_outline_z, e->origin[2] + e->mins[2], e->maxs[2] - e->mins[2], 0, 0);
 		if (m->type == MOD_IQM && m->iqm->skel)
 			skin_iqm(m->iqm, e); /* the buffer holds whichever entity used the model last */
-		/* the model drawn as the game draws it: back faces culled */
-		GL_SetCull(true);
-		qglCullFace(e->mirrored ? GL_FRONT : GL_BACK);
-		/* the model itself, into the stencil only */
-		outline_stencil_state();
-		qglUniform4f(p->u_outline, 0, 0, 0, 0);
-		qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
 		outline_geometry(e);
-		/* then its wireframe, where the stencil isn't set */
-		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-		qglStencilFunc(GL_NOTEQUAL, 1, 0xff);
-		qglStencilMask(0);
-		GL_SetDepth(true, true);
-		qglDepthFunc(GL_ALWAYS);
+
+		/* the band around it, onto the scene */
+		qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedfb);
+		qglScissor(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]);
+		R_UseProgram(PROG_OUTLINE2);
+		GL_BindTexture(0, GL_TEXTURE_2D, outline_tex);
 		GL_SetBlend(BLEND_ALPHA, 0, 0);
-		qglUniform4f(p->u_color, e->outline[0], e->outline[1], e->outline[2], alpha);
-		qglUniform4f(p->u_outline_z, e->origin[2] + e->mins[2], e->maxs[2] - e->mins[2], 0, 0);
-		if (lines) {
-			qglLineWidth(width);
-			qglPolygonMode_opt(GL_FRONT_AND_BACK, GL_LINE);
-			outline_geometry(e);
-			qglPolygonMode_opt(GL_FRONT_AND_BACK, GL_FILL);
-			qglLineWidth(1);
-		} else {
-			/* alias normals come from Quake's triangle winding, the other
-			 * way round from GL's, so they point inwards: push those
-			 * models the other way */
-			GL_SetCull(false);
-			qglUniform4f(p->u_outline, (m->type == MOD_ALIAS ? -0.5f : 0.5f) * width,
-			             2.0f / BW_MAX(vp[2], 1), 2.0f / BW_MAX(vp[3], 1), 0);
-			outline_geometry(e);
-		}
-		qglDepthFunc(GL_LEQUAL);
-		qglStencilMask(0xff);
+		qglUniformMatrix4fv(p2->u_mvp, 1, GL_FALSE, ident);
+		qglUniform4f(p2->u_color, e->outline[0], e->outline[1], e->outline[2], alpha);
+		qglUniform4f(p2->u_outline, width, 0, 0, 0);
+		R_StreamDraw(GL_TRIANGLES, quad, 4, quadidx, 6);
 	}
-	qglCullFace(GL_BACK);
-	qglDisable(GL_STENCIL_TEST);
+	qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedfb);
+	qglScissor(box[0], box[1], box[2], box[3]);
+	GL_BindTexture(0, GL_TEXTURE_2D, 0);
 	GL_SetBlend(BLEND_OPAQUE, 0, 0);
 	GL_SetDepth(true, true);
 	GL_SetCull(true);
