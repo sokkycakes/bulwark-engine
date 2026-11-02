@@ -30,6 +30,10 @@ const char *Key_NameForNum(int key);
 #include <unordered_map>
 #include <vector>
 
+#ifdef BW_HAVE_GDIFONT
+#include "../client/gdifont.h"
+#endif
+
 using namespace panorama;
 
 namespace {
@@ -347,9 +351,15 @@ void add_face(const char *name, const char *searchpath, void *ctx)
 
 /* every font in panorama/fonts/ joins one family; weights come from the
  * file names (Bold, Medium, ...) */
+#ifdef BW_HAVE_GDIFONT
+void gdi_clear();
+#endif
 void load_fonts()
 {
 	PanoramaFontAtlasLoadOptions opts;
+#ifdef BW_HAVE_GDIFONT
+	gdi_clear();
+#endif
 	FS_List("panorama/fonts/*.ttf", true, add_face, &opts.faces);
 	FS_List("panorama/fonts/*.otf", true, add_face, &opts.faces);
 	for (const ExtraFace &f : extra_faces)
@@ -754,6 +764,127 @@ void cmd_ui_key(int argc, const char **argv)
 	UI_KeyEvent(k, false, 0);
 }
 
+#ifdef BW_HAVE_GDIFONT
+/* UI text drawn the way the engine draws its TrueType text: through gdifont,
+ * which rasterizes like Windows GDI's ExtTextOut (docs/spec/gdi-text.md).
+ * ui_gdifont 0 goes back to Panorama's own FreeType rendering; CFF (.otf)
+ * faces always stay on FreeType. r_gdifont_aa picks the quality as it does
+ * for engine text. */
+cvar_t *ui_gdifont;
+
+struct GdiSize
+{
+	gdifont_t *font = nullptr;
+	int ascent = 0;
+	std::vector<unsigned char> scratch;
+	int sw = 0, sh = 0, pad = 0;
+};
+
+struct GdiFace
+{
+	bool truetype = false;
+	std::unordered_map<int, GdiSize> sizes; /* by pixel size * 4 + quality */
+};
+
+std::unordered_map<std::string, GdiFace> gdi_faces;
+
+void gdi_clear()
+{
+	for (auto &f : gdi_faces)
+		for (auto &sz : f.second.sizes)
+			if (sz.second.font)
+				gdifont_free(sz.second.font);
+	gdi_faces.clear();
+}
+
+/* the CreateFont cell height whose em (ppem) is the CSS pixel size */
+gdifont_t *gdi_font_for_ppem(const unsigned char *data, std::size_t len, int ppem, int weight, int quality)
+{
+	int tall = std::max(1, (int)(ppem * 1.2f + 0.5f));
+	gdifont_t *best = nullptr;
+	int bestdiff = 1 << 30;
+	for (int tries = 0; tries < 6; tries++) {
+		gdifont_t *f = gdifont_create_memory(data, len, tall, weight, 0, quality, nullptr);
+		if (!f)
+			break;
+		int got = gdifont_metrics(f)->ppem;
+		int diff = std::abs(got - ppem);
+		if (diff < bestdiff) {
+			if (best)
+				gdifont_free(best);
+			best = f;
+			bestdiff = diff;
+		} else {
+			gdifont_free(f);
+		}
+		if (got == ppem)
+			break;
+		tall += (ppem > got) ? 1 : -1;
+		if (tall < 1)
+			break;
+	}
+	return best;
+}
+
+bool gdi_rasterize(const std::string &identity, const unsigned char *data, std::size_t len, int pixel_size,
+	int weight, char32_t cp, PanoramaRasterGlyph &out)
+{
+	if (!ui_gdifont || !ui_gdifont->value || !data || !len || pixel_size < 1 || pixel_size > 256)
+		return false;
+	auto fit = gdi_faces.find(identity);
+	if (fit == gdi_faces.end()) {
+		GdiFace face;
+		int tt = 0, w = 0, it = 0;
+		char family[64];
+		face.truetype = gdifont_describe(nullptr, data, len, 0, family, sizeof(family), &w, &it, &tt) > 0 && tt;
+		fit = gdi_faces.emplace(identity, std::move(face)).first;
+	}
+	GdiFace &face = fit->second;
+	if (!face.truetype)
+		return false;
+	cvar_t *aa = Cvar_Find("r_gdifont_aa");
+	int quality = (aa && !aa->value) ? GDIFONT_NONANTIALIASED : GDIFONT_ANTIALIASED;
+	GdiSize &sz = face.sizes[pixel_size * 4 + quality];
+	if (!sz.font) {
+		sz.font = gdi_font_for_ppem(data, len, pixel_size, weight % kPanoramaFontFamilyStride, quality);
+		if (!sz.font)
+			return false;
+		const gdifont_metrics_t *tm = gdifont_metrics(sz.font);
+		sz.ascent = tm->ascent;
+		sz.pad = tm->height * 2;
+		sz.sw = tm->max_char_width + sz.pad * 2;
+		sz.sh = tm->height + sz.pad * 2;
+		sz.scratch.assign((std::size_t)sz.sw * sz.sh, 0);
+	}
+	/* one character as ExtTextOut draws it, pen at the cell's top left,
+	   cropped to its ink (as r_gdifont.c does for engine text) */
+	unsigned u = (unsigned)cp;
+	std::fill(sz.scratch.begin(), sz.scratch.end(), 0);
+	int adv = gdifont_text_out(sz.font, sz.pad, sz.pad, &u, 1, sz.scratch.data(), sz.sw, sz.sh, sz.sw);
+	int minx = sz.sw, miny = sz.sh, maxx = -1, maxy = -1;
+	for (int y = 0; y < sz.sh; y++)
+		for (int x = 0; x < sz.sw; x++)
+			if (sz.scratch[(std::size_t)y * sz.sw + x]) {
+				minx = std::min(minx, x);
+				maxx = std::max(maxx, x);
+				miny = std::min(miny, y);
+				maxy = std::max(maxy, y);
+			}
+	out.advance = (float)adv;
+	if (maxx < 0)
+		return true; /* a space */
+	out.width = maxx - minx + 1;
+	out.height = maxy - miny + 1;
+	out.left = minx - sz.pad;
+	out.top = sz.ascent - (miny - sz.pad);
+	out.coverage.resize((std::size_t)out.width * out.height);
+	for (int y = 0; y < out.height; y++)
+		std::memcpy(&out.coverage[(std::size_t)y * out.width], &sz.scratch[(std::size_t)(miny + y) * sz.sw + minx],
+			(std::size_t)out.width);
+	return true;
+}
+#endif
+
 } // namespace
 
 extern "C" {
@@ -763,6 +894,11 @@ void UI_Init(void)
 	ui_designheight = Cvar_Get("ui_designheight", "1080", CVAR_ARCHIVE,
 	                           "screen height, in layout pixels, that UI layouts are authored for");
 	set_panorama_render_backend(&backend);
+#ifdef BW_HAVE_GDIFONT
+	ui_gdifont = Cvar_Get("ui_gdifont", "1", CVAR_ARCHIVE,
+	                      "1: draw UI views' TrueType text the way Windows GDI does (as engine text is); 0: FreeType's smoothed text");
+	panorama_set_glyph_rasterizer(gdi_rasterize);
+#endif
 	load_fonts();
 	Cmd_Add("ui_open", cmd_ui_open);
 	Cmd_Add("ui_close", cmd_ui_close);
