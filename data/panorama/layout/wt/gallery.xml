@@ -1,0 +1,176 @@
+<!--
+	Widget gallery for the WolfTeam look-alike theme (styles/wt/wolfteam.css).
+	Every reusable piece once, at WolfTeam's own 1024x768 scale
+	(bwdesignheight="768"): buttons in all four states, both tab styles,
+	check boxes and radios, edit and combo boxes, a slider with its value
+	box and steppers, gauges, scroll bars, a list with its header bar, item
+	cards, a group frame, a message box and a small "create room" dialog
+	built only from these parts. `exec panorama/wt-gallery.cfg` opens it;
+	the ART button switches to WolfTeam's own sprites and fonts when the
+	private pack is installed.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/wt/wolfteam.css" />
+		<include src="file://{resources}/styles/wt/wolfteam-art.css" />
+		<include src="file://{resources}/styles/wt/gallery.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/wt/gallery.js" />
+	</scripts>
+	<Panel id="WtGallery" class="WolfTeam" bwdesignheight="768">
+
+		<!-- buttons -->
+		<Label class="GalleryCaption" text="Button: default, hover, pressed, disabled, text button, icon, close, steppers" style="x:20px;y:12px;" />
+		<Button style="x:20px;y:30px;"><Label text="OK" /></Button>
+		<Button class="Hover" style="x:115px;y:30px;"><Label text="CANCEL" /></Button>
+		<Button class="Pressed" style="x:210px;y:30px;"><Label text="DEFAULT" /></Button>
+		<Button enabled="false" style="x:305px;y:30px;"><Label text="DISABLED" /></Button>
+		<Button class="WtTextButton" style="x:402px;y:35px;"><Label text="Item button" /></Button>
+		<Button class="WtTextButton" enabled="false" style="x:480px;y:35px;"><Label text="Disabled" /></Button>
+		<Button class="WtIconButton" style="x:548px;y:28px;" />
+		<Button class="WtIconButton Hover" style="x:584px;y:28px;" />
+		<Button class="WtClose" style="x:626px;y:37px;" />
+		<Button class="WtStepper Minus" style="x:650px;y:36px;" />
+		<Button class="WtStepper Plus" style="x:667px;y:36px;" />
+
+		<!-- tabs -->
+		<Label class="GalleryCaption" text="Tabs (op_tab) and glass tabs (lb_ch_tab)" style="x:20px;y:70px;" />
+		<Panel class="WtTabs" style="x:20px;y:88px;">
+			<RadioButton class="WtTab" group="tabs1" text="Graphic" selected="true" />
+			<RadioButton class="WtTab" group="tabs1" text="Control" />
+			<RadioButton class="WtTab Hover" group="tabs1" text="Sound" />
+			<RadioButton class="WtTab" group="tabs1" text="Other" enabled="false" />
+		</Panel>
+		<Panel class="WtTabs Glass" style="x:380px;y:92px;">
+			<RadioButton class="WtTab" group="tabs2" text="CH 1" selected="true" />
+			<RadioButton class="WtTab" group="tabs2" text="CH 2" />
+			<RadioButton class="WtTab Hover" group="tabs2" text="CH 3" />
+			<RadioButton class="WtTab" group="tabs2" text="CH 4" />
+			<RadioButton class="WtTab" group="tabs2" text="CH 5" enabled="false" />
+		</Panel>
+
+		<!-- checks, radios -->
+		<Label class="GalleryCaption" text="Check box, radio (round and square)" style="x:20px;y:128px;" />
+		<ToggleButton text="Observe" style="x:20px;y:146px;" />
+		<ToggleButton text="Checked" selected="true" style="x:120px;y:146px;" />
+		<ToggleButton class="Hover" text="Hover" style="x:220px;y:146px;" />
+		<ToggleButton text="Disabled" enabled="false" style="x:320px;y:146px;" />
+		<RadioButton group="r1" text="Radio" style="x:420px;y:146px;" />
+		<RadioButton group="r1" text="On" selected="true" style="x:500px;y:146px;" />
+		<RadioButton class="Square" group="r2" text="High" selected="true" style="x:570px;y:146px;" />
+		<RadioButton class="Square" group="r2" text="Low" style="x:650px;y:146px;" />
+
+		<!-- entries, combos -->
+		<Label class="GalleryCaption" text="Edit box, combo box (closed and open), light combo" style="x:20px;y:178px;" />
+		<TextEntry id="Focused" text="Room name" style="x:20px;y:196px;width:168px;" />
+		<TextEntry text="Disabled" enabled="false" style="x:196px;y:196px;width:100px;" />
+		<DropDown selected="mode1" style="x:306px;y:196px;width:159px;">
+			<Label id="mode1" text="Deathmatch" />
+			<Label id="mode2" text="Destroy" />
+			<Label id="mode3" text="Conquest" />
+		</DropDown>
+		<DropDown id="OpenCombo" selected="map1" style="x:475px;y:196px;width:110px;">
+			<Label id="map1" text="Map: Dock" />
+			<Label id="map2" text="Map: Mine" />
+			<Label id="map3" text="Map: Paien" />
+		</DropDown>
+		<DropDown class="Light" selected="l1" style="x:595px;y:196px;width:120px;">
+			<Label id="l1" text="Shop list" />
+			<Label id="l2" text="Two" />
+		</DropDown>
+
+		<!-- slider, gauges -->
+		<Label class="GalleryCaption" text="Slider with value box and steppers; gauge; plain gauge" style="x:20px;y:230px;" />
+		<Slider min="0" max="100" value="55" style="x:20px;y:250px;width:285px;" />
+		<Label class="WtSliderValue" text="55" style="x:312px;y:246px;" />
+		<Button class="WtStepper Minus" style="x:356px;y:247px;" />
+		<Button class="WtStepper Plus" style="x:373px;y:247px;" />
+		<ProgressBar value="0.6" style="x:410px;y:248px;width:222px;" />
+		<ProgressBar class="Plain" value="0.35" style="x:410px;y:266px;width:222px;" />
+
+		<!-- scrollbars + list -->
+		<Label class="GalleryCaption" text="List with header bar, scroll bar" style="x:20px;y:288px;" />
+		<Panel class="WtHeaderRow" style="x:20px;y:306px;">
+			<Button class="WtHeader" style="width:40px;"><Label text="No." /></Button>
+			<Button class="WtHeader" style="width:190px;"><Label text="Room name" /></Button>
+			<Button class="WtHeader Hover" style="width:90px;"><Label text="Map" /></Button>
+			<Button class="WtHeader" style="width:70px;"><Label text="Status" /></Button>
+			<Button class="WtHeader" style="width:60px;"><Label text="Players" /></Button>
+		</Panel>
+		<Panel class="WtList" style="x:20px;y:331px;width:454px;">
+			<Panel class="WtRow"><Label text="1" style="width:34px;" /><Label text="Dock 16 vs 16 [go]" style="width:184px;" /><Label text="Dock" style="width:84px;" /><Label text="Waiting" style="width:64px;" /><Label text="12 / 16" /></Panel>
+			<Panel class="WtRow Selected"><Label text="2" style="width:34px;" /><Label text="Paien destroy only" style="width:184px;" /><Label text="Paien" style="width:84px;" /><Label text="Playing" style="width:64px;" /><Label text="16 / 16" /></Panel>
+			<Panel class="WtRow"><Label text="3" style="width:34px;" /><Label text="Wolf vs human" style="width:184px;" /><Label text="Mine" style="width:84px;" /><Label text="Waiting" style="width:64px;" /><Label text="3 / 8" /></Panel>
+			<Panel class="WtRow"><Label text="4" style="width:34px;" /><Label text="Beginners welcome" style="width:184px;" /><Label text="Stone" style="width:84px;" /><Label text="Waiting" style="width:64px;" /><Label text="7 / 16" /></Panel>
+		</Panel>
+		<Panel class="WtScrollV" style="x:478px;y:306px;width:13px;height:121px;"><Panel style="width:13px;height:600px;" /></Panel>
+		<Panel class="WtScrollH" style="x:20px;y:434px;width:471px;height:13px;"><Panel style="width:1400px;height:13px;" /></Panel>
+
+		<!-- cards -->
+		<Label class="GalleryCaption" text="Item cards: default, hover, selected" style="x:510px;y:288px;" />
+		<Panel class="WtCard" style="x:510px;y:306px;width:150px;">
+			<Panel class="WtCardBody"><Label class="WtValue" text="AK-47" style="x:6px;y:6px;" /><Label text="Assault rifle" style="x:6px;y:22px;" /></Panel>
+			<Panel class="WtCardFoot"><Label class="WtHint" text="7 days" style="x:6px;y:4px;" /><Label text="3,200 GOLD" style="x:6px;y:20px;" /></Panel>
+		</Panel>
+		<Panel class="WtCard Hover" style="x:666px;y:306px;width:150px;">
+			<Panel class="WtCardBody"><Label class="WtValue" text="M4A1" style="x:6px;y:6px;" /><Label text="Assault rifle" style="x:6px;y:22px;" /></Panel>
+			<Panel class="WtCardFoot"><Label class="WtHint" text="30 days" style="x:6px;y:4px;" /><Label text="9,900 GOLD" style="x:6px;y:20px;" /></Panel>
+		</Panel>
+		<Panel class="WtCard Selected" style="x:822px;y:306px;width:150px;">
+			<Panel class="WtCardBody"><Label class="WtValue" text="AWP" style="x:6px;y:6px;" /><Label text="Sniper rifle" style="x:6px;y:22px;" /></Panel>
+			<Panel class="WtCardFoot"><Label class="WtHint" text="Permanent" style="x:6px;y:4px;" /><Label class="WtGold" text="Equipped" style="x:6px;y:20px;" /></Panel>
+		</Panel>
+
+		<!-- group + text styles -->
+		<Label class="GalleryCaption" text="Group frame; text styles; big numbers" style="x:510px;y:434px;" />
+		<Panel class="WtGroup" style="x:510px;y:452px;width:230px;height:92px;">
+			<Label class="WtGroupTitle" text="Messenger settings" />
+			<Panel class="WtGroupFrame">
+				<ToggleButton text="Accept invites" selected="true" style="x:10px;y:8px;" />
+				<ToggleButton text="Show offline friends" style="x:10px;y:32px;" />
+			</Panel>
+		</Panel>
+		<Label class="WtTitle" text="TITLE 255,192,3" style="x:752px;y:452px;" />
+		<Label class="WtLabel" text="Label 199,209,217" style="x:752px;y:468px;" />
+		<Label class="WtValue" text="Value 255,255,255" style="x:752px;y:484px;" />
+		<Label class="WtHint" text="Hint 255,204,102" style="x:752px;y:500px;" />
+		<Label class="WtMuted" text="Muted 107,107,107" style="x:752px;y:516px;" />
+		<Label class="WtGold" text="Gold 255,204,0" style="x:752px;y:532px;" />
+		<Label class="WtDisplay" text="DISPLAY 18" style="x:880px;y:452px;" />
+		<Label class="WtNumber Red" text="200" style="x:880px;y:478px;" />
+		<Label class="WtNumber Blue" text="26" style="x:960px;y:478px;" />
+		<Label class="WtNumber" text="35:52" style="x:880px;y:514px;" />
+
+		<!-- message box -->
+		<Panel class="WtWindow" style="x:20px;y:460px;width:471px;height:286px;">
+			<Panel class="WtTitleBar"><Label class="WtTitle" text="MESSAGE" /><Button class="WtClose" /></Panel>
+			<Panel class="WtBody">
+				<Label class="WtValue" text="Some game options such as resolution and effects cannot be changed during game play. Apply the new settings now?" style="x:30px;y:70px;width:411px;text-align:center;white-space:normal;" />
+				<Button style="x:104px;y:219px;"><Label text="YES" /></Button>
+				<Button style="x:190px;y:219px;"><Label text="OK" /></Button>
+				<Button style="x:275px;y:219px;"><Label text="NO" /></Button>
+			</Panel>
+		</Panel>
+
+		<!-- a new dialog built from the parts -->
+		<Panel class="WtWindow" style="x:510px;y:560px;width:417px;height:186px;">
+			<Panel class="WtTitleBar"><Label class="WtTitle" text="CREATE" /><Button class="WtClose" /></Panel>
+			<Panel class="WtBody">
+				<Panel class="WtField" style="x:15px;y:10px;"><Label text="Title" /><TextEntry text="sokky's room" style="width:168px;" /></Panel>
+				<Panel class="WtField" style="x:270px;y:10px;"><Label text="Password" style="width:68px;" /><TextEntry text="" style="width:55px;" /></Panel>
+				<Panel class="WtField" style="x:15px;y:40px;"><Label text="Mode" /><DropDown selected="cm1" style="width:159px;"><Label id="cm1" text="Team deathmatch" /><Label id="cm2" text="Destroy" /></DropDown></Panel>
+				<Panel class="WtField" style="x:270px;y:40px;"><Label text="Player" style="width:68px;" /><DropDown selected="cp1" style="width:60px;"><Label id="cp1" text="16" /><Label id="cp2" text="8" /></DropDown></Panel>
+				<Panel class="WtField" style="x:15px;y:70px;"><Label text="Map" /><DropDown selected="cmap1" style="width:159px;"><Label id="cmap1" text="Dock" /><Label id="cmap2" text="Paien" /></DropDown></Panel>
+				<ToggleButton text="Join while playing" selected="true" style="x:15px;y:100px;" />
+				<ToggleButton text="Observe" style="x:200px;y:100px;" />
+				<Panel class="WtButtonRow" style="y:124px;margin-right:5px;"><Button><Label text="OK" /></Button><Button><Label text="CANCEL" /></Button></Panel>
+			</Panel>
+		</Panel>
+
+		<!-- theme switch -->
+		<Panel id="ArtRow" style="x:940px;y:20px;flow-children:down;">
+			<Button class="WtTextButton" onactivate="WtGallery.ToggleArt()"><Label id="ArtLabel" text="ART: off" /></Button>
+		</Panel>
+	</Panel>
+</root>
