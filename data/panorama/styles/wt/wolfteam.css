@@ -720,26 +720,31 @@
 
 /* ---- Item cards (is_inven_weponbar) ----------------------------------------- */
 
+/* 208x114. The rim is a frame image (images/wt/wt-card-frame*.svg, 1px
+   edges, see-through inside) because WolfTeam's edges are gradients: idle,
+   the left edge runs #4e4e4e to #333 and the top edge fades to the right;
+   chosen, both sides run gold to olive. The idle card's lower strip is
+   18,18,18 at 70% over whatever is behind the card; lit and chosen cards
+   are opaque near-black. Frames are drawn at the card's own size, so a
+   card of another size gets slightly softer edges. */
 .WolfTeam .WtCard
 {
 	width: 208px;
 	height: 114px;
+	padding: 1px;
 	flow-children: down;
-	border-top: 1px solid #464646;
-	border-left: 1px solid #494949;
-	background-color: #2b2b2b;
-	background-image: var(--wt-card-top-bg);
-}
-
-.WolfTeam .WtCard
-{
-	background-color: gradient( linear, 0% 0%, 0% 100%, from( #191919 ), color-stop( 0.09, #2b2b2b ), to( #2b2b2b ) );
+	background-color: transparent;
+	background-image: url( "file://{images}/wt/wt-card-frame.svg" );
+	background-size: 100% 100%;
+	background-position: 0px 0px;
+	background-repeat: no-repeat;
 }
 
 .WolfTeam .WtCardBody
 {
 	width: 100%;
-	height: 71px;
+	height: 70px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #191919 ), color-stop( 0.14, #2b2b2b ), to( #2b2b2b ) );
 }
 
 .WolfTeam .WtCardFoot
@@ -752,16 +757,30 @@
 .WolfTeam .WtCard:hover,
 .WolfTeam .WtCard.Hover
 {
-	border: 1px solid #ffffff;
-	background-color: gradient( linear, 0% 0%, 0% 100%, from( #121212 ), color-stop( 0.09, #181818 ), to( #161616 ) );
+	background-image: url( "file://{images}/wt/wt-card-frame-hover.svg" );
+}
+.WolfTeam .WtCard:hover .WtCardBody,
+.WolfTeam .WtCard.Hover .WtCardBody
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #121212 ), color-stop( 0.14, #181818 ), to( #161616 ) );
+}
+.WolfTeam .WtCard:hover .WtCardFoot,
+.WolfTeam .WtCard.Hover .WtCardFoot
+{
+	background-color: #0d0d0d;
 }
 
 .WolfTeam .WtCard.Selected
 {
-	border: 1px solid #9d8121;
-	border-top-color: #f8c232;
-	border-bottom-color: #444110;
+	background-image: url( "file://{images}/wt/wt-card-frame-selected.svg" );
+}
+.WolfTeam .WtCard.Selected .WtCardBody
+{
 	background-color: gradient( linear, 0% 0%, 0% 100%, from( #070707 ), to( #0a0a0a ) );
+}
+.WolfTeam .WtCard.Selected .WtCardFoot
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #090909 ), to( #040404 ) );
 }
 
 .WolfTeam .WtCard Label { color: var(--wt-value); }

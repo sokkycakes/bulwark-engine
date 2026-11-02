@@ -109,7 +109,7 @@
 
 		<!-- cards -->
 		<Label class="GalleryCaption" text="Item cards: default, hover, selected" style="x:510px;y:288px;" />
-		<Panel class="WtCard" style="x:510px;y:306px;width:150px;">
+		<Panel class="WtCard" style="x:510px;y:306px;width:150px;height:114px;">
 			<Panel class="WtCardBody"><Label class="WtValue" text="AK-47" style="x:6px;y:6px;" /><Label text="Assault rifle" style="x:6px;y:22px;" /></Panel>
 			<Panel class="WtCardFoot"><Label class="WtHint" text="7 days" style="x:6px;y:4px;" /><Label text="3,200 GOLD" style="x:6px;y:20px;" /></Panel>
 		</Panel>
