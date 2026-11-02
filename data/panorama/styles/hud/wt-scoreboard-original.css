@@ -32,11 +32,13 @@
 	background-repeat: no-repeat;
 }
 
+/* team class emblems: StaticSprite 55x55 at 5,5 and 255,5 in hudscore.txt
+   (they reach the frame's bottom edge) */
 .WtoTile
 {
-	y: 3px;
-	width: 53px;
-	height: 51px;
+	y: 5px;
+	width: 55px;
+	height: 55px;
 	background-size: 64px 64px;
 	background-position: 0px 0px;
 	background-repeat: no-repeat;
@@ -44,13 +46,13 @@
 
 #WtoTileRed
 {
-	x: 3px;
+	x: 5px;
 	background-image: url( "file://{images}/hud/wt-private/emblem-hw-red.png" );
 }
 
 #WtoTileBlue
 {
-	x: 256px;
+	x: 255px;
 	background-image: url( "file://{images}/hud/wt-private/emblem-hw-blue.png" );
 	transform: scaleX( -1 );
 }
