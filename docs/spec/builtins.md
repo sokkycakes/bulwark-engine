@@ -79,9 +79,18 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
   the renderer's surfaces as before.
 - `te_customflash(org, radius, lifetime, colour)` sends `svc_flash`: a light
   that shrinks to nothing over its lifetime.
-- `uri_get(url, id)` fetches in the background (GET only; a POST body fails
-  with 0) and calls `URI_Get_Callback(id, status, body, length)` in the VM
-  that asked. All three VMs.
+- `uri_get(url, id, mimetype, body)` (also named `uri_post`) fetches in the
+  background and calls `URI_Get_Callback(id, status, body, length)` in the
+  VM and progs that asked (an `addprogs` module gets its own answers). A
+  body or mimetype makes it a POST; a mimetype of `"METHOD type"`, such as
+  `"PUT application/json"`, picks another method. Requests with a method
+  report any status the server answers with, error bodies included, and
+  don't follow redirects. Status 0 means no answer. All three VMs.
+- Web API token: requests the server's QC makes to addresses under the
+  `stdb_url` cvar carry `Authorization: Bearer <stdb_token>`, added by the
+  engine (`src/server/sv_uri.c`). Client and menu code never get it. Both
+  cvars are never saved to config.cfg; set them from a cfg kept out of git.
+  Made for SpacetimeDB's HTTP API, but any bearer-token API works.
 - Named consoles (`con_getset`, `con_printf`, `con_draw`, `con_input`) for
   Nuclide's VGUI text views, in the client game and the menu:
   `src/client/cl_altcon.c`.

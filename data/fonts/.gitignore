@@ -1,0 +1,8 @@
+# Shared fonts whose licences don't allow shipping them in this repository
+# (freeware without redistribution terms, or GPL). They come in a private
+# bundle unpacked over the build; see docs/spec/bitmap-fonts.md.
+visitor1.ttf
+CWEBL.TTF
+04b09.ttf
+Minusio.ttf
+anorexia.bdf

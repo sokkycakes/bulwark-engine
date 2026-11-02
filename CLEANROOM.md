@@ -60,6 +60,9 @@ unmodified, with their licence text kept at the end of each file:
 - `lzma/` (LzmaDec.c, LzmaDec.h, 7zTypes.h, Compiler.h, Precomp.h) by Igor
   Pavlov, from the LZMA SDK: public domain. Used to decode compressed Source
   BSP lumps.
+- `minimp3.h`, `minimp3_ex.h` by lieff: CC0 (public domain). Decodes MP3
+  sounds, which Sven Co-op maps use for music.
+
 ## Third-party libraries
 
 Libraries under `third_party/` are used as they are and listed with their

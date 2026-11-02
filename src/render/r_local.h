@@ -133,6 +133,7 @@ int R_SpriteFormat(const char *name);
 void GL_SetDepth(bool test, bool write);
 void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);
+void GL_SetCoverageAlpha(bool on);
 void GL_DeleteTextures(int n, const GLuint *tex);
 
 /* --- models -------------------------------------------------------------- */
@@ -257,8 +258,10 @@ void R_PCF_Shutdown(void);
 void R_ShutdownParticles(void);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);
+void R_DrawBackgroundSky(const float *mvp);
+bool R_VoxelLightPoint(const float *p, float *rgb);
 /* voxel worlds (r_voxel.c) */
-extern cvar_t *r_drawvoxels;
+extern cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight, *r_voxel_invlight, *r_voxel_fulldark;
 void R_DrawVoxels(bool translucentpass);
 void R_FreeVoxels(void);
 void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
@@ -430,6 +433,23 @@ image_t *RG_Atlas(const rgsize_t *s);
 const rgglyph_t *RG_Glyph(rgsize_t *s, int cp);
 void RG_Upload(rgsize_t *s);
 int RG_AtlasSize(void);
+
+/* --- bitmap fonts: BDF, PCF and pixel TrueType (r_bmfont.c) -------------- */
+
+typedef struct bffont_s bffont_t;
+typedef struct bfsize_s bfsize_t;
+
+void BF_Init(void);
+bool BF_PixelFontsEnabled(void);
+bffont_t *BF_Load(const char *spec);
+void BF_Free(bffont_t *f);
+int BF_Cell(const bffont_t *f);              /* the font's own cell height in pixels */
+int BF_Scale(const bffont_t *f, int tall);   /* the whole multiple text tall pixels high is drawn at */
+bfsize_t *BF_Size(bffont_t *f, int k);
+const rgglyph_t *BF_Glyph(bffont_t *f, bfsize_t *s, int cp);
+image_t *BF_Atlas(const bfsize_t *s);
+void BF_Upload(bfsize_t *s);
+int BF_AtlasSize(void);
 extern int r_vwidth, r_vheight; /* virtual 2D screen size */
 extern int r_pwidth, r_pheight; /* physical framebuffer size */
 extern float r_2dscale;

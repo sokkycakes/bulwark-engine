@@ -642,6 +642,12 @@ void ensure_panorama_settings_slider_internals(PanoramaNode& node);
 // back to the row (settings_keybinder.css is not included by the tab pages, so its few
 // layout rules are baked as inline styles, mirroring ensure_panorama_settings_slider).
 void ensure_panorama_settings_keybinder_internals(PanoramaNode& node);
+// True for Valve's `ProgressBar` control.
+[[nodiscard]] bool panorama_node_is_progressbar(const PanoramaNode& node);
+// Materializes a `ProgressBar`'s `#ProgressBarLeft` (filled) and
+// `#ProgressBarRight` (empty) children, idempotently. The fill fraction comes
+// from the same value/min/max attributes as a Slider (panorama_slider_fraction).
+void ensure_panorama_progressbar_internals(PanoramaNode& node);
 // The slider's current position as a 0..1 fraction, derived from its `value`,
 // `min`, and `max` attributes (clamped; degenerate range -> 0). Pure.
 [[nodiscard]] float panorama_slider_fraction(const PanoramaNode& node);
@@ -666,6 +672,14 @@ void ensure_panorama_scrollbar_internals(PanoramaNode& node);
 [[nodiscard]] bool panorama_node_is_scrollbar(const PanoramaNode& node);
 // Whether the node's style asks for scrolling on the axis (overflow: scroll).
 // Scrollability additionally requires layout overflow (max_scroll_* > 0).
+// A scrollbar's `.ScrollButtonBack` / `.ScrollButtonForward` line-step button
+// (created with the bar; sized only by styles), or null.
+[[nodiscard]] PanoramaNode* panorama_scrollbar_button(const PanoramaNode& bar, bool forward);
+// The bar's .ScrollThumb child (nullptr if it has none).
+PanoramaNode* panorama_scrollbar_thumb(const PanoramaNode& bar);
+// The part of a scrollbar's content box the thumb travels in: the content box
+// minus the laid-out length of its two line-step buttons.
+void panorama_scrollbar_track(const PanoramaNode& bar, bool vertical, float& track_pos, float& track_len);
 [[nodiscard]] bool panorama_node_scrolls_x(const PanoramaNode& node);
 [[nodiscard]] bool panorama_node_scrolls_y(const PanoramaNode& node);
 // Clamped scroll-offset setter (WebCore RenderLayerScrollableArea::scrollToOffset

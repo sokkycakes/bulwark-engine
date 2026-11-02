@@ -293,6 +293,9 @@ static void VidModes_f(int argc, const char **argv)
 
 bool VID_Init(int width, int height, bool fullscreen)
 {
+#ifdef SDL_HINT_APP_NAME
+	SDL_SetHint(SDL_HINT_APP_NAME, "Bulwark"); /* window class and audio stream name */
+#endif
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
 		Con_Printf("SDL_Init: %s\n", SDL_GetError());
 		return false;

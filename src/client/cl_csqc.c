@@ -29,7 +29,7 @@ static struct {
 	int view_angles, numclientseats, servertime, serverprevtime, input_sequence, input_timelength, input_angles;
 	int input_movevalues, input_buttons, input_impulse, input_servertime, input_clienttime, input_weapon;
 	int input_cursor_screen, input_cursor_start, input_cursor_end, input_cursor_ent, intermission, gamespeed;
-	int entnum; /* field */
+	int entnum, frame1time; /* fields */
 	func_t Ent_Update, Ent_Remove, Parse_Event, UpdateView, InputEvent, Input_Frame, ConsoleCommand, Parse_Print;
 	func_t Parse_CenterPrint, ServerInfoChanged, PlayerInfoChanged, WorldLoaded, Shutdown, Init, RendererRestarted;
 } CS;
@@ -312,6 +312,7 @@ bool CSQC_Load(void)
 	CS.input_cursor_ent = QC_GlobalOfs(vm, "input_cursor_entitynumber");
 	CS.intermission = QC_GlobalOfs(vm, "intermission");
 	CS.entnum = QC_FieldOfs(vm, "entnum");
+	CS.frame1time = QC_FieldOfs(vm, "frame1time");
 	CS.Ent_Update = fn(vm, "CSQC_Ent_Update");
 	CS.Ent_Remove = fn(vm, "CSQC_Ent_Remove");
 	CS.Parse_Event = fn(vm, "CSQC_Parse_Event");
@@ -398,6 +399,7 @@ void CSQC_Shutdown(void)
 	WC_ClientGameShutdown();
 	if (CS.Shutdown)
 		QC_Execute(cl.csqc, CS.Shutdown);
+	R_ResetCursorMode(cl.csqc);
 	QC_Free(cl.csqc);
 	cl.csqc = NULL;
 	cl.csqc_initialised = false;
@@ -441,6 +443,82 @@ static void record_interp(int e, int ent)
 	s->time = cl.servertime;
 	memcpy(s->origin, &QC_EdictFields(vm, ent)[F.origin], sizeof(float) * 3);
 	memcpy(s->angles, &QC_EdictFields(vm, ent)[F.angles], sizeof(float) * 3);
+	s->frame = QC_EFloat(vm, ent, F.frame);
+	s->frame1time = CS.frame1time >= 0 ? QC_EFloat(vm, ent, CS.frame1time) : 0;
+}
+
+static float lerp_angle(float a, float b, float t)
+{
+	float d = fmodf(b - a, 360.0f);
+	if (d > 180)
+		d -= 360;
+	else if (d < -180)
+		d += 360;
+	return a + d * t;
+}
+
+/* Draws networked entities cl_interp seconds in the past, between the two
+ * snapshots around that moment, so movement and animation advance every
+ * drawn frame rather than at the server's tick rate. A field is only
+ * replaced while the client game still holds the value it was sent: one it
+ * changed itself (prediction, effects) is its own business. A long gap
+ * between updates means the entity stood still, so the change is spread
+ * over the last tenth of a second only, and a big jump is a teleport. */
+bool CSQC_LerpEntity(int entnum, int ent, float origin[3], float angles[3], float *frame, float *frame1time)
+{
+	static cvar_t *cl_lerpentities, *cl_interp;
+	const interpsample_t *a, *b, *last;
+	clentity_t *ce;
+	double t;
+	float f;
+	int i;
+	if (!cl_lerpentities) {
+		cl_lerpentities = Cvar_Get("cl_lerpentities", "1", CVAR_ARCHIVE,
+		                           "Draw other entities between snapshots, cl_interp seconds behind the newest");
+		cl_interp = Cvar_Get("cl_interp", "0.03", CVAR_ARCHIVE | CVAR_USERINFO, NULL);
+	}
+	if (!cl_lerpentities->ivalue || entnum <= 0 || entnum >= cl.numents || entnum == cl.playerent)
+		return false;
+	ce = &cl.ents[entnum];
+	if (ce->csqc_ent != ent || ce->numsamples < 2)
+		return false;
+	last = &ce->samples[ce->numsamples - 1];
+	t = cl.time - BW_MAX(cl_interp->value, 0.0f);
+	if (t >= last->time)
+		return false; /* nothing newer to come from: as sent */
+	for (i = ce->numsamples - 2; i > 0 && ce->samples[i].time > t; i--)
+		;
+	a = &ce->samples[i];
+	b = &ce->samples[i + 1];
+	if (t <= a->time) {
+		f = 0;
+	} else {
+		double start = BW_MAX(a->time, b->time - 0.1);
+		f = t <= start ? 0.0f : (float)((t - start) / (b->time - start));
+	}
+	if (!memcmp(origin, last->origin, sizeof(float) * 3)) {
+		float d2 = 0;
+		for (int k = 0; k < 3; k++)
+			d2 += (b->origin[k] - a->origin[k]) * (b->origin[k] - a->origin[k]);
+		for (int k = 0; k < 3; k++)
+			origin[k] = d2 > 256.0f * 256.0f ? (f < 1 ? a->origin[k] : b->origin[k])
+			                                  : a->origin[k] + (b->origin[k] - a->origin[k]) * f;
+	}
+	if (!memcmp(angles, last->angles, sizeof(float) * 3))
+		for (int k = 0; k < 3; k++)
+			angles[k] = lerp_angle(a->angles[k], b->angles[k], f);
+	/* the animation: the time into a sequence runs on between updates of
+	 * the same sequence; across a change the older one holds until then */
+	if (*frame == last->frame && *frame1time == last->frame1time) {
+		if (a->frame == b->frame && b->frame1time >= a->frame1time) {
+			*frame = a->frame;
+			*frame1time = a->frame1time + (b->frame1time - a->frame1time) * f;
+		} else {
+			*frame = f < 1 ? a->frame : b->frame;
+			*frame1time = f < 1 ? a->frame1time : b->frame1time;
+		}
+	}
+	return true;
 }
 
 void CSQC_ParseEntities(msg_t *m)

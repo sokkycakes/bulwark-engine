@@ -2,6 +2,7 @@
  * clearscene, view properties, addentity/addentities, polygons, dynamic
  * lights and renderscene. ISC licence, see LICENSE. */
 #include "r_local.h"
+#include "../server/sv_local.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -9,7 +10,7 @@
 
 rscene_t r_scene;
 rstats_t r_stats;
-static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch, *r_viewmodel_mirror;
+static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch, *r_viewmodel_mirror, *r_seqblend;
 
 /* whether an entity with these render flags is drawn mirrored left to right
  * (r_viewmodel_mirror for view models, RF_MIRROR for any entity) */
@@ -262,6 +263,60 @@ rentity_t *R_AllocEntity(void)
 
 static float efloat(qcvm_t *vm, int e, int ofs, float def) { return ofs < 0 ? def : QC_EFloat(vm, e, ofs); }
 
+/* Sequence blending, as GoldSrc does it: when a skeletal model's sequence
+ * changes, the pose it had then fades out over r_seqblend seconds instead
+ * of snapping. Only for client game entities that blend nothing themselves
+ * (lerpfrac 0) and have no skeleton object; the old pose is held still
+ * while it fades. Kept per entity slot and forgotten when the slot changes
+ * model or isn't drawn for a while. */
+typedef struct {
+	int modelindex, frame, prevframe;
+	float frame1time, prevtime;
+	double changed, seen;
+} seqblend_t;
+
+static void seq_blend(qcvm_t *vm, int ent, rentity_t *e)
+{
+	static seqblend_t *slots;
+	static int numslots;
+	seqblend_t *b;
+	double now = cl.time;
+	float len = r_seqblend ? r_seqblend->value : 0, s;
+	if (vm != cl.csqc || ent <= 0 || len <= 0 || !e->model || e->model->type != MOD_IQM || e->skeletonindex ||
+	    e->lerpfrac != 0)
+		return;
+	if (ent >= numslots) {
+		int n = BW_MAX(ent + 1, numslots * 2);
+		slots = Mem_Realloc(slots, sizeof(*slots) * n);
+		memset(slots + numslots, 0, sizeof(*slots) * (n - numslots));
+		numslots = n;
+	}
+	b = &slots[ent];
+	if (b->modelindex != e->modelindex || now < b->seen || now - b->seen > 0.5) {
+		b->modelindex = e->modelindex;
+		b->frame = e->frame;
+		b->changed = -1e9;
+	} else if (e->frame != b->frame) {
+		/* a change in the middle of a blend starts from the sequence then
+		 * showing most, as only two poses are mixed */
+		bool mid = now - b->changed < len && (now - b->changed) / len < 0.5f;
+		if (!mid) {
+			b->prevframe = b->frame;
+			b->prevtime = b->frame1time;
+		}
+		b->changed = now;
+		b->frame = e->frame;
+	}
+	b->frame1time = e->frame1time;
+	b->seen = now;
+	s = (float)((now - b->changed) / len);
+	if (s >= 0 && s < 1 && b->prevframe != e->frame) {
+		e->frame2 = b->prevframe;
+		e->frame2time = b->prevtime;
+		e->lerpfrac = 1 - s;
+	}
+}
+
 void R_AddEntityFromQC(qcvm_t *vm, int ent)
 {
 	rentity_t *e;
@@ -319,6 +374,12 @@ void R_AddEntityFromQC(qcvm_t *vm, int ent)
 	}
 	e->effects = (int)efloat(vm, ent, EF.effects, 0);
 	e->entnum = (int)efloat(vm, ent, EF.entnum, 0);
+	if (vm == cl.csqc) {
+		float fr = (float)e->frame;
+		if (CSQC_LerpEntity(e->entnum, ent, e->origin, e->angles, &fr, &e->frame1time))
+			e->frame = (int)fr;
+	}
+	seq_blend(vm, ent, e);
 	if (EF.forceshader >= 0 && f[EF.forceshader].f > 0)
 		e->forceshader = R_MaterialForHandle((int)f[EF.forceshader].f);
 	/* models face their angles with pitch inverted, as in Quake, unless
@@ -600,6 +661,8 @@ void R_RenderScene(void)
 	}
 	if (r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels)
 		R_DrawWorldModel(&r_world.submodels[0], r_scene.viewproj, model, 1, false);
+	if (r_scene.drawworld && r_drawworld->ivalue && vx_clientworld && !(r_world.loaded && r_world.numsubmodels))
+		R_DrawBackgroundSky(r_scene.viewproj);
 	if (r_scene.drawworld && r_drawworld->ivalue)
 		R_DrawVoxels(false);
 	if (r_drawentities->ivalue) {
@@ -668,6 +731,8 @@ void R_InitScene(void)
 	r_viewmodel_fov = Cvar_Get("r_viewmodel_fov", "0", CVAR_ARCHIVE,
 	                           "Field of view for view models (like Source's viewmodel_fov); 0 uses the view's");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");
+	r_seqblend = Cvar_Get("r_seqblend", "0.1", CVAR_ARCHIVE,
+	                      "Seconds a skeletal model takes to blend into a new sequence, 0 to switch at once");
 	R_InitDecals();
 	R_InitParticles();
 	R_ClearScene();

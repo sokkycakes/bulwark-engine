@@ -247,6 +247,9 @@ void clear_group_selection(PanoramaNode& node, const std::string& group)
     }
 }
 
+// How far one press of a scrollbar line-step button scrolls, in design px.
+constexpr float kScrollLineStep = 20.0F;
+
 // Nearest self-or-ancestor that is synthesized scrollbar chrome (the bar node;
 // the thumb is its child, so the walk lands on the bar from either).
 PanoramaNode* ancestor_scrollbar(PanoramaNode* node)
@@ -461,6 +464,7 @@ void panorama_apply_control_presentation(PanoramaNode& node)
     // pass (below) build that slider's track/thumb on this frame.
     ensure_panorama_settings_slider_internals(node);
     ensure_panorama_slider_internals(node);
+    ensure_panorama_progressbar_internals(node);
 
     // Settings key-rebind rows (CSGOSettingsKeyBinder) own a labelled bind button +
     // a clear button; materialize them so the host can show the bound key + capture.
@@ -572,6 +576,29 @@ bool PanoramaInputController::update_pointer(
             if (PanoramaNode* scrollbar = ancestor_scrollbar(hover_node_))
             {
                 close_open_dropdowns(root, nullptr);
+                // A line-step button scrolls by one line instead of grabbing.
+                // Found by geometry: the buttons aren't hit-test targets themselves.
+                const auto inside = [&](const PanoramaNode* b) {
+                    return b != nullptr && b->layout.width > 0.0F && b->layout.height > 0.0F &&
+                        design_x >= b->layout.x && design_x < b->layout.x + b->layout.width &&
+                        design_y >= b->layout.y && design_y < b->layout.y + b->layout.height;
+                };
+                const bool back = inside(panorama_scrollbar_button(*scrollbar, false));
+                if ((back || inside(panorama_scrollbar_button(*scrollbar, true))) && scrollbar->parent != nullptr)
+                {
+                    PanoramaNode& scroller = *scrollbar->parent;
+                    const auto axis_it = scrollbar->attributes.find("__scrollbar");
+                    const bool vertical = axis_it == scrollbar->attributes.end() || axis_it->second != "horizontal";
+                    const float step = back ? -kScrollLineStep : kScrollLineStep;
+                    const float dest_x = std::clamp(
+                        panorama_scroll_destination_x(scroller) + (vertical ? 0.0F : step), 0.0F, scroller.max_scroll_x);
+                    const float dest_y = std::clamp(
+                        panorama_scroll_destination_y(scroller) + (vertical ? step : 0.0F), 0.0F, scroller.max_scroll_y);
+                    // The same spring a wheel tick drives; the view keeps
+                    // advancing it after any pointer change.
+                    panorama_smooth_scroll_to(scroller, dest_x, dest_y);
+                    return true;
+                }
                 begin_scrollbar_drag(*scrollbar, design_x, design_y);
                 return true;
             }
@@ -705,15 +732,17 @@ bool PanoramaInputController::update_wheel(
 void PanoramaInputController::begin_scrollbar_drag(PanoramaNode& scrollbar, float design_x, float design_y)
 {
     PanoramaNode* scroller = scrollbar.parent;
-    if (scroller == nullptr || scrollbar.children.empty())
+    if (scroller == nullptr || panorama_scrollbar_thumb(scrollbar) == nullptr)
     {
         return;
     }
     const auto axis_it = scrollbar.attributes.find("__scrollbar");
     const bool vertical = axis_it == scrollbar.attributes.end() || axis_it->second != "horizontal";
-    const PanoramaNode& thumb = *scrollbar.children.front();
+    const PanoramaNode& thumb = *panorama_scrollbar_thumb(scrollbar);
 
-    const float track_pos = vertical ? scrollbar.layout.content_y : scrollbar.layout.content_x;
+    float track_pos = 0.0F;
+    float track_len = 0.0F;
+    panorama_scrollbar_track(scrollbar, vertical, track_pos, track_len);
     const float thumb_pos = (vertical ? thumb.layout.y : thumb.layout.x) - track_pos;
     const float thumb_len = vertical ? thumb.layout.height : thumb.layout.width;
     const float pointer = vertical ? design_y : design_x;
@@ -740,14 +769,15 @@ bool PanoramaInputController::update_scrollbar_drag(float design_x, float design
 {
     PanoramaNode* scroller = scrollbar_drag_scroller_;
     PanoramaNode* bar = scrollbar_drag_bar_;
-    if (scroller == nullptr || bar == nullptr || bar->children.empty())
+    if (scroller == nullptr || bar == nullptr || panorama_scrollbar_thumb(*bar) == nullptr)
     {
         return false;
     }
     const bool vertical = scrollbar_drag_vertical_;
-    const PanoramaNode& thumb = *bar->children.front();
-    const float track_pos = vertical ? bar->layout.content_y : bar->layout.content_x;
-    const float track_len = vertical ? bar->layout.content_height : bar->layout.content_width;
+    const PanoramaNode& thumb = *panorama_scrollbar_thumb(*bar);
+    float track_pos = 0.0F;
+    float track_len = 0.0F;
+    panorama_scrollbar_track(*bar, vertical, track_pos, track_len);
     const float thumb_len = vertical ? thumb.layout.height : thumb.layout.width;
     const float range = track_len - thumb_len;
     const float max_scroll = vertical ? scroller->max_scroll_y : scroller->max_scroll_x;

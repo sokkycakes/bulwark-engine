@@ -21,6 +21,11 @@ struct PanoramaFontAtlasFace
 {
     std::filesystem::path path;
     int weight = 400;
+    // Bulwark: a pixel font, drawn crisp at whole multiples of its own size
+    // (the multiple nearest the asked size, never below 1x). > 0: a scalable
+    // font whose outlines lie on a pixel grid of this many pixels per em; < 0:
+    // a bitmap font (BDF/PCF) drawn from its first strike; 0: an ordinary face.
+    float pixel_ppem = 0.0F;
 };
 
 // Resolves one font face's file bytes without the atlas ever touching a filesystem.

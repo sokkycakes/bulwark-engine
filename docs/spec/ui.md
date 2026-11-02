@@ -20,6 +20,8 @@ Everything is read through the file system under `panorama/` in a game dir:
 | `panorama/scripts/*.js` | scripts, included from a layout |
 | `panorama/images/...` | PNG/TGA images; `{images}/x.png` in CSS or XML means `panorama/images/x.png` |
 | `panorama/fonts/*.ttf\|otf` | every font here is loaded at start; weight is guessed from the file name (`Bold`, `Light`, ...); each is also a `font-family` of its file name without the extension |
+| `panorama/fonts/*.bdf\|pcf\|pcf.gz` | bitmap fonts, loaded the same way and drawn crisp ([bitmap-fonts.md](bitmap-fonts.md)) |
+| `fonts/*` in Bulwark's data directory | shared fonts: each is a `font-family` of its family name and of its file name ([bitmap-fonts.md](bitmap-fonts.md)) |
 | `{game}/<path>` | in an image `src`, a CSS `url()` or a script include: any game file, used in place (a game's own art and scripts) |
 
 Bulwark's own data directory (`data/` in the source tree, or beside the
@@ -48,6 +50,21 @@ archived). The UI scale is framebuffer height ÷ design height, so a layout
 fills the same share of the screen at any resolution. Widths follow the aspect
 ratio, so percentage positions are the safe way to place things horizontally.
 
+`ui_pixelated 1` (archived, default 0) gives a low-resolution look: each
+frame the views are drawn into an offscreen target of design height
+(`ui_designheight` lines, width by aspect), with the font atlas at scale 1,
+and that target is stretched over the screen with nearest filtering
+(`R_BeginPixelated2D` / `R_EndPixelated2D` in `src/render/r_draw.c`). The
+target keeps premultiplied coverage alpha (blend factors for alpha are
+`ONE, ONE_MINUS_SRC_ALPHA` while it is bound), so translucent UI composites
+over the game correctly. A design height that divides the screen height
+(540 on 1080p) gives square, even pixel blocks.
+
+A layout can fix both for its own view: `bwdesignheight="540"` and
+`bwpixelated="1"` on the root or a top-level panel override the cvars for
+that view only, so a pixelated title menu and normal 1080-line pages can be
+open together. Glyphs are baked per scale (one font atlas per scale in use).
+
 ## QuakeC builtins (CSQC and the menu progs)
 
 ```
@@ -55,7 +72,13 @@ float(string layout, float flags) ui_open;            // flags: 1 = takes input;
 void(float view) ui_close;
 float(float view) ui_isopen;
 void(float view, string event, string json) ui_post;  // json may be "" for no value
+void(float view, vector pos, vector size, float alpha) ui_draw;
 ```
+
+`ui_draw` draws a view opened with flag 2 (embedded) right away, into a
+rectangle of the progs' 2D space, laid out at that size. Embedded views are
+not drawn with the others, so a HUD view drawn from the HUD code shows only
+while the game draws its HUD, between the game's other 2D.
 
 Scripts call back into the client game with
 
@@ -128,6 +151,18 @@ no game is running.
 | `ui_list` | list open views |
 | `ui_click <x> <y>` / `ui_key <name>` | synthetic input, for tests and headless runs |
 | `ui_stats` | per-frame update and draw times |
+
+## Qt look-alike themes
+
+`styles/qt/fusion.css` and `styles/qt/qtcurve.css` make the standard widgets
+look like Qt's Fusion and QtCurve styles; see
+[ui-qt-themes.md](ui-qt-themes.md).
+
+## GTK 2 Murrine look-alike theme
+
+`styles/gtk/murrine.css` imitates GTK 2 with the Murrine engine, and
+`tools/gtkref/gtkrc2panorama.py` turns any Murrine gtkrc into a variant; see
+[ui-gtk-themes.md](ui-gtk-themes.md).
 
 ## Not done yet
 

@@ -8,6 +8,7 @@
 #include FT_FREETYPE_H
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -365,6 +366,16 @@ char32_t next_codepoint(std::string_view text, std::size_t& i)
 }
 
 // face_weight is a font key: family * kPanoramaFontFamilyStride + weight (Bulwark).
+// Bulwark: metric generations are unique across every atlas and every reload.
+// Width and geometry caches outside the atlas are keyed by the generation
+// alone, so a reloaded atlas (fonts registered after a view opened) or another
+// atlas a view moves to must never reuse a number already handed out.
+std::uint64_t next_metric_generation()
+{
+    static std::atomic<std::uint64_t> counter{0};
+    return ++counter;
+}
+
 std::uint64_t glyph_key(char32_t codepoint, int pixel_size, int face_weight)
 {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(face_weight & 0x7FFFFFF)) << 37U) |
@@ -414,6 +425,7 @@ struct PanoramaFontAtlas::Impl
         float v1 = 0.0F;
         FT_UInt glyph_index = 0;
         bool valid = false;
+        bool pixel = false; // Bulwark: a pixel-font glyph, k-times its own pixels
         bool host_raster = false; // Bulwark: drawn by the host rasterizer (no kerning)
     };
 
@@ -441,6 +453,11 @@ struct PanoramaFontAtlas::Impl
         std::vector<unsigned char> memory;
         int weight = 400;
         int current_pixel_size = 0;
+        // Bulwark pixel fonts (PanoramaFontAtlasFace::pixel_ppem): the face is
+        // always set to its own size and its glyphs scaled current_k times
+        float pixel_ppem = 0.0F;
+        int current_k = 1;
+        [[nodiscard]] bool pixel() const { return pixel_ppem != 0.0F; }
         struct MetricEntry
         {
             Metrics value;
@@ -460,7 +477,9 @@ struct PanoramaFontAtlas::Impl
               identity(std::move(other.identity)),
               memory(std::move(other.memory)),
               weight(other.weight),
-              current_pixel_size(other.current_pixel_size)
+              current_pixel_size(other.current_pixel_size),
+              pixel_ppem(other.pixel_ppem),
+              current_k(other.current_k)
         {
             metrics.swap(other.metrics);
         }
@@ -478,6 +497,8 @@ struct PanoramaFontAtlas::Impl
                 memory = std::move(other.memory);
                 weight = other.weight;
                 current_pixel_size = other.current_pixel_size;
+                pixel_ppem = other.pixel_ppem;
+                current_k = other.current_k;
                 metrics.clear();
                 metrics.swap(other.metrics);
             }
@@ -516,7 +537,7 @@ struct PanoramaFontAtlas::Impl
     bool counters_enabled = false;
     PanoramaFontAtlasStats counters;
     std::uint64_t cache_clock = 0;
-    std::uint64_t metric_generation = 1;
+    std::uint64_t metric_generation = next_metric_generation();
     std::uint64_t atlas_page_generation = 1;
     std::uint64_t atlas_content_generation = 0;
 
@@ -748,6 +769,27 @@ struct PanoramaFontAtlas::Impl
         {
             return true;
         }
+        if (font.pixel())
+        {
+            // Bulwark: a pixel font stays at its own size; size picks the multiple
+            float native = font.pixel_ppem;
+            if (native < 0.0F)
+            {
+                if (font.face->num_fixed_sizes <= 0 || FT_Select_Size(font.face, 0) != 0)
+                {
+                    return false;
+                }
+                native = static_cast<float>(font.face->available_sizes[0].y_ppem) / 64.0F;
+            }
+            else if (FT_Set_Char_Size(font.face, 0, static_cast<FT_F26Dot6>(std::lround(native * 64.0F)), 72, 72) != 0)
+            {
+                return false;
+            }
+            native = std::max(1.0F, native);
+            font.current_k = std::clamp(static_cast<int>(std::lround(static_cast<float>(size) / native)), 1, 16);
+            font.current_pixel_size = size;
+            return true;
+        }
         if (FT_Set_Pixel_Sizes(font.face, 0, static_cast<FT_UInt>(size)) != 0)
         {
             return false;
@@ -776,8 +818,13 @@ struct PanoramaFontAtlas::Impl
         Metrics result;
         if (set_size(*font, size) && font->face->size != nullptr)
         {
-            result.ascent_px = static_cast<float>(font->face->size->metrics.ascender) / 64.0F;
-            result.line_height_px = static_cast<float>(font->face->size->metrics.height) / 64.0F;
+            const float k = font->pixel() ? static_cast<float>(font->current_k) : 1.0F;
+            result.ascent_px = std::round(static_cast<float>(font->face->size->metrics.ascender) / 64.0F) * k;
+            result.line_height_px = static_cast<float>(font->face->size->metrics.height) / 64.0F * k;
+            if (!font->pixel())
+            {
+                result.ascent_px = static_cast<float>(font->face->size->metrics.ascender) / 64.0F;
+            }
         }
         if (result.ascent_px <= 0.0F)
         {
@@ -851,10 +898,11 @@ struct PanoramaFontAtlas::Impl
         return true;
     }
 
-    bool pack_bitmap(const FT_Bitmap& bitmap, GlyphRecord& record)
+    // k > 1 (Bulwark pixel fonts): each bitmap pixel becomes a k-by-k block
+    bool pack_bitmap(const FT_Bitmap& bitmap, GlyphRecord& record, int k = 1)
     {
-        const int width = static_cast<int>(bitmap.width);
-        const int height = static_cast<int>(bitmap.rows);
+        const int width = static_cast<int>(bitmap.width) * k;
+        const int height = static_cast<int>(bitmap.rows) * k;
         if (width <= 0 || height <= 0)
         {
             return true;
@@ -885,7 +933,7 @@ struct PanoramaFontAtlas::Impl
         {
             for (int x = 0; x < width; ++x)
             {
-                const unsigned char a = bitmap_alpha(bitmap, x, y);
+                const unsigned char a = bitmap_alpha(bitmap, x / k, y / k);
                 const std::size_t dst =
                     (static_cast<std::size_t>(pen_y + y) * static_cast<std::size_t>(atlas_size) +
                         static_cast<std::size_t>(pen_x + x)) *
@@ -952,7 +1000,8 @@ struct PanoramaFontAtlas::Impl
         }
 
         // Bulwark: the host rasterizer gets first go at every glyph
-        if (g_glyph_rasterizer != nullptr && glyph_index != 0)
+        // (pixel fonts keep their own 1-bit path)
+        if (g_glyph_rasterizer != nullptr && glyph_index != 0 && !font->pixel())
         {
             PanoramaRasterGlyph raster;
             if (g_glyph_rasterizer(font->identity, font->memory.empty() ? nullptr : font->memory.data(),
@@ -986,22 +1035,32 @@ struct PanoramaFontAtlas::Impl
             }
         }
 
-        if (FT_Load_Char(font->face, static_cast<FT_ULong>(load_codepoint), FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL) != 0)
+        // Bulwark: a pixel font is drawn 1-bit, unhinted (its edges are on
+        // the pixel grid already), and scaled up by whole pixels
+        const FT_Int32 load_flags = font->pixel() ? FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING
+                                                  : FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL;
+        if (FT_Load_Char(font->face, static_cast<FT_ULong>(load_codepoint), load_flags) != 0)
         {
             return nullptr;
         }
 
         FT_GlyphSlot slot = font->face->glyph;
+        const int k = font->pixel() ? font->current_k : 1;
         GlyphRecord record;
         record.advance_px = static_cast<float>(slot->advance.x) / 64.0F;
-        record.bearing_x_px = static_cast<float>(slot->bitmap_left);
-        record.bearing_y_px = static_cast<float>(slot->bitmap_top);
-        record.width_px = static_cast<float>(slot->bitmap.width);
-        record.height_px = static_cast<float>(slot->bitmap.rows);
+        if (font->pixel())
+        {
+            record.advance_px = std::round(record.advance_px) * static_cast<float>(k);
+        }
+        record.bearing_x_px = static_cast<float>(slot->bitmap_left * k);
+        record.bearing_y_px = static_cast<float>(slot->bitmap_top * k);
+        record.width_px = static_cast<float>(static_cast<int>(slot->bitmap.width) * k);
+        record.height_px = static_cast<float>(static_cast<int>(slot->bitmap.rows) * k);
         record.glyph_index = glyph_index;
         record.valid = slot->bitmap.width > 0 && slot->bitmap.rows > 0 && glyph_index != 0;
+        record.pixel = font->pixel();
 
-        if (record.valid && !pack_bitmap(slot->bitmap, record))
+        if (record.valid && !pack_bitmap(slot->bitmap, record, k))
         {
             if (!atlas_full_logged)
             {
@@ -1095,7 +1154,7 @@ struct PanoramaFontAtlas::Impl
             {
                 continue;
             }
-            if (font != nullptr && !glyph->host_raster && FT_HAS_KERNING(font->face) && previous_index != 0 &&
+            if (font != nullptr && !font->pixel() && !glyph->host_raster && FT_HAS_KERNING(font->face) && previous_index != 0 &&
                 glyph->glyph_index != 0 && set_size(*font, size))
             {
                 FT_Vector kern{};
@@ -1154,7 +1213,7 @@ struct PanoramaFontAtlas::Impl
                 continue;
             }
             float kerning_px = 0.0F;
-            if (font != nullptr && !glyph->host_raster && FT_HAS_KERNING(font->face) && previous_index != 0 &&
+            if (font != nullptr && !font->pixel() && !glyph->host_raster && FT_HAS_KERNING(font->face) && previous_index != 0 &&
                 glyph->glyph_index != 0 && set_size(*font, size))
             {
                 FT_Vector kern{};
@@ -1235,6 +1294,7 @@ struct PanoramaFontAtlas::Impl
         out.u1 = record.u1;
         out.v1 = record.v1;
         out.valid = record.valid;
+        out.pixel_grid = record.pixel ? 1.0F / safe_scale : 0.0F;
     }
 
     void upload_if_dirty()
@@ -1320,6 +1380,7 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
     {
         ResolvedFaceSource source;
         int weight = 400;
+        float pixel_ppem = 0.0F;
     };
     std::vector<PlannedFace> faces;
     if (!options.faces.empty())
@@ -1349,7 +1410,8 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
             faces.push_back(
                 PlannedFace{std::move(resolved),
                     panorama_font_family_of(configured.weight) * kPanoramaFontFamilyStride +
-                        std::clamp(panorama_font_weight_of(configured.weight), 1, 1000)});
+                        std::clamp(panorama_font_weight_of(configured.weight), 1, 1000),
+                    configured.pixel_ppem});
         }
     }
     else
@@ -1400,7 +1462,7 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
         return false;
     }
 
-    const auto load_face = [&](ResolvedFaceSource source, int weight) {
+    const auto load_face = [&](ResolvedFaceSource source, int weight, float pixel_ppem) {
         if (!source.valid())
         {
             return false;
@@ -1416,6 +1478,7 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
         PanoramaFontAtlas::Impl::FontFace font;
         font.identity = source.identity;
         font.weight = weight;
+        font.pixel_ppem = pixel_ppem;
         FT_Face face = nullptr;
         if (!source.bytes.empty())
         {
@@ -1445,6 +1508,10 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
         }
 
         font.face = face;
+        if (font.pixel_ppem < 0.0F && face->num_fixed_sizes <= 0)
+        {
+            font.pixel_ppem = 0.0F; // no strike to draw from
+        }
         impl_->faces.push_back(std::move(font));
         // A face can open successfully yet be unusable (no charmap => every lookup returns
         // glyph 0 and its text silently collapses) — surface glyph/charmap counts here so a
@@ -1457,7 +1524,7 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
     bool loaded_any = false;
     for (PlannedFace& face : faces)
     {
-        loaded_any = load_face(std::move(face.source), face.weight) || loaded_any;
+        loaded_any = load_face(std::move(face.source), face.weight, face.pixel_ppem) || loaded_any;
     }
     if (!loaded_any)
     {
@@ -1471,6 +1538,9 @@ bool PanoramaFontAtlas::load(const PanoramaFontAtlasLoadOptions& options)
 void PanoramaFontAtlas::clear()
 {
     const float ui_scale = impl_->ui_scale;
+    // the new Impl takes a fresh metric generation (next_metric_generation):
+    // restarting at 1 let text measured with the old faces (a view opened
+    // before its fonts were registered) keep those advances
     impl_ = std::make_unique<Impl>();
     impl_->ui_scale = ui_scale;
 }
@@ -1498,7 +1568,7 @@ void PanoramaFontAtlas::set_ui_scale(float ui_scale)
         // the LRU budget evicts them; reclaim the single atlas page immediately
         // so old pixel-size glyphs cannot strand its fixed memory.
         impl_->ui_scale = clamped;
-        ++impl_->metric_generation;
+        impl_->metric_generation = next_metric_generation();
         impl_->reset_atlas_page();
     }
 }

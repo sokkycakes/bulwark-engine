@@ -4,6 +4,7 @@
 #include "skel.h"
 #include "studio.h"
 #include "fs.h"
+#include "cmd.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -328,6 +329,14 @@ skelmodel_t *Skel_LoadModel(const char *name)
 	ok = d && parse_iqm(m, d, size);
 	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
 		ok = from_studio(m, Studio_Cached(name));
+	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] != 10) {
+		/* a format a plugin turns into an IQM (Source .mdl) */
+		size_t qlen;
+		uint8_t *q = Plug_ConvertModel(name, d, size, &qlen);
+		if (q)
+			ok = parse_iqm(m, q, qlen);
+		Mem_Free(q);
+	}
 	Mem_Free(d);
 	if (!ok) {
 		/* remembered as having no skeleton */

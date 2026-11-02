@@ -24,6 +24,8 @@ void R_SetFrameGrab(r_grab_fn fn);
 bool R_EncodeImage(const char *ext, const uint8_t *rgb, int w, int h, int quality, strbuf_t *out);
 void R_Shutdown(void);
 bool R_Active(void);           /* true when there is a window to draw into */
+bool R_CursorMode(void);       /* the focused progs (menu while open, else client game) wants a free cursor */
+void R_ResetCursorMode(qcvm_t *vm); /* forget a progs' setcursormode as it unloads */
 void R_GetSize(int *w, int *h);
 
 void R_PrecacheModel(int index); /* cl.models[index] was just named */
@@ -72,6 +74,10 @@ float R_Get2DScale(void); /* framebuffer pixels per virtual pixel: lay out at R_
 void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const uint16_t *idx, int numidx,
                        int blend);      /* image 0 draws untextured */
 void R_Set2DClip(float x, float y, float w, float h);
+/* 2D drawing between these lands in an off-screen w x h target that End
+ * scales over the whole screen with nearest filtering (chunky pixels) */
+void R_BeginPixelated2D(int w, int h);
+void R_EndPixelated2D(void);
 void R_Reset2DClip(void);
 
 /* simple 2D drawing in virtual pixels, for the engine's own menus: text

@@ -38,6 +38,16 @@ static struct {
 	int prog;
 } gs = {-1, 0, 0, -1, -1, -1, {0}, {0}, -1, -1};
 
+bool gl_coveragealpha;
+
+void GL_SetCoverageAlpha(bool on)
+{
+	if (gl_coveragealpha == on)
+		return;
+	gl_coveragealpha = on;
+	gs.blend = -1; /* the blend function is set again on next use */
+}
+
 void GL_SetBlend(int blend, GLenum src, GLenum dst)
 {
 	if (blend == BLEND_ALPHA)
@@ -54,8 +64,14 @@ void GL_SetBlend(int blend, GLenum src, GLenum dst)
 	}
 	if (gs.blend == BLEND_OPAQUE || gs.blend < 0)
 		qglEnable(GL_BLEND);
-	if (gs.src != src || gs.dst != dst || gs.blend < 0)
-		qglBlendFunc(src, dst);
+	if (gs.src != src || gs.dst != dst || gs.blend < 0) {
+		/* drawing into a transparent target (R_BeginPixelated2D): alpha
+		 * accumulates as coverage, so the target holds premultiplied colour */
+		if (gl_coveragealpha)
+			qglBlendFuncSeparate(src, dst, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		else
+			qglBlendFunc(src, dst);
+	}
 	gs.blend = blend;
 	gs.src = src;
 	gs.dst = dst;

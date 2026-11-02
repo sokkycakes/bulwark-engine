@@ -319,6 +319,141 @@ bad:
 	return false;
 }
 
+/* --- Quake 2 models (.md2) ---------------------------------------------------- */
+
+/* Same vertex animation as .mdl, loaded into the same alias_t. Format from
+ * the public MD2 description: a 68-byte header of ints ("IDP2", version 8,
+ * skin size, frame size, counts, then offsets), 64-byte skin paths, short
+ * texture coordinates, triangles of three position and three texcoord
+ * indices, and frames of scale, translate, a 16-byte name and four bytes per
+ * vertex (x, y, z, normal index). Positions and texcoords are indexed
+ * separately, so each distinct pair becomes one output vertex. */
+static bool load_md2(rmodel_t *mod, const uint8_t *d, size_t size)
+{
+	alias_t *a;
+	int skinw, skinh, framesize, numskins, numxyz, numst, numtris, numframes;
+	size_t ofs_skins, ofs_st, ofs_tris, ofs_frames;
+	int *tris, *pairs;
+
+	if (size < 68 || rd32(d + 4) != 8)
+		return false;
+	skinw = rd32(d + 8);
+	skinh = rd32(d + 12);
+	framesize = rd32(d + 16);
+	numskins = rd32(d + 20);
+	numxyz = rd32(d + 24);
+	numst = rd32(d + 28);
+	numtris = rd32(d + 32);
+	numframes = rd32(d + 40);
+	ofs_skins = (size_t)rd32(d + 44);
+	ofs_st = (size_t)rd32(d + 48);
+	ofs_tris = (size_t)rd32(d + 52);
+	ofs_frames = (size_t)rd32(d + 56);
+	if (skinw <= 0 || skinh <= 0 || numskins < 0 || numskins > 32 || numxyz <= 0 || numxyz > 65535 ||
+	    numst <= 0 || numtris <= 0 || numtris > 65535 || numframes <= 0 || numframes > 4096 ||
+	    framesize < 40 + numxyz * 4 || ofs_skins + (size_t)numskins * 64 > size ||
+	    ofs_st + (size_t)numst * 4 > size || ofs_tris + (size_t)numtris * 12 > size ||
+	    ofs_frames + (size_t)numframes * framesize > size) {
+		Con_Printf("%s: truncated or corrupt model\n", mod->name);
+		return false;
+	}
+
+	a = Mem_Alloc(sizeof(*a));
+	a->numverts = numxyz;
+	a->numtris = numtris;
+	a->numskins = numskins;
+	a->skins = Mem_Alloc(sizeof(material_t *) * (numskins + 1));
+	for (int i = 0; i < numskins; i++) {
+		char skin[65];
+		memcpy(skin, d + ofs_skins + (size_t)i * 64, 64);
+		skin[64] = 0;
+		/* "skin.pcx" also finds a .tga or .png next to it */
+		a->skins[i] = R_FindMaterial(skin, MATF_MODEL);
+	}
+
+	/* one output vertex per distinct position/texcoord pair */
+	tris = Mem_Alloc(sizeof(int) * numtris * 3);
+	pairs = Mem_Alloc(sizeof(int) * numtris * 3 * 2);
+	a->remap = Mem_Alloc(sizeof(int) * numtris * 3);
+	a->st = Mem_Alloc(sizeof(float) * numtris * 3 * 2);
+	a->indices = Mem_Alloc(sizeof(uint16_t) * numtris * 3);
+	a->numoutverts = 0;
+	for (int i = 0; i < numtris; i++) {
+		const uint8_t *t = d + ofs_tris + (size_t)i * 12;
+		for (int k = 0; k < 3; k++) {
+			int xyz = (uint16_t)rd16(t + k * 2), st = (uint16_t)rd16(t + 6 + k * 2), out = -1;
+			if (xyz >= numxyz)
+				xyz = 0;
+			if (st >= numst)
+				st = 0;
+			tris[i * 3 + k] = xyz;
+			for (int o = 0; o < a->numoutverts; o++)
+				if (pairs[o * 2] == xyz && pairs[o * 2 + 1] == st) {
+					out = o;
+					break;
+				}
+			if (out < 0) {
+				out = a->numoutverts++;
+				pairs[out * 2] = xyz;
+				pairs[out * 2 + 1] = st;
+				a->remap[out] = xyz;
+				a->st[out * 2] = ((int16_t)rd16(d + ofs_st + (size_t)st * 4) + 0.5f) / skinw;
+				a->st[out * 2 + 1] = ((int16_t)rd16(d + ofs_st + (size_t)st * 4 + 2) + 0.5f) / skinh;
+			}
+			/* like .mdl, the triangles wind the other way round from GL's front faces */
+			a->indices[i * 3 + (2 - k)] = (uint16_t)out;
+		}
+	}
+	Mem_Free(pairs);
+	if (a->numoutverts > 65535) {
+		Con_Printf("%s: too many vertices\n", mod->name);
+		Mem_Free(tris);
+		return false;
+	}
+
+	/* frames: one pose each, Quake 2 runs them at 10 per second */
+	a->frames = Mem_Alloc(sizeof(aliasframe_t) * numframes);
+	a->numframes = numframes;
+	a->numposes = numframes;
+	a->poses = Mem_Alloc(sizeof(float) * 3 * numxyz * numframes);
+	for (int i = 0; i < numframes; i++) {
+		const uint8_t *f = d + ofs_frames + (size_t)i * framesize;
+		float scale[3], origin[3], *pose = a->poses + (size_t)i * numxyz * 3;
+		for (int k = 0; k < 3; k++) {
+			scale[k] = rdf(f + k * 4);
+			origin[k] = rdf(f + 12 + k * 4);
+		}
+		memcpy(a->frames[i].name, f + 24, 15);
+		a->frames[i].firstpose = i;
+		a->frames[i].numposes = 1;
+		a->frames[i].interval = 0.1f;
+		for (int v = 0; v < numxyz; v++)
+			for (int k = 0; k < 3; k++)
+				pose[v * 3 + k] = f[40 + v * 4 + k] * scale[k] + origin[k];
+	}
+	a->normals = Mem_Alloc(sizeof(float) * 3 * numxyz * numframes);
+	compute_normals(a, tris);
+	Mem_Free(tris);
+
+	for (int k = 0; k < 3; k++) {
+		mod->mins[k] = 1e30f;
+		mod->maxs[k] = -1e30f;
+	}
+	for (size_t i = 0; i < (size_t)numframes * numxyz; i++)
+		for (int k = 0; k < 3; k++) {
+			float v = a->poses[i * 3 + k];
+			if (v < mod->mins[k])
+				mod->mins[k] = v;
+			if (v > mod->maxs[k])
+				mod->maxs[k] = v;
+		}
+	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
+	mod->alias = a;
+	mod->type = MOD_ALIAS;
+	mod->numframes = a->numgroups ? a->numgroups : a->numframes;
+	return true;
+}
+
 /* --- IQM / VVM ------------------------------------------------------------ */
 
 typedef struct {
@@ -438,8 +573,9 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		char path[192];
 		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
 		Str_Copy(q->meshes[m].name, mname < num_text ? text + mname : "", sizeof(q->meshes[m].name));
-		/* a bare material name is looked up next to the model */
-		if (!strchr(matname, '/')) {
+		/* a bare material name is looked up next to the model; "$name"
+		 * is one of the engine's own images */
+		if (!strchr(matname, '/') && matname[0] != '$') {
 			const char *slash = strrchr(mod->name, '/');
 			snprintf(path, sizeof(path), "%.*s%s", slash ? (int)(slash - mod->name + 1) : 0, mod->name, matname);
 			matname = path;
@@ -1139,6 +1275,8 @@ rmodel_t *R_LoadModel(const char *name)
 	}
 	if (size >= 4 && !memcmp(d, "IDPO", 4))
 		m->loaded = load_alias(m, d, size);
+	else if (size >= 4 && !memcmp(d, "IDP2", 4))
+		m->loaded = load_md2(m, d, size);
 	else if (size >= 16 && !memcmp(d, "INTERQUAKEMODEL", 16))
 		m->loaded = load_iqm(m, d, size);
 	else if (size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)

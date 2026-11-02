@@ -13,9 +13,27 @@ static void callback(void *userdata, Uint8 *stream, int len)
 	S_PaintAudio((int16_t *)stream, len / 4);
 }
 
+/* PipeWire and PulseAudio remember volume, mute and output per
+ * application name. Without a name of its own the stream is the generic
+ * "SDL Application", which every SDL program shares, so a mute set for
+ * any of them silenced Bulwark too. Set before the audio subsystem opens. */
+static void set_app_name(void)
+{
+#ifdef SDL_HINT_APP_NAME
+	SDL_SetHint(SDL_HINT_APP_NAME, "Bulwark");
+#endif
+#ifdef SDL_HINT_AUDIO_DEVICE_APP_NAME
+	SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Bulwark");
+#endif
+#ifdef SDL_HINT_AUDIO_DEVICE_STREAM_NAME
+	SDL_SetHint(SDL_HINT_AUDIO_DEVICE_STREAM_NAME, "Game sound");
+#endif
+}
+
 bool SNDDMA_Init(int *rate)
 {
 	SDL_AudioSpec want, have;
+	set_app_name();
 	if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
 		Con_Printf("SDL audio: %s\n", SDL_GetError());
 		return false;

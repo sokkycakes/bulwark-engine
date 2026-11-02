@@ -36,6 +36,60 @@ needs no new parameters:
   (then the default one) by nearest weight, and glyph cache keys hold the
   wider value.
 
+Pixel fonts (`docs/spec/bitmap-fonts.md`), each change marked `Bulwark:`:
+
+- `include/ui/panorama/panorama_font_atlas.hpp`: `PanoramaFontAtlasFace`
+  gains `pixel_ppem` (> 0: a TrueType font on a pixel grid; < 0: a BDF/PCF
+  strike), set by the host.
+- `src/panorama_font_atlas.cpp`: such a face stays at its own size, glyphs
+  are 1-bit and unhinted and are scaled by a whole number k (the multiple
+  nearest the asked size) when packed, metrics and advances times k, no
+  kerning.
+- `include/ui/panorama/panorama_paint.hpp`, `src/panorama_paint.cpp`:
+  `PanoramaGlyph::pixel_grid`; paint rounds a pixel glyph's quad to whole
+  screen pixels when the text's transform only translates.
+
+Controls and selectors added for the Qt look-alike themes
+(`docs/spec/ui-qt-themes.md`):
+
+- `src/panorama_style.cpp`: the pseudo-classes `:checked` (the `checked`
+  class or a selected panel), `:pressed` (same as `:active`), `:first-child`,
+  `:last-child` and `:only-child`. Rules with the last three count as sibling
+  rules, so siblings don't share computed styles.
+- `src/panorama_dom.cpp`, `src/panorama_layout.cpp`: a `ProgressBar`
+  control with `#ProgressBarLeft` (filled) and `#ProgressBarRight` children,
+  split by `value` / `min` / `max`; scrollbars gain `.ScrollButtonBack` and
+  `.ScrollButtonForward` children at the two ends of the track, with no size
+  unless styled, and the thumb travels between them
+  (`panorama_scrollbar_track`). A `.ScrollTrack` child covers the track
+  between the buttons, under the thumb, so a groove can stop at the arrows;
+  the thumb is found by class (`panorama_scrollbar_thumb`), not position.
+- `src/panorama_paint.cpp`: a linear, axis-aligned gradient with interior
+  stops on a rounded box is drawn as rounded end caps plus one square band
+  per pixel between them (`add_rounded_gradient_banded`); the single
+  triangle fan smeared such gradients diagonally.
+- `src/panorama_paint.cpp`: a rounded border takes its side colour for the
+  band and lays a different top or bottom colour over the straight run; a
+  side of zero width is left open: the band is drawn past that side and
+  clipped back, so the other sides run to the end (a tab's open bottom). Inset box-shadows
+  are drawn inside the border (the padding box), as CSS draws them.
+  A single background image smaller than its box no longer takes the box's
+  rounded corners (only a tile that fills the box does).
+- `src/panorama_paint.cpp`: a box's own rounded fill, rounded border and
+  sharp inset ring are anti-aliased: a solid core half a pixel inside each
+  edge and a fringe fading out half a pixel outside it (contours offset with
+  sharp corners kept sharp), so edges on whole pixels stay crisp. A rounded
+  border with an open (zero-width) side keeps the full arc at a rounded
+  corner next to a drawn side, and lets the drawn side run to the end at a
+  square corner.
+- `src/panorama_layout.cpp`: slider and scrollbar thumbs sit on whole
+  pixels, so their border and decoration don't blur.
+- `src/panorama_paint.cpp`: a background image drawn at its natural size is
+  placed on whole pixels, so small pixel art (grip dots) stays crisp.
+- `src/panorama_input.cpp`, `src/panorama_view.cpp`: pressing a scrollbar
+  button scrolls 20px with the wheel's smooth-scroll spring, and a pointer
+  change keeps the scroll animation walk running.
+
 ### Changes to nanosvg
 
 nanosvg ignores `<mask>`, so masked art drew its mask shapes as ordinary

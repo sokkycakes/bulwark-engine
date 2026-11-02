@@ -64,6 +64,7 @@ typedef struct {
 	int classname, model, modelindex, origin, angles, velocity, avelocity, mins, maxs, size;
 	int absmin, absmax, solid, movetype, nextthink, think, touch, use, blocked, frame, skin;
 	int flags, owner, chain, health, ltime, effects, colormap, gravity, groundentity;
+	int bouncefactor, bouncestop;
 	int customphysics, predraw, drawmask, renderflags, alpha, scale, sendentity, sendflags;
 	int pvsflags, dimension_solid, dimension_hit, hitcontentsmaski, nextthink_lerp;
 	int v_angle, fixangle, button0, button2, impulse, waterlevel, watertype, view_ofs, netname;
@@ -175,6 +176,7 @@ struct qcvm_s {
 	int max_edicts;
 	int num_edicts; /* highest slot in use + 1 */
 	int reserved_edicts; /* slots 1..reserved are never handed out by spawn() (player slots) */
+	float quick_reuse_before; /* slots freed before this time can be reused at once (map load) */
 	qcedict_t *edicts;
 	size_t heap_ofs, heap_size;
 

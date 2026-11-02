@@ -1,0 +1,23 @@
+/* Layout of the Murrine theme gallery (layout/gtk/gallery.xml); the look comes
+   from murrine.css. */
+#Window
+{
+	width: 100%;
+	height: 100%;
+}
+
+
+.GtkScrollV
+{
+	overflow: squish scroll;
+}
+
+.GtkScrollH
+{
+	overflow: scroll squish;
+}
+
+.GalleryCaption
+{
+	font-size: 12px;
+}

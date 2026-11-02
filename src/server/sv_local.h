@@ -69,6 +69,7 @@ typedef struct {
 } server_t;
 
 extern server_t sv;
+extern int sv_spawncount; /* maps spawned so far; the host joins each new one */
 
 /* --- clients (sv_client.c) --- */
 typedef enum { CS_FREE, CS_CONNECTED, CS_SPAWNED } clientstate_t;
@@ -259,11 +260,13 @@ bool SV_SaveTakeRestored(client_t *c);
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);
 void SV_Shutdown(void);
+void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);
 int SV_ModelIndex(const char *name, bool precache);
 int SV_SoundIndex(const char *name, bool precache);
 void SV_InfoSet(char *info, size_t size, const char *key, const char *value);
 const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outsize);
+const char *SV_InfoPublic(const char *info, char *out, size_t outsize);
 int SV_Spawn(void);
 bool SV_ConsoleCommand(const char *line);
 /* "say" from the server console; false when no server is running */
@@ -333,6 +336,7 @@ void W_bi_checkpvs(qcvm_t *vm);
 /* sv_uri.c: uri_get for every module, finished requests are delivered by QC_URIFrame */
 extern const qc_builtin_t qc_uri_builtins[];
 void QC_URIFrame(void);
+void QC_URIDrain(double seconds);
 void W_bi_getsurfacenearpoint(qcvm_t *vm);
 void W_bi_getsurfacetexture(qcvm_t *vm);
 
