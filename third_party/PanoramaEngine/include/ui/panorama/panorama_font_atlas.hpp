@@ -133,6 +133,10 @@ public:
     [[nodiscard]] bool loaded() const;
 
     void set_ui_scale(float ui_scale);
+    // Bulwark: text at or below this font size (layout pixels) is rasterized
+    // at exactly that many pixels per em, whatever the UI scale, so small
+    // hinted or bitmap-strike text stays crisp; 0 scales all text.
+    void set_exact_pixel_max(float max_font_size);
     void set_cache_budgets(PanoramaFontAtlasCacheBudgets budgets);
     [[nodiscard]] PanoramaFontAtlasCacheBudgets cache_budgets() const;
 
