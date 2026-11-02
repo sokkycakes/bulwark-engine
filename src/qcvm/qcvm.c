@@ -494,6 +494,7 @@ static bool link_progs(qcvm_t *vm, int n)
 	qcprogs_t *p = &vm->progs[n], *main = &vm->progs[0];
 	int words = BW_MAX(p->hdr.entityfields, 1);
 	int *map;
+	char *claimed;
 	for (int i = 0; i < p->numfielddefs; i++) {
 		int t = p->fielddefs[i].type & ~DEF_SAVEGLOBAL;
 		int end = (int)p->fielddefs[i].ofs + (t == ev_vector ? 3 : (t == ev_int64 || t == ev_uint64 || t == ev_double) ? 2 : 1);
@@ -501,23 +502,41 @@ static bool link_progs(qcvm_t *vm, int n)
 			words = end;
 	}
 	map = Mem_Alloc(sizeof(int) * words);
+	claimed = Mem_Alloc((size_t)vm->edict_words);
 	for (int i = 0; i < words; i++)
 		map[i] = -1;
-	/* by name first; vectors before their _x/_y/_z components */
+	/* by name first; vectors before their _x/_y/_z components. FTEQCC
+	 * gives class fields shared slots named "::float[2]" and so on, and
+	 * packs slots of different types into one word, so those names mean
+	 * nothing across progs: matching them sent two different fields of
+	 * this progs to one word. They get words of their own, and no word of
+	 * the main progs is given to two words of this one. */
 	for (int pass = 0; pass < 2; pass++)
 		for (int i = 0; i < p->numfielddefs; i++) {
 			qcdef_t *d = &p->fielddefs[i];
 			int t = d->type & ~DEF_SAVEGLOBAL;
 			int len = t == ev_vector ? 3 : (t == ev_int64 || t == ev_uint64 || t == ev_double) ? 2 : 1;
-			int k = find_hash(&main->fieldhash, d->name, fdef_name, main);
-			if ((pass == 0) != (t == ev_vector) || !d->name[0])
+			int k, ok = 1;
+			if ((pass == 0) != (t == ev_vector) || !d->name[0] || !strncmp(d->name, "::", 2))
 				continue;
-			if (k >= 0) {
-				for (int j = 0; j < len && d->ofs + j < (uint32_t)words; j++)
-					if (map[d->ofs + j] < 0)
-						map[d->ofs + j] = (int)main->fielddefs[k].ofs + j;
+			k = find_hash(&main->fieldhash, d->name, fdef_name, main);
+			if (k < 0)
+				continue;
+			for (int j = 0; j < len && d->ofs + j < (uint32_t)words; j++) {
+				int to = (int)main->fielddefs[k].ofs + j;
+				if (map[d->ofs + j] >= 0 ? map[d->ofs + j] != to : (to < vm->edict_words && claimed[to]))
+					ok = 0;
+			}
+			if (!ok)
+				continue;
+			for (int j = 0; j < len && d->ofs + j < (uint32_t)words; j++) {
+				int to = (int)main->fielddefs[k].ofs + j;
+				map[d->ofs + j] = to;
+				if (to < vm->edict_words)
+					claimed[to] = 1;
 			}
 		}
+	Mem_Free(claimed);
 	/* anything left gets room from the spare words */
 	for (int i = 0; i < words; i++)
 		if (map[i] < 0) {
