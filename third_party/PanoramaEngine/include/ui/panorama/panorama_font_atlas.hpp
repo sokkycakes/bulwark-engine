@@ -61,6 +61,25 @@ struct PanoramaFontAtlasLoadOptions
     PanoramaFontBytesProvider font_bytes_provider;
 };
 
+// Bulwark: an optional host glyph rasterizer. When set, every glyph is first
+// offered to it; if it returns true its bitmap and advance are used instead of
+// FreeType's, and no kerning is applied after it (Bulwark draws TrueType faces
+// the way Windows GDI's ExtTextOut does: whole-pixel advances, no kerning).
+// face_identity names the face uniquely (the provider's face name or the path);
+// font_data/font_size are the face's bytes (null/0 for a face read from disk).
+struct PanoramaRasterGlyph
+{
+    int width = 0;
+    int height = 0;
+    int left = 0;          // from the pen to the bitmap's left edge
+    int top = 0;           // from the baseline up to the bitmap's top row
+    float advance = 0.0F;
+    std::vector<unsigned char> coverage; // width * height bytes, 0..255
+};
+using PanoramaGlyphRasterizer = bool (*)(const std::string& face_identity, const unsigned char* font_data,
+    std::size_t font_size, int pixel_size, int weight, char32_t codepoint, PanoramaRasterGlyph& out);
+void panorama_set_glyph_rasterizer(PanoramaGlyphRasterizer rasterizer);
+
 struct PanoramaFontAtlasDirtyRect
 {
     int x = 0;

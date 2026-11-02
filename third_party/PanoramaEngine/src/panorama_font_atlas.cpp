@@ -31,6 +31,8 @@ namespace
 constexpr int kInitialAtlasSize = 1024;
 constexpr int kMaxAtlasSize = 2048;
 constexpr int kGlyphPadding = 1;
+// Bulwark: see panorama_set_glyph_rasterizer
+PanoramaGlyphRasterizer g_glyph_rasterizer = nullptr;
 
 std::string lower_ascii(std::string text)
 {
@@ -424,6 +426,7 @@ struct PanoramaFontAtlas::Impl
         FT_UInt glyph_index = 0;
         bool valid = false;
         bool pixel = false; // Bulwark: a pixel-font glyph, k-times its own pixels
+        bool host_raster = false; // Bulwark: drawn by the host rasterizer (no kerning)
     };
 
     struct Metrics
@@ -996,6 +999,42 @@ struct PanoramaFontAtlas::Impl
             glyph_index = FT_Get_Char_Index(font->face, static_cast<FT_ULong>(load_codepoint));
         }
 
+        // Bulwark: the host rasterizer gets first go at every glyph
+        // (pixel fonts keep their own 1-bit path)
+        if (g_glyph_rasterizer != nullptr && glyph_index != 0 && !font->pixel())
+        {
+            PanoramaRasterGlyph raster;
+            if (g_glyph_rasterizer(font->identity, font->memory.empty() ? nullptr : font->memory.data(),
+                    font->memory.size(), size, font->weight, load_codepoint, raster))
+            {
+                GlyphRecord record;
+                record.advance_px = raster.advance;
+                record.bearing_x_px = static_cast<float>(raster.left);
+                record.bearing_y_px = static_cast<float>(raster.top);
+                record.width_px = static_cast<float>(raster.width);
+                record.height_px = static_cast<float>(raster.height);
+                record.glyph_index = glyph_index;
+                record.host_raster = true;
+                record.valid = raster.width > 0 && raster.height > 0;
+                if (record.valid)
+                {
+                    FT_Bitmap bitmap{};
+                    bitmap.rows = static_cast<unsigned int>(raster.height);
+                    bitmap.width = static_cast<unsigned int>(raster.width);
+                    bitmap.pitch = raster.width;
+                    bitmap.buffer = raster.coverage.data();
+                    bitmap.num_grays = 256;
+                    bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
+                    if (!pack_bitmap(bitmap, record))
+                    {
+                        record.valid = false;
+                    }
+                }
+                const auto [it, _] = glyphs.emplace(key, record);
+                return &it->second;
+            }
+        }
+
         // Bulwark: a pixel font is drawn 1-bit, unhinted (its edges are on
         // the pixel grid already), and scaled up by whole pixels
         const FT_Int32 load_flags = font->pixel() ? FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_NO_HINTING
@@ -1115,8 +1154,8 @@ struct PanoramaFontAtlas::Impl
             {
                 continue;
             }
-            if (font != nullptr && !font->pixel() && FT_HAS_KERNING(font->face) && previous_index != 0 && glyph->glyph_index != 0 &&
-                set_size(*font, size))
+            if (font != nullptr && !font->pixel() && !glyph->host_raster && FT_HAS_KERNING(font->face) && previous_index != 0 &&
+                glyph->glyph_index != 0 && set_size(*font, size))
             {
                 FT_Vector kern{};
                 if (FT_Get_Kerning(font->face, previous_index, glyph->glyph_index, FT_KERNING_DEFAULT, &kern) == 0)
@@ -1174,7 +1213,7 @@ struct PanoramaFontAtlas::Impl
                 continue;
             }
             float kerning_px = 0.0F;
-            if (font != nullptr && !font->pixel() && FT_HAS_KERNING(font->face) && previous_index != 0 &&
+            if (font != nullptr && !font->pixel() && !glyph->host_raster && FT_HAS_KERNING(font->face) && previous_index != 0 &&
                 glyph->glyph_index != 0 && set_size(*font, size))
             {
                 FT_Vector kern{};
@@ -1310,6 +1349,11 @@ struct PanoramaFontAtlas::Impl
 
     }
 };
+
+void panorama_set_glyph_rasterizer(PanoramaGlyphRasterizer rasterizer)
+{
+    g_glyph_rasterizer = rasterizer;
+}
 
 PanoramaFontAtlas::PanoramaFontAtlas() : impl_(std::make_unique<Impl>()) {}
 
