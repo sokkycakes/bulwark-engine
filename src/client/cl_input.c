@@ -475,6 +475,28 @@ void IN_MouseMove(float dx, float dy)
 
 /* --- controllers ------------------------------------------------------------ */
 
+/* while a menu view takes input, the left stick moves through it like the
+ * d-pad: pushing past half way presses that d-pad key once, letting it back
+ * under a third releases it */
+static int stick_held[2];
+
+static void stick_nav(int axis, float value)
+{
+	static const int keys[2][2] = {{K_GP_DPAD_LEFT, K_GP_DPAD_RIGHT}, {K_GP_DPAD_UP, K_GP_DPAD_DOWN}};
+	int dir = value <= -0.5f ? -1 : value >= 0.5f ? 1 : 0;
+	int held = stick_held[axis];
+	if (held && fabsf(value) > 0.33f && (dir == 0 || dir == held))
+		return;
+	if (held) {
+		stick_held[axis] = 0;
+		IN_KeyEvent(keys[axis][held > 0], false, 0);
+	}
+	if (dir && UI_WantsInput()) {
+		stick_held[axis] = dir;
+		IN_KeyEvent(keys[axis][dir > 0], true, 0);
+	}
+}
+
 void IN_JoyAxis(int dev, int axis, float value)
 {
 	if (axis < 0 || axis >= 6)
@@ -484,6 +506,8 @@ void IN_JoyAxis(int dev, int axis, float value)
 	if (!Con_IsActive())
 		CSQC_InputEvent(6, (float)axis, value, dev);
 	joyaxis[axis] = value;
+	if (axis <= 1)
+		stick_nav(axis, value);
 }
 
 /* layout like a console shooter's, applied only to an unbound pad so a
@@ -577,7 +601,7 @@ static void fill_command(usercmd_t *u, double now)
 	clamp_pitch();
 
 	/* controller sticks: right one turns, left one moves */
-	if (joy_enable->ivalue && !Con_IsActive()) {
+	if (joy_enable->ivalue && !Con_IsActive() && !UI_WantsInput()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
 		if (lx || ly || rx || ry)
 			last_device(1);
