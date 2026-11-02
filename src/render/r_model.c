@@ -573,8 +573,9 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		char path[192];
 		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
 		Str_Copy(q->meshes[m].name, mname < num_text ? text + mname : "", sizeof(q->meshes[m].name));
-		/* a bare material name is looked up next to the model */
-		if (!strchr(matname, '/')) {
+		/* a bare material name is looked up next to the model; "$name"
+		 * is one of the engine's own images */
+		if (!strchr(matname, '/') && matname[0] != '$') {
 			const char *slash = strrchr(mod->name, '/');
 			snprintf(path, sizeof(path), "%.*s%s", slash ? (int)(slash - mod->name + 1) : 0, mod->name, matname);
 			matname = path;

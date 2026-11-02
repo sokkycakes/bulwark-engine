@@ -1023,6 +1023,13 @@ static void SV_Edict_f(int argc, const char **argv)
 	           QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), f[F.origin].f, f[F.origin + 1].f,
 	           f[F.origin + 2].f, f[F.velocity].f, f[F.velocity + 1].f, f[F.velocity + 2].f, f[F.angles].f,
 	           f[F.angles + 1].f, f[F.angles + 2].f);
+	{
+		/* animation state, for checking that things play */
+		int fr = QC_FieldOfs(sv.vm, "frame"), ft = QC_FieldOfs(sv.vm, "frame1time");
+		if (fr >= 0 && ft >= 0)
+			Con_Printf("  model %s frame %g frame1time %g\n", QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.model)),
+			           f[fr].f, f[ft].f);
+	}
 }
 
 /* "pr_trace <text>": prints entries to QC functions whose names contain it,

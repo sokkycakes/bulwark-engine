@@ -330,7 +330,8 @@ add_library(bwplug_source MODULE
 	plugins/source/plugin.c
 	plugins/source/vtf.c
 	plugins/source/vmt.c
-	plugins/source/mdl.c)
+	plugins/source/mdl.c
+	plugins/source/mdlskel.c)
 set_target_properties(bwplug_source PROPERTIES PREFIX "" C_VISIBILITY_PRESET hidden)
 target_link_libraries(bwplug_source m)
 add_executable(srcconv tools/srcconv.c)

@@ -401,8 +401,31 @@ void V_Draw(int w, int h)
 		draw_map(w, h);
 }
 
+/* viewerframe <number|name> [time]: picks the animation the model viewer
+ * shows (and how far into it), for scripted checks and long lists */
+static void ViewerFrame_f(int argc, const char **argv)
+{
+	rmodel_t *m = mode == VIEW_MODEL ? R_LoadModel(modelname) : NULL;
+	int n;
+	if (!m || argc < 2) {
+		Con_Printf("viewerframe <number|name> [seconds]: in the model viewer, shows that animation\n");
+		return;
+	}
+	n = BW_MAX(1, R_ModelNumFrames(m));
+	frame = -1;
+	for (int i = 0; i < n; i++)
+		if (R_FrameToName(m, i) && !Str_ICmp(R_FrameToName(m, i), argv[1]))
+			frame = i;
+	if (frame < 0)
+		frame = ((atoi(argv[1]) % n) + n) % n;
+	seqtime = argc > 2 ? (float)atof(argv[2]) : 0;
+	paused = argc > 2;
+	spin = argc > 2 ? 0 : spin;
+}
+
 void V_Init(void)
 {
+	Cmd_AddD("viewerframe", ViewerFrame_f, "In the model viewer, shows an animation: viewerframe <number|name> [seconds] (with seconds, holds that moment)");
 	Cmd_AddD("modelviewer", ModelViewer_f, "Shows a model on its own: modelviewer <MODELNAME> [SKINFILE] [ANIMATIONFILE]");
 	Cmd_AddD("mapedit", MapEdit_f, "Loads the named map without any gamecode active.");
 }

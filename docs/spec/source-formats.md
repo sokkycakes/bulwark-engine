@@ -81,8 +81,10 @@ once), and a `.vtf` ending is dropped.
 
 ## MDL, VVD and VTX
 
-The model is drawn in its reference pose, which is what static props use.
-Animation isn't read yet: characters stand in their bind pose.
+The model comes out as a skinned IQM: the bones become joints and every
+sequence an animation (see "Skeleton and animation" below). With
+`src_boneboxes 1`, or when the .vvd/.vtx are missing, the body is one box
+per bone instead of the mesh.
 
 **MDL** header offsets used: `"IDST"`, version at 4 (44 to 49 here;
 GoldSrc's 10 is the engine's own), hull box at 104 and 116, texture count
@@ -128,3 +130,72 @@ offset + the VTX vertex's number. Triangles are written to the IQM in the
 order the VTX gives them: in both test models every triangle's winding
 runs against its vertex normals, which is IQM's own order (the IQM loader
 turns them for GL), and both draw right side out in `modelviewer`.
+
+## Skeleton and animation
+
+Written 2026-11-02 against Left 4 Dead's `models/infected/hunter.mdl` and
+`hulk.mdl` (MDL v49, from the L4D1 install, not in this repository) with
+their `anim_hunter`/`anim_hulk` `.mdl` + `.ani`. Field offsets came from
+the public MDL descriptions and from probing those files. The frame
+animation layout (below) was learned by reading SourceIO
+(github.com/REDxEYE/SourceIO, MIT), which CLEANROOM.md allows; no code was
+taken from it, and its reader's "constants or frames, never both" is wrong
+for these files, which have both.
+
+**Bones** (header 156 count, 160 offset), 216 bytes: name offset (0),
+parent (4), position (32), quaternion xyzw (44), Euler radians (60),
+position scale (72), rotation scale (84), pose-to-bone 3x4 rows (96). The
+IQM joints are the position/quaternion rest pose; the mesh is moved from
+the VVD's bind pose into it through pose-to-bone, so the two always agree.
+
+**Hitboxes**: set count/offset at 172/176; a set is 12 bytes (name,
+count, offset from the set); a box is 68 bytes: bone, hit group, min, max
+(bone space). Bone boxes use set 0; bones without one get a stick to their
+first child (or a 1-unit cube). Box colours come from the engine's
+`$bonepalette` image: hit groups 0 to 7 (generic grey, head red, chest
+orange, stomach yellow, left arm green, right arm cyan, left leg blue, right
+leg magenta), then dark grey for bones without a hitbox.
+
+**Sequences** (188/192, 212 bytes): label (4), flags (12, bit 1 loops),
+blend grid size (68, 72), blend table offset from the sequence (60, int16
+animation numbers, row-major). An IQM animation per sequence uses the
+grid's middle cell; afterwards come the other cells, named
+`<sequence>:<animation>` (Source's leading "@" dropped). Included models
+(336/340, 8 bytes: label, name offsets from the entry) add their sequences
+after the model's own, with bones matched by name.
+
+**Animations** (180/184, 100 bytes): name (4), fps (8), flags (12), frame
+count (16), animation block (52), data offset (56), section offset (80)
+and frames per section (84). With sections, frame f is in section
+f / per-section (8-byte entries: block, offset), at frame f mod
+per-section. Block 0 is data in the .mdl, relative to the description;
+otherwise the .ani named at header 348, at block table (352 count, 356
+offset, 8-byte start/end pairs) start + offset. Flag 0x04 is a delta
+layer (applied on the rest pose), 0x20 all zeros, 0x40 frame animation.
+
+*Per-bone animations* (flag 0x40 clear): records of bone (byte), flags
+(byte), next record offset (int16, 0 ends), then the rotation (0x02
+Quaternion48, 0x20 Quaternion64, 0x08 three int16 offsets to run-length
+Euler values times the rotation scale) and the position (0x01 Vector48 of
+halfs, 0x04 run-length values times the position scale); 0x10 means not
+added to the rest values. Run-length lists are (valid, total) byte pairs
+followed by `valid` int16 values; the last valid value holds for the rest
+of the run.
+
+*Frame animations* (flag 0x40, every L4D animation): constants offset,
+frame offset, frame size (ints), 12 unused bytes, one flag byte per bone.
+The constants are bone by bone: 0x40 Quaternion48S, 0x02 Quaternion48,
+0x01 Vector48, 0x20 three floats; then each frame (frame offset + frame x
+frame size) bone by bone: 0x80 Quaternion48S, 0x08 Quaternion48, 0x04
+Vector48, 0x10 three floats. Quaternion48S stores three components in 15
+bits ((v - 16384) / 23168); the top bits of the first two words give the
+first stored component's index (high*2 + low), the next two follow in
+order, and the fourth is rebuilt with the third word's top bit as its
+sign. Checked: for all 300 frame animations in the two models, the summed
+per-frame sizes equal the stored frame size.
+
+Checks on the decoded result: bone lengths stay at their rest lengths in
+every frame except the Tank's `debris_bone` (the thrown rock) and the
+Hunter's finger tips in upper-body layers; frame-to-frame rotation jumps
+only occur in the `deathpose_*` sequences, which hold one pose per frame.
+`viewerframe <name> [seconds]` in the model viewer shows one.
