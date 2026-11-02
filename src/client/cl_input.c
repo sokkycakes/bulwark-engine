@@ -18,6 +18,7 @@ static bool keydown[K_MAX];
 
 static cvar_t *cl_forwardspeed, *cl_backspeed, *cl_sidespeed, *cl_upspeed, *cl_yawspeed, *cl_pitchspeed;
 static cvar_t *cl_movespeedkey, *sensitivity, *m_pitch, *m_yaw, *m_filter, *cl_run;
+static cvar_t *in_lastdevice;
 static cvar_t *joy_enable, *joy_deadzone, *joy_curve, *joy_yawspeed, *joy_pitchspeed, *joy_invert, *joy_movescale;
 
 /* the newest value of each controller axis */
@@ -345,11 +346,21 @@ static float button_amount(kbutton_t *b)
  * even if the binding changed while it was held */
 static char *held_command[K_MAX];
 
+/* in_lastdevice: what the player last used, 0 keyboard and mouse, 1 a
+ * controller, so a HUD can show the matching button prompts */
+static void last_device(int pad)
+{
+	if (in_lastdevice && in_lastdevice->ivalue != pad)
+		Cvar_SetDirect(in_lastdevice, pad ? "1" : "0");
+}
+
 void IN_KeyEvent(int key, bool down, int unicode)
 {
 	const char *b;
 	if (key < 0 || key >= K_MAX)
 		return;
+	if (down)
+		last_device(key >= K_JOY1 && key <= K_GP_RTRIGGER);
 	if (down && keydown[key] && key != K_BACKSPACE && !Con_IsActive() && bindings[key] && bindings[key][0] == '+')
 		return; /* key repeat on a held button */
 	keydown[key] = down;
@@ -438,6 +449,8 @@ void IN_MouseMove(float dx, float dy)
 {
 	static float olddx, olddy;
 	float mx = dx, my = dy;
+	if (dx || dy)
+		last_device(0);
 	if (Con_IsActive() || EM_Active() || ED_Active())
 		return;
 	if (V_MouseMove(dx, dy))
@@ -566,6 +579,8 @@ static void fill_command(usercmd_t *u, double now)
 	/* controller sticks: right one turns, left one moves */
 	if (joy_enable->ivalue && !Con_IsActive()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
+		if (lx || ly || rx || ry)
+			last_device(1);
 		cl.viewangles[1] -= dt * joy_yawspeed->value * rx;
 		cl.viewangles[0] += dt * joy_pitchspeed->value * ry * (joy_invert->ivalue ? -1 : 1);
 		clamp_pitch();
@@ -680,6 +695,7 @@ void IN_Init(void)
 	sensitivity = Cvar_Get("sensitivity", "3", CVAR_ARCHIVE, "Mouse sensitivity");
 	m_pitch = Cvar_Get("m_pitch", "0.022", CVAR_ARCHIVE, "Degrees per mouse count vertically (negative inverts)");
 	m_yaw = Cvar_Get("m_yaw", "0.022", CVAR_ARCHIVE, "Degrees per mouse count horizontally");
+	in_lastdevice = Cvar_Get("in_lastdevice", "0", CVAR_READONLY, "What was used last: 0 keyboard and mouse, 1 a controller (for button prompts)");
 	joy_enable = Cvar_Get("joy_enable", "1", CVAR_ARCHIVE, "Use game controllers' sticks for moving and looking");
 	joy_deadzone = Cvar_Get("joy_deadzone", "0.2", CVAR_ARCHIVE, "Stick travel ignored around the centre, 0..1");
 	joy_curve = Cvar_Get("joy_curve", "2", CVAR_ARCHIVE, "Stick response exponent: 1 is linear, higher is finer near the centre");
