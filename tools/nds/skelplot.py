@@ -32,7 +32,7 @@ def main():
     cell, top = 220, 22
     img = Image.new("RGB", (cell * per, top + (cell + 18) * len(clips)), (24, 24, 30))
     d = ImageDraw.Draw(img)
-    d.text((6, 4), title + "   grey: full skeleton   orange: cut down", fill=(220, 220, 220))
+    d.text((6, 4), title + "   grey: all 56 bones   orange: the bones kept (dots are joints)", fill=(220, 220, 220))
     yaw = math.radians(40)
     for row, clip in enumerate(clips):
         fr = frames.get(clip, [])
@@ -63,11 +63,21 @@ def main():
                 x, y = proj(p)
                 return (ox + x * s, oy + y * s)
 
-            for which, colour, width in ((2, (130, 130, 140), 3), (3, (255, 150, 40), 2)):
-                for parent, kept, a, b in js:
-                    if parent < 0:
-                        continue
-                    d.line([sp(js[parent][which]), sp((a, b)[which - 2])], fill=colour, width=width)
+            # grey: every bone of the full skeleton
+            for parent, kept, a, b in js:
+                if parent >= 0:
+                    d.line([sp(js[parent][2]), sp(a)], fill=(130, 130, 140), width=3)
+            # orange: only the kept bones, each joined to its nearest kept ancestor
+            for parent, kept, a, b in js:
+                p = parent
+                while p >= 0 and not js[p][1]:
+                    p = js[p][0]
+                if kept and p >= 0:
+                    d.line([sp(js[p][3]), sp(b)], fill=(255, 150, 40), width=2)
+            for parent, kept, a, b in js:
+                if kept:
+                    x, y = sp(b)
+                    d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(255, 150, 40))
             d.text((col * cell + 6, y0 + cell), "frame %d" % num, fill=(150, 150, 150))
     img.save(sys.argv[2])
 
