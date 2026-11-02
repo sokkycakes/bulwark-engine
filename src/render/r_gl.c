@@ -9,6 +9,9 @@
 BW_GL_FUNCS(X)
 #undef X
 
+void(BWGLAPI *qglPolygonMode_opt)(GLenum face, GLenum mode);
+void(BWGLAPI *qglGetFloatv_opt)(GLenum pname, GLfloat *data);
+
 int GL_LoadFunctions(void *(*getproc)(const char *name))
 {
 	int missing = 0;
@@ -20,6 +23,8 @@ int GL_LoadFunctions(void *(*getproc)(const char *name))
 	}
 	BW_GL_FUNCS(X)
 #undef X
+	qglPolygonMode_opt = (void(BWGLAPI *)(GLenum, GLenum))getproc("glPolygonMode");
+	qglGetFloatv_opt = (void(BWGLAPI *)(GLenum, GLfloat *))getproc("glGetFloatv");
 	return missing == 0;
 }
 

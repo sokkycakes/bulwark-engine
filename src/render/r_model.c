@@ -1481,18 +1481,35 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 /* --- outlines --------------------------------------------------------------- */
 
-/* RF_OUTLINE: Counter-Strike Online's teammate outline (cl_outline_tdm),
- * reworked for this renderer. CSO (hw.dll, read in the CSNZ reconstruction)
- * draws each marked model twice after it has been drawn: first into the
- * stencil only, then as a wireframe with thick lines (7 pixels, thinning
- * by distance squared / 10000 to at least 4.5) where the stencil is not
- * set, so only the part of the lines outside the model shows. Depth is
- * ignored, so the outline shows through walls. Its alpha is 0.2 + distance
- * squared / 100000, at most 0.8, and fades to nothing towards the bottom
- * of the entity's box. Thick lines aren't in core GL, so here the second
- * pass pushes the model out along its normals by half the line width in
- * pixels instead. */
+/* RF_OUTLINE: Counter-Strike Online's teammate outline (cl_outline_tdm), as
+ * hw.dll draws it (read in the CSNZ reconstruction: FUN_023035d0 and
+ * FUN_02303190, run for a marked entity right after its model). First the
+ * model goes into the stencil only: stencil ALWAYS 1, KEEP/REPLACE/REPLACE,
+ * depth ALWAYS without writes, colour writes off. Then it is drawn again as
+ * a wireframe (glPolygonMode LINE) in white.spr times the outline colour,
+ * alpha blended, where the stencil is not 1, with depth ALWAYS, so only the
+ * outer half of the lines around the model shows, through walls. Line width
+ * is 7 - d^2 / 10000 pixels, at least 4.5; alpha is 0.2 + d^2 / 100000, at
+ * most 0.8, d being the distance from the view to the entity; per vertex the
+ * alpha is also at most (z - (origin z + mins z)) / (maxs z - mins z), so
+ * the outline fades out towards the bottom of the entity's box. Here the
+ * outlines are drawn after the scene's entities, with view models written
+ * into the stencil first so they cover outlines as they do in CSO. Where GL
+ * has no polygon mode or no lines that wide (WebGL, some core contexts),
+ * the model is pushed out along its normals by half the line width instead. */
 static cvar_t *r_outline, *r_outline_width;
+static float linerange[2];
+static bool linerange_known;
+
+static void outline_stencil_state(void)
+{
+	qglStencilFunc(GL_ALWAYS, 1, 0xff);
+	qglStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
+	qglStencilMask(0xff);
+	qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	GL_SetDepth(false, false); /* CSO: depth ALWAYS without writes */
+	GL_SetBlend(BLEND_OPAQUE, 0, 0);
+}
 
 static void outline_geometry(rentity_t *e)
 {
@@ -1523,7 +1540,7 @@ void R_DrawOutlines(void)
 	GLint vp[4];
 	if (!r_outline) {
 		r_outline = Cvar_Get("r_outline", "1", CVAR_ARCHIVE, "Draw outlines on entities that ask for one (RF_OUTLINE)");
-		r_outline_width = Cvar_Get("r_outline_width", "1", CVAR_ARCHIVE, "Scales the width of outlines");
+		r_outline_width = Cvar_Get("r_outline_width", "1", CVAR_ARCHIVE, "Scales the width of outlines (1 is CSO's)");
 	}
 #if defined(__3DS__) || defined(__NDS__)
 	return; /* no stencil there yet */
@@ -1535,21 +1552,23 @@ void R_DrawOutlines(void)
 	if (!any)
 		return;
 	qglGetIntegerv(GL_VIEWPORT, vp);
+	if (!linerange_known) {
+		linerange[0] = linerange[1] = 1;
+		if (qglGetFloatv_opt)
+			qglGetFloatv_opt(GL_ALIASED_LINE_WIDTH_RANGE, linerange);
+		linerange_known = true;
+	}
 	R_UseProgram(PROG_OUTLINE);
-	GL_SetCull(false);
 	qglEnable(GL_STENCIL_TEST);
 	qglStencilMask(0xff);
 	qglClearStencil(0);
 	qglClear(GL_STENCIL_BUFFER_BIT);
-	qglStencilFunc(GL_ALWAYS, 1, 0xff);
-	qglStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-	qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-	GL_SetDepth(false, false);
-	GL_SetBlend(BLEND_OPAQUE, 0, 0);
+	outline_stencil_state();
 	qglUniform4f(p->u_outline, 0, 0, 0, 0);
 	qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
 	/* view models cover outlines, as they do in CSO, where each outline is
 	 * drawn with its model, before the view model */
+	GL_SetCull(false);
 	for (int i = 0; i < r_scene.numents; i++) {
 		rentity_t *e = &r_scene.ents[i];
 		rmodel_t *m = e->model;
@@ -1568,6 +1587,7 @@ void R_DrawOutlines(void)
 		rentity_t *e = &r_scene.ents[i];
 		rmodel_t *m = e->model;
 		float model[16], mvp[16], d2 = 0, width, alpha;
+		bool lines;
 		if (!(e->renderflags & RF_OUTLINE) || (e->renderflags & (1 | 4)) || !m || !m->loaded ||
 		    (m->type != MOD_ALIAS && m->type != MOD_IQM))
 			continue;
@@ -1576,37 +1596,53 @@ void R_DrawOutlines(void)
 		width = 7 - d2 * 0.0001f;
 		if (width < 4.5f)
 			width = 4.5f;
+		width *= r_outline_width->value;
 		alpha = d2 * 1e-5f + 0.2f;
 		if (alpha > 0.8f)
 			alpha = 0.8f;
+		lines = qglPolygonMode_opt && width <= linerange[1];
 		Mat4_FromAxis(model, e->axis, e->origin, e->scale);
 		Mat4_Multiply(mvp, r_scene.viewproj, model);
 		qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 		qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
 		if (m->type == MOD_IQM && m->iqm->skel)
 			skin_iqm(m->iqm, e); /* the buffer holds whichever entity used the model last */
+		/* the model drawn as the game draws it: back faces culled */
+		GL_SetCull(true);
+		qglCullFace(e->mirrored ? GL_FRONT : GL_BACK);
 		/* the model itself, into the stencil only */
-		qglStencilFunc(GL_ALWAYS, 1, 0xff);
-		qglStencilOp(GL_KEEP, GL_REPLACE, GL_REPLACE);
-		qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-		GL_SetDepth(false, false);
-		GL_SetBlend(BLEND_OPAQUE, 0, 0);
+		outline_stencil_state();
 		qglUniform4f(p->u_outline, 0, 0, 0, 0);
 		qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
 		outline_geometry(e);
-		/* then the model pushed out, where the stencil isn't set */
+		/* then its wireframe, where the stencil isn't set */
 		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 		qglStencilFunc(GL_NOTEQUAL, 1, 0xff);
-		qglStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+		qglStencilMask(0);
+		GL_SetDepth(true, true);
+		qglDepthFunc(GL_ALWAYS);
 		GL_SetBlend(BLEND_ALPHA, 0, 0);
 		qglUniform4f(p->u_color, e->outline[0], e->outline[1], e->outline[2], alpha);
-		/* alias normals come from Quake's triangle winding, the other way
-		 * round from GL's, so they point inwards: push those models the other way */
-		qglUniform4f(p->u_outline, (m->type == MOD_ALIAS ? -0.5f : 0.5f) * width * r_outline_width->value,
-		             2.0f / BW_MAX(vp[2], 1), 2.0f / BW_MAX(vp[3], 1), 0);
 		qglUniform4f(p->u_outline_z, e->origin[2] + e->mins[2], e->maxs[2] - e->mins[2], 0, 0);
-		outline_geometry(e);
+		if (lines) {
+			qglLineWidth(width);
+			qglPolygonMode_opt(GL_FRONT_AND_BACK, GL_LINE);
+			outline_geometry(e);
+			qglPolygonMode_opt(GL_FRONT_AND_BACK, GL_FILL);
+			qglLineWidth(1);
+		} else {
+			/* alias normals come from Quake's triangle winding, the other
+			 * way round from GL's, so they point inwards: push those
+			 * models the other way */
+			GL_SetCull(false);
+			qglUniform4f(p->u_outline, (m->type == MOD_ALIAS ? -0.5f : 0.5f) * width,
+			             2.0f / BW_MAX(vp[2], 1), 2.0f / BW_MAX(vp[3], 1), 0);
+			outline_geometry(e);
+		}
+		qglDepthFunc(GL_LEQUAL);
+		qglStencilMask(0xff);
 	}
+	qglCullFace(GL_BACK);
 	qglDisable(GL_STENCIL_TEST);
 	GL_SetBlend(BLEND_OPAQUE, 0, 0);
 	GL_SetDepth(true, true);

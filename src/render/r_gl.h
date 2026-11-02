@@ -45,6 +45,9 @@ typedef ptrdiff_t GLintptr;
 #define GL_ALWAYS 0x0207
 #define GL_STENCIL_TEST 0x0B90
 #define GL_VIEWPORT 0x0BA2
+#define GL_ALIASED_LINE_WIDTH_RANGE 0x846E
+#define GL_LINE 0x1B01
+#define GL_FILL 0x1B02
 #define GL_KEEP 0x1E00
 #define GL_REPLACE 0x1E01
 #define GL_SRC_COLOR 0x0300
@@ -211,5 +214,9 @@ BW_GL_FUNCS(X)
 
 /* loads every entry point; false (with a message) if one is missing */
 int GL_LoadFunctions(void *(*getproc)(const char *name));
+
+/* optional entry points: NULL where GL lacks them (WebGL, GLES) */
+extern void(BWGLAPI *qglPolygonMode_opt)(GLenum face, GLenum mode);
+extern void(BWGLAPI *qglGetFloatv_opt)(GLenum pname, GLfloat *data);
 
 #endif
