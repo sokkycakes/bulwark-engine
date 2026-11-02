@@ -1,0 +1,42 @@
+<!--
+	Justice Task Force main menu (sokky's Figma group "menuContainer"),
+	themed as a QtCurve window: QtCurve variant "SokkyDark" (sokky's stylerc
+	with GTK 3 Adwaita-dark colours). The frame keeps the Figma outline
+	exactly (tools/qtref/shapes/jtf-menu.svg, painted by tools/qtref/qtshape.py);
+	positions are the Figma ones halved: the menu is laid out at 960x540
+	and drawn pixelated (bwdesignheight="540" bwpixelated="1" below: this
+	view only, whatever ui_designheight / ui_pixelated say), so 1080p shows
+	it at exactly 2x.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/qt/qtcurve.css" />
+		<include src="file://{resources}/styles/qt/qtcurve-sokky-dark.css" />
+		<include src="file://{resources}/styles/qt/jtf-menu.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/qt/jtf-menu.js" />
+	</scripts>
+	<Panel id="JtfScreen" bwdesignheight="540" bwpixelated="1">
+		<Panel id="JtfMenu" class="QtCurve SokkyDark">
+			<Label id="JtfTitle" text="main menu" />
+			<Panel class="JtfTile" style="x:30px;">
+				<Button id="JtfPlay" class="JtfSquare" onactivate="JtfMenuAction('play')" />
+				<Label class="JtfTileLabel" text="PLAY" />
+			</Panel>
+			<Panel class="JtfTile" style="x:179px;">
+				<Button id="JtfHero" class="JtfSquare" onactivate="JtfMenuAction('hero')" />
+				<Label class="JtfTileLabel" text="HERO" />
+			</Panel>
+			<Panel class="JtfTile" style="x:328px;">
+				<Button id="JtfSett" class="JtfSquare" onactivate="JtfMenuAction('settings')" />
+				<Label class="JtfTileLabel" text="SETT" />
+			</Panel>
+			<Panel class="JtfTile" style="x:477px;">
+				<Button id="JtfQuit" class="JtfSquare" onactivate="JtfMenuAction('quit')" />
+				<Label class="JtfTileLabel" text="QUIT" />
+			</Panel>
+			<Panel id="JtfLogo" />
+		</Panel>
+	</Panel>
+</root>

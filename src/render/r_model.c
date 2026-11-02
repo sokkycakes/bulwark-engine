@@ -319,6 +319,141 @@ bad:
 	return false;
 }
 
+/* --- Quake 2 models (.md2) ---------------------------------------------------- */
+
+/* Same vertex animation as .mdl, loaded into the same alias_t. Format from
+ * the public MD2 description: a 68-byte header of ints ("IDP2", version 8,
+ * skin size, frame size, counts, then offsets), 64-byte skin paths, short
+ * texture coordinates, triangles of three position and three texcoord
+ * indices, and frames of scale, translate, a 16-byte name and four bytes per
+ * vertex (x, y, z, normal index). Positions and texcoords are indexed
+ * separately, so each distinct pair becomes one output vertex. */
+static bool load_md2(rmodel_t *mod, const uint8_t *d, size_t size)
+{
+	alias_t *a;
+	int skinw, skinh, framesize, numskins, numxyz, numst, numtris, numframes;
+	size_t ofs_skins, ofs_st, ofs_tris, ofs_frames;
+	int *tris, *pairs;
+
+	if (size < 68 || rd32(d + 4) != 8)
+		return false;
+	skinw = rd32(d + 8);
+	skinh = rd32(d + 12);
+	framesize = rd32(d + 16);
+	numskins = rd32(d + 20);
+	numxyz = rd32(d + 24);
+	numst = rd32(d + 28);
+	numtris = rd32(d + 32);
+	numframes = rd32(d + 40);
+	ofs_skins = (size_t)rd32(d + 44);
+	ofs_st = (size_t)rd32(d + 48);
+	ofs_tris = (size_t)rd32(d + 52);
+	ofs_frames = (size_t)rd32(d + 56);
+	if (skinw <= 0 || skinh <= 0 || numskins < 0 || numskins > 32 || numxyz <= 0 || numxyz > 65535 ||
+	    numst <= 0 || numtris <= 0 || numtris > 65535 || numframes <= 0 || numframes > 4096 ||
+	    framesize < 40 + numxyz * 4 || ofs_skins + (size_t)numskins * 64 > size ||
+	    ofs_st + (size_t)numst * 4 > size || ofs_tris + (size_t)numtris * 12 > size ||
+	    ofs_frames + (size_t)numframes * framesize > size) {
+		Con_Printf("%s: truncated or corrupt model\n", mod->name);
+		return false;
+	}
+
+	a = Mem_Alloc(sizeof(*a));
+	a->numverts = numxyz;
+	a->numtris = numtris;
+	a->numskins = numskins;
+	a->skins = Mem_Alloc(sizeof(material_t *) * (numskins + 1));
+	for (int i = 0; i < numskins; i++) {
+		char skin[65];
+		memcpy(skin, d + ofs_skins + (size_t)i * 64, 64);
+		skin[64] = 0;
+		/* "skin.pcx" also finds a .tga or .png next to it */
+		a->skins[i] = R_FindMaterial(skin, MATF_MODEL);
+	}
+
+	/* one output vertex per distinct position/texcoord pair */
+	tris = Mem_Alloc(sizeof(int) * numtris * 3);
+	pairs = Mem_Alloc(sizeof(int) * numtris * 3 * 2);
+	a->remap = Mem_Alloc(sizeof(int) * numtris * 3);
+	a->st = Mem_Alloc(sizeof(float) * numtris * 3 * 2);
+	a->indices = Mem_Alloc(sizeof(uint16_t) * numtris * 3);
+	a->numoutverts = 0;
+	for (int i = 0; i < numtris; i++) {
+		const uint8_t *t = d + ofs_tris + (size_t)i * 12;
+		for (int k = 0; k < 3; k++) {
+			int xyz = (uint16_t)rd16(t + k * 2), st = (uint16_t)rd16(t + 6 + k * 2), out = -1;
+			if (xyz >= numxyz)
+				xyz = 0;
+			if (st >= numst)
+				st = 0;
+			tris[i * 3 + k] = xyz;
+			for (int o = 0; o < a->numoutverts; o++)
+				if (pairs[o * 2] == xyz && pairs[o * 2 + 1] == st) {
+					out = o;
+					break;
+				}
+			if (out < 0) {
+				out = a->numoutverts++;
+				pairs[out * 2] = xyz;
+				pairs[out * 2 + 1] = st;
+				a->remap[out] = xyz;
+				a->st[out * 2] = ((int16_t)rd16(d + ofs_st + (size_t)st * 4) + 0.5f) / skinw;
+				a->st[out * 2 + 1] = ((int16_t)rd16(d + ofs_st + (size_t)st * 4 + 2) + 0.5f) / skinh;
+			}
+			/* like .mdl, the triangles wind the other way round from GL's front faces */
+			a->indices[i * 3 + (2 - k)] = (uint16_t)out;
+		}
+	}
+	Mem_Free(pairs);
+	if (a->numoutverts > 65535) {
+		Con_Printf("%s: too many vertices\n", mod->name);
+		Mem_Free(tris);
+		return false;
+	}
+
+	/* frames: one pose each, Quake 2 runs them at 10 per second */
+	a->frames = Mem_Alloc(sizeof(aliasframe_t) * numframes);
+	a->numframes = numframes;
+	a->numposes = numframes;
+	a->poses = Mem_Alloc(sizeof(float) * 3 * numxyz * numframes);
+	for (int i = 0; i < numframes; i++) {
+		const uint8_t *f = d + ofs_frames + (size_t)i * framesize;
+		float scale[3], origin[3], *pose = a->poses + (size_t)i * numxyz * 3;
+		for (int k = 0; k < 3; k++) {
+			scale[k] = rdf(f + k * 4);
+			origin[k] = rdf(f + 12 + k * 4);
+		}
+		memcpy(a->frames[i].name, f + 24, 15);
+		a->frames[i].firstpose = i;
+		a->frames[i].numposes = 1;
+		a->frames[i].interval = 0.1f;
+		for (int v = 0; v < numxyz; v++)
+			for (int k = 0; k < 3; k++)
+				pose[v * 3 + k] = f[40 + v * 4 + k] * scale[k] + origin[k];
+	}
+	a->normals = Mem_Alloc(sizeof(float) * 3 * numxyz * numframes);
+	compute_normals(a, tris);
+	Mem_Free(tris);
+
+	for (int k = 0; k < 3; k++) {
+		mod->mins[k] = 1e30f;
+		mod->maxs[k] = -1e30f;
+	}
+	for (size_t i = 0; i < (size_t)numframes * numxyz; i++)
+		for (int k = 0; k < 3; k++) {
+			float v = a->poses[i * 3 + k];
+			if (v < mod->mins[k])
+				mod->mins[k] = v;
+			if (v > mod->maxs[k])
+				mod->maxs[k] = v;
+		}
+	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
+	mod->alias = a;
+	mod->type = MOD_ALIAS;
+	mod->numframes = a->numgroups ? a->numgroups : a->numframes;
+	return true;
+}
+
 /* --- IQM / VVM ------------------------------------------------------------ */
 
 typedef struct {
@@ -438,8 +573,9 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 		char path[192];
 		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
 		Str_Copy(q->meshes[m].name, mname < num_text ? text + mname : "", sizeof(q->meshes[m].name));
-		/* a bare material name is looked up next to the model */
-		if (!strchr(matname, '/')) {
+		/* a bare material name is looked up next to the model; "$name"
+		 * is one of the engine's own images */
+		if (!strchr(matname, '/') && matname[0] != '$') {
 			const char *slash = strrchr(mod->name, '/');
 			snprintf(path, sizeof(path), "%.*s%s", slash ? (int)(slash - mod->name + 1) : 0, mod->name, matname);
 			matname = path;
@@ -968,6 +1104,24 @@ static bool load_sprite(rmodel_t *mod, const uint8_t *d, size_t size)
 	return true;
 }
 
+/* a sprite's frame for particles: its material, and its rectangle about the
+ * sprite's centre as left, right, top, bottom; NULL for a bad frame */
+int R_SpriteFrameCount(const rmodel_t *m)
+{
+	return (m && m->type == MOD_SPRITE && m->sprite) ? m->sprite->numframes : 0;
+}
+
+material_t *R_SpriteFrame(const rmodel_t *m, int frame, float *rect)
+{
+	const spriteframe_t *f;
+	if (!m || m->type != MOD_SPRITE || !m->sprite || m->sprite->numframes <= 0)
+		return NULL;
+	frame = BW_MAX(0, BW_MIN(m->sprite->numframes - 1, frame));
+	f = &m->sprite->frames[frame];
+	rect[0] = f->left, rect[1] = f->right, rect[2] = f->top, rect[3] = f->bottom;
+	return f->material;
+}
+
 /* sprites face the camera, always in the translucent pass. Additive sprites
  * (texture format 1, EF_ADDITIVE or RF_ADDITIVE) add onto the scene */
 static void draw_sprite(rentity_t *e, const float *viewproj)
@@ -1121,6 +1275,8 @@ rmodel_t *R_LoadModel(const char *name)
 	}
 	if (size >= 4 && !memcmp(d, "IDPO", 4))
 		m->loaded = load_alias(m, d, size);
+	else if (size >= 4 && !memcmp(d, "IDP2", 4))
+		m->loaded = load_md2(m, d, size);
 	else if (size >= 16 && !memcmp(d, "INTERQUAKEMODEL", 16))
 		m->loaded = load_iqm(m, d, size);
 	else if (size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
@@ -1286,6 +1442,34 @@ static int alias_pose(alias_t *a, int frame, float t)
 	}
 }
 
+/* an alias model's vertices for the entity's frames, lerped */
+static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
+{
+	static rvert_t *buf;
+	static int bufsize;
+	int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
+	float lerp = e->lerpfrac;
+	const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
+	const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
+	if (a->numoutverts > bufsize) {
+		bufsize = a->numoutverts;
+		buf = Mem_Realloc(buf, sizeof(rvert_t) * bufsize);
+	}
+	/* lerpfrac is how far towards frame2 the entity is */
+	for (int i = 0; i < a->numoutverts; i++) {
+		int v = a->remap[i];
+		rvert_t *o = &buf[i];
+		for (int k = 0; k < 3; k++) {
+			o->xyz[k] = pa[v * 3 + k] + (pb[v * 3 + k] - pa[v * 3 + k]) * lerp;
+			o->normal[k] = na[v * 3 + k] + (nb[v * 3 + k] - na[v * 3 + k]) * lerp;
+		}
+		o->st[0] = a->st[i * 2];
+		o->st[1] = a->st[i * 2 + 1];
+		memset(o->color, 255, 4);
+	}
+	return buf;
+}
+
 static void set_model_lighting(const glprog_t *p, rentity_t *e)
 {
 	float amb[3], dif[3], dir[3], pos[8 * 4], col[8 * 3];
@@ -1393,29 +1577,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 	if (m->type == MOD_ALIAS) {
 		alias_t *a = m->alias;
-		static rvert_t *buf;
-		static int bufsize;
-		int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
-		float lerp = e->lerpfrac;
-		const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
-		const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
+		rvert_t *buf = alias_verts(e, a);
 		material_t *skin;
-		if (a->numoutverts > bufsize) {
-			bufsize = a->numoutverts;
-			buf = Mem_Realloc(buf, sizeof(rvert_t) * bufsize);
-		}
-		/* lerpfrac is how far towards frame2 the entity is */
-		for (int i = 0; i < a->numoutverts; i++) {
-			int v = a->remap[i];
-			rvert_t *o = &buf[i];
-			for (int k = 0; k < 3; k++) {
-				o->xyz[k] = pa[v * 3 + k] + (pb[v * 3 + k] - pa[v * 3 + k]) * lerp;
-				o->normal[k] = na[v * 3 + k] + (nb[v * 3 + k] - na[v * 3 + k]) * lerp;
-			}
-			o->st[0] = a->st[i * 2];
-			o->st[1] = a->st[i * 2 + 1];
-			memset(o->color, 255, 4);
-		}
 		skin = e->forceshader ? e->forceshader
 		       : a->numskins ? a->skins[e->skin >= 0 && e->skin < a->numskins ? e->skin : 0]
 		                     : R_FindMaterial("$default", MATF_MODEL);
@@ -1451,6 +1614,221 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		qglDepthRange(0, 1);
 	if (e->mirrored)
 		qglCullFace(GL_BACK);
+	GL_SetCull(true);
+}
+
+/* --- outlines --------------------------------------------------------------- */
+
+/* RF_OUTLINE: Counter-Strike Online's teammate outline (cl_outline_tdm).
+ * CSO's hw.dll (read in the CSNZ reconstruction: FUN_023035d0, FUN_02303190)
+ * puts the model in the stencil and then draws its wireframe with 4.5 to 7
+ * pixel lines where the stencil is clear, through walls; only the outer half
+ * of the lines shows. Wide lines aren't available everywhere and look ragged,
+ * so Bulwark draws the same band in screen space instead: the model goes
+ * into a mask texture, and every pixel outside it within half CSO's line
+ * width (7 - d^2 / 10000 pixels, at least 4.5, d the distance from the view)
+ * gets the outline, smoothed at the outer edge. CSO's alpha is kept: 0.2 +
+ * d^2 / 100000, at most 0.8, and at most (z - (origin z + mins z)) /
+ * (maxs z - mins z) of the nearest model pixel, so it fades out towards the
+ * bottom of the entity's box. View models go into the mask too and hide
+ * outlines, as they do in CSO, where outlines are drawn with their models
+ * before the view model. No normals, lines or stencil are involved. */
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#endif
+#ifndef GL_FRAMEBUFFER_BINDING
+#define GL_FRAMEBUFFER_BINDING 0x8CA6
+#endif
+#ifndef GL_SCISSOR_BOX
+#define GL_SCISSOR_BOX 0x0C10
+#endif
+static cvar_t *r_outline, *r_outline_width;
+static GLuint outline_fb, outline_tex;
+static int outline_w, outline_h;
+
+static void outline_geometry(rentity_t *e)
+{
+	rmodel_t *m = e->model;
+	if (m->type == MOD_ALIAS) {
+		alias_t *a = m->alias;
+		R_StreamDraw(GL_TRIANGLES, alias_verts(e, a), a->numoutverts, a->indices, a->numtris * 3);
+	} else if (m->type == MOD_IQM && m->iqm->vao) {
+		iqm_t *q = m->iqm;
+		qglBindVertexArray(q->vao);
+		for (int i = 0; i < q->nummeshes; i++) {
+			if (q->meshes[i].geomgroup >= 0 &&
+			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
+				continue;
+			if (!q->meshes[i].numindexes || q->meshes[i].material->nodraw)
+				continue;
+			qglDrawElements(GL_TRIANGLES, q->meshes[i].numindexes, GL_UNSIGNED_INT,
+			                (void *)(sizeof(uint32_t) * (size_t)q->meshes[i].firstindex));
+		}
+		qglBindVertexArray(0);
+	}
+}
+
+static bool outline_target(void)
+{
+	if (!qglFramebufferTexture2D_opt)
+		return false;
+	if (outline_fb && outline_w == r_pwidth && outline_h == r_pheight)
+		return true;
+	if (!outline_fb) {
+		qglGenFramebuffers(1, &outline_fb);
+		qglGenTextures(1, &outline_tex);
+	}
+	GL_BindTexture(0, GL_TEXTURE_2D, outline_tex);
+	qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, r_pwidth, r_pheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	qglBindFramebuffer(GL_FRAMEBUFFER, outline_fb);
+	qglFramebufferTexture2D_opt(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outline_tex, 0);
+	outline_w = r_pwidth, outline_h = r_pheight;
+	return true;
+}
+
+/* the entity's box on screen, in physical pixels, widened by pad; false if
+ * it is all behind the view. Partly behind: the whole box given */
+static bool outline_rect(const rentity_t *e, const int *box, int pad, int *rect)
+{
+	float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
+	const float *vp = r_scene.viewproj;
+	int behind = 0;
+	for (int c = 0; c < 8; c++) {
+		float p[3], clip[4];
+		for (int k = 0; k < 3; k++)
+			p[k] = e->origin[k] + ((c >> k) & 1 ? e->maxs[k] : e->mins[k]);
+		for (int r = 0; r < 4; r++)
+			clip[r] = vp[r] * p[0] + vp[4 + r] * p[1] + vp[8 + r] * p[2] + vp[12 + r];
+		if (clip[3] <= 0.01f) {
+			behind++;
+			continue;
+		}
+		for (int k = 0; k < 2; k++) {
+			float ndc = clip[k] / clip[3];
+			lo[k] = BW_MIN(lo[k], ndc), hi[k] = BW_MAX(hi[k], ndc);
+		}
+	}
+	if (behind == 8)
+		return false;
+	rect[0] = box[0], rect[1] = box[1], rect[2] = box[0] + box[2], rect[3] = box[1] + box[3];
+	if (!behind) {
+		int x0 = box[0] + (int)((lo[0] * 0.5f + 0.5f) * box[2]) - pad, x1 = box[0] + (int)((hi[0] * 0.5f + 0.5f) * box[2]) + pad;
+		int y0 = box[1] + (int)((lo[1] * 0.5f + 0.5f) * box[3]) - pad, y1 = box[1] + (int)((hi[1] * 0.5f + 0.5f) * box[3]) + pad;
+		rect[0] = BW_MAX(rect[0], x0), rect[1] = BW_MAX(rect[1], y0);
+		rect[2] = BW_MIN(rect[2], x1), rect[3] = BW_MIN(rect[3], y1);
+	}
+	return rect[2] > rect[0] && rect[3] > rect[1];
+}
+
+void R_DrawOutlines(void)
+{
+	const glprog_t *p = &r_progs[PROG_OUTLINE], *p2 = &r_progs[PROG_OUTLINE2];
+	static const float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+	static rvert_t quad[4];
+	static const uint16_t quadidx[6] = {0, 1, 2, 0, 2, 3};
+	bool any = false;
+	GLint box[4], savedfb;
+	if (!r_outline) {
+		r_outline = Cvar_Get("r_outline", "1", CVAR_ARCHIVE, "Draw outlines on entities that ask for one (RF_OUTLINE)");
+		r_outline_width = Cvar_Get("r_outline_width", "1", CVAR_ARCHIVE, "Scales the width of outlines (1 is CSO's)");
+	}
+	if (!r_outline->ivalue || !p->prog || !p2->prog)
+		return;
+	if (!quad[1].xyz[0]) {
+		quad[0].xyz[0] = quad[3].xyz[0] = quad[0].xyz[1] = quad[1].xyz[1] = -1;
+		quad[1].xyz[0] = quad[2].xyz[0] = quad[2].xyz[1] = quad[3].xyz[1] = 1;
+	}
+	for (int i = 0; i < r_scene.numents && !any; i++)
+		any = (r_scene.ents[i].renderflags & RF_OUTLINE) != 0;
+	if (!any)
+		return;
+	qglGetIntegerv(GL_SCISSOR_BOX, box);
+	qglGetIntegerv(GL_FRAMEBUFFER_BINDING, &savedfb);
+	if (!outline_target()) {
+		qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedfb);
+		return;
+	}
+	GL_SetCull(false);
+	GL_SetDepth(false, false);
+	for (int i = 0; i < r_scene.numents; i++) {
+		rentity_t *e = &r_scene.ents[i];
+		rmodel_t *m = e->model;
+		float model[16], mvp[16], d2 = 0, width, alpha;
+		int rect[4];
+		if (!(e->renderflags & RF_OUTLINE) || (e->renderflags & (1 | 4)) || !m || !m->loaded ||
+		    (m->type != MOD_ALIAS && m->type != MOD_IQM))
+			continue;
+		for (int k = 0; k < 3; k++)
+			d2 += (e->origin[k] - r_scene.origin[k]) * (e->origin[k] - r_scene.origin[k]);
+		width = 7 - d2 * 0.0001f;
+		if (width < 4.5f)
+			width = 4.5f;
+		width *= 0.5f * r_outline_width->value; /* the outer half of CSO's lines */
+		alpha = d2 * 1e-5f + 0.2f;
+		if (alpha > 0.8f)
+			alpha = 0.8f;
+		if (!outline_rect(e, box, (int)ceilf(width) + 2, rect))
+			continue;
+
+		/* the mask */
+		qglBindFramebuffer(GL_FRAMEBUFFER, outline_fb);
+		{
+			/* wider than the band, which looks this far past its own edge */
+			int pad = (int)ceilf(width) + 1;
+			int x0 = BW_MAX(rect[0] - pad, 0), y0 = BW_MAX(rect[1] - pad, 0);
+			int x1 = BW_MIN(rect[2] + pad, outline_w), y1 = BW_MIN(rect[3] + pad, outline_h);
+			qglScissor(x0, y0, x1 - x0, y1 - y0);
+		}
+		qglClearColor(0, 0, 0, 0);
+		qglClear(GL_COLOR_BUFFER_BIT);
+		GL_SetBlend(BLEND_OPAQUE, 0, 0);
+		R_UseProgram(PROG_OUTLINE);
+		qglUniform4f(p->u_outline_z, 0, 0, 0, 0);
+		qglUniform4f(p->u_color, 0, 0, 1, 1); /* view models: hide the outline */
+		for (int j = 0; j < r_scene.numents; j++) {
+			rentity_t *v = &r_scene.ents[j];
+			float vmodel[16], vmvp[16];
+			if (!(v->renderflags & (1 | 4)) || !v->model || !v->model->loaded ||
+			    (v->model->type != MOD_ALIAS && v->model->type != MOD_IQM))
+				continue;
+			Mat4_FromAxis(vmodel, v->axis, v->origin, v->scale);
+			Mat4_Multiply(vmvp, r_scene.vmviewproj, vmodel);
+			qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, vmvp);
+			qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, vmodel);
+			if (v->model->type == MOD_IQM && v->model->iqm->skel)
+				skin_iqm(v->model->iqm, v);
+			outline_geometry(v);
+		}
+		Mat4_FromAxis(model, e->axis, e->origin, e->scale);
+		Mat4_Multiply(mvp, r_scene.viewproj, model);
+		qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
+		qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
+		qglUniform4f(p->u_color, 1, 0, 0, 1);
+		qglUniform4f(p->u_outline_z, e->origin[2] + e->mins[2], e->maxs[2] - e->mins[2], 0, 0);
+		if (m->type == MOD_IQM && m->iqm->skel)
+			skin_iqm(m->iqm, e); /* the buffer holds whichever entity used the model last */
+		outline_geometry(e);
+
+		/* the band around it, onto the scene */
+		qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedfb);
+		qglScissor(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]);
+		R_UseProgram(PROG_OUTLINE2);
+		GL_BindTexture(0, GL_TEXTURE_2D, outline_tex);
+		GL_SetBlend(BLEND_ALPHA, 0, 0);
+		qglUniformMatrix4fv(p2->u_mvp, 1, GL_FALSE, ident);
+		qglUniform4f(p2->u_color, e->outline[0], e->outline[1], e->outline[2], alpha);
+		qglUniform4f(p2->u_outline, width, 0, 0, 0);
+		R_StreamDraw(GL_TRIANGLES, quad, 4, quadidx, 6);
+	}
+	qglBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedfb);
+	qglScissor(box[0], box[1], box[2], box[3]);
+	GL_BindTexture(0, GL_TEXTURE_2D, 0);
+	GL_SetBlend(BLEND_OPAQUE, 0, 0);
+	GL_SetDepth(true, true);
 	GL_SetCull(true);
 }
 

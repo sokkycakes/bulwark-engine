@@ -40,6 +40,14 @@ static void write_def(msg_t *m, const vxworld_t *w, int type)
 	MSG_WriteByte(m, d->flags);
 	MSG_WriteString(m, d->name);
 	MSG_WriteString(m, d->texture);
+	if (d->lighttype || d->light[0] || d->light[1] || d->light[2]) {
+		MSG_WriteByte(m, svc_voxel);
+		MSG_WriteByte(m, VXN_LIGHT);
+		MSG_WriteVarUInt(m, (uint32_t)type);
+		MSG_WriteByte(m, d->lighttype);
+		for (int i = 0; i < 3; i++)
+			MSG_WriteByte(m, d->light[i]);
+	}
 }
 
 /* returns false for an empty chunk (nothing written) */
@@ -178,10 +186,35 @@ static void bi_voxel_define(qcvm_t *vm)
 	QC_ReturnFloat(vm, 1);
 }
 
+/* float voxel_setlight(float type, float lighttype, vector rgb): how a
+ * defined type passes light (VXL_*) and the light it gives, 0..15 per
+ * channel. voxel_define resets both, so call this after it. */
+static void bi_voxel_setlight(qcvm_t *vm)
+{
+	int type = (int)QC_PFLOAT(vm, 0), lt = (int)QC_PFLOAT(vm, 1);
+	const float *rgb = QC_PVEC(vm, 2);
+	vxdef_t *d;
+	uint8_t buf[512];
+	msg_t m;
+	if (!sv.voxel || type <= 0 || type >= VX_MAX_TYPES || !sv.voxel->defs[type].defined || lt < 0 ||
+	    lt >= VXL_COUNT) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
+	d = &sv.voxel->defs[type];
+	d->lighttype = (uint8_t)lt;
+	for (int i = 0; i < 3; i++)
+		d->light[i] = (uint8_t)BW_MAX(0, BW_MIN(15, (int)rgb[i]));
+	MSG_Init(&m, buf, sizeof(buf));
+	write_def(&m, sv.voxel, type);
+	SV_BroadcastReliable(&m);
+	QC_ReturnFloat(vm, 1);
+}
+
 /* float voxel_set(vector cell, float type, float rot) */
 static void bi_voxel_set(qcvm_t *vm)
 {
-	int c[3], type = (int)QC_PFLOAT(vm, 1), rot = (int)QC_PFLOAT(vm, 2) & 3, oldrot, old;
+	int c[3], type = (int)QC_PFLOAT(vm, 1), rot = (int)QC_PFLOAT(vm, 2) & 7, oldrot, old;
 	uint8_t buf[64];
 	msg_t m;
 	if (!cell_arg(vm, 0, c)) {
@@ -211,7 +244,7 @@ static void bi_voxel_set(qcvm_t *vm)
 static void bi_voxel_fill(qcvm_t *vm)
 {
 	const float *a = QC_PVEC(vm, 0), *b = QC_PVEC(vm, 1);
-	int lo[3], hi[3], type = (int)QC_PFLOAT(vm, 2), rot = (int)QC_PFLOAT(vm, 3) & 3, changed = 0;
+	int lo[3], hi[3], type = (int)QC_PFLOAT(vm, 2), rot = (int)QC_PFLOAT(vm, 3) & 7, changed = 0;
 	vxworld_t *w = sv.voxel;
 	if (!w || type < 0 || type >= VX_MAX_TYPES || !w->defs[type].defined) {
 		QC_ReturnFloat(vm, 0);
@@ -447,6 +480,7 @@ const qc_builtin_t sv_voxel_builtins[] = {
 	{"voxel_create", bi_voxel_create},
 	{"voxel_free", bi_voxel_free},
 	{"voxel_define", bi_voxel_define},
+	{"voxel_setlight", bi_voxel_setlight},
 	{"voxel_set", bi_voxel_set},
 	{"voxel_fill", bi_voxel_fill},
 	{"voxel_get", bi_voxel_get},

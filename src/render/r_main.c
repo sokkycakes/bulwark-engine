@@ -18,7 +18,11 @@ double r_time;
 cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
 static cvar_t *scr_scale, *r_screenshot_format, *jpeg_quality;
-static bool cursor_mode;
+/* setcursormode is kept per progs: the client game's and the menu's. The menu
+ * has focus while it is open, so its choice wins then; otherwise the client
+ * game's does. Nuclide's client sets its own every frame, which must not undo
+ * the menu's */
+static bool cursor_mode[2];
 static char screenshot_pending[256];
 static r_capture_fn capture_fn; /* wants the next frame as a JPEG */
 static r_grab_fn grab_fn;       /* wants every frame (video capture) */
@@ -172,7 +176,7 @@ void R_EndFrame(void)
 	R_DrawConsole(r_vwidth, r_vheight);
 	R_End2D();
 	R_ToolsEndFrame();
-	VID_SetMouseGrab(((game && !cursor_mode) || V_Active()) && !Con_IsActive() && !EM_Active() && !ED_Active() && !UI_WantsInput());
+	VID_SetMouseGrab(((game && !R_CursorMode()) || V_Active()) && !Con_IsActive() && !EM_Active() && !ED_Active() && !UI_WantsInput());
 	if (screenshot_pending[0]) {
 		take_screenshot(screenshot_pending);
 		screenshot_pending[0] = 0;
@@ -358,6 +362,10 @@ bool R_Init(bool headless)
 	r_drawentities = Cvar_Get("r_drawentities", "1", 0, "Draw models and brush entities");
 	r_drawworld = Cvar_Get("r_drawworld", "1", 0, "Draw the world");
 	r_drawvoxels = Cvar_Get("r_drawvoxels", "1", 0, "Draw the voxel world");
+	r_voxel_light = Cvar_Get("r_voxel_light", "1", 0, "Light voxel blocks from light blocks and the sky (0: fixed shade)");
+	r_voxel_daylight = Cvar_Get("r_voxel_daylight", "255 255 255", 0, "Voxel day share, CSO's Color (day): its first number 0-255 mixes block light only (0, night) with block and sky light (255, day)");
+	r_voxel_invlight = Cvar_Get("r_voxel_invlight", "255 255 255", 0, "CSO's Color (Back), r g b 0-255: tints voxel block faces by side");
+	r_voxel_fulldark = Cvar_Get("r_voxel_fulldark", "0", 0, "CSO's Remove default key light: unlit voxel faces and models go fully dark");
 	r_novis = Cvar_Get("r_novis", "0", 0, "Ignore visibility data");
 	r_clearcolor = Cvar_Get("r_clearcolor", "0 0 0", CVAR_ARCHIVE, "Colour behind everything");
 	gl_texturemode = Cvar_Get("gl_texturemode", "linear", CVAR_ARCHIVE, "Texture filtering: linear or nearest");
@@ -1110,8 +1118,11 @@ static void r_getsurfaceclippedpoint(qcvm_t *vm)
 	QC_ReturnVector(vm, best);
 }
 
-static void r_setcursormode(qcvm_t *vm) { cursor_mode = QC_PFLOAT(vm, 0) != 0; }
-static void r_getcursormode(qcvm_t *vm) { QC_ReturnFloat(vm, cursor_mode ? 1 : 0); }
+bool R_CursorMode(void) { return cursor_mode[MQC_Active()]; }
+void R_ResetCursorMode(qcvm_t *vm) { cursor_mode[vm->kind == QCVM_MENU] = false; }
+
+static void r_setcursormode(qcvm_t *vm) { cursor_mode[vm->kind == QCVM_MENU] = QC_PFLOAT(vm, 0) != 0; }
+static void r_getcursormode(qcvm_t *vm) { QC_ReturnFloat(vm, cursor_mode[vm->kind == QCVM_MENU] ? 1 : 0); }
 
 static void r_getmousepos(qcvm_t *vm)
 {

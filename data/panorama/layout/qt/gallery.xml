@@ -1,0 +1,67 @@
+<!--
+	Widget gallery for the Qt look-alike themes (styles/qt/). The positions
+	match tools/qtref/gallery.py, which draws the same widgets with real Qt,
+	so the two can be compared pixel for pixel. Switch themes with the
+	buttons at the bottom, or `ui_eval <view> SetTheme('QtCurve')`.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/qt/fusion.css" />
+		<include src="file://{resources}/styles/qt/qtcurve.css" />
+		<include src="file://{resources}/styles/qt/qtcurve-sokky.css" />
+		<include src="file://{resources}/styles/qt/qtcurve-sokky-dark.css" />
+		<include src="file://{resources}/styles/qt/gallery.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/qt/gallery.js" />
+	</scripts>
+	<Panel id="Window" class="QtFusion QtWindow">
+		<Button style="x:10px;y:10px;width:90px;height:28px;"><Label text="Button" /></Button>
+		<Button style="x:110px;y:10px;width:90px;height:28px;"><Label text="Hover" /></Button>
+		<Button style="x:210px;y:10px;width:90px;height:28px;"><Label text="Pressed" /></Button>
+		<Button class="default" style="x:310px;y:10px;width:90px;height:28px;"><Label text="Default" /></Button>
+		<Button enabled="false" style="x:410px;y:10px;width:90px;height:28px;"><Label text="Disabled" /></Button>
+		<Button class="checked" style="x:510px;y:10px;width:90px;height:28px;"><Label text="Checked" /></Button>
+
+		<ToggleButton text="Check" style="x:10px;y:50px;width:90px;height:22px;" />
+		<ToggleButton text="Checked" selected="true" style="x:110px;y:50px;width:90px;height:22px;" />
+		<ToggleButton text="Hover" style="x:210px;y:50px;width:90px;height:22px;" />
+		<ToggleButton text="Disabled" selected="true" enabled="false" style="x:310px;y:50px;width:90px;height:22px;" />
+		<RadioButton text="Radio" group="gallery" style="x:410px;y:50px;width:90px;height:22px;" />
+		<RadioButton text="On" group="gallery" selected="true" style="x:510px;y:50px;width:90px;height:22px;" />
+
+		<TextEntry text="Text entry" style="x:10px;y:90px;width:140px;height:26px;" />
+		<TextEntry id="Focused" text="Focused" style="x:160px;y:90px;width:140px;height:26px;" />
+		<DropDown selected="combo1" style="x:310px;y:90px;width:140px;height:26px;">
+			<Label id="combo1" text="Combo box" />
+			<Label id="combo2" text="Two" />
+		</DropDown>
+		<TextEntry text="Disabled" enabled="false" style="x:460px;y:90px;width:140px;height:26px;" />
+
+		<Slider min="0" max="100" value="40" style="x:10px;y:130px;width:200px;height:22px;" />
+		<ProgressBar value="0.4" style="x:230px;y:130px;width:200px;height:22px;" />
+		<ProgressBar value="0.7" style="x:450px;y:130px;width:170px;height:22px;"><Label class="ProgressBarText" text="70%" /></ProgressBar>
+
+		<Panel class="QtScrollV" style="x:10px;y:170px;width:16px;height:140px;"><Panel style="width:16px;height:607px;" /></Panel>
+		<Panel class="QtScrollH" style="x:40px;y:170px;width:180px;height:16px;"><Panel style="width:780px;height:16px;" /></Panel>
+		<Panel class="GroupBox" style="x:40px;y:200px;width:180px;height:110px;">
+			<Label class="GroupBoxTitle" text="Group box" />
+			<Panel class="GroupBoxFrame">
+				<ToggleButton text="Inside" style="x:10px;y:6px;width:100px;height:22px;" />
+			</Panel>
+		</Panel>
+		<Panel class="TabWidget" style="x:240px;y:170px;width:380px;height:140px;">
+			<Panel class="TabBar">
+				<RadioButton class="Tab" group="tabs" text="First" selected="true" />
+				<RadioButton class="Tab" group="tabs" text="Second" />
+				<RadioButton class="Tab" group="tabs" text="Third" />
+			</Panel>
+			<Panel class="TabPane" />
+		</Panel>
+
+		<Label class="GalleryCaption" text="Theme:" style="x:10px;y:350px;" />
+		<Button class="ThemeButton" onactivate="SetTheme('QtFusion')" style="x:70px;y:342px;width:90px;height:28px;"><Label text="Fusion" /></Button>
+		<Button class="ThemeButton" onactivate="SetTheme('QtCurve')" style="x:170px;y:342px;width:90px;height:28px;"><Label text="QtCurve" /></Button>
+		<Button class="ThemeButton" onactivate="SetTheme('QtCurve Sokky')" style="x:270px;y:342px;width:90px;height:28px;"><Label text="Sokky" /></Button>
+	</Panel>
+</root>

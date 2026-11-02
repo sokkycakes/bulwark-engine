@@ -6,6 +6,7 @@
 #include "ui.h"
 
 extern "C" {
+#include "../common/bmfont.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
@@ -13,6 +14,7 @@ extern "C" {
 #include "../render/render.h"
 int Key_NumForName(const char *name);
 bool Key_IsDown(int key);
+const char *Key_NameForNum(int key);
 }
 
 #include "ui/panorama/panorama_font_atlas.hpp"
@@ -28,6 +30,10 @@ bool Key_IsDown(int key);
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#ifdef BW_HAVE_GDIFONT
+#include "../client/gdifont.h"
+#endif
 
 using namespace panorama;
 
@@ -253,10 +259,27 @@ struct View {
 	/* UI_EMBED views: the size they were last drawn at, in virtual pixels */
 	float embed_w = 0, embed_h = 0;
 	float drawn_scale = 0; /* virtual pixels per design unit the batches were built for */
+	/* the layout's own design height and pixelated look (attributes
+	 * bwdesignheight / bwpixelated on a top-level panel); 0 / -1 follow
+	 * ui_designheight / ui_pixelated */
+	float design = 0;
+	int px = -1;
+	/* bwexacttext="13": text up to this size keeps its own pixel size */
+	float exact = 0;
+	float atlas_key = 0; /* the font atlas scale the view was given */
+	float atlas_exact = 0;
 };
 
 Backend backend;
-PanoramaFontAtlas fonts;
+/* glyphs are baked for one scale per atlas: views at another scale (their
+ * own design height, or pixelated) get an atlas of their own */
+struct ScaledAtlas {
+	float scale;
+	std::unique_ptr<PanoramaFontAtlas> atlas;
+	bool loaded;
+	float exact = 0; /* set_exact_pixel_max */
+};
+std::vector<ScaledAtlas> atlases;
 bool fonts_loaded;
 bool fonts_dirty; /* UI_AddFont added a face: reload before the next frame */
 std::vector<std::unique_ptr<View>> views;
@@ -271,44 +294,55 @@ struct ExtraFace {
 std::vector<ExtraFace> extra_faces;
 float mouse_x, mouse_y;
 bool mouse_down;
-double last_frame_scale;
 cvar_t *ui_designheight;
+cvar_t *ui_pixelated;
 /* time spent in UI_Frame and UI_Draw, for ui_stats */
 double stat_update, stat_draw;
 long stat_frames;
 
 /* design units -> framebuffer pixels; layouts are authored for a fixed
  * height (ui_designheight, 1080 by default) and scale with the window */
-float ui_scale()
+float design_height(const View *v)
+{
+	float design = v && v->design >= 1 ? v->design : ui_designheight ? ui_designheight->value : 1080;
+	return design < 1 ? 1080 : design;
+}
+
+float ui_scale(const View *v = nullptr)
 {
 	int w, h;
 	R_GetSize(&w, &h);
-	float fbh = h * R_Get2DScale();
-	float design = ui_designheight ? ui_designheight->value : 1080;
-	if (design < 1)
-		design = 1080;
-	return fbh / design;
+	return h * R_Get2DScale() / design_height(v);
 }
 
-void viewport_design(float &w, float &h)
+/* pixelated: the view is drawn at its design resolution (one pixel per
+ * design unit) and blown up to the window with nearest filtering, so text
+ * and art keep a low-resolution look; glyphs are then baked at that
+ * resolution too. Embedded views are never pixelated. */
+bool pixelated(const View *v)
 {
-	int vw, vh;
-	R_GetSize(&vw, &vh);
-	float s = R_Get2DScale() / ui_scale();
-	w = vw * s;
-	h = vh * s;
+	if (v->flags & UI_EMBED)
+		return false;
+	return v->px >= 0 ? v->px != 0 : ui_pixelated && ui_pixelated->ivalue;
 }
+float atlas_scale(const View *v) { return pixelated(v) ? 1.0f : ui_scale(v); }
+
+/* layout pixels per virtual pixel */
+float to_layout(const View *v) { return R_Get2DScale() / ui_scale(v); }
 
 /* an embedded view is laid out at the size it is drawn */
 void view_viewport(const View &v, float &w, float &h)
 {
+	float s = to_layout(&v);
 	if ((v.flags & UI_EMBED) && v.embed_w > 0 && v.embed_h > 0) {
-		float s = R_Get2DScale() / ui_scale();
 		w = v.embed_w * s;
 		h = v.embed_h * s;
 		return;
 	}
-	viewport_design(w, h);
+	int vw, vh;
+	R_GetSize(&vw, &vh);
+	w = vw * s;
+	h = vh * s;
 }
 
 int face_weight(const char *name)
@@ -328,33 +362,130 @@ int face_weight(const char *name)
 	return 400;
 }
 
+/* the file's name without its extension(s) */
+std::string file_stem(const char *path)
+{
+	const char *base = strrchr(path, '/');
+	std::string stem(base ? base + 1 : path);
+	if (stem.size() > 7 && !Str_ICmp(stem.c_str() + stem.size() - 7, ".pcf.gz"))
+		stem.erase(stem.size() - 7);
+	else if (stem.find('.') != std::string::npos)
+		stem.erase(stem.rfind('.'));
+	return stem;
+}
+
+bool font_file(const char *name)
+{
+	const char *dot = strrchr(name, '.');
+	return BMF_IsBitmapName(name) ||
+	       (dot && (!Str_ICmp(dot, ".ttf") || !Str_ICmp(dot, ".otf") || !Str_ICmp(dot, ".ttc")));
+}
+
+/* game files read once per search path: a .gz is inflated */
+bool load_font_bytes(const std::string &path, std::vector<unsigned char> &out)
+{
+	if (!load_bytes(path, out))
+		return false;
+	if (out.size() > 2 && out[0] == 0x1f && out[1] == 0x8b) {
+		size_t n = 0;
+		uint8_t *raw = BMF_Gunzip(out.data(), out.size(), &n);
+		if (!raw)
+			return false;
+		out.assign(raw, raw + n);
+		Mem_Free(raw);
+	}
+	return true;
+}
+
+/* Pixel fonts are drawn crisp (r_pixelfonts, as for engine text): a BDF or
+   PCF file from its strike, a TrueType font on a pixel grid at whole
+   multiples of that grid. Worked out once per file and search path. */
+std::unordered_map<std::string, float> pixel_cache;
+int pixel_cache_gen = -1;
+
+float face_pixel_ppem(const std::string &path)
+{
+	cvar_t *on = Cvar_Find("r_pixelfonts");
+	if (on && !on->value)
+		return 0;
+	if (BMF_IsBitmapName(path.c_str()))
+		return -1;
+	if (pixel_cache_gen != FS_Generation()) {
+		pixel_cache.clear();
+		pixel_cache_gen = FS_Generation();
+	}
+	auto it = pixel_cache.find(path);
+	if (it != pixel_cache.end())
+		return it->second;
+	std::vector<unsigned char> bytes;
+	float ppem = 0;
+	if (load_bytes(path, bytes) && bytes.size() <= (2u << 20))
+		ppem = BMF_PixelGrid(bytes.data(), bytes.size(), nullptr);
+	pixel_cache[path] = ppem;
+	return ppem;
+}
+
 void add_face(const char *name, const char *searchpath, void *ctx)
 {
 	auto *faces = static_cast<std::vector<PanoramaFontAtlasFace> *>(ctx);
 	const char *base = strrchr(name, '/');
+	(void)searchpath;
 	base = base ? base + 1 : name;
 	for (const PanoramaFontAtlasFace &f : *faces)
 		if (f.path == base)
 			return;
-	faces->push_back({base, face_weight(base)});
+	float ppem = face_pixel_ppem(std::string("panorama/fonts/") + base);
+	faces->push_back({base, face_weight(base), ppem});
 	/* each file is also a family of its own name, without the extension */
-	std::string fam(base);
-	if (fam.find('.') != std::string::npos)
-		fam.erase(fam.rfind('.'));
-	faces->push_back({base, panorama_register_font_family(fam) * kPanoramaFontFamilyStride + 400});
+	faces->push_back({base, panorama_register_font_family(file_stem(base)) * kPanoramaFontFamilyStride + 400, ppem});
+}
+
+/* Bulwark's shared fonts, fonts/ in its data directory: every game can name
+   them in CSS by family name ("Visitor TT1 BRK") or file name ("visitor1") */
+void add_shared_face(const char *name, const char *searchpath, void *ctx)
+{
+	auto *faces = static_cast<std::vector<PanoramaFontAtlasFace> *>(ctx);
+	std::vector<unsigned char> bytes;
+	char family[64];
+	int weight = 400;
+	bool italic = false;
+	if (strcmp(searchpath, "(engine)") || !font_file(name) || !load_font_bytes(name, bytes))
+		return;
+	if (!BMF_Describe(bytes.data(), bytes.size(), family, sizeof(family), &weight, &italic))
+		family[0] = 0;
+	float ppem = face_pixel_ppem(name);
+	weight = BW_CLAMP(weight, 1, 1000);
+	std::string stem = file_stem(name);
+	faces->push_back({name, panorama_register_font_family(stem) * kPanoramaFontFamilyStride + weight, ppem});
+	if (family[0] && Str_ICmp(family, stem.c_str()))
+		faces->push_back({name, panorama_register_font_family(family) * kPanoramaFontFamilyStride + weight, ppem});
 }
 
 /* every font in panorama/fonts/ joins one family; weights come from the
  * file names (Bold, Medium, ...) */
-void load_fonts()
+#ifdef BW_HAVE_GDIFONT
+void gdi_clear();
+#endif
+/* loads one atlas, or every atlas when only is null */
+void load_fonts(ScaledAtlas *only = nullptr)
 {
 	PanoramaFontAtlasLoadOptions opts;
+#ifdef BW_HAVE_GDIFONT
+	if (!only)
+		gdi_clear();
+#endif
 	FS_List("panorama/fonts/*.ttf", true, add_face, &opts.faces);
 	FS_List("panorama/fonts/*.otf", true, add_face, &opts.faces);
+	FS_List("panorama/fonts/*.bdf", true, add_face, &opts.faces);
+	FS_List("panorama/fonts/*.pcf", true, add_face, &opts.faces);
+	FS_List("panorama/fonts/*.pcf.gz", true, add_face, &opts.faces);
 	for (const ExtraFace &f : extra_faces)
-		opts.faces.push_back({f.path, f.key});
+		opts.faces.push_back({f.path, f.key, face_pixel_ppem(f.path)});
+	/* last, so that a game's own faces stay the fallback for unknown families */
+	FS_List("fonts/*", true, add_shared_face, &opts.faces);
 	if (opts.faces.empty()) {
 		Con_Printf("^3ui: no fonts in panorama/fonts/; text will not draw\n");
+		fonts_loaded = false;
 		return;
 	}
 	opts.resource_root = "/nonexistent-bulwark-ui-root";
@@ -362,14 +493,63 @@ void load_fonts()
 		std::vector<unsigned char> bytes;
 		std::string name(face);
 		/* registered faces are named by their game path, the others by file name */
-		if (!load_bytes(name.find('/') != std::string::npos ? name : "panorama/fonts/" + name, bytes))
+		if (!load_font_bytes(name.find('/') != std::string::npos ? name : "panorama/fonts/" + name, bytes))
 			return std::vector<unsigned char>(); /* handled: never look on disk */
 		return bytes;
 	};
-	fonts.clear();
-	fonts_loaded = fonts.load(opts);
+	fonts_loaded = true;
+	for (ScaledAtlas &a : atlases) {
+		if (only && &a != only)
+			continue;
+		a.atlas->clear();
+		a.loaded = a.atlas->load(opts);
+		a.atlas->set_ui_scale(a.scale);
+		a.atlas->set_exact_pixel_max(a.exact);
+		fonts_loaded = fonts_loaded && a.loaded;
+	}
 	if (!fonts_loaded)
 		Con_Printf("^3ui: couldn't load the fonts in panorama/fonts/\n");
+}
+
+/* the atlas baked at this scale (and exact text size), made (and loaded) on
+ * first use */
+PanoramaFontAtlas *atlas_for(float scale, float exact)
+{
+	scale = std::clamp(scale, 0.1f, 8.0f);
+	for (ScaledAtlas &a : atlases)
+		if (fabsf(a.scale - scale) < 1e-4f && a.exact == exact)
+			return a.loaded ? a.atlas.get() : nullptr;
+	atlases.push_back({scale, std::make_unique<PanoramaFontAtlas>(), false, exact});
+	load_fonts(&atlases.back());
+	ScaledAtlas &a = atlases.back();
+	return a.loaded ? a.atlas.get() : nullptr;
+}
+
+/* atlases no open view uses any more */
+void drop_unused_atlases()
+{
+	atlases.erase(std::remove_if(atlases.begin(), atlases.end(),
+	                             [](const ScaledAtlas &a) {
+		                             for (auto &v : views)
+			                             if (!v->dead && v->atlas_key == a.scale && v->atlas_exact == a.exact)
+				                             return false;
+		                             return true;
+	                             }),
+	              atlases.end());
+}
+
+/* gives the view the atlas for its current scale; true when that changed */
+bool update_view_atlas(View &v)
+{
+	float scale = std::clamp(atlas_scale(&v), 0.1f, 8.0f);
+	if (v.atlas_key == scale && v.atlas_exact == v.exact)
+		return false;
+	PanoramaFontAtlas *a = atlas_for(scale, v.exact);
+	v.atlas_key = scale;
+	v.atlas_exact = v.exact;
+	if (a)
+		v.pv.set_font_atlas(a);
+	return true;
 }
 
 /* url("file://{images}/x.png") and friends -> a game file path */
@@ -514,7 +694,7 @@ void reap_views()
 void host_action(View *v, const std::string &action, const std::string &arg)
 {
 	if (action == "__size") {
-		float w, h, s = R_Get2DScale() / ui_scale();
+		float w, h, s = to_layout(v);
 		view_viewport(*v, w, h);
 		if (PanoramaNode *root = v->pv.root()) {
 			root->attributes["bwwidth"] = std::to_string(w);
@@ -558,7 +738,7 @@ int blend_for(PanoramaBlendMode m)
 
 void build_batches(View &v)
 {
-	float to_virtual = ui_scale() / R_Get2DScale();
+	float to_virtual = 1 / to_layout(&v);
 	v.batches.clear();
 	for (const PanoramaDrawCommand &cmd : v.pv.draw_list().commands) {
 		if (cmd.vertices.empty() || cmd.indices.empty())
@@ -753,6 +933,127 @@ void cmd_ui_key(int argc, const char **argv)
 	UI_KeyEvent(k, false, 0);
 }
 
+#ifdef BW_HAVE_GDIFONT
+/* UI text drawn the way the engine draws its TrueType text: through gdifont,
+ * which rasterizes like Windows GDI's ExtTextOut (docs/spec/gdi-text.md).
+ * ui_gdifont 0 goes back to Panorama's own FreeType rendering; CFF (.otf)
+ * faces always stay on FreeType. r_gdifont_aa picks the quality as it does
+ * for engine text. */
+cvar_t *ui_gdifont;
+
+struct GdiSize
+{
+	gdifont_t *font = nullptr;
+	int ascent = 0;
+	std::vector<unsigned char> scratch;
+	int sw = 0, sh = 0, pad = 0;
+};
+
+struct GdiFace
+{
+	bool truetype = false;
+	std::unordered_map<int, GdiSize> sizes; /* by pixel size * 4 + quality */
+};
+
+std::unordered_map<std::string, GdiFace> gdi_faces;
+
+void gdi_clear()
+{
+	for (auto &f : gdi_faces)
+		for (auto &sz : f.second.sizes)
+			if (sz.second.font)
+				gdifont_free(sz.second.font);
+	gdi_faces.clear();
+}
+
+/* the CreateFont cell height whose em (ppem) is the CSS pixel size */
+gdifont_t *gdi_font_for_ppem(const unsigned char *data, std::size_t len, int ppem, int weight, int quality)
+{
+	int tall = std::max(1, (int)(ppem * 1.2f + 0.5f));
+	gdifont_t *best = nullptr;
+	int bestdiff = 1 << 30;
+	for (int tries = 0; tries < 6; tries++) {
+		gdifont_t *f = gdifont_create_memory(data, len, tall, weight, 0, quality, nullptr);
+		if (!f)
+			break;
+		int got = gdifont_metrics(f)->ppem;
+		int diff = std::abs(got - ppem);
+		if (diff < bestdiff) {
+			if (best)
+				gdifont_free(best);
+			best = f;
+			bestdiff = diff;
+		} else {
+			gdifont_free(f);
+		}
+		if (got == ppem)
+			break;
+		tall += (ppem > got) ? 1 : -1;
+		if (tall < 1)
+			break;
+	}
+	return best;
+}
+
+bool gdi_rasterize(const std::string &identity, const unsigned char *data, std::size_t len, int pixel_size,
+	int weight, char32_t cp, PanoramaRasterGlyph &out)
+{
+	if (!ui_gdifont || !ui_gdifont->value || !data || !len || pixel_size < 1 || pixel_size > 256)
+		return false;
+	auto fit = gdi_faces.find(identity);
+	if (fit == gdi_faces.end()) {
+		GdiFace face;
+		int tt = 0, w = 0, it = 0;
+		char family[64];
+		face.truetype = gdifont_describe(nullptr, data, len, 0, family, sizeof(family), &w, &it, &tt) > 0 && tt;
+		fit = gdi_faces.emplace(identity, std::move(face)).first;
+	}
+	GdiFace &face = fit->second;
+	if (!face.truetype)
+		return false;
+	cvar_t *aa = Cvar_Find("r_gdifont_aa");
+	int quality = (aa && !aa->value) ? GDIFONT_NONANTIALIASED : GDIFONT_ANTIALIASED;
+	GdiSize &sz = face.sizes[pixel_size * 4 + quality];
+	if (!sz.font) {
+		sz.font = gdi_font_for_ppem(data, len, pixel_size, weight % kPanoramaFontFamilyStride, quality);
+		if (!sz.font)
+			return false;
+		const gdifont_metrics_t *tm = gdifont_metrics(sz.font);
+		sz.ascent = tm->ascent;
+		sz.pad = tm->height * 2;
+		sz.sw = tm->max_char_width + sz.pad * 2;
+		sz.sh = tm->height + sz.pad * 2;
+		sz.scratch.assign((std::size_t)sz.sw * sz.sh, 0);
+	}
+	/* one character as ExtTextOut draws it, pen at the cell's top left,
+	   cropped to its ink (as r_gdifont.c does for engine text) */
+	unsigned u = (unsigned)cp;
+	std::fill(sz.scratch.begin(), sz.scratch.end(), 0);
+	int adv = gdifont_text_out(sz.font, sz.pad, sz.pad, &u, 1, sz.scratch.data(), sz.sw, sz.sh, sz.sw);
+	int minx = sz.sw, miny = sz.sh, maxx = -1, maxy = -1;
+	for (int y = 0; y < sz.sh; y++)
+		for (int x = 0; x < sz.sw; x++)
+			if (sz.scratch[(std::size_t)y * sz.sw + x]) {
+				minx = std::min(minx, x);
+				maxx = std::max(maxx, x);
+				miny = std::min(miny, y);
+				maxy = std::max(maxy, y);
+			}
+	out.advance = (float)adv;
+	if (maxx < 0)
+		return true; /* a space */
+	out.width = maxx - minx + 1;
+	out.height = maxy - miny + 1;
+	out.left = minx - sz.pad;
+	out.top = sz.ascent - (miny - sz.pad);
+	out.coverage.resize((std::size_t)out.width * out.height);
+	for (int y = 0; y < out.height; y++)
+		std::memcpy(&out.coverage[(std::size_t)y * out.width], &sz.scratch[(std::size_t)(miny + y) * sz.sw + minx],
+			(std::size_t)out.width);
+	return true;
+}
+#endif
+
 } // namespace
 
 extern "C" {
@@ -761,7 +1062,14 @@ void UI_Init(void)
 {
 	ui_designheight = Cvar_Get("ui_designheight", "1080", CVAR_ARCHIVE,
 	                           "screen height, in layout pixels, that UI layouts are authored for");
+	ui_pixelated = Cvar_Get("ui_pixelated", "0", CVAR_ARCHIVE,
+	                         "1: draw UI views at ui_designheight pixels and scale them up unfiltered (a low-resolution look)");
 	set_panorama_render_backend(&backend);
+#ifdef BW_HAVE_GDIFONT
+	ui_gdifont = Cvar_Get("ui_gdifont", "1", CVAR_ARCHIVE,
+	                      "1: draw UI views' TrueType text the way Windows GDI does (as engine text is); 0: FreeType's smoothed text");
+	panorama_set_glyph_rasterizer(gdi_rasterize);
+#endif
 	load_fonts();
 	Cmd_Add("ui_open", cmd_ui_open);
 	Cmd_Add("ui_close", cmd_ui_close);
@@ -777,12 +1085,49 @@ void UI_Init(void)
 void UI_Shutdown(void)
 {
 	views.clear();
-	fonts.abandon_gpu_resources();
+	for (ScaledAtlas &a : atlases)
+		a.atlas->abandon_gpu_resources();
+	atlases.clear();
 	set_panorama_render_backend(nullptr);
 }
 
 void UI_SetActionHandler(ui_action_fn fn) { action_handler = fn; }
 void UI_SetQueryHandler(ui_query_fn fn) { query_handler = fn; }
+
+/* a top-level panel can carry bwdesignheight="540" and bwpixelated="1":
+ * that view then keeps its own design height and look whatever
+ * ui_designheight / ui_pixelated say. True when the layout set either. */
+bool read_view_options(View &v)
+{
+	PanoramaNode *root = v.pv.root();
+	if (!root)
+		return false;
+	bool set = false;
+	std::vector<PanoramaNode *> top = {root};
+	for (auto &c : root->children)
+		top.push_back(c.get());
+	for (PanoramaNode *n : top) {
+		auto d = n->attributes.find("bwdesignheight");
+		if (d != n->attributes.end() && atof(d->second.c_str()) >= 1) {
+			v.design = (float)atof(d->second.c_str());
+			set = true;
+		}
+		auto p = n->attributes.find("bwpixelated");
+		if (p != n->attributes.end()) {
+			v.px = atoi(p->second.c_str()) != 0;
+			set = true;
+		}
+		/* bwexacttext="13": text at or below 13 layout pixels is drawn at
+		 * exactly its own pixel size, not scaled with the view, so small
+		 * hinted and bitmap-strike text (Tahoma 11, 12) stays crisp */
+		auto e = n->attributes.find("bwexacttext");
+		if (e != n->attributes.end()) {
+			v.exact = std::max(0.0f, (float)atof(e->second.c_str()));
+			set = true;
+		}
+	}
+	return set;
+}
 
 bool UI_LayoutExists(const char *layout) { return FS_FileExists(ui_path(layout).c_str()); }
 
@@ -800,12 +1145,9 @@ int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 	v->flags = flags;
 	v->layout = layout;
 	float w, h;
-	viewport_design(w, h);
+	view_viewport(*v, w, h);
 	v->pv.set_viewport(w, h);
-	if (fonts_loaded) {
-		fonts.set_ui_scale(ui_scale());
-		v->pv.set_font_atlas(&fonts);
-	}
+	update_view_atlas(*v);
 	v->pv.resources().add_provider(std::make_unique<FsProvider>());
 	v->pv.runtime().add_bootstrap_script({"bulwark://prelude", bulwark_prelude});
 	if (bootstrap && *bootstrap)
@@ -817,6 +1159,15 @@ int UI_OpenEx(const char *layout, int flags, const char *bootstrap)
 	if (!v->pv.load(layout, std::move(opts))) {
 		Con_Printf("ui: couldn't load %s\n", ui_path(layout).c_str());
 		return 0;
+	}
+	if (read_view_options(*v)) {
+		/* the layout has its own design height or look: lay it out again */
+		view_viewport(*v, w, h);
+		v->pv.set_viewport(w, h);
+		if (update_view_atlas(*v)) {
+			v->pv.invalidate_style();
+			v->pv.invalidate_visual();
+		}
 	}
 	next_view++;
 	views.push_back(std::move(v));
@@ -861,7 +1212,7 @@ void UI_ViewSize(int num, float *w, float *h)
 	float dw = 0, dh = 0;
 	if (v) {
 		view_viewport(*v, dw, dh);
-		float s = ui_scale() / R_Get2DScale();
+		float s = 1 / to_layout(v);
 		dw *= s;
 		dh *= s;
 	}
@@ -939,24 +1290,35 @@ void UI_Eval(int num, const char *js)
 
 bool UI_WantsInput(void) { return input_view() != nullptr; }
 
+/* posts a "key" event: key is the DOM-style name (may be empty), bind the
+ * engine's own key name, as the bind command takes it */
+static void post_key(View *v, const char *name, int key, bool down)
+{
+	const char *bind = Key_NameForNum(key);
+	std::string json = "{\"key\":" + js_quote(name ? name : "") + ",\"bind\":" + js_quote(bind ? bind : "") +
+	                   ",\"down\":" + (down ? "true" : "false") +
+	                   ",\"shift\":" + (Key_IsDown(K_LSHIFT) ? "true" : "false") +
+	                   ",\"ctrl\":" + (Key_IsDown(K_LCTRL) ? "true" : "false") +
+	                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") + "}";
+	UI_Post(v->num, "key", json.c_str());
+}
+
 bool UI_KeyEvent(int key, bool down, int unicode)
 {
 	View *v = input_view();
 	if (!v)
 		return false;
-	float s = R_Get2DScale() / ui_scale();
+	float s = to_layout(v);
 	if (key == K_MOUSE1) {
 		mouse_down = down;
 		v->pv.update_pointer(mouse_x * s, mouse_y * s, mouse_down);
+		post_key(v, "", key, down);
 		return true;
 	}
 	if (key == K_MWHEELUP || key == K_MWHEELDOWN) {
 		if (down)
 			v->pv.update_wheel(mouse_x * s, mouse_y * s, key == K_MWHEELUP ? 1.0f : -1.0f);
-		char json[64];
-		snprintf(json, sizeof(json), "{\"key\":\"%s\",\"down\":%s}", key == K_MWHEELUP ? "WheelUp" : "WheelDown",
-		         down ? "true" : "false");
-		UI_Post(v->num, "key", json);
+		post_key(v, key == K_MWHEELUP ? "WheelUp" : "WheelDown", key, down);
 		return true;
 	}
 	if (down) {
@@ -975,14 +1337,7 @@ bool UI_KeyEvent(int key, bool down, int unicode)
 		}
 	}
 	char buf[8];
-	const char *name = key_name(key, unicode, buf, sizeof(buf));
-	if (name) {
-		std::string json = "{\"key\":" + js_quote(name) + ",\"down\":" + (down ? "true" : "false") +
-		                   ",\"shift\":" + (Key_IsDown(K_LSHIFT) ? "true" : "false") +
-		                   ",\"ctrl\":" + (Key_IsDown(K_LCTRL) ? "true" : "false") +
-		                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") + "}";
-		UI_Post(v->num, "key", json.c_str());
-	}
+	post_key(v, key_name(key, unicode, buf, sizeof(buf)), key, down);
 	return true;
 }
 
@@ -991,7 +1346,7 @@ void UI_MouseMove(float x, float y)
 	mouse_x = x;
 	mouse_y = y;
 	if (View *v = input_view()) {
-		float s = R_Get2DScale() / ui_scale();
+		float s = to_layout(v);
 		v->pv.update_pointer(x * s, y * s, mouse_down);
 	}
 }
@@ -1000,14 +1355,13 @@ void UI_Frame(double dt)
 {
 	double start = Sys_Seconds();
 	reap_views();
+	drop_unused_atlases();
 	if (fonts_dirty) {
 		fonts_dirty = false;
 		load_fonts();
-		if (fonts_loaded)
-			fonts.set_ui_scale(ui_scale());
 		for (auto &v : views) {
-			if (fonts_loaded)
-				v->pv.set_font_atlas(&fonts);
+			v->atlas_key = 0;
+			update_view_atlas(*v);
 			/* font-family names that weren't registered yet resolve now */
 			v->pv.invalidate_style();
 			v->pv.invalidate_visual();
@@ -1015,14 +1369,15 @@ void UI_Frame(double dt)
 		}
 	}
 	float w, h;
-	viewport_design(w, h);
-	double scale = ui_scale();
-	if (scale != last_frame_scale) {
-		last_frame_scale = scale;
-		if (fonts_loaded)
-			fonts.set_ui_scale((float)scale);
-		for (auto &v : views)
+	for (auto &v : views) {
+		/* window size or cvars changed: rebake glyphs, rebuild geometry */
+		float scale = 1 / to_layout(v.get()) * (pixelated(v.get()) ? -1 : 1);
+		if (scale != v->drawn_scale) {
+			v->drawn_scale = scale;
 			v->batches_dirty = true;
+			if (update_view_atlas(*v))
+				v->pv.invalidate_visual();
+		}
 	}
 	/* a script can close views (Bulwark.Cmd("ui_close ...") runs later from
 	 * the command buffer, so iterating here is safe) */
@@ -1056,6 +1411,13 @@ void UI_Draw(void)
 			continue;
 		if (v->batches_dirty)
 			build_batches(*v);
+		bool lowres = pixelated(v.get());
+		if (lowres) {
+			int w, h;
+			R_GetSize(&w, &h);
+			float s = to_layout(v.get());
+			R_BeginPixelated2D((int)lroundf(w * s), (int)lroundf(h * s));
+		}
 		for (const View::Batch &b : v->batches) {
 			if (b.clip)
 				R_Set2DClip(b.cx, b.cy, b.cw, b.ch);
@@ -1065,6 +1427,8 @@ void UI_Draw(void)
 			                  b.blend);
 		}
 		R_Reset2DClip();
+		if (lowres)
+			R_EndPixelated2D();
 	}
 	if (!views.empty())
 		stat_draw += Sys_Seconds() - start;

@@ -42,6 +42,7 @@ typedef ptrdiff_t GLintptr;
 #define GL_LEQUAL 0x0203
 #define GL_GREATER 0x0204
 #define GL_ALWAYS 0x0207
+#define GL_VIEWPORT 0x0BA2
 #define GL_SRC_COLOR 0x0300
 #define GL_ONE_MINUS_SRC_COLOR 0x0301
 #define GL_SRC_ALPHA 0x0302
@@ -104,6 +105,7 @@ typedef ptrdiff_t GLintptr;
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_RENDERBUFFER 0x8D41
 #define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_FRAMEBUFFER_BINDING 0x8CA6
 #define GL_DEPTH_ATTACHMENT 0x8D00
 #define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
 #define GL_DEPTH24_STENCIL8 0x88F0
@@ -191,7 +193,9 @@ typedef ptrdiff_t GLintptr;
 	X(void, glDeleteRenderbuffers, (GLsizei n, const GLuint *r))                                               \
 	X(void, glBindRenderbuffer, (GLenum t, GLuint r))                                                          \
 	X(void, glRenderbufferStorage, (GLenum t, GLenum f, GLsizei w, GLsizei h))                                 \
-	X(void, glFramebufferRenderbuffer, (GLenum t, GLenum a, GLenum rt, GLuint r))
+	X(void, glFramebufferRenderbuffer, (GLenum t, GLenum a, GLenum rt, GLuint r))                             \
+	X(void, glFramebufferTexture2D, (GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l))                     \
+	X(void, glBlendFuncSeparate, (GLenum s, GLenum d, GLenum sa, GLenum da))
 
 #define X(ret, name, args) typedef ret(BWGLAPI *PFN_##name) args;
 BW_GL_FUNCS(X)
@@ -202,5 +206,8 @@ BW_GL_FUNCS(X)
 
 /* loads every entry point; false (with a message) if one is missing */
 int GL_LoadFunctions(void *(*getproc)(const char *name));
+
+/* optional entry points: NULL where the platform's GL lacks them */
+extern void(BWGLAPI *qglFramebufferTexture2D_opt)(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l);
 
 #endif

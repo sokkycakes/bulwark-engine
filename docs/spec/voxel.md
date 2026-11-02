@@ -33,6 +33,9 @@ texture name (or none for flat colour) and flags:
 | `VXS_SLAB_LOW` (4) / `VXS_SLAB_HIGH` (5) | lower / upper half |
 | `VXS_THIN` (6) | panel at the +X side (fences, doors) |
 | `VXS_FIELD` (7) | whole cell, contents only (water, ladders, volumes) |
+| `VXS_SLAB3` (8) | CSO's SLAB: the rotation is a height state, not a turn. 0 low third, 1 low two thirds, 2 whole cell, 3 high two thirds, 4 high third (hw.dll display-type bounds, 13.33 units a step); 5..7 read as 0 |
+
+Cells keep rotations 0..7. Rotations turn a shape by `rot & 3` quarter turns; `VXS_SLAB3` never turns.
 
 Flags: `VXF_NODRAW` 1 (collides, not drawn), `VXF_FULLBRIGHT` 2.
 
@@ -105,7 +108,7 @@ crc32             u32      of everything before it
 
 Chunk runs cover the 4096 cells of a chunk in x-fastest, then y, then z
 order: `varuint count, u16 type, u8 rot` repeated until 4096 cells are
-covered. A run of 0, a run past the end, a rotation above 3 or a type outside
+covered. A run of 0, a run past the end, a rotation above 7 or a type outside
 the table makes the file invalid.
 
 Loading checks the magic, version, sizes against the limits, every length
@@ -127,6 +130,7 @@ order is kept and nothing is lost.
 | `VXN_DEF` | varuint type, u8 shape, i32 contents, 4 u8 colour, u8 flags, string name, string texture | type defined, signon |
 | `VXN_CHUNK` | 3 varuint chunk, varuint length, chunk runs | `voxel_fill`, `voxel_load`, signon |
 | `VXN_SET` | 3 varuint cell, u16 type, u8 rot | `voxel_set` |
+| `VXN_LIGHT` | varuint type, u8 light type, 3 u8 colour (0..15) | `voxel_setlight`, signon |
 
 A client that connects later gets INIT, every DEF and every non-empty chunk
 during signon (`SV_VoxelSignon`). The client checks every message: a world
@@ -141,9 +145,58 @@ with a developer message.
 faces hidden by an opaque full neighbour, and rebuilds only chunks that
 changed. Faces are grouped by image; translucent types (alpha below 255) are
 drawn in the translucent pass after opaque ones. Textured types use the
-named image on every face, others the flat colour. Light is a fixed shade
-per face direction times the block colour: there are no lightmaps and no
-dynamic lights on blocks yet.
+named image on every face, others the flat colour, both shaded by the light
+below.
+
+## Light
+
+`voxel_setlight(type, lighttype, '<r g b>')` gives a block type a light
+type and an emitted colour (0..15 per channel). Light types: 0 none,
+1 blocked, 2 slope-blocked, 3 point light, 4 sky light, 5 water-blocked,
+6 slab-blocked. A type with no call has light type none, so light passes
+through it (as in CSO, where a block with no light type is not an occluder).
+
+The client keeps one light cell per voxel cell and rebuilds it when the
+world changes:
+
+1. Sky: every column is walked from the top down; open cells get sky level
+   7 until the first blocked, slope-blocked, water-blocked or slab-blocked
+   cell.
+2. Spread: point-light cells (their colour) and sky cells are seeds. Light
+   flows to the six neighbours, losing 1 per channel per step, keeping the
+   per-channel maximum. It never enters blocked cells; slope-blocked light
+   only flows into slope-blocked cells; slab-blocked light does not flow up
+   or down.
+3. Vertex: each face vertex averages the light of the cell in front of the
+   face and of the side and corner cells around the vertex that are not
+   blocked (the corner only when a side is open), clamped to 7. Each vertex
+   gets two colours: night, darkened by `(7 - block) * k` per channel, and
+   day, darkened by `(7 - max(block, sky)) * k`, with k = 0.6/7 (1/7 when
+   `r_voxel_fulldark` is 1, the map's "remove default key light"). Corner
+   darkening subtracts 0.1 per blocked side cell, 0.3 when both are
+   blocked. The drawn colour is `night * (1 - d) + day * d`, with d the
+   first value of `r_voxel_daylight` / 255 ("r g b", default
+   "255 255 255", the map's day light).
+4. Face shade: top 1.0, bottom 0.7, +y 0.925, -y 0.775, ±x 0.85, slope top
+   0.97, slope underside 0.73, each tinted by `r_voxel_invlight` ("r g b",
+   default "255 255 255", the map's back colour) as
+   `1 + (v / 255 * 0.2 - 0.2) * w / 7`, where w is 0, 7, 2, 5, 3, 4, 1, 6
+   for the faces in that order.
+
+Models (entities and the view model) inside a voxel world are lit from the
+light cell at their origin: with base 50 (0 when `r_voxel_fulldark` is 1)
+and s = (256 - base) / 7, each channel is
+`max(sky, c) * s * d + c * s * (1 - d) + base` out of 255, split 70/30
+between ambient and a light from above (the split is ours).
+
+A voxel world with no BSP world under it draws the sky named by `sky`
+(`env/`, `gfx/env/` or `materials/skybox/` faces) as a background cube
+before the voxels.
+
+`r_voxel_light 0` turns this off (face shade only). Fullbright types are
+never darkened. The behaviour is matched to Counter-Strike Online's Studio
+lighting from its hw.dll (vertex colours, day mix, face shade and model
+light); see the CSNZ studio trace notes.
 
 ## Void maps
 

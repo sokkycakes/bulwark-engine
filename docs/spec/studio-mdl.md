@@ -196,5 +196,6 @@ shipped model yet.
 
 - Encrypted v20/v21 models
 - External `IDSQ` sequence groups
-- Blending between sequences, blend axes, other body part sub-models
+- Blend axes, other body part sub-models (a change of sequence fades over
+  `r_seqblend`, see client-game.md)
 - Bone controllers and hitbox tracing

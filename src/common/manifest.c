@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 static manifest_t active;
@@ -222,22 +223,52 @@ void Mf_Startup(const char *const *games, int count)
 	mount(&active);
 }
 
-/* the startup configs, in order */
+/* text names file, as a whole word in any case ("config.cfg" but not
+ * "myconfig.cfg") */
+static bool mentions(const char *text, const char *file)
+{
+	size_t n = strlen(file);
+	for (const char *p = text; *p; p++) {
+		if (strncasecmp(p, file, n))
+			continue;
+		bool start = p == text || isspace((unsigned char)p[-1]) || p[-1] == '"' || p[-1] == ';';
+		bool end = !p[n] || isspace((unsigned char)p[n]) || p[n] == '"' || p[n] == ';';
+		if (start && end)
+			return true;
+	}
+	return false;
+}
+
+/* the startup configs, in order. A game with a quake.rc gets it in place
+ * of default.cfg: Nuclide games set their defaults there (Rad-Therapy's
+ * movement cvars are in a default_cvar.cfg only its quake.rc runs). It
+ * counts only from the same game directory as the default.cfg (or
+ * default_controls.cfg) or a later one, so a mod on top of base with its
+ * own default.cfg (TF) doesn't run base's quake.rc. The saved config and
+ * autoexec.cfg follow unless the quake.rc runs them. */
 static void configs_text(strbuf_t *sb)
 {
+	const char *fallback = FS_FileExists("default.cfg") ? "default.cfg" :
+	                       FS_FileExists("default_controls.cfg") ? "default_controls.cfg" : NULL;
+	int rcdir = FS_WhichGameDir("quake.rc");
+	char *rc = NULL;
+	if (rcdir >= 0 && (!fallback || rcdir >= FS_WhichGameDir(fallback)))
+		rc = FS_LoadFile("quake.rc", NULL);
 	if (active.precmds.data)
 		SB_AppendStr(sb, active.precmds.data);
-	if (FS_FileExists("default.cfg"))
-		SB_AppendStr(sb, "exec default.cfg\n");
-	else if (FS_FileExists("default_controls.cfg"))
-		SB_AppendStr(sb, "exec default_controls.cfg\n");
+	if (rc)
+		SB_AppendStr(sb, "exec quake.rc\n");
+	else if (fallback)
+		SB_Printf(sb, "exec %s\n", fallback);
 	if (active.postcmds.data)
 		SB_AppendStr(sb, active.postcmds.data);
 	const char *cfg = va("%s.cfg", Cvar_String("cfg_save_name"));
-	if (FS_FileExists(cfg))
+	if (FS_FileExists(cfg) && !(rc && mentions(rc, cfg)))
 		SB_Printf(sb, "exec %s\n", cfg);
-	if (FS_FileExists("autoexec.cfg"))
+	if (FS_FileExists("autoexec.cfg") && !(rc && mentions(rc, "autoexec.cfg")))
 		SB_AppendStr(sb, "exec autoexec.cfg\n");
+	if (rc)
+		Mem_Free(rc);
 }
 
 void Mf_ExecConfigs(void)

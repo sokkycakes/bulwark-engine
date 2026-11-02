@@ -1,0 +1,273 @@
+/* WolfTeam-art version of the team match header
+   (layout/hud/wt-scoreboard-original.xml). Uses WolfTeam's own textures,
+   unpacked from sokky's client (wolf.xfs) into images/hud/wt-private/,
+   which is private and never in git (.gitignore). Positions are the ones
+   in WolfTeam's UI script (NumberRect, Position, FontRect) where it has
+   them, else measured from sokky's screenshot. The layout is 384 lines
+   tall, the scale WolfTeam draws its UI at on a 768-line screen.
+
+   Numbers work like WolfTeam's "Number" widget: a column of white digits
+   (one strip per size), one panel per digit, tinted with wash-color. */
+
+#WtoScreen
+{
+	width: 100%;
+	height: 100%;
+}
+
+#WtoScreen.WtDemo
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #8ac5fd ), to( #7fbdf8 ) );
+}
+
+#WtoBoard
+{
+	horizontal-align: center;
+	y: 1px;
+	width: 312px;
+	height: 60px;
+	background-image: url( "file://{images}/hud/wt-private/frame.png" );
+	background-size: 512px 64px;
+	background-position: 0px 0px;
+	background-repeat: no-repeat;
+}
+
+/* team class emblems: StaticSprite 55x55 at 5,5 and 255,5 in hudscore.txt
+   (they reach the frame's bottom edge) */
+.WtoTile
+{
+	y: 5px;
+	width: 55px;
+	height: 55px;
+	background-size: 64px 64px;
+	background-position: 0px 0px;
+	background-repeat: no-repeat;
+}
+
+#WtoTileRed
+{
+	x: 5px;
+	background-image: url( "file://{images}/hud/wt-private/emblem-hw-red.png" );
+}
+
+#WtoTileBlue
+{
+	x: 255px;
+	background-image: url( "file://{images}/hud/wt-private/emblem-hw-blue.png" );
+	transform: scaleX( -1 );
+}
+
+/* mode name: FontRect 60,8 - 157,25, right / v-centre, bold, white */
+#WtoMode
+{
+	x: 0px;
+	y: 7px;
+	width: 157px;
+	height: 18px;
+	text-align: right;
+	font-family: "IBM Plex Sans";
+	font-weight: bold;
+	font-size: 12px;
+	color: #ffffff;
+	text-shadow: 0px 1px 1px 1.5 #1c2a3a;
+}
+
+/* number boxes: NumberRect from the script; children are digits */
+.WtoNum
+{
+	flow-children: right;
+	height: fit-children;
+}
+
+.WtoNum.Right { horizontal-align: right; }
+
+#WtoGoalBox { x: 161px; y: 8px; width: 30px; }
+#WtoPoints
+{
+	x: 195px;
+	y: 9px;
+	width: 64px;
+	height: 16px;
+	background-image: url( "file://{images}/hud/wt-private/points.png" );
+	background-size: 64px 16px;
+	background-repeat: no-repeat;
+}
+#WtoRedBox { x: 88px; y: 29px; width: 40px; }
+#WtoBlueBox { x: 184px; y: 29px; width: 41px; }
+
+#WtoRed .Dg { wash-color: #ff0000; }
+#WtoBlue .Dg { wash-color: #008ad9; }
+
+/* lead sign at 150,32 */
+#WtoSign
+{
+	x: 150px;
+	y: 32px;
+	width: 16px;
+	height: 16px;
+	background-size: 16px 16px;
+	background-repeat: no-repeat;
+	background-image: url( "file://{images}/hud/wt-private/sign-same.png" );
+}
+#WtoSign.LeadRed { background-image: url( "file://{images}/hud/wt-private/sign-left.png" ); }
+#WtoSign.LeadBlue { background-image: url( "file://{images}/hud/wt-private/sign-right.png" ); }
+
+/* round clock: Minute 0-40 (right), colon text 24px, Second 40-82 */
+#WtoTimer
+{
+	horizontal-align: center;
+	y: 57px;
+	width: 86px;
+	height: 32px;
+	opacity: 0.72;
+}
+#WtoMinBox { x: 0px; y: 7px; width: 40px; }
+#WtoSecBox { x: 52px; y: 7px; width: 34px; }
+#WtoColon
+{
+	x: 42px;
+	y: 1px;
+	width: 10px;
+	text-align: center;
+	font-family: "IBM Plex Sans";
+	font-weight: bold;
+	font-size: 22px;
+	color: #ffffff;
+}
+
+/* kills / deaths at the screen edges (not in the script we have; placed
+   from the screenshot) */
+.WtoKd
+{
+	flow-children: right;
+}
+.WtoSlash
+{
+	vertical-align: bottom;
+	margin-left: 1px;
+	margin-right: 1px;
+	margin-bottom: -2px;
+	font-family: "IBM Plex Sans";
+	font-weight: bold;
+	font-size: 16px;
+	color: #9b9a7c;
+	text-shadow: 0px 0px 2px 6 #1b2733;
+}
+.WtoKd .WtoNum { vertical-align: bottom; }
+#WtoSelf { x: 29px; y: 45px; }
+#WtoWatch
+{
+	horizontal-align: right;
+	margin-right: 9px;
+	y: 21px;
+	flow-children: down;
+}
+#WtoWatch.Hidden { opacity: 0; }
+#WtoWatchName
+{
+	horizontal-align: right;
+	font-family: "IBM Plex Sans";
+	font-weight: bold;
+	font-size: 13px;
+	color: #f2f8ff;
+	text-shadow: 0px 1px 2px 1.5 #3c5f86;
+}
+#WtoWatch .WtoKd { horizontal-align: right; }
+
+/* ---- digit strips -------------------------------------------------- */
+
+.N0 .Dg
+{
+	width: 20px;
+	height: 33px;
+	background-image: url( "file://{images}/hud/wt-private/num0.png" );
+	background-size: 32px 512px;
+	background-repeat: no-repeat;
+}
+.N0 .Dg.d0 { background-position: 0px 0px; }
+.N0 .Dg.d1 { background-position: 0px -40px; }
+.N0 .Dg.d2 { background-position: 0px -80px; }
+.N0 .Dg.d3 { background-position: 0px -120px; }
+.N0 .Dg.d4 { background-position: 0px -160px; }
+.N0 .Dg.d5 { background-position: 0px -200px; }
+.N0 .Dg.d6 { background-position: 0px -240px; }
+.N0 .Dg.d7 { background-position: 0px -280px; }
+.N0 .Dg.d8 { background-position: 0px -320px; }
+.N0 .Dg.d9 { background-position: 0px -360px; }
+
+.N1 .Dg
+{
+	width: 13px;
+	height: 22px;
+	background-image: url( "file://{images}/hud/wt-private/num1.png" );
+	background-size: 16px 256px;
+	background-repeat: no-repeat;
+}
+.N1 .Dg.d0 { background-position: 0px 0px; }
+.N1 .Dg.d1 { background-position: 0px -25px; }
+.N1 .Dg.d2 { background-position: 0px -50px; }
+.N1 .Dg.d3 { background-position: 0px -75px; }
+.N1 .Dg.d4 { background-position: 0px -100px; }
+.N1 .Dg.d5 { background-position: 0px -125px; }
+.N1 .Dg.d6 { background-position: 0px -150px; }
+.N1 .Dg.d7 { background-position: 0px -175px; }
+.N1 .Dg.d8 { background-position: 0px -200px; }
+.N1 .Dg.d9 { background-position: 0px -225px; }
+
+.N2 .Dg
+{
+	width: 8px;
+	height: 18px;
+	background-image: url( "file://{images}/hud/wt-private/num2.png" );
+	background-size: 16px 256px;
+	background-repeat: no-repeat;
+}
+.N2 .Dg.d0 { background-position: 0px 0px; }
+.N2 .Dg.d1 { background-position: 0px -20px; }
+.N2 .Dg.d2 { background-position: 0px -40px; }
+.N2 .Dg.d3 { background-position: 0px -60px; }
+.N2 .Dg.d4 { background-position: 0px -80px; }
+.N2 .Dg.d5 { background-position: 0px -100px; }
+.N2 .Dg.d6 { background-position: 0px -120px; }
+.N2 .Dg.d7 { background-position: 0px -140px; }
+.N2 .Dg.d8 { background-position: 0px -160px; }
+.N2 .Dg.d9 { background-position: 0px -180px; }
+
+.N4 .Dg
+{
+	width: 18px;
+	height: 25px;
+	background-image: url( "file://{images}/hud/wt-private/num4.png" );
+	background-size: 32px 256px;
+	background-repeat: no-repeat;
+}
+.N4 .Dg.d0 { background-position: 0px 0px; }
+.N4 .Dg.d1 { background-position: 0px -25px; }
+.N4 .Dg.d2 { background-position: 0px -50px; }
+.N4 .Dg.d3 { background-position: 0px -75px; }
+.N4 .Dg.d4 { background-position: 0px -100px; }
+.N4 .Dg.d5 { background-position: 0px -125px; }
+.N4 .Dg.d6 { background-position: 0px -150px; }
+.N4 .Dg.d7 { background-position: 0px -175px; }
+.N4 .Dg.d8 { background-position: 0px -200px; }
+.N4 .Dg.d9 { background-position: 0px -225px; }
+
+.N5 .Dg
+{
+	width: 11px;
+	height: 16px;
+	background-image: url( "file://{images}/hud/wt-private/num5.png" );
+	background-size: 16px 256px;
+	background-repeat: no-repeat;
+}
+.N5 .Dg.d0 { background-position: 0px 0px; }
+.N5 .Dg.d1 { background-position: 0px -16px; }
+.N5 .Dg.d2 { background-position: 0px -32px; }
+.N5 .Dg.d3 { background-position: 0px -48px; }
+.N5 .Dg.d4 { background-position: 0px -64px; }
+.N5 .Dg.d5 { background-position: 0px -80px; }
+.N5 .Dg.d6 { background-position: 0px -96px; }
+.N5 .Dg.d7 { background-position: 0px -112px; }
+.N5 .Dg.d8 { background-position: 0px -128px; }
+.N5 .Dg.d9 { background-position: 0px -144px; }
+.Dg.Blank { opacity: 0; }

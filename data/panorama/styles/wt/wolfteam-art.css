@@ -1,0 +1,56 @@
+/*
+	WolfTeam theme with the game's own glyph sprites and fonts.
+
+	Add class "WolfTeamArt" next to "WolfTeam" and the check mark, scroll
+	arrows, combo arrow, close cross, slider cursor and radio dot come from
+	WolfTeam's textures (cropped from a_check, a_scroll, cb_button_down,
+	a_close, op_slider_cursor, mb_popup_bt) and the display font is the
+	real Square721 BT Bold. All of that is private (sokky's WolfTeam
+	install) and lives in images/wt/wt-private/ and fonts-wt/wt-private/,
+	which .gitignore keeps out of git; without the pack the rules below
+	simply point at missing files, so leave the class off.
+
+	Register the fonts before opening a layout:
+	    ui_font "Square721 BT" panorama/fonts-wt/wt-private/sqr721b.ttf 700
+	    ui_font "Gulim" panorama/fonts-wt/wt-private/gulim.ttc
+	(panorama/wt-gallery.cfg does this.)
+*/
+
+.WolfTeam.WolfTeamArt
+{
+	--wt-check-image: url( "file://{images}/wt/wt-private/check-1.png" );
+	--wt-close-image: url( "file://{images}/wt/wt-private/close-0.png" );
+	--wt-close-hover-image: url( "file://{images}/wt/wt-private/close-1.png" );
+	--wt-close-active-image: url( "file://{images}/wt/wt-private/close-2.png" );
+	--wt-close-disabled-image: url( "file://{images}/wt/wt-private/close-3.png" );
+	--wt-combo-arrow-image: url( "file://{images}/wt/wt-private/combo-arrow-0.png" );
+	--wt-combo-arrow-disabled-image: url( "file://{images}/wt/wt-private/combo-arrow-3.png" );
+	--wt-slider-cursor-image: url( "file://{images}/wt/wt-private/slider-cursor.png" );
+	--wt-radio-image: url( "file://{images}/wt/wt-private/radio-0.png" );
+	--wt-radio-hover-image: url( "file://{images}/wt/wt-private/radio-1.png" );
+	--wt-radio-checked-image: url( "file://{images}/wt/wt-private/radio-2.png" );
+	--wt-radio-disabled-image: url( "file://{images}/wt/wt-private/radio-3.png" );
+	--wt-scroll-up-image: url( "file://{images}/wt/wt-private/scroll-up-0.png" );
+	--wt-scroll-up-hover-image: url( "file://{images}/wt/wt-private/scroll-up-1.png" );
+	--wt-scroll-up-active-image: url( "file://{images}/wt/wt-private/scroll-up-2.png" );
+	--wt-scroll-down-image: url( "file://{images}/wt/wt-private/scroll-down-0.png" );
+	--wt-scroll-down-hover-image: url( "file://{images}/wt/wt-private/scroll-down-1.png" );
+	--wt-scroll-down-active-image: url( "file://{images}/wt/wt-private/scroll-down-2.png" );
+}
+
+/* The check sprite is 18x18 including its rim: draw it edge to edge. */
+.WolfTeam.WolfTeamArt ToggleButton:hover > .TickBox,
+.WolfTeam.WolfTeamArt ToggleButton:checked > .TickBox,
+.WolfTeam.WolfTeamArt RadioButton.Square:hover > .RadioBox,
+.WolfTeam.WolfTeamArt RadioButton.Square:checked > .RadioBox
+{
+	border: 0px;
+	background-color: transparent;
+}
+
+/* cb_button_down's cell is 16x15 with the triangle at the top left. */
+.WolfTeam.WolfTeamArt DropDown
+{
+	background-size: 16px 15px;
+	padding-right: 0px;
+}

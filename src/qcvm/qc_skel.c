@@ -375,7 +375,9 @@ static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 	float scale = QC_EFloat(vm, ent, vm->fofs.scale);
 	if (!quakepitch)
 		quakepitch = Cvar_Find("r_viewmodel_quakepitch");
-	bool vm_model = ((int)QC_EFloat(vm, ent, vm->fofs.renderflags) & (1 | 4)) != 0;
+	int renderflags = (int)QC_EFloat(vm, ent, vm->fofs.renderflags);
+	bool vm_model = (renderflags & (1 | 4)) != 0;
+	bool mirrored = (renderflags & 65536) != 0;	/* RF_MIRROR, r_local.h */
 	if (!mirror)
 		mirror = Cvar_Find("r_viewmodel_mirror");
 	if (vm_model && !(quakepitch && quakepitch->ivalue))
@@ -386,9 +388,11 @@ static void entity_matrix(qcvm_t *vm, int ent, bonemat_t out)
 	for (int k = 0; k < 3; k++)
 		f[k] *= scale, r[k] *= scale, u[k] *= scale;
 	Bone_FromVectors(out, o, f, r, u);
-	/* mirrored view models (r_viewmodel_mirror, r_scene.c): their tags
-	 * and attachments are mirrored with them */
+	/* mirrored view models (r_viewmodel_mirror, r_scene.c) and RF_MIRROR
+	 * entities: their tags and attachments are mirrored with them */
 	if (vm_model && mirror && mirror->ivalue)
+		mirrored = !mirrored;
+	if (mirrored)
 		out[1] = -out[1], out[5] = -out[5], out[9] = -out[9];
 }
 

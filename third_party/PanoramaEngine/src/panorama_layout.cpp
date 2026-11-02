@@ -918,13 +918,13 @@ void layout_scrollbars(PanoramaNode& node)
         const auto axis_it = child->attributes.find("__scrollbar");
         const bool vertical = axis_it != child->attributes.end() && axis_it->second == "vertical";
         const float max_scroll = vertical ? node.max_scroll_y : node.max_scroll_x;
-        PanoramaNode* thumb = child->children.empty() ? nullptr : child->children.front().get();
+        PanoramaNode* thumb = panorama_scrollbar_thumb(*child);
         if (max_scroll <= 0.0F)
         {
             child->layout = PanoramaLayoutBox{};
-            if (thumb != nullptr)
+            for (const auto& part : child->children)
             {
-                thumb->layout = PanoramaLayoutBox{};
+                part->layout = PanoramaLayoutBox{};
             }
             continue;
         }
@@ -950,12 +950,52 @@ void layout_scrollbars(PanoramaNode& node)
         {
             continue;
         }
+        // Line-step buttons sit at the two ends of the bar's content box, sized
+        // by their own style (zero when unstyled), and shorten the thumb's track.
+        for (const bool forward : {false, true})
+        {
+            PanoramaNode* button = panorama_scrollbar_button(*child, forward);
+            if (button == nullptr)
+            {
+                continue;
+            }
+            const float cw = child->layout.content_width;
+            const float ch = child->layout.content_height;
+            // Across the bar a button spans its thickness; along it, its styled size.
+            button->layout.width = vertical ? cw : provisional_width(*button, cw, ch);
+            button->layout.height = vertical ? provisional_height(*button, cw, ch) : ch;
+            if (vertical)
+            {
+                button->layout.x = child->layout.content_x;
+                button->layout.y = forward ? child->layout.content_y + ch - button->layout.height : child->layout.content_y;
+            }
+            else
+            {
+                button->layout.x = forward ? child->layout.content_x + cw - button->layout.width : child->layout.content_x;
+                button->layout.y = child->layout.content_y;
+            }
+            refresh_content_box(*button);
+        }
+
         const PanoramaComputedStyle& ts = thumb->computed;
-        const float track_x = child->layout.content_x;
-        const float track_y = child->layout.content_y;
-        const float track_w = child->layout.content_width;
-        const float track_h = child->layout.content_height;
-        const float track_len = vertical ? track_h : track_w;
+        float track_along = 0.0F;
+        float track_len = 0.0F;
+        panorama_scrollbar_track(*child, vertical, track_along, track_len);
+        const float track_x = vertical ? child->layout.content_x : track_along;
+        const float track_y = vertical ? track_along : child->layout.content_y;
+        const float track_w = vertical ? child->layout.content_width : track_len;
+        const float track_h = vertical ? track_len : child->layout.content_height;
+        for (const auto& part : child->children)
+        {
+            if (part->has_class("ScrollTrack"))
+            {
+                part->layout.x = track_x;
+                part->layout.y = track_y;
+                part->layout.width = track_w;
+                part->layout.height = track_h;
+                refresh_content_box(*part);
+            }
+        }
         const float visible = vertical ? viewport_h : viewport_w;
         const float total = visible + max_scroll;
         const float current = vertical ? node.scroll_offset_y : node.scroll_offset_x;
@@ -978,16 +1018,17 @@ void layout_scrollbars(PanoramaNode& node)
             thumb->layout.width = provisional_width(*thumb, track_w, track_h);
             thumb->layout.height = thumb_len;
             const float avail = track_w - ts.margin.left - ts.margin.right - thumb->layout.width;
-            thumb->layout.x = track_x + ts.margin.left + halign_offset(ts.halign, avail);
-            thumb->layout.y = track_y + thumb_pos;
+            // whole pixels, so the thumb's border and grip don't blur
+            thumb->layout.x = std::floor(track_x + ts.margin.left + halign_offset(ts.halign, avail));
+            thumb->layout.y = std::round(track_y + thumb_pos);
         }
         else
         {
             thumb->layout.width = thumb_len;
             thumb->layout.height = provisional_height(*thumb, track_w, track_h);
             const float avail = track_h - ts.margin.top - ts.margin.bottom - thumb->layout.height;
-            thumb->layout.x = track_x + thumb_pos;
-            thumb->layout.y = track_y + ts.margin.top + valign_offset(ts.valign, avail);
+            thumb->layout.x = std::round(track_x + thumb_pos);
+            thumb->layout.y = std::floor(track_y + ts.margin.top + valign_offset(ts.valign, avail));
         }
         refresh_content_box(*thumb);
     }
@@ -1047,8 +1088,9 @@ void layout_sliders(PanoramaNode& node)
     thumb->layout.width = provisional_width(*thumb, track_w, track_h);
     thumb->layout.height = provisional_height(*thumb, track_w, track_h);
     const float travel = std::max(0.0F, track_w - thumb->layout.width);
-    thumb->layout.x = track_x + fraction * travel;
-    thumb->layout.y = track->layout.y + (track->layout.height - thumb->layout.height) * 0.5F;
+    // Whole pixels, so a thumb's border and decoration don't blur.
+    thumb->layout.x = std::round(track_x + fraction * travel);
+    thumb->layout.y = std::round(track->layout.y + (track->layout.height - thumb->layout.height) * 0.5F);
     refresh_content_box(*thumb);
 
     if (progress != nullptr)
@@ -1058,6 +1100,37 @@ void layout_sliders(PanoramaNode& node)
         progress->layout.x = track_x;
         progress->layout.y = track->layout.y + (track->layout.height - progress->layout.height) * 0.5F;
         refresh_content_box(*progress);
+    }
+}
+
+// Splits a `ProgressBar`'s content box between `#ProgressBarLeft` (the filled
+// fraction) and `#ProgressBarRight` (the rest), horizontally. Each child keeps
+// its own styled height (full height when unset).
+void layout_progressbars(PanoramaNode& node)
+{
+    if (!panorama_node_is_progressbar(node))
+    {
+        return;
+    }
+    const float fraction = panorama_slider_fraction(node);
+    const float x = node.layout.content_x;
+    const float w = node.layout.content_width;
+    const float h = node.layout.content_height;
+    const float filled = std::round(fraction * w);
+    for (const auto& child : node.children)
+    {
+        const bool left = child->id == "ProgressBarLeft";
+        if (!left && child->id != "ProgressBarRight")
+        {
+            continue;
+        }
+        child->layout.width = left ? filled : w - filled;
+        const PanoramaLengthType ht = child->computed.height.type;
+        child->layout.height =
+            ht == PanoramaLengthType::Pixels || ht == PanoramaLengthType::Percent ? provisional_height(*child, w, h) : h;
+        child->layout.x = left ? x : x + filled;
+        child->layout.y = node.layout.content_y + (h - child->layout.height) * 0.5F;
+        refresh_content_box(*child);
     }
 }
 
@@ -1406,6 +1479,7 @@ void resolve_node(PanoramaNode& node, const PanoramaTextMeasure& tm)
         apply_overflow_scroll(node);
         layout_scrollbars(node);
         layout_sliders(node);
+        layout_progressbars(node);
         position_open_dropdown_popup(node, tm);
         return;
     }
@@ -1416,6 +1490,7 @@ void resolve_node(PanoramaNode& node, const PanoramaTextMeasure& tm)
         apply_overflow_scroll(node);
         layout_scrollbars(node);
         layout_sliders(node);
+        layout_progressbars(node);
         position_open_dropdown_popup(node, tm);
         return;
     }
@@ -1599,6 +1674,7 @@ void resolve_node(PanoramaNode& node, const PanoramaTextMeasure& tm)
     apply_overflow_scroll(node);
     layout_scrollbars(node);
     layout_sliders(node);
+    layout_progressbars(node);
     position_open_dropdown_popup(node, tm);
 }
 

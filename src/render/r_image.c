@@ -537,6 +537,20 @@ void R_InitImages(void)
 	r_whiteimage = solid("$white", 255, 255, 255, 255);
 	r_blackimage = solid("$black", 0, 0, 0, 255);
 	r_flatnormal = solid("$flatnormal", 128, 128, 255, 255);
+	{
+		/* colours for debug geometry, picked by texture column (the Source
+		 * plugin's bone boxes: hit groups 0 to 7, then plain bones) */
+		static const uint8_t pal[16][3] = {
+		    {200, 200, 200}, {230, 40, 40}, {240, 140, 30}, {240, 220, 40}, {60, 200, 60}, {40, 200, 220},
+		    {60, 90, 240}, {210, 60, 220}, {110, 110, 120}, {255, 255, 255}, {255, 255, 255}, {255, 255, 255},
+		    {255, 255, 255}, {255, 255, 255}, {255, 255, 255}, {255, 255, 255}};
+		uint8_t px[16 * 4];
+		for (int i = 0; i < 16; i++) {
+			memcpy(px + i * 4, pal[i], 3);
+			px[i * 4 + 3] = 255;
+		}
+		R_ImageFromPixels("$bonepalette", px, 16, 1, IMG_NOMIP | IMG_NEAREST);
+	}
 	for (int y = 0; y < 64; y++)
 		for (int x = 0; x < 64; x++) {
 			bool on = ((x >> 3) ^ (y >> 3)) & 1;

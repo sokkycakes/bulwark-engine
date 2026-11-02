@@ -302,6 +302,9 @@ struct PanoramaGlyph
     float u1 = 0.0F;
     float v1 = 0.0F;
     bool valid = false;     // false -> whitespace / no geometry, advance only
+    // Bulwark: > 0 for a pixel-font glyph: the size of one screen pixel in
+    // these units, so paint can put the quad on whole screen pixels
+    float pixel_grid = 0.0F;
 };
 
 // Supplies glyph metrics + atlas placement for text painting. PanoramaFontAtlas

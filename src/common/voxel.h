@@ -21,7 +21,8 @@
 #define VX_FILE_VERSION 1
 
 /* collision shapes; the comments give the solid part of a unit cell for
- * rotation 0 (rotations turn it about +Z by 90 degrees each) */
+ * rotation 0 (rotations 0..3 turn it about +Z by 90 degrees each; a cell
+ * keeps rotations 0..7, the upper bit is a state some games use) */
 typedef enum {
 	VXS_EMPTY,     /* nothing */
 	VXS_BOX,       /* the whole cell */
@@ -32,6 +33,8 @@ typedef enum {
 	VXS_THIN,      /* panel: x >= 0.875 (fences, doors, hatches) */
 	VXS_FIELD,     /* the whole cell, but with no solid bit by default
 	                  (water, ladders, trigger volumes) */
+	VXS_SLAB3,     /* CSO's SLAB: the rotation is a height state, not a
+	                  turn; see Vox_Slab3 */
 	VXS_COUNT
 } vxshape_t;
 
@@ -43,7 +46,21 @@ typedef struct {
 	uint8_t flags;       /* VXF_* */
 	char name[48];       /* stable name used in save files */
 	char texture[96];    /* image for all faces, "" for a flat colour */
+	uint8_t lighttype;   /* VXL_*: how the block passes or gives light */
+	uint8_t light[3];    /* light it gives, per channel 0..15 (VXL_POINT) */
 } vxdef_t;
+
+/* light kinds, the order of CSO's VoxelLightType (voxelprop.json) */
+enum {
+	VXL_NONE,          /* light passes */
+	VXL_BLOCKED,       /* opaque to light */
+	VXL_SLOPE_BLOCKED, /* stops sky light; light inside only spreads to slopes */
+	VXL_POINT,         /* gives its light[] */
+	VXL_SKY,           /* open sky (set by the light pass, not by blocks) */
+	VXL_WATER_BLOCKED, /* stops sky light, passes the rest */
+	VXL_SLAB_BLOCKED,  /* stops sky light; light inside does not go up or down */
+	VXL_COUNT
+};
 
 #define VXF_NODRAW 1     /* collides but is not drawn (clip, triggers in play) */
 #define VXF_FULLBRIGHT 2
@@ -73,6 +90,7 @@ void Vox_Free(vxworld_t *w);
 void Vox_Clear(vxworld_t *w); /* empties every cell, keeps the type table */
 
 bool Vox_Define(vxworld_t *w, int type, const vxdef_t *def);
+void Vox_TouchAll(vxworld_t *w); /* every chunk needs redrawing (a type's look or light changed) */
 int Vox_TypeForName(const vxworld_t *w, const char *name); /* -1 if none */
 
 /* cells; out of range reads give type 0 */
@@ -80,6 +98,13 @@ bool Vox_InBounds(const vxworld_t *w, int x, int y, int z);
 int Vox_Get(const vxworld_t *w, int x, int y, int z, int *rot);
 /* false when out of range or the type is not defined (0 always works) */
 bool Vox_Set(vxworld_t *w, int x, int y, int z, int type, int rot);
+
+/* the solid z range of a VXS_SLAB3 cell in state rot: thirds of a cell,
+ * 0 low third, 1 low two thirds, 2 whole, 3 high two thirds, 4 high third
+ * (CSO hw.dll bounds for display type SLAB); states above 4 read as 0 */
+void Vox_Slab3(int rot, float *z0, float *z1);
+/* the quarter turns a shape takes from a rotation (0 for VXS_SLAB3) */
+int Vox_Turns(int shape, int rot);
 
 /* world <-> cell coordinates */
 void Vox_CellForPoint(const vxworld_t *w, const float p[3], int out[3]);

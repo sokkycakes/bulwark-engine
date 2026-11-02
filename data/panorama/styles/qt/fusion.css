@@ -1,0 +1,409 @@
+/*
+	Qt Fusion look-alike for Panorama.
+
+	Put class="QtFusion" on any panel; everything inside it takes the look.
+	Colours come from the palette variables below (Qt's palette roles), so a
+	dark or custom palette is a new block of variables. Values were measured
+	from Qt 5.15 Fusion screenshots with its standard palette
+	(tools/qtref/gallery.py); no Qt code was used.
+
+	Widgets: Button (.default, :checked), ToggleButton (check box),
+	RadioButton, TextEntry, DropDown (combo box), Slider, ProgressBar,
+	scrollbars, .GroupBox (.GroupBoxTitle + .GroupBoxFrame) and .TabWidget
+	(.TabBar of RadioButton.Tab, then .TabPane). See docs/spec/ui-qt-themes.md.
+*/
+
+.QtFusion
+{
+	--window: #efefef;
+	--window-text: #000000;
+	--base: #ffffff;
+	--alternate-base: #f7f7f7;
+	--button: #efefef;
+	--button-text: #000000;
+	--text: #000000;
+	--highlight: #308cc6;
+	--highlighted-text: #ffffff;
+	--disabled-text: #bebebe;
+	--outline: #ababab;           /* window, 140% darker */
+	--outline-disabled: #c4c4c4;
+	--indicator-outline: #bcbcbc;
+	--focus-outline: #26709e;     /* highlight, darker */
+	--focus-inner: #dde9f0;
+	--button-top: #fefefe;
+	--button-bottom: #ededed;
+	--button-hover-bottom: #f6f6f6;
+	--button-pressed: #dbdbdb;
+	--default-top: #fcfdfd;
+	--default-bottom: #dae3e8;
+	--groove-top: #d2d2d2;
+	--groove-bottom: #e0e0e0;
+	--fill-outline: #22648d;
+	--fill-top: #3aa6eb;
+	--fill-bottom: #318fca;
+	--scroll-groove: #e6e6e6;
+	--scroll-outline: #bcbcbc;
+	--scroll-button: #f7f7f7;
+	--scroll-thumb: #f7f7f7;
+	--scroll-thumb-outline: #bdbdbd;
+	--frame: #ececec;
+	--tab-inactive: #e8e8e8;
+	--tab-pane: #fbfbfb;
+
+	background-color: var(--window);
+	color: var(--window-text);
+	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
+	font-size: 12px;
+}
+
+.QtFusion Label
+{
+	color: var(--window-text);
+	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
+	font-size: 12px;
+}
+
+/* ---- Push buttons --------------------------------------------------------- */
+
+.QtFusion Button
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--button-top) ), to( var(--button-bottom) ) );
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+	min-width: 24px;
+	min-height: 24px;
+}
+
+.QtFusion Button > Label
+{
+	color: var(--button-text);
+	horizontal-align: center;
+	vertical-align: center;
+}
+
+.QtFusion Button:hover
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--button-top) ), to( var(--button-hover-bottom) ) );
+}
+
+.QtFusion Button.default
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--default-top) ), to( var(--default-bottom) ) );
+	border-color: var(--focus-outline);
+}
+
+.QtFusion Button:active,
+.QtFusion Button:checked
+{
+	background-color: var(--button-pressed);
+}
+
+.QtFusion Button:disabled
+{
+	border-color: var(--outline-disabled);
+}
+
+.QtFusion Button:disabled > Label
+{
+	color: var(--disabled-text);
+}
+
+/* ---- Check boxes and radio buttons ---------------------------------------- */
+
+.QtFusion ToggleButton,
+.QtFusion RadioButton
+{
+	flow-children: right;
+}
+
+.QtFusion ToggleButton > Label,
+.QtFusion RadioButton > Label
+{
+	vertical-align: center;
+	margin-left: 5px;
+}
+
+.QtFusion .TickBox
+{
+	width: 14px;
+	height: 14px;
+	vertical-align: center;
+	background-color: var(--base);
+	border: 1px solid var(--indicator-outline);
+	border-radius: 0px;
+	background-size: 14px 14px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtFusion ToggleButton:checked > .TickBox
+{
+	background-image: url( "file://{images}/qt/fusion-check.png" );
+}
+
+.QtFusion ToggleButton:disabled > .TickBox
+{
+	background-color: var(--window);
+}
+
+.QtFusion ToggleButton:disabled:checked > .TickBox
+{
+	background-image: url( "file://{images}/qt/fusion-check-disabled.png" );
+}
+
+.QtFusion ToggleButton:disabled > Label,
+.QtFusion RadioButton:disabled > Label
+{
+	color: var(--disabled-text);
+}
+
+.QtFusion .RadioBox
+{
+	width: 15px;
+	height: 15px;
+	vertical-align: center;
+	background-color: var(--base);
+	border: 1px solid var(--outline);
+	border-radius: 50%;
+}
+
+.QtFusion RadioButton:checked > .RadioBox
+{
+	background-image: url( "file://{images}/qt/fusion-radio-dot.png" );
+	background-size: 15px 15px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+/* ---- Line edits ------------------------------------------------------------ */
+
+.QtFusion TextEntry
+{
+	background-color: var(--base);
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+	color: var(--text);
+	padding: 5px 2px 0px 2px;
+	font-family: "DejaVu Sans", "Noto Sans", "Verdana", sans-serif;
+	font-size: 12px;
+}
+
+.QtFusion TextEntry:focus
+{
+	border-color: var(--focus-outline);
+}
+
+.QtFusion TextEntry:disabled
+{
+	background-color: var(--window);
+	color: var(--disabled-text);
+}
+
+/* ---- Combo boxes ----------------------------------------------------------- */
+
+.QtFusion DropDown
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--button-top) ), to( var(--button-bottom) ) );
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+	background-image: url( "file://{images}/qt/fusion-combo-arrow.png" );
+	background-size: 22px 8px;
+	background-position: 100% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtFusion DropDown > Label
+{
+	color: var(--button-text);
+	vertical-align: center;
+	margin-left: 3px;
+}
+
+/* ---- Sliders --------------------------------------------------------------- */
+
+.QtFusion Slider #SliderTrack
+{
+	overflow: noclip;
+	width: 100%;
+	height: 5px;
+	vertical-align: center;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--groove-top) ), to( var(--groove-bottom) ) );
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+}
+
+.QtFusion Slider #SliderTrackProgress
+{
+	height: 5px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--fill-top) ), to( var(--fill-bottom) ) );
+	border: 1px solid var(--fill-outline);
+	border-radius: 2px;
+}
+
+.QtFusion Slider #SliderThumb
+{
+	width: 13px;
+	height: 13px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( #f7f7f7 ) );
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+}
+
+/* ---- Progress bars --------------------------------------------------------- */
+
+.QtFusion ProgressBar
+{
+	background-color: var(--base);
+	border: 1px solid var(--outline);
+	border-radius: 2px;
+}
+
+.QtFusion ProgressBar #ProgressBarLeft
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( var(--fill-top) ), to( var(--fill-bottom) ) );
+	border: 1px solid var(--fill-outline);
+	border-radius: 2px;
+}
+
+.QtFusion ProgressBar .ProgressBarText
+{
+	horizontal-align: center;
+	vertical-align: center;
+	color: var(--highlighted-text);
+}
+
+/* ---- Scroll bars ----------------------------------------------------------- */
+
+.QtFusion VerticalScrollBar
+{
+	width: 16px;
+	height: 100%;
+	horizontal-align: right;
+	background-color: var(--scroll-groove);
+	border-left: 1px solid var(--scroll-outline);
+}
+
+.QtFusion HorizontalScrollBar
+{
+	width: 100%;
+	height: 16px;
+	vertical-align: bottom;
+	background-color: var(--scroll-groove);
+	border-top: 1px solid var(--scroll-outline);
+}
+
+.QtFusion VerticalScrollBar .ScrollThumb
+{
+	width: 100%;
+	min-height: 16px;
+	background-color: var(--scroll-thumb);
+	border-bottom: 1px solid var(--scroll-thumb-outline);
+}
+
+.QtFusion HorizontalScrollBar .ScrollThumb
+{
+	height: 100%;
+	min-width: 16px;
+	background-color: var(--scroll-thumb);
+	border-right: 1px solid var(--scroll-thumb-outline);
+}
+
+.QtFusion .ScrollButtonBack,
+.QtFusion .ScrollButtonForward
+{
+	background-color: var(--scroll-button);
+	background-size: 16px 16px;
+	background-position: 50% 50%;
+	background-repeat: no-repeat;
+}
+
+.QtFusion VerticalScrollBar .ScrollButtonBack { height: 16px; border-bottom: 1px solid #c2c2c2; }
+.QtFusion VerticalScrollBar .ScrollButtonForward { height: 16px; border-top: 1px solid #c2c2c2; }
+.QtFusion HorizontalScrollBar .ScrollButtonBack { width: 16px; border-right: 1px solid #c2c2c2; }
+.QtFusion HorizontalScrollBar .ScrollButtonForward { width: 16px; border-left: 1px solid #c2c2c2; }
+
+.QtFusion VerticalScrollBar .ScrollButtonBack { background-image: url( "file://{images}/qt/fusion-scroll-up.png" ); }
+.QtFusion VerticalScrollBar .ScrollButtonForward { background-image: url( "file://{images}/qt/fusion-scroll-down.png" ); }
+.QtFusion HorizontalScrollBar .ScrollButtonBack { background-image: url( "file://{images}/qt/fusion-scroll-left.png" ); }
+.QtFusion HorizontalScrollBar .ScrollButtonForward { background-image: url( "file://{images}/qt/fusion-scroll-right.png" ); }
+
+.QtFusion .ScrollButtonBack:hover,
+.QtFusion .ScrollButtonForward:hover
+{
+	background-color: #fdfdfd;
+}
+
+/* ---- Group boxes ----------------------------------------------------------- */
+
+.QtFusion .GroupBox
+{
+	flow-children: down;
+}
+
+.QtFusion .GroupBoxTitle
+{
+	margin-left: 0px;
+	margin-bottom: 3px;
+}
+
+.QtFusion .GroupBoxFrame
+{
+	width: 100%;
+	height: fill-parent-flow( 1 );
+	background-color: var(--frame);
+	border: 1px solid #d7d7d7;
+	border-radius: 2px;
+}
+
+/* ---- Tabs ------------------------------------------------------------------ */
+
+.QtFusion .TabWidget
+{
+	flow-children: down;
+}
+
+.QtFusion .TabBar
+{
+	flow-children: right;
+	height: 25px;
+	margin-left: 1px;
+}
+
+.QtFusion .TabBar .Tab
+{
+	height: 24px;
+	vertical-align: bottom;
+	padding: 0px 12px;
+	background-color: var(--tab-inactive);
+	border: 1px solid var(--outline);
+	border-bottom-width: 0px;
+	border-radius: 2px 2px 0px 0px;
+	margin-right: -1px;
+}
+
+.QtFusion .TabBar .Tab .RadioBox
+{
+	visibility: collapse;
+}
+
+.QtFusion .TabBar .Tab > Label
+{
+	margin-left: 0px;
+	vertical-align: center;
+}
+
+.QtFusion .TabBar .Tab:checked
+{
+	height: 26px;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #ffffff ), to( var(--tab-pane) ) );
+	z-index: 1;
+}
+
+.QtFusion .TabPane
+{
+	width: 100%;
+	height: fill-parent-flow( 1 );
+	background-color: var(--tab-pane);
+	border: 1px solid var(--outline);
+	margin-top: -1px;
+}

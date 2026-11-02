@@ -149,7 +149,13 @@ void W_bi_tracebox(qcvm_t *vm)
 	do_trace(vm, QC_PVEC(vm, 0), QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3), (int)QC_PFLOAT(vm, 4), QC_PENT(vm, 5));
 }
 
-void W_bi_pointcontents(qcvm_t *vm) { QC_ReturnFloat(vm, (float)SV_ContentsToQuake(SV_PointContentsBits(QC_PVEC(vm, 0)))); }
+/* Sky is solid to movement, but pointcontents reports it as sky, as Quake
+ * does, so the game can tell open sky from a wall. */
+void W_bi_pointcontents(qcvm_t *vm)
+{
+	int bits = SV_PointContentsBits(QC_PVEC(vm, 0));
+	QC_ReturnFloat(vm, (float)((bits & CONTENTS_SKY) ? CONTENT_SKY : SV_ContentsToQuake(bits)));
+}
 
 void W_bi_droptofloor(qcvm_t *vm)
 {
@@ -398,11 +404,44 @@ static skelmodel_t *skel_arg(qcvm_t *vm)
 	return Skel_LoadModel(sv.models[i]);
 }
 
+/* alias models (.mdl, .md2) have no skeleton; their frame groups come from
+ * a "<model>.framegroups" file, as on the client */
+static framegroup_t *alias_groups(qcvm_t *vm, int *count)
+{
+	static struct {
+		char name[128];
+		framegroup_t *groups;
+		int count;
+	} cache[256];
+	static int numcached;
+	int i = (int)QC_PFLOAT(vm, 0);
+	const char *name;
+	*count = 0;
+	if (i <= 0 || i >= sv.nummodels || !sv.models[i] || Studio_Cached(sv.models[i]))
+		return NULL;
+	name = sv.models[i];
+	for (int c = 0; c < numcached; c++)
+		if (!Str_ICmp(cache[c].name, name)) {
+			*count = cache[c].count;
+			return cache[c].groups;
+		}
+	if (numcached == (int)BW_ARRAY_COUNT(cache))
+		return NULL;
+	Str_Copy(cache[numcached].name, name, sizeof(cache[numcached].name));
+	cache[numcached].groups = Skel_LoadFramegroups(name, &cache[numcached].count);
+	*count = cache[numcached].count;
+	return cache[numcached++].groups;
+}
+
 static framegroup_t *group_arg(qcvm_t *vm, int n)
 {
 	skelmodel_t *m = skel_arg(vm);
-	int f = (int)QC_PFLOAT(vm, n);
-	return m && f >= 0 && f < m->numanims ? &m->anims[f] : NULL;
+	int f = (int)QC_PFLOAT(vm, n), count;
+	framegroup_t *g;
+	if (m)
+		return f >= 0 && f < m->numanims ? &m->anims[f] : NULL;
+	g = alias_groups(vm, &count);
+	return g && f >= 0 && f < count ? &g[f] : NULL;
 }
 
 /* the frame queries take IQM framegroups, or GoldSrc studio sequences */

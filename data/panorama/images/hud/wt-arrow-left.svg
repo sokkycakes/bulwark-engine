@@ -1,0 +1,4 @@
+<!-- Lead marker between the two scores (points at the team in front). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="23" viewBox="0 0 16 18">
+  <path fill="#8a9097" d="M1 9 L15 1 L15 17 Z"/>
+</svg>

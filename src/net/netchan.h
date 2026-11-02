@@ -75,6 +75,9 @@ void Netchan_Free(netchan_t *c);
 /* Queues one reliable message; delivered whole, in order. */
 void Netchan_WriteReliable(netchan_t *c, const void *data, size_t len);
 bool Netchan_HasPendingReliable(const netchan_t *c);
+/* Room the next Netchan_Transmit wants for reliable fragments: those due
+ * for a first send or a resend, at most one fragment's worth. */
+size_t Netchan_ReliableBytesDue(const netchan_t *c);
 
 /* Sends a packet carrying any due reliable fragments followed by 'data'.
  * Returns the sequence number used. */

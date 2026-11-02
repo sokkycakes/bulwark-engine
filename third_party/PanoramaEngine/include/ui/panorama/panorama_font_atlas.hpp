@@ -21,6 +21,11 @@ struct PanoramaFontAtlasFace
 {
     std::filesystem::path path;
     int weight = 400;
+    // Bulwark: a pixel font, drawn crisp at whole multiples of its own size
+    // (the multiple nearest the asked size, never below 1x). > 0: a scalable
+    // font whose outlines lie on a pixel grid of this many pixels per em; < 0:
+    // a bitmap font (BDF/PCF) drawn from its first strike; 0: an ordinary face.
+    float pixel_ppem = 0.0F;
 };
 
 // Resolves one font face's file bytes without the atlas ever touching a filesystem.
@@ -55,6 +60,25 @@ struct PanoramaFontAtlasLoadOptions
     // Optional byte source consulted ahead of every filesystem probe. See above.
     PanoramaFontBytesProvider font_bytes_provider;
 };
+
+// Bulwark: an optional host glyph rasterizer. When set, every glyph is first
+// offered to it; if it returns true its bitmap and advance are used instead of
+// FreeType's, and no kerning is applied after it (Bulwark draws TrueType faces
+// the way Windows GDI's ExtTextOut does: whole-pixel advances, no kerning).
+// face_identity names the face uniquely (the provider's face name or the path);
+// font_data/font_size are the face's bytes (null/0 for a face read from disk).
+struct PanoramaRasterGlyph
+{
+    int width = 0;
+    int height = 0;
+    int left = 0;          // from the pen to the bitmap's left edge
+    int top = 0;           // from the baseline up to the bitmap's top row
+    float advance = 0.0F;
+    std::vector<unsigned char> coverage; // width * height bytes, 0..255
+};
+using PanoramaGlyphRasterizer = bool (*)(const std::string& face_identity, const unsigned char* font_data,
+    std::size_t font_size, int pixel_size, int weight, char32_t codepoint, PanoramaRasterGlyph& out);
+void panorama_set_glyph_rasterizer(PanoramaGlyphRasterizer rasterizer);
 
 struct PanoramaFontAtlasDirtyRect
 {
@@ -109,6 +133,10 @@ public:
     [[nodiscard]] bool loaded() const;
 
     void set_ui_scale(float ui_scale);
+    // Bulwark: text at or below this font size (layout pixels) is rasterized
+    // at exactly that many pixels per em, whatever the UI scale, so small
+    // hinted or bitmap-strike text stays crisp; 0 scales all text.
+    void set_exact_pixel_max(float max_font_size);
     void set_cache_budgets(PanoramaFontAtlasCacheBudgets budgets);
     [[nodiscard]] PanoramaFontAtlasCacheBudgets cache_budgets() const;
 

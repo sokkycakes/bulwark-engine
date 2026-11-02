@@ -53,5 +53,8 @@ __attribute__((visibility("default"))) int bwplug_init(const bwplug_api_t *a)
 	a->register_image(".vtf", image);
 	a->register_material(".vmt", VMT_Load);
 	a->register_model(".mdl", model);
+	a->cvar_register("src_boneboxes", "0",
+	                 "1 draws Source models as one box per bone (hitboxes where the model has them); 0 draws the mesh, "
+	                 "falling back to boxes when the .vvd or .vtx is missing. Applies to models loaded afterwards");
 	return 1;
 }

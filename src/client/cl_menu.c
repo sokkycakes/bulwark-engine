@@ -7,6 +7,7 @@
 #include "../net/pkg.h"
 #include "../server/sv_local.h"
 #include "lobby.h"
+#include "../ui/ui.h"
 
 #include "../common/cmd.h"
 #include "../common/cvar.h"
@@ -92,14 +93,18 @@ bool MQC_Active(void)
 	return M.vm && (M.keydest == KEYDEST_MENU || M.keydest == KEYDEST_MENU_GRABBED);
 }
 
+qcvm_t *MQC_VM(void) { return M.vm; }
+
 void MQC_Shutdown(void)
 {
 	if (!M.vm)
 		return;
+	UI_CloseMenuViews();
 	if (M.shutdown) {
 		set_time();
 		call(M.shutdown, 0);
 	}
+	R_ResetCursorMode(M.vm);
 	QC_Free(M.vm);
 	for (int i = 0; i < M.numregistered; i++)
 		Mem_Free(M.registered[i]);
@@ -129,7 +134,8 @@ bool MQC_Load(void)
 	tables[9] = cl_webcore_builtins;
 	tables[10] = lobby_builtins;
 	tables[11] = r_skin_builtins;
-	tables[12] = NULL;
+	tables[12] = ui_builtins; /* Panorama views, see docs/spec/ui.md */
+	tables[13] = NULL;
 	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, BW_MENU_MAXEDICTS, (size_t)BW_MENU_HEAP_MB * 1024 * 1024);
 	Mem_Free(data);
 	if (!M.vm)

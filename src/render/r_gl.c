@@ -9,6 +9,8 @@
 BW_GL_FUNCS(X)
 #undef X
 
+void(BWGLAPI *qglFramebufferTexture2D_opt)(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l);
+
 int GL_LoadFunctions(void *(*getproc)(const char *name))
 {
 	int missing = 0;
@@ -20,6 +22,7 @@ int GL_LoadFunctions(void *(*getproc)(const char *name))
 	}
 	BW_GL_FUNCS(X)
 #undef X
+	qglFramebufferTexture2D_opt = (void(BWGLAPI *)(GLenum, GLenum, GLenum, GLuint, GLint))getproc("glFramebufferTexture2D");
 	return missing == 0;
 }
 
@@ -34,6 +37,16 @@ static struct {
 	int unit;
 	int prog;
 } gs = {-1, 0, 0, -1, -1, -1, {0}, {0}, -1, -1};
+
+bool gl_coveragealpha;
+
+void GL_SetCoverageAlpha(bool on)
+{
+	if (gl_coveragealpha == on)
+		return;
+	gl_coveragealpha = on;
+	gs.blend = -1; /* the blend function is set again on next use */
+}
 
 void GL_SetBlend(int blend, GLenum src, GLenum dst)
 {
@@ -51,8 +64,14 @@ void GL_SetBlend(int blend, GLenum src, GLenum dst)
 	}
 	if (gs.blend == BLEND_OPAQUE || gs.blend < 0)
 		qglEnable(GL_BLEND);
-	if (gs.src != src || gs.dst != dst || gs.blend < 0)
-		qglBlendFunc(src, dst);
+	if (gs.src != src || gs.dst != dst || gs.blend < 0) {
+		/* drawing into a transparent target (R_BeginPixelated2D): alpha
+		 * accumulates as coverage, so the target holds premultiplied colour */
+		if (gl_coveragealpha)
+			qglBlendFuncSeparate(src, dst, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		else
+			qglBlendFunc(src, dst);
+	}
 	gs.blend = blend;
 	gs.src = src;
 	gs.dst = dst;
@@ -206,6 +225,46 @@ static const char *fs_model =
 	"  o_color = vec4(c, d.a) * u_color;\n"
 	"}\n";
 
+/* outlines (RF_OUTLINE), in screen space. The mask: a model's coverage in
+ * red (or a view model, which hides outlines, in blue) and in green how far
+ * up the entity's box it is, for the fade */
+static const char *vs_outline =
+	"layout(location=0) in vec3 a_pos;\n"
+	"uniform mat4 u_mvp; uniform mat4 u_model;\n"
+	"out float v_z;\n"
+	"void main() { gl_Position = u_mvp * vec4(a_pos, 1.0); v_z = (u_model * vec4(a_pos, 1.0)).z; }\n";
+static const char *fs_outline =
+	"in float v_z;\n"
+	"uniform vec4 u_color; uniform vec4 u_outline_z;\n"
+	"out vec4 o_color;\n"
+	"void main() {\n"
+	"  float f = u_outline_z.y > 0.0 ? clamp((v_z - u_outline_z.x) / u_outline_z.y, 0.0, 1.0) : 1.0;\n"
+	"  o_color = vec4(u_color.r, f, u_color.b, 1.0);\n"
+	"}\n";
+/* then the outline: every pixel outside the model within u_outline.x pixels
+ * of it, smoothed at the outer edge, faded as the nearest model pixel is */
+static const char *vs_outline2 =
+	"layout(location=0) in vec3 a_pos;\n"
+	"void main() { gl_Position = vec4(a_pos.xy, 0.0, 1.0); }\n";
+static const char *fs_outline2 =
+	"uniform sampler2D u_tex; uniform vec4 u_color; uniform vec4 u_outline;\n"
+	"out vec4 o_color;\n"
+	"void main() {\n"
+	"  ivec2 p = ivec2(gl_FragCoord.xy), hi = textureSize(u_tex, 0) - 1;\n"
+	"  vec4 c = texelFetch(u_tex, p, 0);\n"
+	"  if (c.r > 0.5 || c.b > 0.5) discard;\n"
+	"  float r = u_outline.x, best = 1e9, fade = 0.0; int n = int(ceil(r));\n"
+	"  for (int y = -n; y <= n; y++)\n"
+	"    for (int x = -n; x <= n; x++) {\n"
+	"      vec4 s = texelFetch(u_tex, clamp(p + ivec2(x, y), ivec2(0), hi), 0);\n"
+	"      float d = length(vec2(x, y));\n"
+	"      if (s.r > 0.5 && d < best) { best = d; fade = s.g; }\n"
+	"    }\n"
+	"  float a = clamp(r + 0.5 - best, 0.0, 1.0) * min(u_color.a, fade);\n"
+	"  if (a <= 0.0) discard;\n"
+	"  o_color = vec4(u_color.rgb, a);\n"
+	"}\n";
+
 static const char *vs_unlit =
 	"layout(location=0) in vec3 a_pos;\n"
 	"layout(location=1) in vec2 a_tc;\n"
@@ -268,6 +327,7 @@ static bool build(glprog_t *p, const char *vs, const char *fs, const char *what)
 	U(u_mvp); U(u_model); U(u_tex); U(u_lightmap); U(u_cube); U(u_color); U(u_lmscale); U(u_vieworg);
 	U(u_light_ambient); U(u_light_dir); U(u_light_diffuse); U(u_tcmod); U(u_alphatest); U(u_fog); U(u_time);
 	U(u_dlights); U(u_numdlights); U(u_dlightcolors); U(u_fullbright); U(u_usefullbright);
+	U(u_outline); U(u_outline_z);
 #undef U
 	qglUseProgram(p->prog);
 	if (p->u_tex >= 0)
@@ -292,6 +352,8 @@ bool R_InitPrograms(void)
 	ok &= build(&r_progs[PROG_MODEL], vs_model, fs_model, "model");
 	ok &= build(&r_progs[PROG_UNLIT], vs_unlit, fs_2d, "unlit");
 	ok &= build(&r_progs[PROG_SKY], vs_sky, fs_sky, "sky");
+	ok &= build(&r_progs[PROG_OUTLINE], vs_outline, fs_outline, "outline");
+	ok &= build(&r_progs[PROG_OUTLINE2], vs_outline2, fs_outline2, "outline2");
 	gs.prog = -1;
 	return ok;
 }
@@ -488,7 +550,7 @@ bool Mat4_Invert(float *out, const float *m)
 /* a program's GLSL, for r_dumpshaders */
 bool R_ProgramSource(int p, const char **name, const char **vs, const char **fs)
 {
-	static const char *const names[PROG_COUNT] = {"2d", "world", "model", "unlit", "sky"};
+	static const char *const names[PROG_COUNT] = {"2d", "world", "model", "unlit", "sky", "outline", "outline2"};
 	const char *const v[PROG_COUNT] = {vs_2d, vs_world, vs_model, vs_unlit, vs_sky};
 	const char *const f[PROG_COUNT] = {fs_2d, fs_world, fs_model, fs_2d, fs_sky};
 	if (p < 0 || p >= PROG_COUNT)

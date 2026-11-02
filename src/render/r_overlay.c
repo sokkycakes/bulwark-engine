@@ -170,6 +170,12 @@ void R_DrawOverlays(int w, int h)
 	draw_notify(w, h, size);
 	draw_centerprint(w, h, size * 2);
 	draw_chat(w, h, size);
-	draw_readouts(w, h, size);
+	{
+		/* fps, position and netgraph in the console's own font */
+		float consize;
+		int saved = R_UseConsoleFont(&consize);
+		draw_readouts(w, h, consize);
+		R_RestoreDrawFont(saved);
+	}
 	R_DrawHud(w, h);
 }

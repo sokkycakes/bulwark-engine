@@ -56,6 +56,8 @@ static int q1_contents(int c)
 	}
 }
 
+int BSP_QuakeContentsToBits(int contents) { return q1_contents(contents); }
+
 static void brush_bounds(bspmap_t *m, cbrush_t *b)
 {
 	/* axial sides give the bounds; Q3 compilers always emit the six axial planes first */

@@ -22,7 +22,13 @@ static bwplug_model_fn model_fn;
 static void p_print(const char *t) { fputs(t, stdout); }
 static void p_add_command(const char *n, bwplug_cmd_fn fn, const char *d) {}
 static void p_add_text(const char *t) {}
-static const char *p_cvar_string(const char *n) { return ""; }
+static const char *p_cvar_string(const char *n)
+{
+	/* SRCCONV_<name>=value sets a cvar, e.g. SRCCONV_src_boneboxes=1 */
+	char env[128];
+	snprintf(env, sizeof(env), "SRCCONV_%s", n);
+	return getenv(env) ? getenv(env) : "";
+}
 static void p_cvar_set(const char *n, const char *v) {}
 static void p_cvar_register(const char *n, const char *v, const char *d) {}
 static const char *p_gamedir(void) { return root; }

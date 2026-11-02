@@ -32,12 +32,13 @@ typedef struct {
 	void *render;   /* renderer's data */
 } clmodel_t;
 
-/* recent network origins of a server entity, for render interpolation */
+/* recent network states of a server entity, for render interpolation */
 #define CL_INTERP_SAMPLES 16
 typedef struct {
 	double time;
 	float origin[3];
 	float angles[3];
+	float frame, frame1time;
 } interpsample_t;
 
 typedef struct {
@@ -203,6 +204,9 @@ extern bool key_console_active;
 bool CSQC_Load(void);
 void CSQC_Shutdown(void);
 void CSQC_ParseEntities(msg_t *m);
+/* where a networked entity is drawn, cl_interp seconds behind the newest
+ * snapshot; false when it should be drawn as the client game left it */
+bool CSQC_LerpEntity(int entnum, int ent, float origin[3], float angles[3], float *frame, float *frame1time);
 void CSQC_ParseEvent(msg_t *m, size_t len);
 void CSQC_WorldLoaded(void);
 void CSQC_RendererRestarted(void);
@@ -285,6 +289,7 @@ bool MQC_Load(void);
 void MQC_LoadWhenActive(void); /* once the game being started is in */
 void MQC_PendingLoad(void); /* does the load MQC_LoadWhenActive asked for */
 void MQC_Shutdown(void);
+qcvm_t *MQC_VM(void); /* the menu progs, NULL when none is loaded */
 bool MQC_Active(void);
 void MQC_Toggle(int mode);
 void MQC_Frame(int width, int height);

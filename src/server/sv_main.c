@@ -15,6 +15,7 @@
 #define G sv.vm->gofs
 
 server_t sv;
+int sv_spawncount;
 
 static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate;
 
@@ -38,6 +39,31 @@ const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outs
 			memcpy(out, v, n);
 			out[n] = 0;
 			return out;
+		}
+		p = ve;
+	}
+	return out;
+}
+
+/* The info string other clients may see: keys starting with '_' are private
+ * to the server (passwords, the player key), as in QuakeWorld. */
+const char *SV_InfoPublic(const char *info, char *out, size_t outsize)
+{
+	const char *p = info;
+	out[0] = 0;
+	while (*p == '\\') {
+		const char *k = p + 1, *ke = strchr(k, '\\'), *ve;
+		if (!ke)
+			break;
+		ve = strchr(ke + 1, '\\');
+		if (!ve)
+			ve = ke + 1 + strlen(ke + 1);
+		if (*k != '_') {
+			size_t l = strlen(out), n = (size_t)(ve - p);
+			if (l + n < outsize) {
+				memcpy(out + l, p, n);
+				out[l + n] = 0;
+			}
 		}
 		p = ve;
 	}
@@ -456,6 +482,12 @@ bool SV_SpawnServer(const char *mapname)
 		spawn_map_entities(sv.world->entities);
 	}
 	sv.spawning = false;
+	/* only slots freed while the map loaded skip the reuse delay; the
+	   server clock starts at 1, so a fixed "before 2 seconds" would also
+	   let a client that joins quickly reuse a slot some stale reference
+	   still points at */
+	vm->quick_reuse_before = (float)sv.time + 0.001f;
+	sv_spawncount++;
 	Script_LevelSpawned();
 	SV_ClientsMapChanged();
 	SV_MVDMapSpawned();
@@ -577,9 +609,23 @@ static void physics_toss(int e, int movetype)
 		VectorClear(vel);
 		return;
 	}
-	clip_velocity(vel, tr.normal, vel, (movetype == MOVETYPE_BOUNCE) ? 1.5f : 1.0f);
+	/* MOVETYPE_BOUNCE keeps half the speed into the surface, or the
+	 * entity's .bouncefactor of it, and comes to rest on a floor below
+	 * 60 units/s upward, or .bouncestop times the gravity it falls with
+	 * (the DarkPlaces/FTE extension fields; 0 means unset) */
+	float bounce = 0.5f, stop = 60;
+	if (movetype == MOVETYPE_BOUNCE) {
+		float bf = PF.bouncefactor >= 0 ? QC_EFloat(pv, e, PF.bouncefactor) : 0;
+		float bs = PF.bouncestop >= 0 ? QC_EFloat(pv, e, PF.bouncestop) : 0;
+		float grav = PF.gravity >= 0 && QC_EFloat(pv, e, PF.gravity) ? QC_EFloat(pv, e, PF.gravity) : 1;
+		if (bf > 0)
+			bounce = bf;
+		if (bs > 0)
+			stop = bs * grav * pgrav;
+	}
+	clip_velocity(vel, tr.normal, vel, (movetype == MOVETYPE_BOUNCE) ? 1.0f + bounce : 1.0f);
 	if (tr.normal[2] > 0.7f && movetype != MOVETYPE_FLY && movetype != MOVETYPE_FLYMISSILE) {
-		if (vel[2] < 60 || movetype != MOVETYPE_BOUNCE) {
+		if (vel[2] < stop || movetype != MOVETYPE_BOUNCE) {
 			QC_SetEFloat(pv, e, PF.flags, (float)((int)QC_EFloat(pv, e, PF.flags) | FL_ONGROUND));
 			QC_SetEInt(pv, e, PF.groundentity, tr.ent);
 			VectorClear(vel);
@@ -977,6 +1023,13 @@ static void SV_Edict_f(int argc, const char **argv)
 	           QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), f[F.origin].f, f[F.origin + 1].f,
 	           f[F.origin + 2].f, f[F.velocity].f, f[F.velocity + 1].f, f[F.velocity + 2].f, f[F.angles].f,
 	           f[F.angles + 1].f, f[F.angles + 2].f);
+	{
+		/* animation state, for checking that things play */
+		int fr = QC_FieldOfs(sv.vm, "frame"), ft = QC_FieldOfs(sv.vm, "frame1time");
+		if (fr >= 0 && ft >= 0)
+			Con_Printf("  model %s frame %g frame1time %g\n", QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.model)),
+			           f[fr].f, f[ft].f);
+	}
 }
 
 /* "pr_trace <text>": prints entries to QC functions whose names contain it,

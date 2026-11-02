@@ -45,6 +45,22 @@ void Netchan_WriteReliable(netchan_t *c, const void *data, size_t len)
 
 bool Netchan_HasPendingReliable(const netchan_t *c) { return c->reloutlen || c->relnext != c->relacked; }
 
+size_t Netchan_ReliableBytesDue(const netchan_t *c)
+{
+	double resend = c->rtt * 1.5 + 0.03;
+	size_t due = 0;
+	for (uint32_t s = c->relacked; s != c->relnext; s++) {
+		const netfrag_t *f = &c->frags[s % NETCHAN_WINDOW];
+		if (!f->lastsent || host_time - f->lastsent >= resend)
+			due += 6 + f->len;
+	}
+	/* stream bytes not cut into fragments yet go out as new ones */
+	due += c->reloutlen + 6 * ((c->reloutlen + NETCHAN_FRAGSIZE - 1) / NETCHAN_FRAGSIZE);
+	if (due)
+		due += 2; /* the reliable flag's count byte, and slack */
+	return BW_MIN(due, (size_t)NETCHAN_FRAGSIZE + 8);
+}
+
 /* moves stream bytes into fragments while the window has room */
 static void make_fragments(netchan_t *c)
 {

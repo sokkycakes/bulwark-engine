@@ -112,6 +112,9 @@ int main(int argc, char **argv)
 	if (maxframes >= 0)
 		Cmd_ExecuteString("status");
 	Plug_Shutdown();
+	if (sv.active)
+		SV_DropClients("server shut down");
 	SV_Shutdown();
+	QC_URIDrain(3);
 	return 0;
 }

@@ -101,10 +101,10 @@ typedef struct {
 	GLuint prog;
 	GLint u_mvp, u_model, u_tex, u_lightmap, u_cube, u_color, u_lmscale, u_vieworg, u_light_ambient;
 	GLint u_light_dir, u_light_diffuse, u_tcmod, u_alphatest, u_fog, u_time, u_dlights, u_numdlights;
-	GLint u_dlightcolors, u_fullbright, u_usefullbright;
+	GLint u_dlightcolors, u_fullbright, u_usefullbright, u_outline, u_outline_z;
 } glprog_t;
 
-enum { PROG_2D, PROG_WORLD, PROG_MODEL, PROG_UNLIT, PROG_SKY, PROG_COUNT };
+enum { PROG_2D, PROG_WORLD, PROG_MODEL, PROG_UNLIT, PROG_SKY, PROG_OUTLINE, PROG_OUTLINE2, PROG_COUNT };
 extern glprog_t r_progs[PROG_COUNT];
 bool R_InitPrograms(void);
 void R_ShutdownPrograms(void);
@@ -133,6 +133,7 @@ int R_SpriteFormat(const char *name);
 void GL_SetDepth(bool test, bool write);
 void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);
+void GL_SetCoverageAlpha(bool on);
 void GL_DeleteTextures(int n, const GLuint *tex);
 
 /* --- models -------------------------------------------------------------- */
@@ -170,6 +171,8 @@ typedef struct rmodel_s {
 
 rmodel_t *R_ModelForIndex(int index);
 rmodel_t *R_LoadModel(const char *name); /* cached by name */
+int R_SpriteFrameCount(const rmodel_t *m);
+material_t *R_SpriteFrame(const rmodel_t *m, int frame, float *rect); /* rect: left right top bottom */
 void R_FreeModels(void);
 int R_ModelNumFrames(rmodel_t *m);
 
@@ -255,8 +258,10 @@ void R_PCF_Shutdown(void);
 void R_ShutdownParticles(void);
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass);
 void R_DrawSky(const float *viewproj_noorigin);
+void R_DrawBackgroundSky(const float *mvp);
+bool R_VoxelLightPoint(const float *p, float *rgb);
 /* voxel worlds (r_voxel.c) */
-extern cvar_t *r_drawvoxels;
+extern cvar_t *r_drawvoxels, *r_voxel_light, *r_voxel_daylight, *r_voxel_invlight, *r_voxel_fulldark;
 void R_DrawVoxels(bool translucentpass);
 void R_FreeVoxels(void);
 void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir);
@@ -287,6 +292,8 @@ typedef struct {
 	int qcent;        /* entity in that vm */
 	int skeletonindex; /* a skeleton object of that vm posing the model, 0 for none */
 	const struct rskin_s *customskin; /* setcustomskin: geomsets and surface replacements */
+	float outline[3];  /* RF_OUTLINE: the outline's colour, 0 to 1 */
+	float mins[3], maxs[3]; /* the entity's box, for the outline's fade */
 } rentity_t;
 
 /* custom skins (r_skin.c) */
@@ -362,6 +369,13 @@ void R_PolygonVertex(const float *org, const float *tc, const float *rgb, float 
 void R_EndPolygon(void);
 void R_EndPolygonRibbon(float radius, const float *tcbias);
 void R_AddEntityFromQC(struct qcvm_s *vm, int ent);
+/* render flag: draw the entity mirrored left to right (Bulwark's own) */
+#define RF_MIRROR 65536
+/* render flag: draw a teammate outline around the entity, seen through walls
+ * (Bulwark's own; the colour is the entity's .outlinecolor) */
+#define RF_OUTLINE 131072
+void R_DrawOutlines(void);
+bool R_EntityMirrored(int renderflags);
 void R_AddEntities(struct qcvm_s *vm, int mask);
 void R_ClearStatics(void);
 int R_AddDynamicLight(const float *org, float radius, const float *color);
@@ -388,6 +402,8 @@ float R_StringWidth(const char *text, float sx, float sy, bool markup);
 void R_SetClip(float x, float y, float w, float h);
 void R_ResetClip(void);
 void R_DrawConsole(int w, int h);
+int R_UseConsoleFont(float *size);
+void R_RestoreDrawFont(int saved);
 void R_InitDraw(void);
 int R_LoadFont(const char *name, const char *path, const char *sizes, int slot);
 int R_FindFont(const char *name);
@@ -417,6 +433,23 @@ image_t *RG_Atlas(const rgsize_t *s);
 const rgglyph_t *RG_Glyph(rgsize_t *s, int cp);
 void RG_Upload(rgsize_t *s);
 int RG_AtlasSize(void);
+
+/* --- bitmap fonts: BDF, PCF and pixel TrueType (r_bmfont.c) -------------- */
+
+typedef struct bffont_s bffont_t;
+typedef struct bfsize_s bfsize_t;
+
+void BF_Init(void);
+bool BF_PixelFontsEnabled(void);
+bffont_t *BF_Load(const char *spec);
+void BF_Free(bffont_t *f);
+int BF_Cell(const bffont_t *f);              /* the font's own cell height in pixels */
+int BF_Scale(const bffont_t *f, int tall);   /* the whole multiple text tall pixels high is drawn at */
+bfsize_t *BF_Size(bffont_t *f, int k);
+const rgglyph_t *BF_Glyph(bffont_t *f, bfsize_t *s, int cp);
+image_t *BF_Atlas(const bfsize_t *s);
+void BF_Upload(bfsize_t *s);
+int BF_AtlasSize(void);
 extern int r_vwidth, r_vheight; /* virtual 2D screen size */
 extern int r_pwidth, r_pheight; /* physical framebuffer size */
 extern float r_2dscale;
