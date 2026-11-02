@@ -20,6 +20,8 @@ Everything is read through the file system under `panorama/` in a game dir:
 | `panorama/scripts/*.js` | scripts, included from a layout |
 | `panorama/images/...` | PNG/TGA images; `{images}/x.png` in CSS or XML means `panorama/images/x.png` |
 | `panorama/fonts/*.ttf\|otf` | every font here is loaded at start; weight is guessed from the file name (`Bold`, `Light`, ...); each is also a `font-family` of its file name without the extension |
+| `panorama/fonts/*.bdf\|pcf\|pcf.gz` | bitmap fonts, loaded the same way and drawn crisp ([bitmap-fonts.md](bitmap-fonts.md)) |
+| `fonts/*` in Bulwark's data directory | shared fonts: each is a `font-family` of its family name and of its file name ([bitmap-fonts.md](bitmap-fonts.md)) |
 | `{game}/<path>` | in an image `src`, a CSS `url()` or a script include: any game file, used in place (a game's own art and scripts) |
 
 Bulwark's own data directory (`data/` in the source tree, or beside the

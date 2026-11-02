@@ -36,6 +36,19 @@ needs no new parameters:
   (then the default one) by nearest weight, and glyph cache keys hold the
   wider value.
 
+Pixel fonts (`docs/spec/bitmap-fonts.md`), each change marked `Bulwark:`:
+
+- `include/ui/panorama/panorama_font_atlas.hpp`: `PanoramaFontAtlasFace`
+  gains `pixel_ppem` (> 0: a TrueType font on a pixel grid; < 0: a BDF/PCF
+  strike), set by the host.
+- `src/panorama_font_atlas.cpp`: such a face stays at its own size, glyphs
+  are 1-bit and unhinted and are scaled by a whole number k (the multiple
+  nearest the asked size) when packed, metrics and advances times k, no
+  kerning.
+- `include/ui/panorama/panorama_paint.hpp`, `src/panorama_paint.cpp`:
+  `PanoramaGlyph::pixel_grid`; paint rounds a pixel glyph's quad to whole
+  screen pixels when the text's transform only translates.
+
 Controls and selectors added for the Qt look-alike themes
 (`docs/spec/ui-qt-themes.md`):
 

@@ -431,6 +431,23 @@ image_t *RG_Atlas(const rgsize_t *s);
 const rgglyph_t *RG_Glyph(rgsize_t *s, int cp);
 void RG_Upload(rgsize_t *s);
 int RG_AtlasSize(void);
+
+/* --- bitmap fonts: BDF, PCF and pixel TrueType (r_bmfont.c) -------------- */
+
+typedef struct bffont_s bffont_t;
+typedef struct bfsize_s bfsize_t;
+
+void BF_Init(void);
+bool BF_PixelFontsEnabled(void);
+bffont_t *BF_Load(const char *spec);
+void BF_Free(bffont_t *f);
+int BF_Cell(const bffont_t *f);              /* the font's own cell height in pixels */
+int BF_Scale(const bffont_t *f, int tall);   /* the whole multiple text tall pixels high is drawn at */
+bfsize_t *BF_Size(bffont_t *f, int k);
+const rgglyph_t *BF_Glyph(bffont_t *f, bfsize_t *s, int cp);
+image_t *BF_Atlas(const bfsize_t *s);
+void BF_Upload(bfsize_t *s);
+int BF_AtlasSize(void);
 extern int r_vwidth, r_vheight; /* virtual 2D screen size */
 extern int r_pwidth, r_pheight; /* physical framebuffer size */
 extern float r_2dscale;

@@ -552,6 +552,9 @@ static void Listfonts_f(int argc, const char **argv)
 	FS_List("fonts/*.ttf", true, font_file, &count);
 	FS_List("fonts/*.otf", true, font_file, &count);
 	FS_List("fonts/*.font", true, font_file, &count);
+	FS_List("fonts/*.bdf", true, font_file, &count);
+	FS_List("fonts/*.pcf", true, font_file, &count);
+	FS_List("fonts/*.pcf.gz", true, font_file, &count);
 	Con_Printf("%d font files\n", count);
 	if (!RG_Enabled())
 		Con_Printf("r_gdifont is 0: face names such as \"Verdana\" are not looked up\n");

@@ -1,0 +1,25 @@
+<!--
+	The shared fonts in Bulwark's data/fonts/, by CSS font-family. Pixel
+	fonts (BDF, PCF, and TrueType fonts drawn on a pixel grid) are drawn crisp,
+	at the whole multiple of their own size nearest font-size (r_pixelfonts).
+	Open with `ui_open layout/fonts/shared-fonts.xml`.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/fonts/shared-fonts.css" />
+	</styles>
+	<Panel id="Window" bwdesignheight="540">
+		<Label class="row f-anorexia" text="anorexia (BDF) 11px: The quick brown fox jumps over the lazy dog 0123456789" />
+		<Label class="row f-anorexia big" text="anorexia (BDF) 22px: The quick brown fox jumps" />
+		<Label class="row f-visitor" text="visitor1 (pixel TTF) 10px: The quick brown fox jumps over the lazy dog" />
+		<Label class="row f-visitor big" text="Visitor TT1 BRK 20px: The quick brown fox jumps" />
+		<Label class="row f-cweb" text="C Web (CWEBL) 13px: The quick brown fox jumps over the lazy dog" />
+		<Label class="row f-cweb big" text="CWEBL 26px: The quick brown fox jumps" />
+		<Label class="row f-tall" text="tallpixelfont 9px: The quick brown fox jumps over the lazy dog" />
+		<Label class="row f-tall big" text="TallPixelFont 18px: The quick brown fox jumps" />
+		<Label class="row f-04b" text="04b09 8px: The quick brown fox jumps over the lazy dog" />
+		<Label class="row f-04b big" text="04b09 16px: The quick brown fox jumps" />
+		<Label class="row f-minusio" text="Minusio 16px: The quick brown fox jumps over the lazy dog" />
+		<Label class="row f-minusio big" text="Minusio 32px: The quick brown fox" />
+	</Panel>
+</root>

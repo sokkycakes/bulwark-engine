@@ -6,6 +6,7 @@
 #include "ui.h"
 
 extern "C" {
+#include "../common/bmfont.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
@@ -353,20 +354,103 @@ int face_weight(const char *name)
 	return 400;
 }
 
+/* the file's name without its extension(s) */
+std::string file_stem(const char *path)
+{
+	const char *base = strrchr(path, '/');
+	std::string stem(base ? base + 1 : path);
+	if (stem.size() > 7 && !Str_ICmp(stem.c_str() + stem.size() - 7, ".pcf.gz"))
+		stem.erase(stem.size() - 7);
+	else if (stem.find('.') != std::string::npos)
+		stem.erase(stem.rfind('.'));
+	return stem;
+}
+
+bool font_file(const char *name)
+{
+	const char *dot = strrchr(name, '.');
+	return BMF_IsBitmapName(name) ||
+	       (dot && (!Str_ICmp(dot, ".ttf") || !Str_ICmp(dot, ".otf") || !Str_ICmp(dot, ".ttc")));
+}
+
+/* game files read once per search path: a .gz is inflated */
+bool load_font_bytes(const std::string &path, std::vector<unsigned char> &out)
+{
+	if (!load_bytes(path, out))
+		return false;
+	if (out.size() > 2 && out[0] == 0x1f && out[1] == 0x8b) {
+		size_t n = 0;
+		uint8_t *raw = BMF_Gunzip(out.data(), out.size(), &n);
+		if (!raw)
+			return false;
+		out.assign(raw, raw + n);
+		Mem_Free(raw);
+	}
+	return true;
+}
+
+/* Pixel fonts are drawn crisp (r_pixelfonts, as for engine text): a BDF or
+   PCF file from its strike, a TrueType font on a pixel grid at whole
+   multiples of that grid. Worked out once per file and search path. */
+std::unordered_map<std::string, float> pixel_cache;
+int pixel_cache_gen = -1;
+
+float face_pixel_ppem(const std::string &path)
+{
+	cvar_t *on = Cvar_Find("r_pixelfonts");
+	if (on && !on->value)
+		return 0;
+	if (BMF_IsBitmapName(path.c_str()))
+		return -1;
+	if (pixel_cache_gen != FS_Generation()) {
+		pixel_cache.clear();
+		pixel_cache_gen = FS_Generation();
+	}
+	auto it = pixel_cache.find(path);
+	if (it != pixel_cache.end())
+		return it->second;
+	std::vector<unsigned char> bytes;
+	float ppem = 0;
+	if (load_bytes(path, bytes) && bytes.size() <= (2u << 20))
+		ppem = BMF_PixelGrid(bytes.data(), bytes.size(), nullptr);
+	pixel_cache[path] = ppem;
+	return ppem;
+}
+
 void add_face(const char *name, const char *searchpath, void *ctx)
 {
 	auto *faces = static_cast<std::vector<PanoramaFontAtlasFace> *>(ctx);
 	const char *base = strrchr(name, '/');
+	(void)searchpath;
 	base = base ? base + 1 : name;
 	for (const PanoramaFontAtlasFace &f : *faces)
 		if (f.path == base)
 			return;
-	faces->push_back({base, face_weight(base)});
+	float ppem = face_pixel_ppem(std::string("panorama/fonts/") + base);
+	faces->push_back({base, face_weight(base), ppem});
 	/* each file is also a family of its own name, without the extension */
-	std::string fam(base);
-	if (fam.find('.') != std::string::npos)
-		fam.erase(fam.rfind('.'));
-	faces->push_back({base, panorama_register_font_family(fam) * kPanoramaFontFamilyStride + 400});
+	faces->push_back({base, panorama_register_font_family(file_stem(base)) * kPanoramaFontFamilyStride + 400, ppem});
+}
+
+/* Bulwark's shared fonts, fonts/ in its data directory: every game can name
+   them in CSS by family name ("Visitor TT1 BRK") or file name ("visitor1") */
+void add_shared_face(const char *name, const char *searchpath, void *ctx)
+{
+	auto *faces = static_cast<std::vector<PanoramaFontAtlasFace> *>(ctx);
+	std::vector<unsigned char> bytes;
+	char family[64];
+	int weight = 400;
+	bool italic = false;
+	if (strcmp(searchpath, "(engine)") || !font_file(name) || !load_font_bytes(name, bytes))
+		return;
+	if (!BMF_Describe(bytes.data(), bytes.size(), family, sizeof(family), &weight, &italic))
+		family[0] = 0;
+	float ppem = face_pixel_ppem(name);
+	weight = BW_CLAMP(weight, 1, 1000);
+	std::string stem = file_stem(name);
+	faces->push_back({name, panorama_register_font_family(stem) * kPanoramaFontFamilyStride + weight, ppem});
+	if (family[0] && Str_ICmp(family, stem.c_str()))
+		faces->push_back({name, panorama_register_font_family(family) * kPanoramaFontFamilyStride + weight, ppem});
 }
 
 /* every font in panorama/fonts/ joins one family; weights come from the
@@ -377,8 +461,13 @@ void load_fonts(ScaledAtlas *only = nullptr)
 	PanoramaFontAtlasLoadOptions opts;
 	FS_List("panorama/fonts/*.ttf", true, add_face, &opts.faces);
 	FS_List("panorama/fonts/*.otf", true, add_face, &opts.faces);
+	FS_List("panorama/fonts/*.bdf", true, add_face, &opts.faces);
+	FS_List("panorama/fonts/*.pcf", true, add_face, &opts.faces);
+	FS_List("panorama/fonts/*.pcf.gz", true, add_face, &opts.faces);
 	for (const ExtraFace &f : extra_faces)
-		opts.faces.push_back({f.path, f.key});
+		opts.faces.push_back({f.path, f.key, face_pixel_ppem(f.path)});
+	/* last, so that a game's own faces stay the fallback for unknown families */
+	FS_List("fonts/*", true, add_shared_face, &opts.faces);
 	if (opts.faces.empty()) {
 		Con_Printf("^3ui: no fonts in panorama/fonts/; text will not draw\n");
 		fonts_loaded = false;
@@ -389,7 +478,7 @@ void load_fonts(ScaledAtlas *only = nullptr)
 		std::vector<unsigned char> bytes;
 		std::string name(face);
 		/* registered faces are named by their game path, the others by file name */
-		if (!load_bytes(name.find('/') != std::string::npos ? name : "panorama/fonts/" + name, bytes))
+		if (!load_font_bytes(name.find('/') != std::string::npos ? name : "panorama/fonts/" + name, bytes))
 			return std::vector<unsigned char>(); /* handled: never look on disk */
 		return bytes;
 	};

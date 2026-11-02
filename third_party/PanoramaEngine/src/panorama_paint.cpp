@@ -3306,8 +3306,17 @@ private:
                 const float leading_kerning = first ? 0.0F : cached.leading_kerning;
                 if (g.valid)
                 {
-                    const float gx = pen + leading_kerning + g.bearing_x + dx;
-                    const float gy = baseline - g.bearing_y + dy;
+                    float gx = pen + leading_kerning + g.bearing_x + dx;
+                    float gy = baseline - g.bearing_y + dy;
+                    // Bulwark: a pixel-font glyph goes on whole screen pixels,
+                    // so its texels map one to one (only through a transform
+                    // that moves without scaling or turning)
+                    if (g.pixel_grid > 0.0F && run_transform.a == 1.0F && run_transform.d == 1.0F &&
+                        run_transform.b == 0.0F && run_transform.c == 0.0F)
+                    {
+                        gx = std::round((gx + run_transform.e) / g.pixel_grid) * g.pixel_grid - run_transform.e;
+                        gy = std::round((gy + run_transform.f) / g.pixel_grid) * g.pixel_grid - run_transform.f;
+                    }
                     add_rect(gx, gy, g.width, g.height, run_color, glyphs_.atlas_texture, run_transform, g.u0, g.v0, g.u1, g.v1);
                 }
                 pen += cached.advance - (first ? cached.leading_kerning : 0.0F);

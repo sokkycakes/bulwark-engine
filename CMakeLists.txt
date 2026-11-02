@@ -64,6 +64,7 @@ add_library(bwcommon STATIC
 	src/common/terrain.c
 	src/common/stb_image_impl.c
 	src/common/json.c
+	src/common/bmfont.c
 	src/common/ftew.c)
 target_link_libraries(bwcommon PUBLIC m Threads::Threads ${CMAKE_DL_LIBS})
 # Bulwark's own data files (UI layouts), found here when nothing is installed beside the executable
@@ -175,6 +176,10 @@ if(NOT BULWARK_CONSOLE)
 	target_link_libraries(wavcheck bwcommon)
 	add_executable(rescheck tools/rescheck.c)
 	target_link_libraries(rescheck bwcommon)
+	add_executable(bmfdump tools/bmfdump.c)
+	target_link_libraries(bmfdump bwcommon)
+	add_executable(bmfonttest tests/bmfont/bmfonttest.c)
+	target_link_libraries(bmfonttest bwcommon)
 	add_executable(vguitest tools/vguitest.c)
 	target_link_libraries(vguitest bwcommon)
 
@@ -194,6 +199,7 @@ if(NOT BULWARK_CONSOLE)
 	# real content, if BULWARK_STUDIO_FIXTURES names a folder of models (never committed)
 	add_test(NAME studio-fixtures COMMAND ${CMAKE_SOURCE_DIR}/tests/run_studio_fixtures.sh $<TARGET_FILE:mdlcheck>)
 	add_test(NAME vgui COMMAND vguitest)
+	add_test(NAME bmfont COMMAND ${CMAKE_SOURCE_DIR}/tests/bmfont/run.sh $<TARGET_FILE:bmfonttest>)
 	# real .res files, if BULWARK_RES_FIXTURES names a folder of them (never committed)
 	add_test(NAME vgui-fixtures COMMAND ${CMAKE_SOURCE_DIR}/tests/run_res_fixtures.sh $<TARGET_FILE:rescheck>)
 	add_executable(bsptest tests/bsp/bsptest.c)
@@ -283,6 +289,7 @@ add_library(bwclient STATIC
 	src/render/r_hud.c
 	src/render/r_draw.c
 	src/render/r_gdifont.c
+	src/render/r_bmfont.c
 	src/render/r_model.c
 	src/render/r_scene.c
 	src/render/r_voxel.c

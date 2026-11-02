@@ -1,0 +1,21 @@
+/* shared-fonts.xml: each shared font at its own size and at twice it */
+#Window {
+	width: 100%;
+	height: 100%;
+	background-color: #1b1d22;
+	flow-children: down;
+	padding: 12px;
+}
+.row { color: #e8e8e8; margin-bottom: 6px; }
+.f-anorexia { font-family: anorexia; font-size: 11px; }
+.f-anorexia.big { font-size: 22px; }
+.f-visitor { font-family: visitor1; font-size: 10px; }
+.f-visitor.big { font-family: "Visitor TT1 BRK"; font-size: 20px; }
+.f-cweb { font-family: "C Web"; font-size: 13px; }
+.f-cweb.big { font-family: CWEBL; font-size: 26px; }
+.f-tall { font-family: tallpixelfont; font-size: 9px; }
+.f-tall.big { font-family: TallPixelFont; font-size: 18px; }
+.f-04b { font-family: 04b09; font-size: 8px; }
+.f-04b.big { font-size: 16px; }
+.f-minusio { font-family: Minusio; font-size: 16px; }
+.f-minusio.big { font-size: 32px; }
