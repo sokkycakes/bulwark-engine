@@ -517,6 +517,7 @@ struct PanoramaFontAtlas::Impl
 
     FT_Library library = nullptr;
     float ui_scale = 1.0F;
+    float exact_pixel_max = 0.0F; // Bulwark: see set_exact_pixel_max
     std::vector<FontFace> faces;
 
     int atlas_size = kInitialAtlasSize;
@@ -694,6 +695,11 @@ struct PanoramaFontAtlas::Impl
 
     [[nodiscard]] int pixel_size(float font_size) const
     {
+        // Bulwark: small text at its own pixel size (set_exact_pixel_max)
+        if (exact_pixel_max > 0.0F && font_size <= exact_pixel_max)
+        {
+            return std::max(1, static_cast<int>(std::lround(std::max(1.0F, font_size))));
+        }
         return std::max(1, static_cast<int>(std::lround(std::max(1.0F, font_size) * ui_scale)));
     }
 
@@ -1541,8 +1547,10 @@ void PanoramaFontAtlas::clear()
     // the new Impl takes a fresh metric generation (next_metric_generation):
     // restarting at 1 let text measured with the old faces (a view opened
     // before its fonts were registered) keep those advances
+    const float exact_pixel_max = impl_->exact_pixel_max;
     impl_ = std::make_unique<Impl>();
     impl_->ui_scale = ui_scale;
+    impl_->exact_pixel_max = exact_pixel_max;
 }
 
 void PanoramaFontAtlas::abandon_gpu_resources() noexcept
@@ -1568,6 +1576,17 @@ void PanoramaFontAtlas::set_ui_scale(float ui_scale)
         // the LRU budget evicts them; reclaim the single atlas page immediately
         // so old pixel-size glyphs cannot strand its fixed memory.
         impl_->ui_scale = clamped;
+        impl_->metric_generation = next_metric_generation();
+        impl_->reset_atlas_page();
+    }
+}
+
+void PanoramaFontAtlas::set_exact_pixel_max(float max_font_size)
+{
+    const float clamped = std::max(0.0F, max_font_size);
+    if (clamped != impl_->exact_pixel_max)
+    {
+        impl_->exact_pixel_max = clamped;
         impl_->metric_generation = next_metric_generation();
         impl_->reset_atlas_page();
     }

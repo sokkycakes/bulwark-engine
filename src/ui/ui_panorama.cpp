@@ -264,7 +264,10 @@ struct View {
 	 * ui_designheight / ui_pixelated */
 	float design = 0;
 	int px = -1;
+	/* bwexacttext="13": text up to this size keeps its own pixel size */
+	float exact = 0;
 	float atlas_key = 0; /* the font atlas scale the view was given */
+	float atlas_exact = 0;
 };
 
 Backend backend;
@@ -274,6 +277,7 @@ struct ScaledAtlas {
 	float scale;
 	std::unique_ptr<PanoramaFontAtlas> atlas;
 	bool loaded;
+	float exact = 0; /* set_exact_pixel_max */
 };
 std::vector<ScaledAtlas> atlases;
 bool fonts_loaded;
@@ -500,20 +504,22 @@ void load_fonts(ScaledAtlas *only = nullptr)
 		a.atlas->clear();
 		a.loaded = a.atlas->load(opts);
 		a.atlas->set_ui_scale(a.scale);
+		a.atlas->set_exact_pixel_max(a.exact);
 		fonts_loaded = fonts_loaded && a.loaded;
 	}
 	if (!fonts_loaded)
 		Con_Printf("^3ui: couldn't load the fonts in panorama/fonts/\n");
 }
 
-/* the atlas baked at this scale, made (and loaded) on first use */
-PanoramaFontAtlas *atlas_for(float scale)
+/* the atlas baked at this scale (and exact text size), made (and loaded) on
+ * first use */
+PanoramaFontAtlas *atlas_for(float scale, float exact)
 {
 	scale = std::clamp(scale, 0.1f, 8.0f);
 	for (ScaledAtlas &a : atlases)
-		if (fabsf(a.scale - scale) < 1e-4f)
+		if (fabsf(a.scale - scale) < 1e-4f && a.exact == exact)
 			return a.loaded ? a.atlas.get() : nullptr;
-	atlases.push_back({scale, std::make_unique<PanoramaFontAtlas>(), false});
+	atlases.push_back({scale, std::make_unique<PanoramaFontAtlas>(), false, exact});
 	load_fonts(&atlases.back());
 	ScaledAtlas &a = atlases.back();
 	return a.loaded ? a.atlas.get() : nullptr;
@@ -525,7 +531,7 @@ void drop_unused_atlases()
 	atlases.erase(std::remove_if(atlases.begin(), atlases.end(),
 	                             [](const ScaledAtlas &a) {
 		                             for (auto &v : views)
-			                             if (!v->dead && v->atlas_key == a.scale)
+			                             if (!v->dead && v->atlas_key == a.scale && v->atlas_exact == a.exact)
 				                             return false;
 		                             return true;
 	                             }),
@@ -536,10 +542,11 @@ void drop_unused_atlases()
 bool update_view_atlas(View &v)
 {
 	float scale = std::clamp(atlas_scale(&v), 0.1f, 8.0f);
-	if (v.atlas_key == scale)
+	if (v.atlas_key == scale && v.atlas_exact == v.exact)
 		return false;
-	PanoramaFontAtlas *a = atlas_for(scale);
+	PanoramaFontAtlas *a = atlas_for(scale, v.exact);
 	v.atlas_key = scale;
+	v.atlas_exact = v.exact;
 	if (a)
 		v.pv.set_font_atlas(a);
 	return true;
@@ -1108,6 +1115,14 @@ bool read_view_options(View &v)
 		auto p = n->attributes.find("bwpixelated");
 		if (p != n->attributes.end()) {
 			v.px = atoi(p->second.c_str()) != 0;
+			set = true;
+		}
+		/* bwexacttext="13": text at or below 13 layout pixels is drawn at
+		 * exactly its own pixel size, not scaled with the view, so small
+		 * hinted and bitmap-strike text (Tahoma 11, 12) stays crisp */
+		auto e = n->attributes.find("bwexacttext");
+		if (e != n->attributes.end()) {
+			v.exact = std::max(0.0f, (float)atof(e->second.c_str()));
 			set = true;
 		}
 	}
