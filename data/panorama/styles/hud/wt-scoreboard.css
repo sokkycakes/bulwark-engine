@@ -1,0 +1,288 @@
+/* WolfTeam-style team match header (layout/hud/wt-scoreboard.xml).
+   Positions and colours were measured from sokky's reference screenshot
+   (800x600 game, 2026-11-02); the view is laid out at 800x600.
+
+   Fonts (panorama/wt-scoreboard.cfg registers them):
+     "Saira Condensed" 600/700 (SIL OFL, panorama/fonts-hud/): scores and
+       timer. A stand-in: the reference uses a condensed square face that
+       hasn't been identified. Change --wt-num-font... below to swap it.
+     "IBM Plex Sans" 700 (base game fonts/): header text, names, kills.
+
+   Panorama has no CSS variables outside custom properties on a class, so
+   the colours that matter are set on #WtScreen as custom properties and
+   read with var() below. */
+
+#WtScreen
+{
+	width: 100%;
+	height: 100%;
+
+	--wt-frame-border: #2c4a72;
+	--wt-frame-bg: gradient( linear, 0% 0%, 0% 100%, from( #5f7895e0 ), to( #4b6587e0 ) );
+	--wt-glass: gradient( linear, 0% 0%, 0% 100%, from( #6c85a3 ), color-stop( 0.08, #677a90 ), color-stop( 0.58, #657a8b ), color-stop( 0.62, #4f6175 ), to( #4c5f74 ) );
+	--wt-well-bg: #1f2b37;
+	--wt-well-border: #5a6a80;
+	--wt-red: #ff0a0a;
+	--wt-blue: #1e8ce6;
+	--wt-text: #f5ffff;
+	--wt-time: #e1e8f0;
+	--wt-num-font: "Saira Condensed";
+	--wt-text-font: "IBM Plex Sans";
+}
+
+/* ---- the frame -------------------------------------------------------- */
+
+#WtBoard
+{
+	horizontal-align: center;
+	y: 2px;
+	width: 484px;
+	height: 84px;
+	border: 1px solid var(--wt-frame-border);
+	border-radius: 2px;
+	background-color: var(--wt-frame-bg);
+	box-shadow: inset 0px 1px 0px 0px #7f9bbd80;
+}
+
+/* Team emblem tiles: a tinted translucent square, a darker team-coloured
+   rim, and the white figures on top. */
+.WtTile
+{
+	y: 1px;
+	width: 84px;
+	height: 80px;
+	border: 1px solid #00000000;
+}
+
+.WtTile.Red
+{
+	x: 2px;
+	border-color: #6e2028;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #8a5b6ee6 ), color-stop( 0.35, #5a5058e6 ), color-stop( 0.7, #64434fe6 ), to( #5c2836e6 ) );
+	box-shadow: inset 0px 0px 0px 1px #b0484e90;
+}
+
+.WtTile.Blue
+{
+	x: 396px;
+	border-color: #1d4a72;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #5a8aa6e6 ), color-stop( 0.4, #46708ee6 ), to( #3c6488e6 ) );
+	box-shadow: inset 0px 0px 0px 1px #6aa6d090;
+}
+
+.WtEmblem
+{
+	width: 80px;
+	height: 76px;
+	horizontal-align: center;
+	vertical-align: center;
+	background-image: url( "file://{images}/hud/wt-emblem-soldier.svg" );
+	background-size: 80px 76px;
+	background-repeat: no-repeat;
+}
+
+/* The blue side faces the other way. */
+.WtTile.Blue .WtEmblem
+{
+	transform: scaleX( -1 );
+}
+
+/* ---- the mode bar (glass) and score well ------------------------------- */
+
+#WtHeader
+{
+	x: 88px;
+	y: 0px;
+	width: 306px;
+	height: 36px;
+	background-color: var(--wt-glass);
+	border-bottom: 1px solid #8a9cb0;
+	box-shadow: inset 0px 1px 0px 0px #9fb4cc;
+}
+
+#WtHeaderRow
+{
+	horizontal-align: center;
+	y: -6px;
+	flow-children: right;
+	height: 44px;
+}
+
+#WtMode, #WtGoal, #WtGoalUnit
+{
+	vertical-align: bottom;
+	font-family: var(--wt-text-font);
+	font-weight: bold;
+	color: var(--wt-text);
+	text-shadow: 0px 1px 1px 1.5 #1c2a3a;
+}
+
+#WtMode
+{
+	font-size: 20px;
+	margin-right: 13px;
+}
+
+/* the goal is in the condensed number face, like the reference */
+#WtGoal, #WtGoalUnit
+{
+	font-family: var(--wt-num-font);
+	font-size: 28px;
+	margin-bottom: -4px;
+}
+
+#WtGoal
+{
+	margin-right: 5px;
+}
+
+#WtWell
+{
+	x: 88px;
+	y: 37px;
+	width: 306px;
+	height: 44px;
+	background-color: var(--wt-well-bg);
+	border: 1px solid var(--wt-well-border);
+	border-top-width: 0px;
+	overflow: noclip;
+}
+
+.WtScoreNum
+{
+	y: -31px;
+	width: 90px;
+	height: 96px;
+	text-align: center;
+	font-family: var(--wt-num-font);
+	font-weight: 600;
+	font-size: 60px;
+}
+
+#WtRed
+{
+	x: 42px;
+	color: var(--wt-red);
+}
+
+#WtBlue
+{
+	x: 174px;
+	color: var(--wt-blue);
+}
+
+/* Lead arrow: points at the team in front; hidden on a tie. */
+#WtLead
+{
+	x: 142px;
+	y: 10px;
+	width: 20px;
+	height: 23px;
+	background-image: url( "file://{images}/hud/wt-arrow-left.svg" );
+	background-size: 20px 23px;
+	background-repeat: no-repeat;
+}
+
+#WtLead.LeadBlue
+{
+	transform: scaleX( -1 );
+}
+
+#WtLead.LeadNone
+{
+	opacity: 0;
+}
+
+/* ---- round timer ------------------------------------------------------ */
+
+#WtTimer
+{
+	horizontal-align: center;
+	y: 72px;
+	flow-children: right;
+}
+
+.WtTimeNum
+{
+	font-family: var(--wt-num-font);
+	font-weight: 600;
+	font-size: 54px;
+	color: var(--wt-time);
+	opacity: 0.92;
+	text-shadow: 0px 0px 2px 0.8 #6d8fb4;
+}
+
+#WtColon
+{
+	margin-left: 9px;
+	margin-right: 1px;
+}
+
+/* ---- kills / deaths at the screen edges -------------------------------- */
+
+.WtKd
+{
+	flow-children: right;
+}
+
+.WtKills
+{
+	vertical-align: bottom;
+	font-family: var(--wt-text-font);
+	font-weight: bold;
+	font-size: 46px;
+	color: #ffffff;
+	text-shadow: 0px 0px 3px 9 #1b2733;
+}
+
+.WtDeaths
+{
+	vertical-align: bottom;
+	margin-bottom: 4px;
+	font-family: var(--wt-text-font);
+	font-weight: bold;
+	font-size: 28px;
+	color: #9b9a7c;
+	text-shadow: 0px 0px 3px 9 #1b2733;
+}
+
+#WtSelf
+{
+	x: 27px;
+	y: 42px;
+}
+
+#WtWatch
+{
+	horizontal-align: right;
+	margin-right: 14px;
+	y: 26px;
+	flow-children: down;
+}
+
+#WtWatch .WtKd
+{
+	horizontal-align: right;
+	margin-top: -10px;
+}
+
+#WtWatchName
+{
+	horizontal-align: right;
+	font-family: var(--wt-text-font);
+	font-weight: bold;
+	font-size: 20px;
+	color: #f2f8ff;
+	text-shadow: 0px 1px 2px 1.5 #3c5f86;
+}
+
+#WtWatch.Hidden
+{
+	opacity: 0;
+}
+
+/* demo layout only: a sky like the reference shot's, for contrast */
+#WtScreen.WtDemo
+{
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #8ac5fd ), to( #7fbdf8 ) );
+}
