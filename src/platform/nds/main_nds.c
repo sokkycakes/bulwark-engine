@@ -308,6 +308,11 @@ static void bench(const char *line)
 			World_MergeLight = atoi(line + 11);
 		return;
 	}
+	if (!strncmp(line, "maps/skel ", 10)) {
+		if (numresults < MAX_RESULTS)
+			Skel_Bench(line + 10, results[numresults++], sizeof(results[0]));
+		return;
+	}
 	if (!strncmp(line, "maps/flicker ", 13)) {
 		Ents_Flicker = !strcmp(line + 13, "on");
 		return;
@@ -340,6 +345,15 @@ static void bench(const char *line)
 	Nds_ResetTextures();
 }
 
+void Nds_PrintResults(void)
+{
+	if (!numresults)
+		return;
+	iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut;\nf: models taking turns\n");
+	for (int i = 0; i < numresults; i++)
+		iprintf("%s\n", results[i]);
+}
+
 static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *st, int fps)
 {
 	consoleClear();
@@ -365,11 +379,7 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 	        (long)(cam->org[2] / 8));
 	print_memory();
 	iprintf("START: map list  SELECT: mode\n");
-	if (numresults) {
-		iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut;\nf: models taking turns\n");
-		for (int i = 0; i < numresults; i++)
-			iprintf("%s\n", results[i]);
-	}
+	Nds_PrintResults();
 }
 
 int main(int argc, char **argv)
@@ -402,6 +412,11 @@ int main(int argc, char **argv)
 	numbench = read_bench(benchmaps, MAX_RESULTS);
 	for (int i = 0; i < numbench; i++)
 		bench(benchmaps[i]);
+	/* a list ending in a skeleton stays on it: "skel <file> <copies>" (docs/platforms/nds.md) */
+	if (numbench && !strncmp(benchmaps[numbench - 1], "maps/skel ", 10)) {
+		Skel_View(benchmaps[numbench - 1] + 10);
+		numbench = 0;
+	}
 
 	for (bool first = true;; first = false) {
 		const char *path;

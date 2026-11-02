@@ -5,3 +5,4 @@ tests/script/game/scripts/vscripts/test_qc.lno
 
 # private game art (never in git)
 **/wt-private/
+**/*.bsk

@@ -97,7 +97,26 @@ int Fs_NumPaks(void);
 uint8_t *Fs_Load(const char *name, size_t *size); /* malloc'd, with a 0 after the end */
 void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void *user), void *user);
 
+/* skel_nds.c: skeletons cut down on the PC (tools/nds/skelreduce), posed on
+ * the CPU, a box per hitbox for now */
+typedef struct skel_s skel_t;
+typedef struct {
+	int32_t m[12]; /* the GPU's 4x3: the bone's axes (4.12) as rows, then its origin (1/8 units) */
+} skmat_t;
+skel_t *Skel_Load(const char *path, char *err, int errsize);
+void Skel_Free(skel_t *s);
+int Skel_NumBones(const skel_t *s);
+int Skel_NumClips(const skel_t *s);
+int Skel_FileBytes(const skel_t *s);
+const char *Skel_ClipName(const skel_t *s, int clip);
+int Skel_ClipFrames(const skel_t *s, int clip);
+void Skel_Pose(const skel_t *s, int clip, int32_t time, skmat_t *out); /* time in seconds, 20.12 */
+void Skel_Draw(const skel_t *s, const skmat_t *pose, const int32_t *org, int yaw);
+void Skel_Bench(const char *args, char *result, int resultsize); /* "<file> <copies> [clip]" */
+void Skel_View(const char *args);                                /* "<file> <copies>", until START */
+
 /* main_nds.c */
+void Nds_PrintResults(void); /* the bench results so far, on the bottom screen */
 extern const char *const nds_basedirs[];
 #define NDS_NUMBASEDIRS 4
 void Nds_Init3D(void);

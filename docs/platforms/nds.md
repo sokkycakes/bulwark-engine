@@ -358,6 +358,83 @@ With flicker, no world faces are cut for models. `e1m5` still loses faces
 because its world alone is over 2048 polygons in places. Flicker hasn't
 been seen on hardware; melonDS screenshots show one frame at a time.
 
+## Skeletons
+
+The DS can pose a skeleton on the CPU and draw each bone's part with the
+bone's matrix. `tools/nds/skelreduce` cuts a Source model's skeleton down
+on the PC and writes a `.bsk` file: the kept bones, the model's hitboxes,
+and every clip's keys (a quaternion and a translation a bone, 14 bytes).
+
+- Every kept bone keeps its exact place. Its pose is taken from the full
+  skeleton relative to its nearest kept ancestor, so whatever the bones in
+  between did is folded into it.
+- A dropped bone, with its hitboxes, rides rigidly on its nearest kept
+  ancestor, as it was in the bind pose. `-report` says how far that puts
+  each part of the body from where the full skeleton has it.
+- `-clips` picks the clips and `-fps` resamples them. `tools/nds/skelplot.py`
+  draws the full and cut-down skeletons over each other from `-poses`.
+
+```sh
+cc -O2 -o skelreduce tools/nds/skelreduce.c tools/nds/skelstub.c plugins/source/mdlskel.c -lm
+./skelreduce <game folder> models/infected/hulk.mdl tank12.bsk \
+  -keep Pelvis,Spine2,L_UpperArm,L_Forearm,L_Hand,R_UpperArm,R_Forearm,R_Hand,L_Thigh,L_Calf,R_Thigh,R_Calf \
+  -clips Idle,Run_1,Walk,Melee,Throw -ignore debris_bone,jiggle_tongue01,jiggle_tongue2 -report tank12.txt
+```
+
+A `.bsk` is the game's data cut down, so it is kept out of git
+(`.gitignore`) and out of packages.
+
+On the DS (`skel_nds.c`), each bone's keys either side of the time are
+blended (nlerp: one hardware square root and one hardware divide), turned
+into a 4.12 matrix and multiplied onto the parent's. With up to 23 bones
+the matrices are stored in the GPU's position matrix stack once, and each
+part only restores its bone's slot, as a mesh with one bone a vertex would
+be drawn. Bigger skeletons load the matrix again for each part. For now
+each hitbox is drawn as a box.
+
+In `bench.txt`, `skel <file> <copies> [clip]` runs a skeleton for 240
+frames, every copy on its own clip unless one is named. A result reads
+`tank12 12x8 60/60fps 166us p970`: bones and copies, frame rates, posing
+time a copy, and GPU polygons. A list that ends in a `skel` line stays on
+it: L and R step through the clips, UP and DOWN change the copies.
+
+## Measured: the L4D Tank cut to 12 bones
+
+The Tank (`hulk.mdl`, 56 bones: 30 of them fingers, plus a rock bone for
+throwing and two tongue bones) with its 76 clips. The 12 bones kept are
+pelvis, one spine bone, upper arm, forearm and hand for each arm, and thigh
+and calf for each leg. Feet, head, neck, clavicles and fingers ride on
+their parents. A Source unit is an inch.
+
+| Bones | Worst-placed body part a frame: median / 95% / worst | All 76 clips at 30 fps |
+|---|---|---|
+| 56 | 0 | 3.6 MB |
+| 20 (also feet, clavicles, neck, head, 3 spine) | 4.1 / 4.8 / 17.4 units | 1.3 MB |
+| 13 (the 12 and the head) | 7.6 / 12.8 / 22.2 units | 0.87 MB |
+| 12 | 8.5 / 13.6 / 22.2 units | 0.80 MB |
+| 12, head instead of hands | 11.8 / 24.5 / 33.2 units | 0.80 MB |
+
+The Tank's hands are as long as its forearms, so they matter more than its
+head. With the hands kept, most of what remains is the spine's bend (one
+bone instead of four), the head and the feet. Fingers on a kept hand move
+at most 17 units, in clenched fists.
+
+In melonDS 1.1, with 12 clips (1086 frames). On the PC, the DS's
+fixed-point posing lands within 1.1 units (12 bones) to 1.9 units (56
+bones) of the same keys posed in floating point.
+
+| File | Size | Posing a copy | 8 copies | 16 copies |
+|---|---|---|---|---|
+| 56 bones | 834 KB | 781 µs | 59 / 60 fps | |
+| 20 bones | 298 KB | 278 µs | | |
+| 12 bones | 179 KB | 167 µs | 60 / 60 fps | 60 / 60 fps |
+| 12 bones, 15 fps keys | 91 KB | 167 µs | | |
+
+Posing costs about 14 µs a bone, so a 12-bone Tank takes 1% of a 60 fps
+frame. melonDS doesn't time the ARM9 exactly, so these times need checking
+on hardware. A mesh hasn't been tried: the boxes are 19 hitboxes, 114
+quads a copy.
+
 ## Measured: linked, in melonDS 1.1
 
 melonDS joined a `bulwark-ded` server on Nuclide `base` with `link.txt`
