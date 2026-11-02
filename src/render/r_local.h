@@ -399,6 +399,8 @@ float R_StringWidth(const char *text, float sx, float sy, bool markup);
 void R_SetClip(float x, float y, float w, float h);
 void R_ResetClip(void);
 void R_DrawConsole(int w, int h);
+int R_UseConsoleFont(float *size);
+void R_RestoreDrawFont(int saved);
 void R_InitDraw(void);
 int R_LoadFont(const char *name, const char *path, const char *sizes, int slot);
 int R_FindFont(const char *name);
