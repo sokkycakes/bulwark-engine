@@ -70,7 +70,7 @@ autojoin=1          optional: join the first server found at start-up
 controls=touch      touch (default) or classic, see below
 hand=right          left: move with A B X Y and fire with R
 sens=100            aim speed in percent (100 turns 120 degrees across the screen)
-diag=1              frame rate, polygons and models on the bottom screen's top bar
+diag=0              hide the frame rate, polygons and models along the top screen's top edge
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
@@ -80,13 +80,17 @@ that answer, and A or a tap joins one.
 While linked, the bottom screen is a touch pad, as in Metroid Prime
 Hunters:
 
-- The top bar shows health and the map (or, with `diag=1`, frames a second
-  and the slowest frame, polygons, and models loaded and failed). Its
+- The panel at the top shows health, armour and score in big numbers and
+  the weapon in hand under them (the server's `STATS` packet). Its
   **GAME** tab swaps the pad for the game's own bottom screen (what the
   game draws with the `link_*` builtins, or the engine's name, health, map
   and player list); **PAD** swaps back. Touches on the game's screen go to
   the game.
 - Drag in the middle to aim. A double tap jumps.
+- The top screen's first line shows frames a second, the slowest second's
+  rate, polygons, and models loaded and failed, and the second line why the
+  last map didn't load, if it didn't. It is a text layer (BG1, VRAM F) in
+  front of the 3D. `diag=0` hides the first line.
 - Eight buttons: previous and next weapon, reload, use, jump, duck (stays on
   until pressed again), flashlight and secondary fire.
 

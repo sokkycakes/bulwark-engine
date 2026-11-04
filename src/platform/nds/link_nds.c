@@ -9,14 +9,16 @@
  * WiFi comes from the DS's own settings, or from link.txt in a base folder:
  *   ssid=  key=  security=open|wep|wpa|wpa2  server=ip[:port]  name=  autojoin=1
  * and the controls: controls=touch|classic  hand=right|left  sens=100 (percent)
- * diag=1 (frame rate and polygons on the bottom screen's top bar)
+ * diag=0 (hides the frame rate and counters along the top screen's top edge)
  *
  * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
  * middle to aim, double-tap to jump, and buttons below for weapons, reload,
- * use, jump, duck, flashlight and secondary fire. The tab at the top right
+ * use, jump, duck, flashlight and secondary fire. Above the pad are the
+ * player's health, armour, score and weapon (STATS). The tab at the top right
  * swaps it for the game's own bottom screen (SCREEN packets) and back.
  */
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <dswifi9.h>
 #include <nds.h>
 #include <netinet/in.h>
@@ -38,7 +40,7 @@
 #define HZ 60
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS };
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
 #define MAX_THINGS 48
@@ -146,6 +148,9 @@ static struct {
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
 	int health;
+	int armor, frags;           /* from STATS */
+	char weapon[25];            /* the weapon in hand, by class name without "weapon_" */
+	int statsver;               /* bumped when any of the above changes */
 	uint16_t entsseq;
 	bool haveents;
 	thing_t things[MAX_THINGS];
@@ -162,6 +167,7 @@ static void read_config(void)
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.port = LINK_PORT;
 	cfg.sens = 100;
+	cfg.diag = true;
 	snprintf(cfg.name, sizeof(cfg.name), "DS");
 	for (int b = 0; b < NDS_NUMBASEDIRS; b++) {
 		FILE *f;
@@ -395,6 +401,23 @@ static void copy_str(char *dst, int size, const uint8_t *src, int len)
 
 /* --- the bottom screen --------------------------------------------------------------- */
 
+static PrintConsole topcon;
+
+/* the top screen's two lines: the frame rate and counters, then why a map didn't load */
+static void top_print(const char *l1, const char *l2)
+{
+	PrintConsole *was = consoleSelect(&topcon);
+	iprintf("\x1b[0;0H%-32.32s%-32.32s", l1, l2);
+	consoleSelect(was);
+}
+
+static void top_clear(void)
+{
+	PrintConsole *was = consoleSelect(&topcon);
+	consoleClear();
+	consoleSelect(was);
+}
+
 static void screen_init(void)
 {
 	int bg;
@@ -406,10 +429,21 @@ static void screen_init(void)
 	bg = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
 	sub = bgGetGfxPtr(bg);
 	dmaFillHalfWords(0x8000, sub, 256 * 192 * 2);
+	/* the top screen's counters: a text layer over the 3D, in bank F (16 KB:
+	 * the font at 0, the map at 8 KB). BG1 goes in front of the 3D's BG0 */
+	vramSetBankF(VRAM_F_MAIN_BG_0x06000000);
+	consoleInit(&topcon, 1, BgType_Text4bpp, BgSize_T_256x256, 4, 0, true, true);
+	bgSetPriority(0, 1);
+	bgSetPriority(topcon.bgId, 0);
+	top_clear();
+	REG_DISPCNT |= DISPLAY_BG1_ACTIVE;
 }
 
 static void screen_done(void)
 {
+	REG_DISPCNT &= ~DISPLAY_BG1_ACTIVE;
+	bgSetPriority(0, 0);
+	vramSetBankF(VRAM_F_LCD);
 	sub = NULL;
 	Nds_InitConsole();
 	Mp_Init();
@@ -472,8 +506,9 @@ static void draw_screen(const uint8_t *d, int len)
 
 /* --- the touch pad on the bottom screen ------------------------------------------------ */
 
-#define PAD_TOP 16     /* rows 0-15: the bar (health, map or diagnostics, the tab) */
-#define PAD_BOTTOM 144 /* rows 16-143: drag to aim; 144-191: the buttons */
+#define PAD_TOP 48     /* rows 0-47: the player's numbers and the tab */
+#define PAD_BOTTOM 144 /* rows 48-143: drag to aim; 144-191: the buttons */
+#define TAB_H 16
 #define TAB_X 200      /* the tab that swaps in the game's own screen */
 
 typedef struct {
@@ -514,8 +549,8 @@ static struct {
 	uint8_t impulse, impseq; /* the last one-shot press, and its count */
 	uint8_t screen[1300];    /* the game's last screen, to show when asked */
 	int screenlen;
-	int shownhealth;
-	char diagline[24];
+	int shownstats;          /* link.statsver when the panel was drawn */
+	char diagline[33];
 } pad;
 
 static uint16_t pad_bg(int x, int y)
@@ -537,20 +572,43 @@ static void pad_button(int i, bool lit)
 	text_mid(b->x, b->y + (b->h - 8) / 2, b->w, lit ? C_EDGE : C_TEXT, b->label);
 }
 
-/* the bar: health, then the map or the frame rate, then the tab */
+/* text at twice the size, for the big numbers */
+static void text2(int x, int y, uint16_t c, const char *s)
+{
+	for (; *s && x + 16 <= 256; s++, x += 16) {
+		const u8 *glyph = default_font_bin + (uint8_t)*s * 8;
+		for (int j = 0; j < 16 && y + j < 192; j++) {
+			uint16_t *row = sub + (y + j) * 256 + x;
+			for (int i = 0; i < 16; i++)
+				if (glyph[j / 2] & (1 << (i / 2)))
+					row[i] = c;
+		}
+	}
+}
+
+/* the panel: health, armour and score in big numbers, the weapon under them, and the tab */
 static void pad_bar(void)
 {
-	char hp[12];
-	const char *mid = link.loaderr[0] ? link.loaderr : cfg.diag && pad.diagline[0] ? pad.diagline : link.map;
+	char n[12], w[sizeof(link.weapon)];
+	const uint16_t red = RGB15(31, 12, 8) | BIT(15);
 	fill(0, 0, 256, PAD_TOP, C_BAR);
-	snprintf(hp, sizeof(hp), "%d", link.health);
-	text(4, 4, C_DIM, (const uint8_t *)"HP", 2);
-	text(24, 4, link.health > 25 ? C_TEXT : (RGB15(31, 12, 8) | BIT(15)), (const uint8_t *)hp, (int)strlen(hp));
-	text(56, 4, cfg.diag && !link.loaderr[0] ? (RGB15(20, 31, 20) | BIT(15)) : C_DIM, (const uint8_t *)mid,
-	     BW_NDS_MIN((int)strlen(mid), (TAB_X - 60) / 8));
-	fill(TAB_X, 1, 256 - TAB_X - 1, PAD_TOP - 2, C_BTN);
+	fill(0, PAD_TOP - 1, 256, 1, C_EDGE);
+	text(4, 3, C_DIM, (const uint8_t *)"HEALTH", 6);
+	snprintf(n, sizeof(n), "%d", link.health);
+	text2(4, 13, link.health > 25 ? C_TEXT : red, n);
+	text(68, 3, C_DIM, (const uint8_t *)"ARMOR", 5);
+	snprintf(n, sizeof(n), "%d", link.armor);
+	text2(68, 13, C_TEXT, n);
+	text(132, 3, C_DIM, (const uint8_t *)"SCORE", 5);
+	snprintf(n, sizeof(n), "%d", link.frags);
+	text2(132, 13, C_TEXT, n);
+	text(4, 35, C_DIM, (const uint8_t *)"WEAPON", 6);
+	for (int i = 0; i < (int)sizeof(w); i++)
+		w[i] = link.weapon[i] == '_' ? ' ' : (char)toupper((unsigned char)link.weapon[i]);
+	text(60, 35, C_TEXT, (const uint8_t *)w, BW_NDS_MIN((int)strlen(w), (256 - 64) / 8));
+	fill(TAB_X, 1, 256 - TAB_X - 1, TAB_H - 2, C_BTN);
 	text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, pad.gamepage ? "PAD" : "GAME");
-	pad.shownhealth = link.health;
+	pad.shownstats = link.statsver;
 }
 
 static void pad_draw(void)
@@ -560,7 +618,7 @@ static void pad_draw(void)
 			draw_screen(pad.screen, pad.screenlen);
 		else
 			fill(0, 0, 256, 192, RGB15(0, 0, 0) | BIT(15));
-		fill(TAB_X, 1, 256 - TAB_X - 1, PAD_TOP - 2, C_BTN);
+		fill(TAB_X, 1, 256 - TAB_X - 1, TAB_H - 2, C_BTN);
 		text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, "PAD");
 		return;
 	}
@@ -569,7 +627,6 @@ static void pad_draw(void)
 		for (int x = 0; x < 256; x++)
 			row[x] = pad_bg(x, y);
 	}
-	text_mid(0, PAD_BOTTOM - 12, 256, C_DIM, "drag to aim, double-tap to jump");
 	for (int i = 0; i < NUM_PADBTNS; i++)
 		pad_button(i, (padbtns[i].toggle && pad.ducked) || i == pad.pressed);
 	pad.dotx = pad.doty = -1;
@@ -605,7 +662,7 @@ static void pad_reset(void)
 	pad.pressed = -1;
 	pad.dotx = pad.doty = -1;
 	pad.upframe = -100;
-	pad.shownhealth = -99999;
+	pad.shownstats = -1;
 }
 
 /* the stylus, once a frame. Returns the buttons the pad holds; aiming turns
@@ -618,7 +675,7 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 	*togame = false;
 	if (down)
 		touchRead(tp);
-	if (began && tp->py < PAD_TOP && tp->px >= TAB_X) {
+	if (began && tp->py < TAB_H && tp->px >= TAB_X) {
 		pad.gamepage = !pad.gamepage;
 		pad.aiming = false, pad.pressed = -2; /* the rest of this touch is the tab's */
 		pad_draw();
@@ -672,7 +729,7 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 		buttons |= B_CROUCH;
 	if (pad.jumpframes > 0)
 		pad.jumpframes--, buttons |= B_JUMP;
-	if (!pad.gamepage && link.health != pad.shownhealth)
+	if (!pad.gamepage && link.statsver != pad.shownstats)
 		pad_bar();
 	return buttons;
 }
@@ -817,6 +874,22 @@ static void reset_studio(void)
 }
 
 /* names for model indexes (docs/spec/link.md, MODELS) */
+/* STATS: the player's numbers for the panel */
+static void handle_stats(const uint8_t *d, int len)
+{
+	char w[sizeof(link.weapon)];
+	int armor, frags;
+	if (len < 11)
+		return;
+	armor = (int16_t)rd16(d + 6), frags = (int16_t)rd16(d + 8);
+	copy_str(w, sizeof(w), d + 11, BW_NDS_MIN(d[10], len - 11));
+	if (armor != link.armor || frags != link.frags || strcmp(w, link.weapon)) {
+		link.armor = armor, link.frags = frags;
+		memcpy(link.weapon, w, sizeof(w));
+		link.statsver++;
+	}
+}
+
 static void handle_models(const uint8_t *d, int len)
 {
 	int pos = 7, count;
@@ -877,7 +950,8 @@ static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
 		return;
 	for (int k = 0; k < 3; k++)
 		link.target[k] = (int32_t)rd32(d + 6 + k * 4);
-	link.health = (int16_t)rd16(d + 22);
+	if ((int16_t)rd16(d + 22) != link.health)
+		link.health = (int16_t)rd16(d + 22), link.statsver++;
 	if (d[24] & 1) { /* the game turned us */
 		cam->pitch = (int16_t)rd16(d + 18) / 2;
 		cam->yaw = (int16_t)rd16(d + 20) / 2;
@@ -1250,6 +1324,8 @@ static const char *play(ndscam_t *cam)
 				handle_ents(d, len);
 			else if (type == L_MODELS)
 				handle_models(d, len);
+			else if (type == L_STATS)
+				handle_stats(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -1302,10 +1378,9 @@ static const char *play(ndscam_t *cam)
 				int mok, mbad;
 				Ents_Counts(&mok, &mbad);
 
-				snprintf(pad.diagline, sizeof(pad.diagline), "%d/%d %dp m%d/%d%s", link.fps, link.minfps, peak, mok, mbad,
+				snprintf(pad.diagline, sizeof(pad.diagline), "%2d fps (min %d) %dp m%d/%d%s", link.fps, link.minfps, peak, mok, mbad,
 				         debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
-				if (!pad.gamepage && (cfg.diag || link.loaderr[0]))
-					pad_bar();
+				top_print(cfg.diag ? pad.diagline : "", link.loaderr);
 				secstart = now, frames = 0, worst = 0, peak = 0;
 			}
 		}

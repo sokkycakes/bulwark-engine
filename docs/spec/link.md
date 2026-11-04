@@ -101,6 +101,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x86 | KICK | u32 session, char reason[64] |
 | 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (16), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom)} |
 | 0x88 | MODELS | u32 session, u16 spawncount, u8 count, count × {u16 model, u8 len, char name[len]} |
+| 0x89 | STATS | u32 session, s16 health, s16 armour, s16 score, u8 len, char weapon[len] |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`), and every 2 s in case one was lost. The device then loads
@@ -146,6 +147,12 @@ entities itself:
 
 `MODELS` names the model indexes in `things`, a few at a time with every
 fifth `ENTS`, until the device has had them all for this map.
+
+`STATS` comes with every fourth `ENTS`: the player's `health`,
+`armorvalue` and `frags`, and the weapon in hand as its class name without
+`weapon_` (from Nuclide's `m_activeWeapon`; empty when there is none, at
+most 24 bytes). A field the game doesn't have is sent as 0. The DS shows
+them above its touch pad.
 
 A device ignores an `ENTS` older than the last one it used.
 

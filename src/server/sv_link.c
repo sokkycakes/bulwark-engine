@@ -41,7 +41,7 @@
 #define ENTS_RANGE 2048.0f
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -580,6 +580,8 @@ static int cmp_thing(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
+static void send_stats(link_t *l);
+
 /* the names of the studio models, a run at a time (docs/spec/link.md,
  * MODELS): u32 session, u16 spawncount, u8 count, count x {u16 index, u8
  * length, name} */
@@ -757,9 +759,41 @@ void SV_LinkSend(void)
 			send_ents(l);
 			if (l->entsseq % 5 == 0)
 				send_models(l);
+			if (l->entsseq % 4 == 0)
+				send_stats(l);
 			l->nextview = now + VIEW_INTERVAL;
 		}
 	}
+}
+
+/* a float field by name, 0 when the game has no such field */
+static float efloat(int e, const char *name)
+{
+	int ofs = QC_FieldOfs(sv.vm, name);
+	return ofs >= 0 ? QC_EdictFields(sv.vm, e)[ofs].f : 0;
+}
+
+/* the player's numbers for the device's own status panel (docs/spec/link.md,
+ * STATS): health, armour, score, and the weapon in hand by its class name,
+ * without "weapon_" (Nuclide keeps it in .m_activeWeapon) */
+static void send_stats(link_t *l)
+{
+	pkt_t p;
+	int e = l->client->edict, ofs = QC_FieldOfs(sv.vm, "m_activeWeapon"), w;
+	const char *wname = "";
+	p_begin(&p, L_STATS);
+	p_u32(&p, l->session);
+	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(QC_EFloat(sv.vm, e, F.health), -32768, 32767));
+	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(efloat(e, "armorvalue"), -32768, 32767));
+	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(efloat(e, "frags"), -32768, 32767));
+	if (ofs >= 0 && (w = (int)QC_EdictFields(sv.vm, e)[ofs].u) > 0 && w < sv.vm->num_edicts && !sv.vm->edicts[w].free) {
+		wname = QC_GetString(sv.vm, QC_EInt(sv.vm, w, F.classname));
+		if (!strncmp(wname, "weapon_", 7))
+			wname += 7;
+	}
+	p_u8(&p, (unsigned)BW_MIN(strlen(wname), 24));
+	p_bytes(&p, wname, (int)BW_MIN(strlen(wname), 24));
+	send_to(&l->from, &p);
 }
 
 /* the client's slot is going away (SV_DropClient) */
