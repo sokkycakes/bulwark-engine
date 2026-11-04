@@ -106,6 +106,33 @@ uint8_t *Fs_Load(const char *name, size_t *size)
 	return NULL;
 }
 
+/* part of a file, as Fs_Load finds it: len bytes from pos (len < 0: to the end) */
+uint8_t *Fs_LoadRange(const char *name, long pos, long len, size_t *size)
+{
+	char path[300];
+	if (strstr(name, ":/"))
+		return len < 0 ? read_range(name, 0, -1, size) : read_range(name, pos, len, size);
+	for (int b = 0; b < NDS_NUMBASEDIRS; b++) {
+		FILE *f;
+		snprintf(path, sizeof(path), "%s%s", nds_basedirs[b], name);
+		if (!(f = fopen(path, "rb")))
+			continue;
+		fclose(f);
+		return read_range(path, pos, len, size);
+	}
+	for (int p = numpaks - 1; p >= 0; p--)
+		for (int i = 0; i < paks[p].numfiles; i++)
+			if (!strcasecmp(paks[p].files[i].name, name)) {
+				long flen = (long)paks[p].files[i].len;
+				if (pos > flen)
+					return NULL;
+				if (len < 0 || pos + len > flen)
+					len = flen - pos;
+				return read_range(paks[p].path, (long)paks[p].files[i].pos + pos, len, size);
+			}
+	return NULL;
+}
+
 /* calls fn for each file in dir ending in ext: loose files (full paths) then pak entries */
 void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void *user), void *user)
 {

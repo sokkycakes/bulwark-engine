@@ -55,6 +55,7 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 const char *World_Entities(void);
 int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
+bool World_HasLit(void); /* the map came with coloured light (.lit) */
 extern bool World_MergeFaces; /* join coplanar faces at load (default on) */
 int World_MergedFaces(void);  /* faces the last load joined into others */
 extern int World_MergeLight;  /* light steps (of 31) a dropped vertex may be off */
@@ -95,6 +96,7 @@ void Mp_Stop(void);                  /* back to drawing the 3D straight to the s
 void Fs_Init(void);
 int Fs_NumPaks(void);
 uint8_t *Fs_Load(const char *name, size_t *size); /* malloc'd, with a 0 after the end */
+uint8_t *Fs_LoadRange(const char *name, long pos, long len, size_t *size); /* part of one, the same way */
 void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void *user), void *user);
 
 /* skel_nds.c: skeletons cut down on the PC (tools/nds/skelreduce), posed on

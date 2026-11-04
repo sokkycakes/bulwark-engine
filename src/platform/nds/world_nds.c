@@ -93,8 +93,7 @@ typedef struct {
 
 static struct {
 	bool loaded;
-	uint8_t *file;
-	size_t filesize;
+	uint8_t *entbuf, *markbuf, *visbuf; /* the lumps kept from the file */
 	const char *entities;
 	plane_t *planes;
 	int numplanes;
@@ -130,9 +129,12 @@ static struct {
 	int portalleaves;       /* leaves the portals reached this frame */
 	int portaltests, pvsleaves;
 	int loadms;             /* portal building time, for the stats */
+	bool haslit;            /* coloured light from a .lit */
 } w;
 
 static inline uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static const uint8_t *lp[NUM_LUMPS]; /* the lumps read in while loading (see World_Load) */
 static inline int16_t rd16(const uint8_t *p) { return (int16_t)(p[0] | p[1] << 8); }
 static inline float rdf(const uint8_t *p)
 {
@@ -165,7 +167,7 @@ void World_Free(void)
 			if (w.texs[i].name)
 				glDeleteTextures(1, &w.texs[i].name);
 	}
-	free(w.file);
+	free(w.entbuf), free(w.markbuf), free(w.visbuf);
 	free(w.planes);
 	free(w.nodes);
 	free(w.leafs);
@@ -183,10 +185,21 @@ void World_Free(void)
 
 bool World_Loaded(void) { return w.loaded; }
 int World_TextureBytes(void) { return w.texbytes; }
+bool World_HasLit(void) { return w.haslit; }
 
 /* --- textures ---------------------------------------------------------------------------- */
 
 static bool name_is(const char *name, const char *what) { return strncasecmp(name, what, 16) == 0; }
+
+/* the size the mips really have: the header's, or for a Half-Life map
+ * shrunk on the PC (tools/nds/hlmap.py) the one in the "DSz" tag after it;
+ * the header keeps the original size, which texture coordinates use */
+static void stored_size(const uint8_t *mt, int avail, int *pw, int *ph)
+{
+	*pw = (int)rd32(mt + 16), *ph = (int)rd32(mt + 20);
+	if (avail >= 48 && rd32(mt + 24) == 48 && !memcmp(mt + 40, "DSz", 4))
+		*pw = (uint16_t)rd16(mt + 44), *ph = (uint16_t)rd16(mt + 46);
+}
 
 static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 {
@@ -208,11 +221,12 @@ static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 	for (level = 0; level < 3; level++) {
 		int total = 0;
 		for (int i = 0; i < count; i++) {
-			int ofs = (int)rd32(lump + 4 + i * 4), tw, th;
+			int ofs = (int)rd32(lump + 4 + i * 4), tw, th, pw, ph;
 			if (ofs <= 0 || ofs + 40 > len)
 				continue;
-			tw = pot_floor((int)rd32(lump + ofs + 16) >> level);
-			th = pot_floor((int)rd32(lump + ofs + 20) >> level);
+			stored_size(lump + ofs, len - ofs, &pw, &ph);
+			tw = pot_floor(pw >> level);
+			th = pot_floor(ph >> level);
 			total += BW_NDS_MIN(tw, TEX_MAXDIM) * BW_NDS_MIN(th, TEX_MAXDIM);
 		}
 		if (total <= TEX_BUDGET)
@@ -221,7 +235,7 @@ static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 
 	for (int i = 0; i < count; i++) {
 		tex_t *t = &w.texs[i];
-		int ofs = (int)rd32(lump + 4 + i * 4), sw, sh, tw, th;
+		int ofs = (int)rd32(lump + 4 + i * 4), sw, sh, tw, th, pw, ph;
 		const uint8_t *mt, *src;
 		char name[17];
 		uint8_t *pix;
@@ -243,7 +257,8 @@ static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 		alpha = name[0] == '{';
 		if (t->skip || t->w <= 0 || t->h <= 0)
 			continue;
-		sw = t->w >> level, sh = t->h >> level;
+		stored_size(mt, len - ofs, &pw, &ph);
+		sw = pw >> level, sh = ph >> level;
 		if (sw < 1 || sh < 1 || !rd32(mt + 24 + level * 4) ||
 		    ofs + (int)rd32(mt + 24 + level * 4) + sw * sh > len)
 			continue; /* the picture lives in a WAD the map doesn't carry */
@@ -256,7 +271,7 @@ static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 			continue;
 		for (int y = 0; y < th; y++)
 			for (int x = 0; x < tw; x++) {
-				uint8_t c = src[(y * sh / th) * (t->w >> level) + x * sw / tw];
+				uint8_t c = src[(y * sh / th) * (pw >> level) + x * sw / tw];
 				if (alpha)
 					c = c == 255 ? 0 : c == 0 ? 255 : c;
 				pix[y * tw + x] = c;
@@ -303,9 +318,11 @@ static uint16_t light_color(int l)
 	return RGB15(c, c, c);
 }
 
-/* the light at a point of a face, from its lightmap(s), bilinear */
+/* the light at a point of a face, from its lightmap(s), bilinear; samples
+ * are stride bytes apart (1 for the map's own, 3 for a .lit), and chan picks
+ * the byte. lightlen counts samples. */
 static int sample_light(const uint8_t *light, int lightlen, int lightofs, const uint8_t *styles, int lw, int lh,
-                        float u, float v)
+                        float u, float v, int stride, int chan)
 {
 	int x0, y0, x1, y1, total = 0;
 	float fx, fy;
@@ -324,11 +341,11 @@ static int sample_light(const uint8_t *light, int lightlen, int lightofs, const 
 	y1 = y0 + 1 < lh ? y0 + 1 : y0;
 	fx = u - x0, fy = v - y0;
 	for (int s = 0; s < 4 && styles[s] != 255; s++) {
-		const uint8_t *m = light + lightofs + s * lw * lh;
+		const uint8_t *m = light + (lightofs + s * lw * lh) * stride + chan;
 		if (lightofs + (s + 1) * lw * lh > lightlen)
 			break;
-		total += (int)((m[y0 * lw + x0] * (1 - fx) + m[y0 * lw + x1] * fx) * (1 - fy) +
-		               (m[y1 * lw + x0] * (1 - fx) + m[y1 * lw + x1] * fx) * fy);
+		total += (int)((m[(y0 * lw + x0) * stride] * (1 - fx) + m[(y0 * lw + x1) * stride] * fx) * (1 - fy) +
+		               (m[(y1 * lw + x0) * stride] * (1 - fx) + m[(y1 * lw + x1) * stride] * fx) * fy);
 	}
 	return total;
 }
@@ -502,10 +519,21 @@ out:
 	free(idx);
 }
 
+/* coloured light for the map being loaded: a Quake-style .lit (QLIT,
+ * version 1, RGB a sample), or NULL */
+static const uint8_t *lit;
+static int litsamples;
+
+static int light_channel(int c)
+{
+	int v = c * 31 / 140;
+	return v > 31 ? 31 : v < 2 ? 2 : v;
+}
+
 static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *len)
 {
-	const uint8_t *vx = d + ofs[L_VERTEXES], *ed = d + ofs[L_EDGES], *se = d + ofs[L_SURFEDGES];
-	const uint8_t *ti = d + ofs[L_TEXINFO], *fc = d + ofs[L_FACES], *light = d + ofs[L_LIGHTING];
+	const uint8_t *vx = lp[L_VERTEXES], *ed = lp[L_EDGES], *se = lp[L_SURFEDGES];
+	const uint8_t *ti = lp[L_TEXINFO], *fc = lp[L_FACES], *light = lp[L_LIGHTING];
 	int numvx = (int)(len[L_VERTEXES] / 12), numedges = (int)(len[L_EDGES] / 4);
 	int numse = (int)(len[L_SURFEDGES] / 4), numti = (int)(len[L_TEXINFO] / 40);
 	w.numfaces = (int)(len[L_FACES] / 20);
@@ -515,7 +543,7 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 	int poolsize = numse + (World_MergeFaces ? numse / 2 : 0), poolused = 0;
 	mvert_t *pool = malloc(sizeof(mvert_t) * (size_t)poolsize);
 	mface_t *mf = calloc((size_t)w.numfaces, sizeof(mface_t));
-	const uint8_t *mo = d + ofs[L_MODELS];
+	const uint8_t *mo = lp[L_MODELS];
 	int nummodels = (int)(len[L_MODELS] / 64);
 	if (!w.faces || !w.vislist || !w.visdist || !pool || !mf) {
 		free(pool), free(mf);
@@ -584,12 +612,19 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 			mv->z = (int16_t)BW_NDS_CLAMP(lrintf(pos[k][2] * 8), -32767, 32767);
 			mv->s = lrintf(st[k][0] * sscale * 16);
 			mv->t = lrintf(st[k][1] * tscale * 16);
-			if (tex->fullbright)
-				l = 255;
-			else
+			if (tex->fullbright) {
+				mv->color = light_color(255);
+			} else if (lit) {
+				int rgb[3];
+				for (int c = 0; c < 3; c++)
+					rgb[c] = light_channel(sample_light(lit, litsamples, lightofs, f + 12, lw, lh, st[k][0] / 16 - bmins,
+					                                    st[k][1] / 16 - bmint, 3, c));
+				mv->color = RGB15(rgb[0], rgb[1], rgb[2]);
+			} else {
 				l = sample_light(light, (int)len[L_LIGHTING], lightofs, f + 12, lw, lh, st[k][0] / 16 - bmins,
-				                 st[k][1] / 16 - bmint);
-			mv->color = light_color(l);
+				                 st[k][1] / 16 - bmint, 1, 0);
+				mv->color = light_color(l);
+			}
 		}
 	}
 	if (World_MergeFaces)
@@ -659,7 +694,7 @@ int World_TotalPolys(void)
 
 static void load_tree(const uint8_t *d, const uint32_t *ofs, const uint32_t *len)
 {
-	const uint8_t *p = d + ofs[L_PLANES], *n = d + ofs[L_NODES], *l = d + ofs[L_LEAFS], *m = d + ofs[L_MARKSURFACES];
+	const uint8_t *p = lp[L_PLANES], *n = lp[L_NODES], *l = lp[L_LEAFS], *m = w.markbuf;
 	w.numplanes = (int)(len[L_PLANES] / 20);
 	w.planes = malloc(sizeof(plane_t) * (size_t)w.numplanes);
 	for (int i = 0; i < w.numplanes; i++) {
@@ -703,8 +738,8 @@ static void load_tree(const uint8_t *d, const uint32_t *ofs, const uint32_t *len
 				w.leafs[-(c + 1)].parent = i;
 		}
 	w.nummarks = (int)(len[L_MARKSURFACES] / 2);
-	w.marks = (uint16_t *)(uintptr_t)m; /* the file is 4-byte aligned and the lump 2-byte aligned */
-	w.vis = d + ofs[L_VISIBILITY];
+	w.marks = (uint16_t *)(uintptr_t)m; /* its own allocation, so aligned */
+	w.vis = w.visbuf;
 	w.vissize = (int)len[L_VISIBILITY];
 	w.leafvis = malloc((size_t)(w.numleafs + 7) / 8 + 1);
 	w.lastleaf = -2;
@@ -783,50 +818,116 @@ static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t 
 
 /* --- loading ----------------------------------------------------------------------------- */
 
+/* the map's lumps, read one at a time so a big map never sits in RAM whole:
+ * each is freed once what it holds has been turned into the DS's own form */
+static uint8_t *lbuf[NUM_LUMPS];
+
+static bool get_lump(const char *path, int i, const uint32_t *ofs, const uint32_t *len)
+{
+	if (!lbuf[i])
+		lbuf[i] = Fs_LoadRange(path, (long)ofs[i], (long)len[i], NULL);
+	lp[i] = lbuf[i];
+	return lbuf[i] != NULL;
+}
+
+static void drop_lump(int i)
+{
+	free(lbuf[i]);
+	lbuf[i] = NULL, lp[i] = NULL;
+}
+
+static void drop_lumps(void)
+{
+	for (int i = 0; i < NUM_LUMPS; i++)
+		drop_lump(i);
+}
+
 bool World_Load(const char *path, const uint16_t *palette, char *err, int errsize)
 {
-	size_t fsize;
-	long size;
 	uint32_t ofs[NUM_LUMPS], len[NUM_LUMPS];
+	size_t hsize;
+	uint8_t *head;
 	World_Free();
-	w.file = Fs_Load(path, &fsize); /* with a spare byte for a 0 */
-	if (!w.file) {
-		snprintf(err, (size_t)errsize, "can't read %s (missing, or not enough memory)", path);
+	head = Fs_LoadRange(path, 0, 4 + NUM_LUMPS * 8, &hsize);
+	if (!head) {
+		snprintf(err, (size_t)errsize, "can't read %s", path);
 		return false;
 	}
-	size = (long)fsize;
-	w.file[size] = 0;
-	w.filesize = (size_t)size;
-	if (size < 4 + NUM_LUMPS * 8 || rd32(w.file) != BSPVERSION) {
-		snprintf(err, (size_t)errsize, "not a Quake map (BSP version %d)", size >= 4 ? (int)rd32(w.file) : -1);
-		World_Free();
+	if (hsize < 4 + NUM_LUMPS * 8 || rd32(head) != BSPVERSION) {
+		if (hsize >= 4 && rd32(head) == 30)
+			snprintf(err, (size_t)errsize, "a Half-Life map: convert it with tools/nds/hlmap.py first");
+		else
+			snprintf(err, (size_t)errsize, "not a Quake map (BSP version %d)", hsize >= 4 ? (int)rd32(head) : -1);
+		free(head);
 		return false;
 	}
-	for (int i = 0; i < NUM_LUMPS; i++) {
-		ofs[i] = rd32(w.file + 4 + i * 8);
-		len[i] = rd32(w.file + 8 + i * 8);
-		if (ofs[i] > (uint32_t)size || len[i] > (uint32_t)size - ofs[i]) {
-			snprintf(err, (size_t)errsize, "lump %d runs past the end", i);
+	for (int i = 0; i < NUM_LUMPS; i++)
+		ofs[i] = rd32(head + 4 + i * 8), len[i] = rd32(head + 8 + i * 8);
+	free(head);
+
+	/* kept for as long as the map is: the entities (text), the marks and the PVS */
+	if (!get_lump(path, L_ENTITIES, ofs, len) || !get_lump(path, L_MARKSURFACES, ofs, len) ||
+	    !get_lump(path, L_VISIBILITY, ofs, len)) {
+		snprintf(err, (size_t)errsize, "can't read %s (cut short, or not enough memory)", path);
+		drop_lumps();
+		return false;
+	}
+	w.entbuf = lbuf[L_ENTITIES], w.markbuf = lbuf[L_MARKSURFACES], w.visbuf = lbuf[L_VISIBILITY];
+	lbuf[L_ENTITIES] = lbuf[L_MARKSURFACES] = lbuf[L_VISIBILITY] = NULL; /* now w's to free */
+	w.entities = (const char *)w.entbuf;
+	if (len[L_ENTITIES])
+		w.entbuf[len[L_ENTITIES] - 1] = 0;
+	else
+		w.entbuf[0] = 0;
+
+	/* a Half-Life map made for the DS (tools/nds/hlmap.py) brings its own
+	 * palette and coloured light, beside it as <map>.pal and <map>.lit */
+	{
+		static uint16_t mappal[256];
+		char side[300];
+		size_t n;
+		uint8_t *b;
+		bool ok;
+		snprintf(side, sizeof(side), "%.*s.pal", (int)(strlen(path) > 4 ? strlen(path) - 4 : strlen(path)), path);
+		if ((b = Fs_Load(side, &n)) && n >= 768) {
+			for (int i = 0; i < 256; i++)
+				mappal[i] = RGB15(b[i * 3] >> 3, b[i * 3 + 1] >> 3, b[i * 3 + 2] >> 3);
+			palette = mappal;
+		}
+		free(b);
+		if (get_lump(path, L_TEXTURES, ofs, len))
+			load_textures(lp[L_TEXTURES], (int)len[L_TEXTURES], palette);
+		drop_lump(L_TEXTURES);
+		ok = get_lump(path, L_PLANES, ofs, len) && get_lump(path, L_NODES, ofs, len) && get_lump(path, L_LEAFS, ofs, len);
+		if (ok)
+			load_tree(NULL, ofs, len);
+		drop_lump(L_NODES), drop_lump(L_LEAFS);
+		memcpy(side + strlen(side) - 4, ".lit", 4);
+		b = Fs_Load(side, &n);
+		if (b && n >= 8 && !memcmp(b, "QLIT", 4) && rd32(b + 4) == 1)
+			lit = b + 8, litsamples = (int)((n - 8) / 3);
+		w.haslit = lit != NULL;
+		ok = ok && get_lump(path, L_VERTEXES, ofs, len) && get_lump(path, L_EDGES, ofs, len) &&
+		     get_lump(path, L_SURFEDGES, ofs, len) && get_lump(path, L_TEXINFO, ofs, len) &&
+		     get_lump(path, L_FACES, ofs, len) && get_lump(path, L_MODELS, ofs, len) &&
+		     (lit || get_lump(path, L_LIGHTING, ofs, len));
+		if (ok)
+			ok = load_faces(NULL, ofs, len);
+		free(b);
+		lit = NULL;
+		drop_lump(L_VERTEXES), drop_lump(L_EDGES), drop_lump(L_SURFEDGES), drop_lump(L_TEXINFO);
+		drop_lump(L_FACES), drop_lump(L_LIGHTING);
+		if (!ok) {
+			snprintf(err, (size_t)errsize, "bad faces, or out of memory");
+			drop_lumps();
 			World_Free();
 			return false;
 		}
 	}
-	/* the entities are text: make sure they end */
-	w.entities = (const char *)w.file + ofs[L_ENTITIES];
-	if (len[L_ENTITIES])
-		w.file[ofs[L_ENTITIES] + len[L_ENTITIES] - 1] = 0;
-
-	load_textures(w.file + ofs[L_TEXTURES], (int)len[L_TEXTURES], palette);
-	load_tree(w.file, ofs, len);
-	if (!load_faces(w.file, ofs, len)) {
-		snprintf(err, (size_t)errsize, "bad faces, or out of memory");
-		World_Free();
-		return false;
-	}
 	w.nummodels = (int)(len[L_MODELS] / 64);
 	w.models = malloc(sizeof(submodel_t) * (size_t)(w.nummodels ? w.nummodels : 1));
 	for (int i = 0; i < w.nummodels; i++) {
-		const uint8_t *q = w.file + ofs[L_MODELS] + i * 64;
+		const uint8_t *q = lp[L_MODELS] + i * 64;
 		for (int c = 0; c < 3; c++) {
 			w.models[i].mins[c] = (int16_t)BW_NDS_CLAMP(lrintf(rdf(q + c * 4)), -32767, 32767);
 			w.models[i].maxs[c] = (int16_t)BW_NDS_CLAMP(lrintf(rdf(q + 12 + c * 4)), -32767, 32767);
@@ -836,9 +937,9 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 		if (i == 0)
 			w.visleafs = BW_NDS_MIN((int)rd32(q + 52), w.numleafs - 1);
 	}
-	build_portals(w.file, ofs, len);
-	/* the lighting and pictures have been used up; the rest of the file
-	 * (planes, vis, marks) is still read from */
+	drop_lump(L_MODELS);
+	build_portals(NULL, ofs, len);
+	drop_lumps();
 	w.loaded = true;
 	return true;
 }
@@ -1151,8 +1252,8 @@ static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t 
 	if (want && pl && nd && contents && w.numnodes && w.nummodels) {
 		for (int i = 0; i < np; i++) {
 			for (int c = 0; c < 3; c++)
-				pl[i].n[c] = rdf(d + ofs[L_PLANES] + i * 20 + c * 4);
-			pl[i].dist = rdf(d + ofs[L_PLANES] + i * 20 + 12);
+				pl[i].n[c] = rdf(lp[L_PLANES] + i * 20 + c * 4);
+			pl[i].dist = rdf(lp[L_PLANES] + i * 20 + 12);
 		}
 		for (int i = 0; i < w.numnodes; i++) {
 			nd[i].plane = w.nodes[i].plane;
