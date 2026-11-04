@@ -81,6 +81,9 @@ typedef struct {
 	int devspawn;                 /* the map (spawn count) the device says it has, -1 if it doesn't say */
 	int buttons;                  /* the game's buttons as the device mapped them, -1 if it doesn't */
 	int impseq;                   /* the count of the device's last one-shot impulse */
+	int vmseq;                    /* the view model's sequence when last looked at */
+	float vmtime;                 /* and how long it had played */
+	uint8_t vmplays, vmsent;      /* sequences started (the same one again counts), and as last sent */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -581,6 +584,7 @@ static int cmp_thing(const void *a, const void *b)
 }
 
 static void send_stats(link_t *l);
+static void watch_viewmodel(link_t *l);
 
 /* the names of the studio models, a run at a time (docs/spec/link.md,
  * MODELS): u32 session, u16 spawncount, u8 count, count x {u16 index, u8
@@ -746,6 +750,7 @@ void SV_LinkSend(void)
 		 * on its way when the welcome went out can fool that) */
 		if (l->devspawn >= 0 ? l->devspawn != (svs.spawncount & 0xffff) : l->lastrecv < l->welcomed)
 			continue;
+		watch_viewmodel(l);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -759,7 +764,7 @@ void SV_LinkSend(void)
 			send_ents(l);
 			if (l->entsseq % 5 == 0)
 				send_models(l);
-			if (l->entsseq % 4 == 0)
+			if (l->entsseq % 4 == 0 || l->vmplays != l->vmsent)
 				send_stats(l);
 			l->nextview = now + VIEW_INTERVAL;
 		}
@@ -773,26 +778,61 @@ static float efloat(int e, const char *name)
 	return ofs >= 0 ? QC_EdictFields(sv.vm, e)[ofs].f : 0;
 }
 
+/* the entity in the player's hand (Nuclide's .m_activeWeapon), 0 for none */
+static int active_weapon(int e)
+{
+	int ofs = QC_FieldOfs(sv.vm, "m_activeWeapon"), w;
+	if (ofs < 0 || (w = (int)QC_EdictFields(sv.vm, e)[ofs].u) <= 0 || w >= sv.vm->num_edicts || sv.vm->edicts[w].free)
+		return 0;
+	return w;
+}
+
+/* a class member field: Nuclide's compiler names them Class::__mm_name */
+static float member(int e, const char *cls, const char *name)
+{
+	char full[96];
+	snprintf(full, sizeof(full), "%s::__mm_%s", cls, name);
+	return QC_FieldOfs(sv.vm, full) >= 0 ? efloat(e, full) : efloat(e, name);
+}
+
+/* the view model's sequence, once a server frame: a sequence started again
+ * (another shot) shows as its time going back */
+static void watch_viewmodel(link_t *l)
+{
+	int e = l->client->edict, seq = (int)member(e, "ncPlayer", "weaponAnimSequence");
+	float t = member(e, "ncPlayer", "weaponAnimTime");
+	if (seq != l->vmseq || t < l->vmtime)
+		l->vmplays++;
+	l->vmseq = seq, l->vmtime = t;
+}
+
 /* the player's numbers for the device's own status panel (docs/spec/link.md,
  * STATS): health, armour, score, and the weapon in hand by its class name,
  * without "weapon_" (Nuclide keeps it in .m_activeWeapon) */
 static void send_stats(link_t *l)
 {
 	pkt_t p;
-	int e = l->client->edict, ofs = QC_FieldOfs(sv.vm, "m_activeWeapon"), w;
+	int e = l->client->edict, w = active_weapon(e);
 	const char *wname = "";
+	size_t n;
 	p_begin(&p, L_STATS);
 	p_u32(&p, l->session);
 	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(QC_EFloat(sv.vm, e, F.health), -32768, 32767));
 	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(efloat(e, "armorvalue"), -32768, 32767));
 	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(efloat(e, "frags"), -32768, 32767));
-	if (ofs >= 0 && (w = (int)QC_EdictFields(sv.vm, e)[ofs].u) > 0 && w < sv.vm->num_edicts && !sv.vm->edicts[w].free) {
+	if (w) {
 		wname = QC_GetString(sv.vm, QC_EInt(sv.vm, w, F.classname));
 		if (!strncmp(wname, "weapon_", 7))
 			wname += 7;
 	}
-	p_u8(&p, (unsigned)BW_MIN(strlen(wname), 24));
-	p_bytes(&p, wname, (int)BW_MIN(strlen(wname), 24));
+	n = BW_MIN(strlen(wname), 24);
+	p_u8(&p, (unsigned)n);
+	p_bytes(&p, wname, (int)n);
+	/* the view model: its model index (named by MODELS), sequence, and plays */
+	p_u16(&p, w ? (unsigned)member(w, "ncWeapon", "viewModel") : 0);
+	p_u8(&p, (unsigned)l->vmseq & 255);
+	p_u8(&p, l->vmplays);
+	l->vmsent = l->vmplays;
 	send_to(&l->from, &p);
 }
 

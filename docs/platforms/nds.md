@@ -182,6 +182,20 @@ clip for the sequence the server says, and walks or runs a model the server
 only has standing (other players) from how fast it moves. Things with no DS
 copy of their model stay boxes.
 
+The weapon in hand is drawn too, from its view model (`v_*.mdl`), baked
+with `-view`:
+
+```
+python3 tools/nds/hlmdl.py v_9mmhandgun.dump nitro/models/v_9mmhandgun.mdl -view -tris 250 -frames 60
+```
+
+`-view` keeps a clip for every sequence (the game plays them by number) and
+leaves out the arms and hands (Half-Life's glove, sleeve and forearm
+textures) and additive effect meshes. `-mirror` swaps left and right, for
+the models a weapon def marks `model_viewMirror` (CSO's). `STATS` tells the
+DS the view model, its sequence, and when a sequence starts again, so each
+shot replays it. It costs about 250 polygons.
+
 Baked models are Valve's data too: keep them out of git and public
 packages.
 

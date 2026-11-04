@@ -152,6 +152,8 @@ static struct {
 	int armor, frags;           /* from STATS */
 	char weapon[25];            /* the weapon in hand, by class name without "weapon_" */
 	int statsver;               /* bumped when any of the above changes */
+	int vmodel, vseq, vplays;   /* the view model (a model index), its sequence and plays */
+	int vmstart;                /* the frame its sequence started */
 	uint16_t entsseq;
 	bool haveents;
 	thing_t things[MAX_THINGS];
@@ -999,6 +1001,14 @@ static void handle_stats(const uint8_t *d, int len)
 		memcpy(link.weapon, w, sizeof(w));
 		link.statsver++;
 	}
+	/* then the view model, from servers that send it */
+	if (len >= 11 + d[10] + 4) {
+		const uint8_t *v = d + 11 + d[10];
+		link.vmodel = rd16(v);
+		if (v[2] != link.vseq || v[3] != link.vplays)
+			link.vmstart = linkframe;
+		link.vseq = v[2], link.vplays = v[3];
+	}
 }
 
 static void handle_models(const uint8_t *d, int len)
@@ -1189,11 +1199,29 @@ static int thing_model(const thing_t *t, bool *loaded_one)
 	return *m;
 }
 
+/* the weapon in hand; its light is looked up again every half second */
+static void set_viewmodel(const ndscam_t *cam, bool *loaded_one)
+{
+	static int light = -1, lightframe;
+	thing_t t = {0};
+	int mdl;
+	t.model = (uint16_t)link.vmodel;
+	mdl = thing_model(&t, loaded_one);
+	if (mdl >= 0 && (light < 0 || linkframe - lightframe > 30)) {
+		int16_t at[3];
+		for (int k = 0; k < 3; k++)
+			at[k] = (int16_t)BW_NDS_CLAMP(cam->org[k] / 8, -4000, 4000);
+		light = World_LightAt(at), lightframe = linkframe;
+	}
+	Ents_SetViewModel(mdl, link.vseq, linkframe - link.vmstart, light);
+}
+
 /* the things with a model the DS has, into the model list Ents_Draw draws */
-static void add_studio_things(void)
+static void add_studio_things(const ndscam_t *cam)
 {
 	bool loaded_one = false;
 	Ents_Clear();
+	set_viewmodel(cam, &loaded_one);
 	for (int i = 0; i < link.numthings; i++) {
 		const thing_t *t = &link.things[i];
 		int mdl = thing_model(t, &loaded_one);
@@ -1461,7 +1489,7 @@ static const char *play(ndscam_t *cam)
 		linkframe = frame;
 		if (World_Loaded()) {
 			if (debugview == 0)
-				add_studio_things();
+				add_studio_things(cam);
 			else
 				Ents_Clear();
 			Ents_Draw(cam, &st);
