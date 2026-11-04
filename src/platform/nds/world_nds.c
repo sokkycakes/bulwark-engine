@@ -138,6 +138,7 @@ static struct {
 	int portaltests, pvsleaves;
 	int loadms;             /* portal building time, for the stats */
 	bool haslit;            /* coloured light from a .lit */
+	int texfailed;          /* textures VRAM had no room for */
 } w;
 
 static inline uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -195,6 +196,7 @@ void World_Free(void)
 bool World_Loaded(void) { return w.loaded; }
 int World_TextureBytes(void) { return w.texbytes; }
 bool World_HasLit(void) { return w.haslit; }
+int World_TextureFails(void) { return w.texfailed; }
 
 /* --- textures ---------------------------------------------------------------------------- */
 
@@ -289,6 +291,7 @@ static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 		glBindTexture(GL_TEXTURE_2D, t->name);
 		if (!glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB256, size_enum(tw), size_enum(th), 0,
 		                  GL_TEXTURE_WRAP_S | GL_TEXTURE_WRAP_T | (alpha ? GL_TEXTURE_COLOR0_TRANSPARENT : 0), pix)) {
+			w.texfailed++;
 			glDeleteTextures(1, &t->name);
 			t->name = 0;
 			free(pix);

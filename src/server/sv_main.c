@@ -1030,6 +1030,10 @@ static void SV_Edict_f(int argc, const char **argv)
 			Con_Printf("  model %s frame %g frame1time %g\n", QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.model)),
 			           f[fr].f, f[ft].f);
 	}
+	if (F.mins >= 0 && F.maxs >= 0 && F.view_ofs >= 0)
+		Con_Printf("  mins %g %g %g maxs %g %g %g view_ofs %g %g %g solid %g movetype %g\n", f[F.mins].f, f[F.mins + 1].f,
+		           f[F.mins + 2].f, f[F.maxs].f, f[F.maxs + 1].f, f[F.maxs + 2].f, f[F.view_ofs].f, f[F.view_ofs + 1].f,
+		           f[F.view_ofs + 2].f, f[F.solid].f, f[F.movetype].f);
 }
 
 /* "pr_trace <text>": prints entries to QC functions whose names contain it,

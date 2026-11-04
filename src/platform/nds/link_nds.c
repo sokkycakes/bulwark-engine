@@ -848,8 +848,8 @@ static const char *play(ndscam_t *cam)
 			if (now - secstart >= 60) {
 				link.fps = frames * 60 / (now - secstart), link.minfps = 60 / (worst ? worst : 1);
 				link.peakpolys = peak;
-				int n = snprintf(line, sizeof(line), "%2d fps min %2d %4dp lf%d%s", link.fps, link.minfps, peak, st.leaf,
-				                 debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
+				int n = snprintf(line, sizeof(line), "%2d/%2d %4dp t%dk f%d%s", link.fps, link.minfps, peak,
+				                 World_TextureBytes() >> 10, World_TextureFails(), debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
 				fill(0, 184, 256, 8, RGB15(2, 2, 4) | BIT(15));
 				text(0, 184, RGB15(20, 31, 20) | BIT(15), (const uint8_t *)line, n);
 				secstart = now, frames = 0, worst = 0, peak = 0;

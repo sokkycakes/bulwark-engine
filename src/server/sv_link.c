@@ -760,8 +760,10 @@ static void SV_LinkStats_f(int argc, const char **argv)
 		if (!l->used || !l->client || !sv.active || F.origin < 0)
 			continue;
 		o = &QC_EdictFields(sv.vm, l->client->edict)[F.origin].f;
-		Con_Printf("link %s map %s at %.0f %.0f %.0f fps %d min %d polys %d load %d ms\n", l->client->name, sv.mapname,
-		           o[0], o[1], o[2], l->fps, l->minfps, l->peakpolys, l->loadms);
+		Con_Printf("link %s map %s at %.0f %.0f %.0f eye %+.0f mins %.0f fps %d min %d polys %d load %d ms\n",
+		           l->client->name, sv.mapname, o[0], o[1], o[2], QC_EField(sv.vm, l->client->edict, F.view_ofs) ?
+		           QC_EField(sv.vm, l->client->edict, F.view_ofs)[2].f : 0, QC_EField(sv.vm, l->client->edict, F.mins) ?
+		           QC_EField(sv.vm, l->client->edict, F.mins)[2].f : 0, l->fps, l->minfps, l->peakpolys, l->loadms);
 	}
 }
 

@@ -106,6 +106,7 @@ typedef struct client_s {
 	infoblob_t blobs[MAX_INFOBLOBS];
 	int edict;
 	int spawncount; /* map the client was last told about */
+	double spawn_at; /* a bot carried over to a new map: spawn it once the map has run this long (sv.time) */
 	double connect_time, last_ping_update;
 	float spawn_parms[MAX_SPAWN_PARMS];
 	bool have_parms;

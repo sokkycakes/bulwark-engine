@@ -57,6 +57,7 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 const char *World_Entities(void);
 int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
+int World_TextureFails(void); /* textures of this map VRAM had no room for */
 bool World_HasLit(void); /* the map came with coloured light (.lit) */
 /* brush entities as a server has them (link play): shown or not, and moved
  * to org (1/8 units) and turned by ang (pitch yaw roll, libnds angles); org

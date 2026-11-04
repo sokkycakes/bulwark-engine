@@ -708,6 +708,8 @@ static void prepare_client_edict(client_t *c)
 	QC_SetEFloat(vm, c->edict, F.flags, FL_CLIENT);
 }
 
+#define BOT_RESPAWN_DELAY 0.5
+
 static void spawn_client(client_t *c)
 {
 	qcvm_t *vm = sv.vm;
@@ -816,7 +818,11 @@ void SV_ClientsMapChanged(void)
 		if (c->state == CS_FREE)
 			continue;
 		if (c->bot) {
-			spawn_client(c);
+			/* not at once: the game sets up some of a new map in its first
+			   frames (Nuclide gave a bot spawned here no size and no eye
+			   height), and real clients come back later than this too */
+			c->state = CS_CONNECTED;
+			c->spawn_at = sv.time + BOT_RESPAWN_DELAY;
 			continue;
 		}
 		reset_entity_state(c);
@@ -1499,6 +1505,13 @@ void SV_ClientsPostThink(void)
 
 void SV_ClientsAfterPhysics(void)
 {
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->bot && c->state == CS_CONNECTED && c->spawn_at > 0 && sv.time >= c->spawn_at) {
+			c->spawn_at = 0;
+			spawn_client(c);
+		}
+	}
 	collect_sendflags();
 	if (msg_broadcast.len) {
 		LOCALMSG(h, 8);
