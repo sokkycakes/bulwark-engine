@@ -116,7 +116,9 @@ size actually stored.
 
 The DS loads one lump at a time, so a map needs about its own size in RAM
 (c1a0: 695 KB). A map too big to fit with its coloured light (t0a0) loads
-again with the grey. Brush entities built round an origin brush (doors
+again with the grey, and then without joining faces. `hlmap.py` also drops
+the planes only the clip hulls used (c5a1: 21126 planes down to 2176); with
+both, every campaign map loads. Brush entities built round an origin brush (doors
 that swing, trains) start where the map's `origin` key puts them.
 
 Converted Half-Life maps are Valve's data: keep them on your own cards,
@@ -470,6 +472,35 @@ bottom screen showed the engine's default screen, and the top screen drew
 walked down a corridor and showed up as a green marker in the right place.
 The DS's own button presses couldn't be scripted in the emulator, so the
 movement and buttons were tested with a script that sends the same packets.
+
+## Measured: the Half-Life campaign, in melonDS 1.1
+
+All 97 maps of `valve/maps` convert. A bench of 8 spots a map (player
+starts, landmarks and `info_node`s spread through the map) over the
+campaign, at commit `9e8bac2`:
+
+- Every map loads; loading takes 2 to 7 s in melonDS.
+- Every map held 60 fps at every spot with no faces cut, except two:
+  c1a2 (58 average, 30 worst, 173 faces cut at the worst spot, 5941
+  vertices) and c2a5e (59 average, 30 worst, 30 faces cut). Both are at the
+  6144-vertex limit there, not the polygon limit.
+- The highest polygon count at any spot was 1706 (c2a5e); 1428 in c1a1b.
+- Memory leaked per map load: 1 to 4 KB, from the bench's own count.
+
+Linked: a `bulwark-ded` running Nuclide `valve` + `coop` hosted the DS and
+a PC client at once. A script walked the link player along the 78-map
+route from c0a0 to c5a1 (a breadth-first search over
+`trigger_changelevel`), teleporting next to each changelevel with
+`link_teleport` and touching it; changelevels that only fire when used or
+from a script were fired by rcon ("forced"). The DS loaded each map the
+server changed to, drew the doors, lifts and NPC boxes it sent, and
+reported 60 fps (`link_stats`) on every map it was measured on, at up to
+about 1050 polygons. That proves the maps load, draw and follow the
+server; it does not prove the campaign can be played through by hand,
+since the script skipped every puzzle and fight.
+
+melonDS's frame rate is not a hardware measurement: these need repeating
+on a DS.
 
 ## Not supported yet
 

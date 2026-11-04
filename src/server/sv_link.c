@@ -609,7 +609,10 @@ void SV_LinkSend(void)
 		link_t *l = &links[i];
 		if (!l->used || !l->client)
 			continue;
-		if (now - l->lastrecv > BW_MAX(sv_link_timeout->value, 2) && now > l->loading_until) {
+		/* the load grace covers one quiet spell: a device that is never heard
+		 * from again goes after LOAD_GRACE even if the map keeps changing */
+		if (now - l->lastrecv > BW_MAX(sv_link_timeout->value, 2) &&
+		    (now > l->loading_until || now - l->lastrecv > LOAD_GRACE)) {
 			SV_DropClient(l->client, "the link timed out");
 			continue;
 		}

@@ -20,7 +20,7 @@ games on the PC.
 |---|---|---|
 | `sv_link_port` | `27901` | UDP port for link players, `0` turns links off |
 | `sv_link_max` | `4` | how many player slots link players may take |
-| `sv_link_timeout` | `10` | seconds without input before a link player is dropped (after a map change it gets 60 more, while the device loads the map) |
+| `sv_link_timeout` | `10` | seconds without input before a link player is dropped (after a map change it gets 60 more, while the device loads the map, but never more than 60 s of silence in all) |
 
 A link player takes a normal client slot and edict. The game sees it as a
 real player: `clienttype` is `CLIENTTYPE_REAL`, `ClientConnect` and
