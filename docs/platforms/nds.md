@@ -67,22 +67,46 @@ security=wpa2       open, wep, wpa or wpa2 (leave it out to take the best offere
 server=192.168.1.20:27901   optional: asks this server as well as broadcasting
 name=Player         optional
 autojoin=1          optional: join the first server found at start-up
+controls=touch      touch (default) or classic, see below
+hand=right          left: move with A B X Y and fire with R
+sens=100            aim speed in percent (100 turns 120 degrees across the screen)
+diag=1              frame rate, polygons and models on the bottom screen's top bar
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
 Link players use UDP port 27901 (`sv_link_port`). The DS lists the servers
 that answer, and A or a tap joins one.
 
-While linked:
+While linked, the bottom screen is a touch pad, as in Metroid Prime
+Hunters:
 
-| Button | Action |
-|---|---|
-| D-pad up / down | move |
-| D-pad left / right | turn |
-| L + D-pad | strafe, and look up / down |
-| A, B, X, Y, R | attack, jump, use, reload, attack2 |
-| touch | goes to the game's private screen |
-| START | leave |
+- The top bar shows health and the map (or, with `diag=1`, frames a second
+  and the slowest frame, polygons, and models loaded and failed). Its
+  **GAME** tab swaps the pad for the game's own bottom screen (what the
+  game draws with the `link_*` builtins, or the engine's name, health, map
+  and player list); **PAD** swaps back. Touches on the game's screen go to
+  the game.
+- Drag in the middle to aim. A double tap jumps.
+- Eight buttons: previous and next weapon, reload, use, jump, duck (stays on
+  until pressed again), flashlight and secondary fire.
+
+| Button | `controls=touch` (default) | `hand=left` | `controls=classic` |
+|---|---|---|---|
+| D-pad | move and strafe | (free) | up / down move, left / right turn |
+| A B X Y | attack, jump, use, reload | X / B move, Y / A strafe | attack, jump, use, reload |
+| L | attack | jump | held: D-pad strafes and looks up / down |
+| R | jump | attack | secondary fire |
+| touch | aim and the pad's buttons | the same | the same |
+| START | leave | leave | leave |
+| SELECT | debug views (no things, no moved models) | the same | the same |
+
+`classic` is the scheme of Quake or Half-Life on a pad with one stick; the
+touch pad still aims. The DS maps the buttons itself and sends what the
+game reads (Nuclide's `input_buttons`), plus Quake's impulses 10 and 12 for
+the next and previous weapon and 100 for the flashlight. Weapon switching by
+impulse needs Nuclide `claude/project-thread-9qaek1` or later; the
+flashlight needs a game that handles impulse 100, as the co-op rules do.
+The DS itself draws no flashlight beam yet: its map lighting is baked.
 
 The top screen draws the map only if the DS has a copy of it in `maps/`.
 Other players show as coloured markers, green for other DS players. The

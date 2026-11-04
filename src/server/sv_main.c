@@ -1034,6 +1034,14 @@ static void SV_Edict_f(int argc, const char **argv)
 		Con_Printf("  mins %g %g %g maxs %g %g %g view_ofs %g %g %g solid %g movetype %g\n", f[F.mins].f, f[F.mins + 1].f,
 		           f[F.mins + 2].f, f[F.maxs].f, f[F.maxs + 1].f, f[F.maxs + 2].f, f[F.view_ofs].f, f[F.view_ofs + 1].f,
 		           f[F.view_ofs + 2].f, f[F.solid].f, f[F.movetype].f);
+	/* "edict <n> <field>...": named fields too, as a float and as a whole word */
+	for (int i = 2; i < argc; i++) {
+		int ofs = QC_FieldOfs(sv.vm, argv[i]);
+		if (ofs < 0)
+			Con_Printf("  %s: no such field\n", argv[i]);
+		else
+			Con_Printf("  %s %g (%d)\n", argv[i], f[ofs].f, (int)f[ofs].u);
+	}
 }
 
 /* "pr_trace <text>": prints entries to QC functions whose names contain it,

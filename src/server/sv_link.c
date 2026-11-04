@@ -79,6 +79,8 @@ typedef struct {
 	double loading_until; /* a new map was announced: the device may be quiet while it loads it */
 	double welcomed, nextwelcome; /* when this map was announced; when to say it again */
 	int devspawn;                 /* the map (spawn count) the device says it has, -1 if it doesn't say */
+	int buttons;                  /* the game's buttons as the device mapped them, -1 if it doesn't */
+	int impseq;                   /* the count of the device's last one-shot impulse */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -270,6 +272,8 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	l->version = 1; /* nothing acknowledged yet */
 	l->fps = l->minfps = l->peakpolys = l->loadms = -1;
 	l->devspawn = -1;
+	l->buttons = -1;
+	l->impseq = -1;
 	send_welcome(l);
 	Con_Printf("link: %s joined from %s\n", name, inet_ntoa(from->sin_addr));
 }
@@ -297,6 +301,14 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 		l->loadms = rd16(d + 24) * 10;
 	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 8)
 		l->devspawn = (uint16_t)rd16(d + 26);
+	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 12) {
+		/* the device's own button mapping, and a one-shot impulse it repeats
+		 * in every packet: taken once, when its count changes */
+		l->buttons = (uint16_t)rd16(d + 28);
+		if (l->impseq >= 0 && d[31] != l->impseq && d[30])
+			c->forced_impulse = d[30];
+		l->impseq = d[31];
+	}
 
 	u = &c->lastucmd;
 	u->angles[0] = -pitch * (360.0f / 65536.0f); /* the device's pitch is up-positive */
@@ -305,9 +317,14 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 	u->movevalues[0] = (int8_t)d[11] * (400.0f / 127.0f);
 	u->movevalues[1] = (int8_t)d[12] * (400.0f / 127.0f);
 	u->movevalues[2] = (int8_t)d[13] * (400.0f / 127.0f);
-	/* DS keys (libnds): A 1, B 2, R 0x100, X 0x400, Y 0x800 */
-	u->buttons = (l->keys & 0x001 ? 1 : 0) | (l->keys & 0x002 ? 2 : 0) | (l->keys & 0x400 ? 16 : 0) |
-	             (l->keys & 0x800 ? 8 : 0) | (l->keys & 0x100 ? 32 : 0);
+	/* a device that maps its own buttons sends them; otherwise the DS keys
+	 * (libnds: A 1, B 2, R 0x100, X 0x400, Y 0x800) become attack, jump, use
+	 * (0x20), reload (8) and attack2 (0x10), as Nuclide numbers them */
+	if (l->buttons >= 0)
+		u->buttons = (unsigned)l->buttons;
+	else
+		u->buttons = (l->keys & 0x001 ? 1 : 0) | (l->keys & 0x002 ? 2 : 0) | (l->keys & 0x400 ? 0x20 : 0) |
+		             (l->keys & 0x800 ? 8 : 0) | (l->keys & 0x100 ? 0x10 : 0);
 	/* the game reads the view from v_angle as well */
 	if (F.v_angle >= 0) {
 		float *va = &QC_EdictFields(sv.vm, c->edict)[F.v_angle].f;

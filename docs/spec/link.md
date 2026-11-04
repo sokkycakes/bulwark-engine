@@ -32,17 +32,23 @@ the last command, as it does for bots.
 ### Default input mapping
 
 The device sends movement (-127..127 per axis), view angles, and its raw
-keys. The server turns them into a usercmd:
+keys. A device that maps its own buttons (the DS does) also sends the
+game's buttons and a one-shot impulse at the end of `INPUT`, and the server
+takes those as they are. Otherwise the server maps the keys:
 
 | Device | usercmd |
 |---|---|
 | move axes | `movevalues`, ×400/127 forward and side, ×400/127 up |
 | angles | `angles` (pitch, yaw), as sent |
-| A | button 1 (attack) |
-| B | button 2 (jump) |
-| X | button 5 (use) |
-| Y | button 4 (reload) |
-| R | button 6 (attack2) |
+| A | 0x01 (attack) |
+| B | 0x02 (jump) |
+| X | 0x20 (use) |
+| Y | 0x08 (reload) |
+| R | 0x10 (secondary attack) |
+
+These are Nuclide's `INPUT_BUTTON*` bits. The impulse goes into the move
+once, when its count changes (the device repeats it in every packet, so a
+lost packet loses nothing).
 
 The game can read the raw state with `link_keys` and `link_touch` and do its
 own mapping.
@@ -78,7 +84,7 @@ a type byte. Multi-byte values are little endian. A device keeps sending
 |---|---|---|
 | 0x01 | DISCOVER | nothing (broadcast to the port) |
 | 0x02 | JOIN | u32 session, u16 device (1 = DS), char name[16] |
-| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second), u16 load_ms (its last map load, in 10 ms steps), u16 spawncount (the map it has loaded) |
+| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second), u16 load_ms (its last map load, in 10 ms steps), u16 spawncount (the map it has loaded), u16 buttons (the game's buttons, as the device mapped them), u8 impulse, u8 impulse_count |
 | 0x04 | LEAVE | u32 session |
 
 Angles use 65536 per turn, and positive pitch looks up.

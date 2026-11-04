@@ -8,6 +8,13 @@
  *
  * WiFi comes from the DS's own settings, or from link.txt in a base folder:
  *   ssid=  key=  security=open|wep|wpa|wpa2  server=ip[:port]  name=  autojoin=1
+ * and the controls: controls=touch|classic  hand=right|left  sens=100 (percent)
+ * diag=1 (frame rate and polygons on the bottom screen's top bar)
+ *
+ * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
+ * middle to aim, double-tap to jump, and buttons below for weapons, reload,
+ * use, jump, duck, flashlight and secondary fire. The tab at the top right
+ * swaps it for the game's own bottom screen (SCREEN packets) and back.
  */
 #include <arpa/inet.h>
 #include <dswifi9.h>
@@ -45,7 +52,16 @@ typedef struct {
 	uint32_t server; /* network order, 0 for none */
 	uint16_t port;
 	bool autojoin;
+	bool classic; /* D-pad turns, as Quake and Half-Life on a pad with one stick */
+	bool lefty;   /* move with A B X Y, fire with R */
+	bool diag;
+	int sens;     /* aim speed, percent: 100 turns 120 degrees across the screen */
 } linkcfg_t;
+
+/* what the game reads in input_buttons (Nuclide's INPUT_BUTTON*) */
+enum { B_ATTACK = 0x01, B_JUMP = 0x02, B_RELOAD = 0x08, B_ATTACK2 = 0x10, B_USE = 0x20, B_CROUCH = 0x80 };
+/* Quake's next and previous weapon, Half-Life's flashlight */
+enum { IMP_NEXT = 10, IMP_PREV = 12, IMP_LIGHT = 100 };
 
 typedef struct {
 	struct sockaddr_in addr;
@@ -145,6 +161,7 @@ static void read_config(void)
 	char path[64], line[160];
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.port = LINK_PORT;
+	cfg.sens = 100;
 	snprintf(cfg.name, sizeof(cfg.name), "DS");
 	for (int b = 0; b < NDS_NUMBASEDIRS; b++) {
 		FILE *f;
@@ -167,6 +184,14 @@ static void read_config(void)
 				snprintf(cfg.name, sizeof(cfg.name), "%s", v);
 			else if (!strcmp(line, "autojoin"))
 				cfg.autojoin = atoi(v) != 0;
+			else if (!strcmp(line, "controls"))
+				cfg.classic = !strcmp(v, "classic");
+			else if (!strcmp(line, "hand"))
+				cfg.lefty = !strcmp(v, "left");
+			else if (!strcmp(line, "sens"))
+				cfg.sens = BW_NDS_CLAMP(atoi(v), 10, 1000);
+			else if (!strcmp(line, "diag"))
+				cfg.diag = atoi(v) != 0;
 			else if (!strcmp(line, "server")) {
 				char *colon = strchr(v, ':');
 				if (colon)
@@ -374,6 +399,9 @@ static void screen_init(void)
 {
 	int bg;
 	videoSetModeSub(MODE_5_2D);
+	/* bank H holds the console at the same address: take it off, or both
+	 * banks answer there and the top 64 rows show the two mixed */
+	vramSetBankH(VRAM_H_LCD);
 	vramSetBankC(VRAM_C_SUB_BG);
 	bg = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
 	sub = bgGetGfxPtr(bg);
@@ -440,6 +468,213 @@ static void draw_screen(const uint8_t *d, int len)
 			return;
 		}
 	}
+}
+
+/* --- the touch pad on the bottom screen ------------------------------------------------ */
+
+#define PAD_TOP 16     /* rows 0-15: the bar (health, map or diagnostics, the tab) */
+#define PAD_BOTTOM 144 /* rows 16-143: drag to aim; 144-191: the buttons */
+#define TAB_X 200      /* the tab that swaps in the game's own screen */
+
+typedef struct {
+	uint8_t x, y, w, h;
+	const char *label;
+	uint16_t button; /* held while pressed */
+	uint8_t impulse; /* sent once per press */
+	bool toggle;     /* stays on until pressed again */
+} padbtn_t;
+
+static const padbtn_t padbtns[] = {
+	{0, 144, 64, 24, "< WPN", 0, IMP_PREV, false},    {64, 144, 64, 24, "WPN >", 0, IMP_NEXT, false},
+	{128, 144, 64, 24, "RELOAD", B_RELOAD, 0, false}, {192, 144, 64, 24, "USE", B_USE, 0, false},
+	{0, 168, 64, 24, "JUMP", B_JUMP, 0, false},       {64, 168, 64, 24, "DUCK", B_CROUCH, 0, true},
+	{128, 168, 64, 24, "LIGHT", 0, IMP_LIGHT, false}, {192, 168, 64, 24, "ALT", B_ATTACK2, 0, false},
+};
+#define NUM_PADBTNS ((int)(sizeof(padbtns) / sizeof(padbtns[0])))
+
+#define C_BAR (RGB15(3, 4, 7) | BIT(15))
+#define C_PAD (RGB15(2, 3, 5) | BIT(15))
+#define C_GRID (RGB15(4, 6, 10) | BIT(15))
+#define C_BTN (RGB15(6, 8, 13) | BIT(15))
+#define C_BTNLIT (RGB15(14, 20, 31) | BIT(15))
+#define C_EDGE (RGB15(1, 1, 2) | BIT(15))
+#define C_TEXT (RGB15(26, 28, 31) | BIT(15))
+#define C_DIM (RGB15(10, 12, 17) | BIT(15))
+#define C_DOT (RGB15(31, 31, 20) | BIT(15))
+
+static struct {
+	bool gamepage;           /* showing the game's screen instead of the pad */
+	bool touching, aiming;   /* the stylus is down; it went down in the aim area */
+	int lastx, lasty;        /* where it was last frame */
+	int dotx, doty;          /* the marker drawn under it, -1 for none */
+	int pressed;             /* the button the stylus holds, -1 for none */
+	bool ducked;             /* DUCK is on */
+	int upframe, upx, upy;   /* when and where the last aim touch ended (double-tap) */
+	int jumpframes;          /* JUMP held for a few more frames */
+	uint8_t impulse, impseq; /* the last one-shot press, and its count */
+	uint8_t screen[1300];    /* the game's last screen, to show when asked */
+	int screenlen;
+	int shownhealth;
+	char diagline[24];
+} pad;
+
+static uint16_t pad_bg(int x, int y)
+{
+	return (x & 31) == 16 || ((y - PAD_TOP) & 31) == 16 ? C_GRID : C_PAD;
+}
+
+static void text_mid(int x, int y, int w, uint16_t c, const char *s)
+{
+	int n = (int)strlen(s);
+	text(x + (w - n * 8) / 2, y, c, (const uint8_t *)s, n);
+}
+
+static void pad_button(int i, bool lit)
+{
+	const padbtn_t *b = &padbtns[i];
+	fill(b->x, b->y, b->w, b->h, C_EDGE);
+	fill(b->x + 1, b->y + 1, b->w - 2, b->h - 2, lit ? C_BTNLIT : C_BTN);
+	text_mid(b->x, b->y + (b->h - 8) / 2, b->w, lit ? C_EDGE : C_TEXT, b->label);
+}
+
+/* the bar: health, then the map or the frame rate, then the tab */
+static void pad_bar(void)
+{
+	char hp[12];
+	const char *mid = link.loaderr[0] ? link.loaderr : cfg.diag && pad.diagline[0] ? pad.diagline : link.map;
+	fill(0, 0, 256, PAD_TOP, C_BAR);
+	snprintf(hp, sizeof(hp), "%d", link.health);
+	text(4, 4, C_DIM, (const uint8_t *)"HP", 2);
+	text(24, 4, link.health > 25 ? C_TEXT : (RGB15(31, 12, 8) | BIT(15)), (const uint8_t *)hp, (int)strlen(hp));
+	text(56, 4, cfg.diag && !link.loaderr[0] ? (RGB15(20, 31, 20) | BIT(15)) : C_DIM, (const uint8_t *)mid,
+	     BW_NDS_MIN((int)strlen(mid), (TAB_X - 60) / 8));
+	fill(TAB_X, 1, 256 - TAB_X - 1, PAD_TOP - 2, C_BTN);
+	text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, pad.gamepage ? "PAD" : "GAME");
+	pad.shownhealth = link.health;
+}
+
+static void pad_draw(void)
+{
+	if (pad.gamepage) {
+		if (pad.screenlen)
+			draw_screen(pad.screen, pad.screenlen);
+		else
+			fill(0, 0, 256, 192, RGB15(0, 0, 0) | BIT(15));
+		fill(TAB_X, 1, 256 - TAB_X - 1, PAD_TOP - 2, C_BTN);
+		text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, "PAD");
+		return;
+	}
+	for (int y = PAD_TOP; y < PAD_BOTTOM; y++) {
+		uint16_t *row = sub + y * 256;
+		for (int x = 0; x < 256; x++)
+			row[x] = pad_bg(x, y);
+	}
+	text_mid(0, PAD_BOTTOM - 12, 256, C_DIM, "drag to aim, double-tap to jump");
+	for (int i = 0; i < NUM_PADBTNS; i++)
+		pad_button(i, (padbtns[i].toggle && pad.ducked) || i == pad.pressed);
+	pad.dotx = pad.doty = -1;
+	pad_bar();
+}
+
+/* the marker under the stylus while aiming */
+static void pad_dot(int x, int y)
+{
+	if (pad.dotx >= 0)
+		for (int j = 0; j < 4; j++)
+			for (int i = 0; i < 4; i++)
+				sub[(pad.doty + j) * 256 + pad.dotx + i] = pad_bg(pad.dotx + i, pad.doty + j);
+	pad.dotx = pad.doty = -1;
+	if (x < 0)
+		return;
+	x = BW_NDS_CLAMP(x - 2, 0, 252), y = BW_NDS_CLAMP(y - 2, PAD_TOP, PAD_BOTTOM - 4);
+	for (int j = 0; j < 4; j++)
+		for (int i = 0; i < 4; i++)
+			sub[(y + j) * 256 + x + i] = C_DOT;
+	pad.dotx = x, pad.doty = y;
+}
+
+static void pad_impulse(int n)
+{
+	pad.impulse = (uint8_t)n;
+	pad.impseq++;
+}
+
+static void pad_reset(void)
+{
+	memset(&pad, 0, sizeof(pad));
+	pad.pressed = -1;
+	pad.dotx = pad.doty = -1;
+	pad.upframe = -100;
+	pad.shownhealth = -99999;
+}
+
+/* the stylus, once a frame. Returns the buttons the pad holds; aiming turns
+ * the camera directly. *totouch is set when the touch belongs to the game's
+ * screen (sent on to the server as it is) */
+static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touchPosition *tp)
+{
+	bool down = (held & KEY_TOUCH) != 0, began = down && !pad.touching;
+	int buttons = 0;
+	*togame = false;
+	if (down)
+		touchRead(tp);
+	if (began && tp->py < PAD_TOP && tp->px >= TAB_X) {
+		pad.gamepage = !pad.gamepage;
+		pad.aiming = false, pad.pressed = -2; /* the rest of this touch is the tab's */
+		pad_draw();
+	} else if (pad.gamepage) {
+		*togame = down && !(pad.touching && !pad.aiming && pad.pressed == -2);
+	} else if (began) {
+		if (tp->py >= PAD_TOP && tp->py < PAD_BOTTOM) {
+			pad.aiming = true;
+			pad.lastx = tp->px, pad.lasty = tp->py;
+			if (frame - pad.upframe < 18 && abs(tp->px - pad.upx) < 24 && abs(tp->py - pad.upy) < 24)
+				pad.jumpframes = 8; /* double-tap */
+			pad_dot(tp->px, tp->py);
+		} else if (tp->py >= PAD_BOTTOM) {
+			for (int i = 0; i < NUM_PADBTNS; i++) {
+				const padbtn_t *b = &padbtns[i];
+				if (tp->px >= b->x && tp->px < b->x + b->w && tp->py >= b->y && tp->py < b->y + b->h) {
+					pad.pressed = i;
+					if (b->impulse)
+						pad_impulse(b->impulse);
+					if (b->toggle)
+						pad.ducked = !pad.ducked;
+					pad_button(i, true);
+				}
+			}
+		}
+	} else if (down && pad.aiming) {
+		int dx = tp->px - pad.lastx, dy = tp->py - pad.lasty;
+		/* the touch screen jumps now and then: ignore a big leap */
+		if (abs(dx) < 48 && abs(dy) < 48) {
+			cam->yaw -= dx * cfg.sens * 7 / 16;
+			cam->pitch -= dy * cfg.sens * 7 / 16;
+			cam->pitch = BW_NDS_CLAMP(cam->pitch, -8000, 8000);
+			cam->yaw = (int16_t)cam->yaw;
+			pad.lastx = tp->px, pad.lasty = tp->py;
+			pad_dot(tp->px, tp->py);
+		}
+	}
+	if (!down && pad.touching) {
+		if (pad.aiming) {
+			pad.upframe = frame, pad.upx = pad.lastx, pad.upy = pad.lasty;
+			pad_dot(-1, -1);
+		}
+		if (pad.pressed >= 0 && !pad.gamepage)
+			pad_button(pad.pressed, padbtns[pad.pressed].toggle && pad.ducked);
+		pad.aiming = false, pad.pressed = -1;
+	}
+	pad.touching = down;
+	if (pad.pressed >= 0)
+		buttons |= padbtns[pad.pressed].button & ~B_CROUCH;
+	if (pad.ducked)
+		buttons |= B_CROUCH;
+	if (pad.jumpframes > 0)
+		pad.jumpframes--, buttons |= B_JUMP;
+	if (!pad.gamepage && link.health != pad.shownhealth)
+		pad_bar();
+	return buttons;
 }
 
 /* --- finding and joining a server ---------------------------------------------------- */
@@ -882,24 +1117,51 @@ static void draw_markers(const ndscam_t *cam)
 	glColor(RGB15(31, 31, 31));
 }
 
-static void send_input(const ndscam_t *cam, uint32_t held)
+/* the buttons the keys hold, by scheme */
+static int key_buttons(uint32_t held)
+{
+	int b = 0;
+	if (cfg.lefty) { /* A B X Y move, R fires, L jumps */
+		b |= held & KEY_R ? B_ATTACK : 0;
+		b |= held & KEY_L ? B_JUMP : 0;
+		return b;
+	}
+	b |= held & KEY_A ? B_ATTACK : 0;
+	b |= held & KEY_B ? B_JUMP : 0;
+	b |= held & KEY_X ? B_USE : 0;
+	b |= held & KEY_Y ? B_RELOAD : 0;
+	if (cfg.classic) /* L is the strafe and look key */
+		b |= held & KEY_R ? B_ATTACK2 : 0;
+	else /* L fires, R jumps, as the stylus hand has no thumb for A or B */
+		b |= (held & KEY_L ? B_ATTACK : 0) | (held & KEY_R ? B_JUMP : 0);
+	return b;
+}
+
+static void key_move(uint32_t held, int *fwd, int *side)
+{
+	uint32_t up = KEY_UP, dn = KEY_DOWN, lf = KEY_LEFT, rt = KEY_RIGHT;
+	if (cfg.lefty)
+		up = KEY_X, dn = KEY_B, lf = KEY_Y, rt = KEY_A;
+	*fwd = held & up ? 127 : held & dn ? -127 : 0;
+	*side = 0;
+	if (!cfg.classic || held & KEY_L) /* classic: left and right turn unless L is held */
+		*side = held & rt ? 127 : held & lf ? -127 : 0;
+	if (cfg.classic && held & KEY_L)
+		*fwd = 0; /* L + up / down looks */
+}
+
+static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool togame, const touchPosition *tp)
 {
 	pkt_t p;
-	int fwd = 0, side = 0;
-	touchPosition tp = {0};
-	if (held & KEY_TOUCH)
-		touchRead(&tp);
-	if (held & KEY_L) {
-		side = held & KEY_RIGHT ? 127 : held & KEY_LEFT ? -127 : 0;
-	} else
-		fwd = held & KEY_UP ? 127 : held & KEY_DOWN ? -127 : 0;
+	int fwd, side;
+	key_move(held, &fwd, &side);
 	p_begin(&p, L_INPUT);
 	p_u32(&p, link.session);
 	p_u16(&p, ++link.seq);
-	p_u16(&p, (int)(held & 0xffff));
-	p_u8(&p, held & KEY_TOUCH ? 1 : 0);
-	p_u8(&p, tp.px > 255 ? 255 : tp.px);
-	p_u8(&p, tp.py > 191 ? 191 : tp.py);
+	p_u16(&p, (int)(held & (togame ? 0xffff : ~KEY_TOUCH & 0xffff)));
+	p_u8(&p, togame ? 1 : 0);
+	p_u8(&p, togame ? BW_NDS_MIN(tp->px, 255) : 0);
+	p_u8(&p, togame ? BW_NDS_MIN(tp->py, 191) : 0);
 	p_u8(&p, fwd), p_u8(&p, side), p_u8(&p, 0);
 	p_u16(&p, cam->pitch * 2);
 	p_u16(&p, cam->yaw * 2);
@@ -907,12 +1169,17 @@ static void send_input(const ndscam_t *cam, uint32_t held)
 	p_u8(&p, link.fps), p_u8(&p, link.minfps), p_u16(&p, link.peakpolys);
 	p_u16(&p, link.loadms / 10);
 	p_u16(&p, link.spawncount); /* the map this device has */
+	p_u16(&p, buttons);         /* what the game reads, mapped here */
+	p_u8(&p, pad.impulse), p_u8(&p, pad.impseq);
 	send_to(&link.to, &p);
 }
 
+/* classic: left and right turn, L + up and down look */
 static void turn(ndscam_t *cam, uint32_t held)
 {
 	const int step = 32768 / 180;
+	if (!cfg.classic)
+		return;
 	if (held & KEY_L) {
 		if (held & KEY_UP)
 			cam->pitch += step;
@@ -938,10 +1205,14 @@ static const char *play(ndscam_t *cam)
 	pkt_t p;
 	int secstart = Nds_Vblanks(), lastv = secstart, frames = 0, worst = 0, peak = 0, debugview = 0;
 	screen_init();
+	pad_reset();
+	pad_draw();
 	link.lastrecv = 0;
 	for (int frame = 1;; frame++) {
-		int len, type;
+		int len, type, buttons;
 		uint32_t held;
+		bool togame;
+		touchPosition tp = {0};
 		scanKeys();
 		held = keysHeld();
 		if (keysDown() & KEY_START) {
@@ -952,8 +1223,9 @@ static const char *play(ndscam_t *cam)
 		if (keysDown() & KEY_SELECT)
 			debugview = (debugview + 1) % 3;
 		turn(cam, held);
+		buttons = pad_frame(frame, held, cam, &togame, &tp) | key_buttons(held);
 		if (frame % 3 == 0)
-			send_input(cam, held);
+			send_input(cam, held, buttons, togame, &tp);
 
 		while ((len = receive(buf, sizeof(buf), &from, &type)) > 0) {
 			const uint8_t *d = buf + 5;
@@ -966,7 +1238,10 @@ static const char *play(ndscam_t *cam)
 			else if (type == L_SCREEN && len >= 6) {
 				uint16_t version = (uint16_t)rd16(d + 4);
 				if (version != link.screen_ack) {
-					draw_screen(d + 6, len - 6);
+					pad.screenlen = BW_NDS_MIN(len - 6, (int)sizeof(pad.screen));
+					memcpy(pad.screen, d + 6, (size_t)pad.screenlen);
+					if (pad.gamepage)
+						pad_draw();
 					link.screen_ack = version;
 				}
 			} else if (type == L_VIEW)
@@ -1018,7 +1293,6 @@ static const char *play(ndscam_t *cam)
 		/* how fast this runs, on the bottom row: frames a second, the slowest frame, peak polygons */
 		{
 			int now = Nds_Vblanks();
-			char line[33];
 			worst = now - lastv > worst ? now - lastv : worst;
 			lastv = now;
 			frames++;
@@ -1027,10 +1301,11 @@ static const char *play(ndscam_t *cam)
 				link.peakpolys = peak;
 				int mok, mbad;
 				Ents_Counts(&mok, &mbad);
-				int n = link.loaderr[0] ? snprintf(line, sizeof(line), "%.32s", link.loaderr) : snprintf(line, sizeof(line), "%2d/%2d %4dp t%dk m%d/%d%s", link.fps, link.minfps, peak,
-				                 World_TextureBytes() >> 10, mok, mbad, debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
-				fill(0, 184, 256, 8, RGB15(2, 2, 4) | BIT(15));
-				text(0, 184, RGB15(20, 31, 20) | BIT(15), (const uint8_t *)line, n);
+
+				snprintf(pad.diagline, sizeof(pad.diagline), "%d/%d %dp m%d/%d%s", link.fps, link.minfps, peak, mok, mbad,
+				         debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
+				if (!pad.gamepage && (cfg.diag || link.loaderr[0]))
+					pad_bar();
 				secstart = now, frames = 0, worst = 0, peak = 0;
 			}
 		}
