@@ -90,7 +90,7 @@ void Ents_Free(void);
 int Ents_Model(const char *path);
 void Ents_Clear(void);
 void Ents_Counts(int *loaded, int *failed);
-void Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int ticks, int speed);
+int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int ticks, int speed, int light); /* light -1: look it up; returns it */
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
 /* Ents_Draw in parts, for two passes: Select culls and sorts after World_Begin;
  * DrawPass draws the models on one side of split2 (squared map units) */

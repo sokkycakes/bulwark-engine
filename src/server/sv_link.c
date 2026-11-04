@@ -77,6 +77,8 @@ typedef struct {
 	int modelcursor; /* where the next MODELS packet starts in the model list */
 	int fps, minfps, peakpolys, loadms; /* what the device last said about itself; -1 unknown */
 	double loading_until; /* a new map was announced: the device may be quiet while it loads it */
+	double welcomed, nextwelcome; /* when this map was announced; when to say it again */
+	int devspawn;                 /* the map (spawn count) the device says it has, -1 if it doesn't say */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -173,13 +175,20 @@ static void open_socket(void)
 
 /* --- link players ----------------------------------------------------------------------- */
 
-static link_t *find_session(uint32_t session, const struct sockaddr_in *from)
+/* the link a packet is from: by session and address, and by port as well when
+ * two DSes behind one router picked the same session; otherwise the port may
+ * have moved (NAT) */
+static link_t *find_session(uint32_t session, const struct sockaddr_in *from, bool exact)
 {
+	link_t *only = NULL;
+	int count = 0;
 	for (int i = 0; i < MAX_LINKS; i++)
-		if (links[i].used && links[i].session == session && links[i].from.sin_addr.s_addr == from->sin_addr.s_addr &&
-		    links[i].from.sin_port == from->sin_port) /* several DSes behind one router */
-			return &links[i];
-	return NULL;
+		if (links[i].used && links[i].session == session && links[i].from.sin_addr.s_addr == from->sin_addr.s_addr) {
+			if (links[i].from.sin_port == from->sin_port)
+				return &links[i];
+			only = &links[i], count++;
+		}
+	return count == 1 && !exact ? only : NULL;
 }
 
 static link_t *link_for_edict(int e)
@@ -206,8 +215,9 @@ static void send_welcome(link_t *l)
 	p_str(&p, sv.mapname, 64);
 	send_to(&l->from, &p);
 	if (l->spawncount != svs.spawncount)
-		l->loading_until = Sys_Seconds() + LOAD_GRACE;
+		l->loading_until = Sys_Seconds() + LOAD_GRACE, l->welcomed = Sys_Seconds();
 	l->spawncount = svs.spawncount;
+	l->nextwelcome = Sys_Seconds() + 2;
 }
 
 static void refuse(const struct sockaddr_in *to, const char *reason)
@@ -227,7 +237,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	if (len < 4 + 2 + 16)
 		return;
 	session = rd32(d);
-	if ((l = find_session(session, from))) {
+	if ((l = find_session(session, from, true))) {
 		send_welcome(l); /* the welcome was lost */
 		return;
 	}
@@ -259,6 +269,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	l->client = c;
 	l->version = 1; /* nothing acknowledged yet */
 	l->fps = l->minfps = l->peakpolys = l->loadms = -1;
+	l->devspawn = -1;
 	send_welcome(l);
 	Con_Printf("link: %s joined from %s\n", name, inet_ntoa(from->sin_addr));
 }
@@ -284,6 +295,8 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 		l->fps = d[20], l->minfps = d[21], l->peakpolys = rd16(d + 22);
 	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 6)
 		l->loadms = rd16(d + 24) * 10;
+	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 8)
+		l->devspawn = (uint16_t)rd16(d + 26);
 
 	u = &c->lastucmd;
 	u->angles[0] = -pitch * (360.0f / 65536.0f); /* the device's pitch is up-positive */
@@ -337,7 +350,7 @@ void SV_LinkReadPackets(void)
 		case L_JOIN: handle_join(&from, buf + 5, n - 5); break;
 		case L_INPUT:
 		case L_LEAVE:
-			if (n < 9 || !(l = find_session(rd32(buf + 5), &from)))
+			if (n < 9 || !(l = find_session(rd32(buf + 5), &from, false)))
 				break;
 			l->lastrecv = Sys_Seconds();
 			l->from.sin_port = from.sin_port; /* NAT may move it */
@@ -704,8 +717,16 @@ void SV_LinkSend(void)
 		}
 		if (l->client->state != CS_SPAWNED)
 			continue;
-		if (l->spawncount != svs.spawncount)
-			send_welcome(l);
+		if (l->spawncount != svs.spawncount || now >= l->nextwelcome)
+			send_welcome(l); /* again every 2 s, in case one was lost */
+		/* nothing else until the device has the map: while it loads it reads
+		 * nothing, and its network stack keeps every packet that comes in
+		 * meanwhile, which can leave too little memory for the map. A device
+		 * that says which map it has is believed; otherwise the first packet
+		 * after the welcome is taken to mean it has loaded (a packet already
+		 * on its way when the welcome went out can fool that) */
+		if (l->devspawn >= 0 ? l->devspawn != (svs.spawncount & 0xffff) : l->lastrecv < l->welcomed)
+			continue;
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -825,7 +846,7 @@ static void SV_LinkTeleport_f(int argc, const char **argv)
 	for (int i = 0; i < MAX_LINKS; i++) {
 		link_t *l = &links[i];
 		int e;
-		if (!l->used || !l->client)
+		if (!l->used || !l->client || (argc > 5 && Str_ICmp(argv[5], l->client->name)))
 			continue;
 		e = l->client->edict;
 		for (int c = 0; c < 3; c++)
@@ -839,6 +860,25 @@ static void SV_LinkTeleport_f(int argc, const char **argv)
 		SV_LinkEdict(e, true);
 		Con_Printf("link: moved %s\n", l->client->name);
 	}
+}
+
+/* link_god [0|1]: link players take no damage (takedamage 0), for tests that
+ * watch a fight from where it happens */
+static void SV_LinkGod_f(int argc, const char **argv)
+{
+	int td = sv.active ? QC_FieldOfs(sv.vm, "takedamage") : -1;
+	bool on = argc < 2 || atoi(argv[1]);
+	if (td < 0)
+		return;
+	if (!Cvar_Value("sv_cheats")) {
+		Con_Printf("link_god needs sv_cheats 1\n");
+		return;
+	}
+	for (int i = 0; i < MAX_LINKS; i++)
+		if (links[i].used && links[i].client) {
+			QC_EdictFields(sv.vm, links[i].client->edict)[td].f = on ? 0 : 2;
+			Con_Printf("link: %s %s\n", links[i].client->name, on ? "takes no damage" : "takes damage");
+		}
 }
 
 /* link_stats: each link player's map, where it is, and how fast the device runs */
@@ -861,7 +901,8 @@ static void SV_LinkStats_f(int argc, const char **argv)
 void SV_LinkInit(void)
 {
 	Cmd_AddD("link_stats", SV_LinkStats_f, "Show the link players and how fast their devices run");
-	Cmd_AddD("link_teleport", SV_LinkTeleport_f, "Put the link players at x y z [yaw] (sv_cheats 1)");
+	Cmd_AddD("link_teleport", SV_LinkTeleport_f, "Put the link players (or the one named) at x y z [yaw [name]] (sv_cheats 1)");
+	Cmd_AddD("link_god", SV_LinkGod_f, "Link players take no damage: link_god [0|1] (sv_cheats 1)");
 	sv_link_port = Cvar_Get("sv_link_port", "27901", 0, "UDP port for link players (Nintendo DS), 0 for none");
 	sv_link_max = Cvar_Get("sv_link_max", "4", 0, "Player slots link players may take");
 	sv_link_timeout = Cvar_Get("sv_link_timeout", "10", 0, "Seconds without input before a link player is dropped");

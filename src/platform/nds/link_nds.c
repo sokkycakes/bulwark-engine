@@ -35,7 +35,6 @@ enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_M
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
 #define MAX_THINGS 48
-#define MAX_LINKEDICTS 2048 /* entity numbers whose animation we follow */
 #define MAX_STUDIO 1032     /* model indexes the server can name; 1000 on are players' own */
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
@@ -65,15 +64,38 @@ typedef struct {
 	uint8_t yaw, half, height, kind;
 	uint16_t ent, model; /* entity number; studio model index, 0 for none */
 	uint8_t seq, lift;   /* the sequence it plays; its origin above the bottom */
+	int8_t anim;         /* its slot in anim[], -1 for none */
 } thing_t;
 
-/* each entity's animation, as we saw it: what it played and since when */
+/* the animation of the entities we were last sent, as we saw it: what each
+ * played and since when; a small table, the oldest slot reused */
+#define MAX_ANIM 96
 static struct {
+	uint16_t ent;
 	uint8_t seq;
-	int start;   /* frame the sequence started */
+	int start, seen; /* frame the sequence started; frame last sent */
 	int16_t prev[3];
 	int16_t speed; /* map units a second, eased */
-} anim[MAX_LINKEDICTS];
+	int16_t lightat[3]; /* where the light was looked up */
+	/* light -1: not yet */
+	int8_t light;
+} anim[MAX_ANIM];
+
+static int anim_slot(int ent, int frame)
+{
+	int old = 0;
+	for (int i = 0; i < MAX_ANIM; i++) {
+		if (anim[i].ent == ent)
+			return i;
+		if (anim[i].seen < anim[old].seen)
+			old = i;
+	}
+	memset(&anim[old], 0, sizeof(anim[old]));
+	anim[old].ent = (uint16_t)ent;
+	anim[old].seen = frame;
+	anim[old].light = -1;
+	return old;
+}
 
 /* the server's studio model names, by model index, and what loading gave */
 static char *studioname[MAX_STUDIO];
@@ -102,6 +124,7 @@ static struct {
 	uint16_t seq, screen_ack, spawncount;
 	int lastrecv; /* frame */
 	char map[65];
+	char loaderr[40];           /* why the last map didn't load */
 	int32_t target[3];
 	bool haveview;
 	marker_t markers[MAX_MARKERS];
@@ -593,18 +616,21 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	if (World_Loaded() && !strcmp(map, link.map))
 		return;
 	snprintf(link.map, sizeof(link.map), "%s", map);
+	reset_studio(); /* the models' textures go before VRAM is reset, not after */
 	World_Free();
 	Nds_ResetTextures();
 	link.haveview = false;
 	link.haveents = false;
 	link.numthings = 0;
 	memset(models, 0, sizeof(models));
-	reset_studio();
 	snprintf(path, sizeof(path), "maps/%s.bsp", map);
 	{
 		int start = Nds_Vblanks();
+		link.loaderr[0] = 0;
 		if (World_Load(path, palette, err, sizeof(err)))
 			World_StartPosition(cam);
+		else /* shown on the bottom line */
+			snprintf(link.loaderr, sizeof(link.loaderr), "%s", err);
 		link.loadms = (Nds_Vblanks() - start) * 1000 / 60;
 	}
 }
@@ -691,9 +717,11 @@ static void handle_ents(const uint8_t *d, int len)
 				t->ent = (uint16_t)rd16(d + pos + 10), t->model = (uint16_t)rd16(d + pos + 12);
 				t->seq = d[pos + 14], t->lift = d[pos + 15];
 			}
-			if (t->ent && t->ent < MAX_LINKEDICTS) {
+			t->anim = -1;
+			if (t->ent && t->model) {
 				/* a new sequence starts its clip again; speed from how far it went since the last packet (20 a second) */
-				typeof(anim[0]) *a = &anim[t->ent];
+				typeof(anim[0]) *a = &anim[t->anim = (int8_t)anim_slot(t->ent, linkframe)];
+				a->seen = linkframe;
 				int dx = t->org[0] - a->prev[0], dy = t->org[1] - a->prev[1];
 				int sp = (int)sqrtf((float)(dx * dx + dy * dy)) * 20;
 				if (a->seq != t->seq || !a->start)
@@ -751,10 +779,20 @@ static void add_studio_things(void)
 		int mdl = thing_model(t, &loaded_one);
 		if (mdl >= 0) {
 			int16_t org[3] = {t->org[0], t->org[1], (int16_t)(t->org[2] + t->lift)};
-			int seq = t->seq, start = 0, speed = 0;
-			if (t->ent && t->ent < MAX_LINKEDICTS)
-				start = anim[t->ent].start, speed = anim[t->ent].speed;
-			Ents_AddLinked(mdl, org, t->yaw * 128, seq, linkframe - start, speed);
+			int seq = t->seq, start = 0, speed = 0, light = -1;
+			if (t->anim >= 0) {
+				typeof(anim[0]) *a = &anim[t->anim];
+				start = a->start, speed = a->speed;
+				/* look the light up again only after it moves a little */
+				if (a->light >= 0 && abs(a->lightat[0] - org[0]) + abs(a->lightat[1] - org[1]) + abs(a->lightat[2] - org[2]) < 32)
+					light = a->light;
+			}
+			if (light < 0) {
+				light = Ents_AddLinked(mdl, org, t->yaw * 128, seq, linkframe - start, speed, -1);
+				if (t->anim >= 0)
+					anim[t->anim].light = (int8_t)light, memcpy(anim[t->anim].lightat, org, sizeof(org));
+			} else
+				Ents_AddLinked(mdl, org, t->yaw * 128, seq, linkframe - start, speed, light);
 		}
 	}
 }
@@ -868,6 +906,7 @@ static void send_input(const ndscam_t *cam, uint32_t held)
 	p_u16(&p, link.screen_ack);
 	p_u8(&p, link.fps), p_u8(&p, link.minfps), p_u16(&p, link.peakpolys);
 	p_u16(&p, link.loadms / 10);
+	p_u16(&p, link.spawncount); /* the map this device has */
 	send_to(&link.to, &p);
 }
 
@@ -988,8 +1027,8 @@ static const char *play(ndscam_t *cam)
 				link.peakpolys = peak;
 				int mok, mbad;
 				Ents_Counts(&mok, &mbad);
-				int n = snprintf(line, sizeof(line), "%2d/%2d %4dp t%dk f%d m%d/%d%s", link.fps, link.minfps, peak,
-				                 World_TextureBytes() >> 10, World_TextureFails(), mok, mbad, debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
+				int n = link.loaderr[0] ? snprintf(line, sizeof(line), "%.32s", link.loaderr) : snprintf(line, sizeof(line), "%2d/%2d %4dp t%dk m%d/%d%s", link.fps, link.minfps, peak,
+				                 World_TextureBytes() >> 10, mok, mbad, debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
 				fill(0, 184, 256, 8, RGB15(2, 2, 4) | BIT(15));
 				text(0, 184, RGB15(20, 31, 20) | BIT(15), (const uint8_t *)line, n);
 				secstart = now, frames = 0, worst = 0, peak = 0;

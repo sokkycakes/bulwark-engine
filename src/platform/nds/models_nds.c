@@ -20,11 +20,11 @@
 
 #include "nds.h"
 
-#define MAX_MDLS 48
+#define MAX_MDLS 32
 #define MAX_ENTS 256
 #define MAX_FRAMES 40       /* frames kept a model: enough to see it animate */
 #define MAX_HL_FRAMES 96    /* a baked Half-Life model's clips (tools/nds/hlmdl.py) */
-#define MAX_CLIPS 24
+#define MAX_CLIPS 16
 #define MAX_ENT_POLYS 2400  /* triangles sent; about half survive back-face culling */
 #define MAX_SKIN 128
 #define HEADER 84
@@ -425,19 +425,24 @@ static int clip_for(const mdl_t *m, int act)
 
 /* speed: map units a second the thing is moving at, to walk or run a model
  * the server only has standing (players animate on their own machines) */
-void Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, int speed)
+int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, int speed, int light)
 {
 	const mdl_t *m;
 	ent_t *e;
 	float o[3] = {org[0], org[1], org[2]};
 	int clip = 0, f;
 	if (mdl < 0 || mdl >= nummdls || mdls[mdl].bad || numents >= MAX_ENTS)
-		return;
+		return light;
 	m = &mdls[mdl];
-	add_ent(mdl, o, yaw * 360.0f / 32768, 0);
-	e = &ents[numents - 1];
+	e = &ents[numents++];
+	e->mdl = mdl;
+	for (int c = 0; c < 3; c++)
+		e->org[c] = (int16_t)BW_NDS_CLAMP(o[c], -4000, 4000);
+	e->yaw = yaw, e->phase = 0, e->frame = -1;
+	/* the floor's light takes a walk through the leaf's faces: the caller keeps it */
+	e->light = light >= 0 ? light : World_LightAt(e->org);
 	if (!m->numclips)
-		return;
+		return e->light;
 	if (seq >= 0 && seq < m->numseqs)
 		clip = m->seqclip[seq];
 	if (m->clips[clip].act == 1 || clip == 0) { /* standing while moving: walk or run */
@@ -450,6 +455,7 @@ void Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, 
 	f = elapsed * m->clips[clip].fps / 60;
 	f = m->clips[clip].loop ? f % m->clips[clip].frames : BW_NDS_MIN(f, m->clips[clip].frames - 1);
 	e->frame = m->clips[clip].first + f;
+	return e->light;
 }
 
 void Ents_Free(void)

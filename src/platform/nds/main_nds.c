@@ -139,8 +139,17 @@ void Nds_InitConsole(void)
 
 void Nds_ResetTextures(void)
 {
+	/* libnds keeps its texture and palette tables in arrays it grows with
+	 * realloc. Grown while a map is up, they land above the map's memory and
+	 * stay there after it is freed, cutting the heap in two, which is enough
+	 * to stop the biggest maps loading after a level change. So grow them
+	 * now, while the heap is empty, to more names than a map and its models
+	 * use. */
+	static int names[512];
 	Mp_Stop();
 	glResetTextures();
+	if (glGenTextures(512, names))
+		glDeleteTextures(512, names);
 	Mp_Init();
 }
 
