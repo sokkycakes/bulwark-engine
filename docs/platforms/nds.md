@@ -491,13 +491,23 @@ Linked: a `bulwark-ded` running Nuclide `valve` + `coop` hosted the DS and
 a PC client at once. A script walked the link player along the 78-map
 route from c0a0 to c5a1 (a breadth-first search over
 `trigger_changelevel`), teleporting next to each changelevel with
-`link_teleport` and touching it; changelevels that only fire when used or
-from a script were fired by rcon ("forced"). The DS loaded each map the
-server changed to, drew the doors, lifts and NPC boxes it sent, and
-reported 60 fps (`link_stats`) on every map it was measured on, at up to
-about 1050 polygons. That proves the maps load, draw and follow the
-server; it does not prove the campaign can be played through by hand,
-since the script skipped every puzzle and fight.
+`link_teleport` and touching it; 8 changelevels that only fire when used
+or from a script were fired by rcon instead ("forced"). At each map the DS
+stood at a path node and `link_stats` was read three times (commit
+`795816d`):
+
+- The DS loaded and drew all 78 maps, with the server's doors, lifts and
+  NPC boxes, and reached c5a1.
+- 76 maps held 60 fps. c2a2b1 dipped to 30 (924 polygons) and c1a2 ran at
+  30 with a worst of 20 (1628 to 1839 polygons). c1a2 only fits without
+  joining faces, so it draws more polygons than in the bench.
+- Loading took 1.4 to 7 s on most maps; the big ones that need the
+  fallbacks took 12 to 19 s (c1a2: 19 s), because each failed attempt
+  reads the map again.
+
+That proves the maps load, draw and follow the server; it does not prove
+the campaign can be played through by hand, since the script skipped
+every puzzle and fight.
 
 melonDS's frame rate is not a hardware measurement: these need repeating
 on a DS.
