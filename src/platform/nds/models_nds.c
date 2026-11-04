@@ -20,9 +20,11 @@
 
 #include "nds.h"
 
-#define MAX_MDLS 24
+#define MAX_MDLS 48
 #define MAX_ENTS 256
 #define MAX_FRAMES 40       /* frames kept a model: enough to see it animate */
+#define MAX_HL_FRAMES 96    /* a baked Half-Life model's clips (tools/nds/hlmdl.py) */
+#define MAX_CLIPS 24
 #define MAX_ENT_POLYS 2400  /* triangles sent; about half survive back-face culling */
 #define MAX_SKIN 128
 #define HEADER 84
@@ -42,6 +44,13 @@ typedef struct {
 	int16_t mins[3], maxs[3];   /* map units, model space (yaw turns x and y) */
 	int16_t radius;
 	int tex;
+	/* a baked Half-Life model: its clips and which clip each sequence plays */
+	int numclips, numseqs;
+	struct {
+		uint16_t first;
+		uint8_t frames, fps, loop, act;
+	} clips[MAX_CLIPS];
+	uint8_t *seqclip;
 } mdl_t;
 
 typedef struct {
@@ -49,6 +58,7 @@ typedef struct {
 	int16_t org[3];
 	int yaw;
 	int phase;
+	int frame; /* -1: animate from phase */
 	int light;
 	int32_t dist;
 } ent_t;
@@ -88,7 +98,7 @@ static int size_enum(int v)
 }
 
 /* the skin, shrunk to a power of two no larger than MAX_SKIN; smaller again if VRAM is short */
-static int upload_skin(const uint8_t *src, int sw, int sh, int *tw, int *th)
+static int upload_skin(const uint8_t *src, int sw, int sh, int *tw, int *th, const uint16_t *own)
 {
 	for (int cap = MAX_SKIN; cap >= 16; cap /= 2) {
 		int w = BW_NDS_MIN(pot_floor(sw), cap), h = BW_NDS_MIN(pot_floor(sh), cap), name = 0;
@@ -102,7 +112,9 @@ static int upload_skin(const uint8_t *src, int sw, int sh, int *tw, int *th)
 		glBindTexture(GL_TEXTURE_2D, name);
 		if (glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB256, size_enum(w), size_enum(h), 0, 0, pix)) {
 			free(pix);
-			if (pal_owner)
+			if (own)
+				glColorTableEXT(GL_TEXTURE_2D, 0, 256, 0, 0, own);
+			else if (pal_owner)
 				glAssignColorTable(GL_TEXTURE_2D, pal_owner);
 			else {
 				static uint16_t pal[256];
@@ -158,6 +170,9 @@ static int load_mdl(const char *name)
 	int32_t *idx = NULL;
 	float scale[3];
 	const uint8_t *skin = NULL;
+	static uint16_t ownpal[256];
+	bool haveown = false;
+	int maxframes;
 	for (int i = 0; i < nummdls; i++)
 		if (!strcmp(mdls[i].name, name))
 			return mdls[i].bad ? -1 : i;
@@ -167,7 +182,10 @@ static int load_mdl(const char *name)
 	memset(m, 0, sizeof(*m));
 	snprintf(m->name, sizeof(m->name), "%s", name);
 	m->bad = true;
-	snprintf(path, sizeof(path), "progs/%s.mdl", name);
+	if (strchr(name, '/'))
+		snprintf(path, sizeof(path), "%s", name);
+	else
+		snprintf(path, sizeof(path), "progs/%s.mdl", name);
 	if (!(d = Fs_Load(path, &size)))
 		return -1;
 	end = d + size;
@@ -185,6 +203,32 @@ static int load_mdl(const char *name)
 		m->maxs[k] = (int16_t)lrintf(rdf(d + 20 + k * 4) + 255 * scale[k]);
 	}
 	m->radius = (int16_t)lrintf(rdf(d + 32));
+	/* the trailer hlmdl.py adds: clips, the sequence map and the skin's own palette */
+	if (size > 8 + 4 + 768 && !memcmp(end - 4, "DSHL", 4)) {
+		uint32_t at = (uint32_t)rd32(end - 8);
+		const uint8_t *t = d + at;
+		if (at + 6 < size && !memcmp(t, "DSHL", 4)) {
+			int nc = t[4] | t[5] << 8, ns;
+			t += 6;
+			for (int c = 0; c < nc && c < MAX_CLIPS && t + 6 <= end; c++, t += 6) {
+				m->clips[c].first = (uint16_t)(t[0] | t[1] << 8);
+				m->clips[c].frames = t[2] ? t[2] : 1, m->clips[c].fps = t[3] ? t[3] : 10;
+				m->clips[c].loop = t[4], m->clips[c].act = t[5];
+				m->numclips = c + 1;
+			}
+			t = d + at + 6 + nc * 6;
+			ns = t + 2 <= end ? t[0] | t[1] << 8 : 0;
+			t += 2;
+			if (ns > 0 && t + ns + 768 <= end && (m->seqclip = malloc((size_t)ns))) {
+				memcpy(m->seqclip, t, (size_t)ns);
+				m->numseqs = ns;
+				t += ns;
+				for (int i = 0; i < 256; i++)
+					ownpal[i] = RGB15(t[i * 3] >> 3, t[i * 3 + 1] >> 3, t[i * 3 + 2] >> 3);
+				haveown = true;
+			}
+		}
+	}
 	p = d + HEADER;
 	for (int s = 0; s < numskins; s++) {
 		int type = rd32(p);
@@ -203,7 +247,7 @@ static int load_mdl(const char *name)
 			goto fail;
 	}
 	if (skin)
-		m->tex = upload_skin(skin, sw, sh, &tw, &th);
+		m->tex = upload_skin(skin, sw, sh, &tw, &th, haveown ? ownpal : NULL);
 
 	/* triangles, with their texture coordinates at each corner */
 	{
@@ -234,17 +278,18 @@ static int load_mdl(const char *name)
 	m->numverts = nv, m->numtris = nt;
 
 	/* frames, flattening groups, up to MAX_FRAMES */
-	m->frames = malloc((size_t)BW_NDS_MIN(nf * 4, MAX_FRAMES) * nv * 4);
+	maxframes = m->numclips ? MAX_HL_FRAMES : MAX_FRAMES;
+	m->frames = malloc((size_t)BW_NDS_MIN(nf * 4, maxframes) * nv * 4);
 	if (!m->frames)
 		goto fail;
-	for (int f = 0; f < nf && m->numframes < MAX_FRAMES; f++) {
+	for (int f = 0; f < nf && m->numframes < maxframes; f++) {
 		int type = rd32(p), n = 1;
 		p += 4;
 		if (type != 0) {
 			n = rd32(p);
 			p += 4 + 8 + n * 4; /* count, bounds, intervals */
 		}
-		for (int g = 0; g < n && m->numframes < MAX_FRAMES; g++) {
+		for (int g = 0; g < n && m->numframes < maxframes; g++) {
 			uint8_t *fr = m->frames + (size_t)m->numframes * nv * 4;
 			p += 8 + 16; /* bounds and name */
 			if (p + nv * 4 > end)
@@ -267,7 +312,8 @@ fail:
 	free(d);
 	free(m->tris);
 	free(m->frames);
-	m->tris = NULL, m->frames = NULL;
+	free(m->seqclip);
+	m->tris = NULL, m->frames = NULL, m->seqclip = NULL;
 	if (m->tex)
 		glDeleteTextures(1, &m->tex), m->tex = 0;
 	return -1;
@@ -284,6 +330,7 @@ static void add_ent(int mdl, const float *org, float angle, int phase)
 		e->org[c] = (int16_t)BW_NDS_CLAMP(lrintf(org[c]), -4000, 4000);
 	e->yaw = (int)(angle * 32768 / 360);
 	e->phase = phase;
+	e->frame = -1;
 	e->light = World_LightAt(e->org);
 }
 
@@ -356,11 +403,61 @@ int Ents_AddCrowd(const ndscam_t *cam, const char *model, int count)
 	return added;
 }
 
+int Ents_Model(const char *path) { return load_mdl(path); }
+
+void Ents_Counts(int *loaded, int *failed)
+{
+	*loaded = *failed = 0;
+	for (int i = 0; i < nummdls; i++)
+		(*(mdls[i].bad ? failed : loaded))++;
+}
+
+void Ents_Clear(void) { numents = 0; }
+
+/* the clip for an activity, -1 if the model has none */
+static int clip_for(const mdl_t *m, int act)
+{
+	for (int c = 0; c < m->numclips; c++)
+		if (m->clips[c].act == act)
+			return c;
+	return -1;
+}
+
+/* speed: map units a second the thing is moving at, to walk or run a model
+ * the server only has standing (players animate on their own machines) */
+void Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, int speed)
+{
+	const mdl_t *m;
+	ent_t *e;
+	float o[3] = {org[0], org[1], org[2]};
+	int clip = 0, f;
+	if (mdl < 0 || mdl >= nummdls || mdls[mdl].bad || numents >= MAX_ENTS)
+		return;
+	m = &mdls[mdl];
+	add_ent(mdl, o, yaw * 360.0f / 32768, 0);
+	e = &ents[numents - 1];
+	if (!m->numclips)
+		return;
+	if (seq >= 0 && seq < m->numseqs)
+		clip = m->seqclip[seq];
+	if (m->clips[clip].act == 1 || clip == 0) { /* standing while moving: walk or run */
+		int c = speed > 200 ? clip_for(m, 4) : speed > 40 ? clip_for(m, 3) : -1;
+		if (c < 0 && speed > 40)
+			c = clip_for(m, speed > 200 ? 3 : 4);
+		if (c >= 0)
+			clip = c, elapsed = ticks;
+	}
+	f = elapsed * m->clips[clip].fps / 60;
+	f = m->clips[clip].loop ? f % m->clips[clip].frames : BW_NDS_MIN(f, m->clips[clip].frames - 1);
+	e->frame = m->clips[clip].first + f;
+}
+
 void Ents_Free(void)
 {
 	for (int i = 0; i < nummdls; i++) {
 		free(mdls[i].frames);
 		free(mdls[i].tris);
+		free(mdls[i].seqclip);
 		if (mdls[i].tex)
 			glDeleteTextures(1, &mdls[i].tex);
 	}
@@ -445,7 +542,7 @@ static void draw_ent(const ent_t *e)
 	glTranslatef32(e->org[0] * 8, e->org[1] * 8, e->org[2] * 8);
 	glRotateZi(e->yaw);
 	glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
-	draw_mdl(m, ticks / 6 + e->phase, e->light);
+	draw_mdl(m, e->frame >= 0 ? e->frame : ticks / 6 + e->phase, e->light);
 	glPopMatrix(1);
 }
 

@@ -14,7 +14,9 @@
 #include <nds.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -29,10 +31,12 @@
 #define HZ 60
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS };
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
 #define MAX_THINGS 48
+#define MAX_LINKEDICTS 2048 /* entity numbers whose animation we follow */
+#define MAX_STUDIO 1032     /* model indexes the server can name; 1000 on are players' own */
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 extern const u8 default_font_bin[]; /* libnds' console font: 256 characters, 8x8, 1 bit */
@@ -59,7 +63,22 @@ typedef struct {
 typedef struct {
 	int16_t org[3]; /* the bottom middle, map units */
 	uint8_t yaw, half, height, kind;
+	uint16_t ent, model; /* entity number; studio model index, 0 for none */
+	uint8_t seq, lift;   /* the sequence it plays; its origin above the bottom */
 } thing_t;
+
+/* each entity's animation, as we saw it: what it played and since when */
+static struct {
+	uint8_t seq;
+	int start;   /* frame the sequence started */
+	int16_t prev[3];
+	int16_t speed; /* map units a second, eased */
+} anim[MAX_LINKEDICTS];
+
+/* the server's studio model names, by model index, and what loading gave */
+static char *studioname[MAX_STUDIO];
+static int16_t studiomdl[MAX_STUDIO]; /* -2 not tried, -1 can't, else Ents_Model's */
+static int linkframe;
 
 /* each brush model as the server last had it, and as drawn (easing toward it) */
 typedef struct {
@@ -491,7 +510,10 @@ static bool join(const server_t *s, ndscam_t *cam)
 	pkt_t p;
 	memset(&link, 0, sizeof(link));
 	link.to = s->addr;
-	link.session = (uint32_t)rand() ^ (uint32_t)time(NULL) << 8 ^ Wifi_GetIP();
+	/* different on every DS and every join: the time, how long since power-on and the name */
+	link.session = (uint32_t)rand() ^ (uint32_t)time(NULL) << 8 ^ Wifi_GetIP() ^ (uint32_t)Nds_Vblanks() * 2654435761u;
+	for (const char *n = cfg.name; *n; n++)
+		link.session = link.session * 31 + (uint8_t)*n;
 	if (!link.session)
 		link.session = 1;
 	iprintf("Joining %s...\n", s->host);
@@ -525,6 +547,43 @@ static bool join(const server_t *s, ndscam_t *cam)
 
 /* --- linked -------------------------------------------------------------------------- */
 
+static void reset_studio(void)
+{
+	Ents_Free();
+	for (int i = 0; i < MAX_STUDIO; i++) {
+		free(studioname[i]);
+		studioname[i] = NULL;
+		studiomdl[i] = -2;
+	}
+	memset(anim, 0, sizeof(anim));
+}
+
+/* names for model indexes (docs/spec/link.md, MODELS) */
+static void handle_models(const uint8_t *d, int len)
+{
+	int pos = 7, count;
+	if (len < 7 || (uint16_t)rd16(d + 4) != link.spawncount)
+		return;
+	count = d[6];
+	for (int i = 0; i < count && pos + 3 <= len; i++) {
+		int idx = rd16(d + pos), n = d[pos + 2];
+		pos += 3;
+		if (pos + n > len)
+			break;
+		if (idx > 0 && idx < MAX_STUDIO && studioname[idx] && (strlen(studioname[idx]) != (size_t)n || strncasecmp(studioname[idx], (const char *)d + pos, (size_t)n))) {
+			free(studioname[idx]); /* a player picked another model */
+			studioname[idx] = NULL;
+			studiomdl[idx] = -2;
+		}
+		if (idx > 0 && idx < MAX_STUDIO && !studioname[idx] && (studioname[idx] = malloc((size_t)n + 1))) {
+			for (int k = 0; k < n; k++) /* the card's copies are in lower case */
+				studioname[idx][k] = (char)(d[pos + k] >= 'A' && d[pos + k] <= 'Z' ? d[pos + k] + 32 : d[pos + k]);
+			studioname[idx][n] = 0;
+		}
+		pos += n;
+	}
+}
+
 static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 {
 	char map[65], path[300], err[96];
@@ -540,6 +599,7 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	link.haveents = false;
 	link.numthings = 0;
 	memset(models, 0, sizeof(models));
+	reset_studio();
 	snprintf(path, sizeof(path), "maps/%s.bsp", map);
 	{
 		int start = Nds_Vblanks();
@@ -617,11 +677,31 @@ static void handle_ents(const uint8_t *d, int len)
 	if (pos >= len)
 		return;
 	count = d[pos++];
-	for (int i = 0; i < count && link.numthings < MAX_THINGS && pos + 10 <= len; i++, pos += 10) {
-		thing_t *t = &link.things[link.numthings++];
-		for (int c = 0; c < 3; c++)
-			t->org[c] = (int16_t)rd16(d + pos + c * 2);
-		t->yaw = d[pos + 6], t->half = d[pos + 7], t->height = d[pos + 8], t->kind = d[pos + 9];
+	{
+		int size = pos < len ? d[pos++] : 10;
+		if (size < 10)
+			return;
+		for (int i = 0; i < count && link.numthings < MAX_THINGS && pos + size <= len; i++, pos += size) {
+			thing_t *t = &link.things[link.numthings++];
+			for (int c = 0; c < 3; c++)
+				t->org[c] = (int16_t)rd16(d + pos + c * 2);
+			t->yaw = d[pos + 6], t->half = d[pos + 7], t->height = d[pos + 8], t->kind = d[pos + 9];
+			t->ent = t->model = 0, t->seq = t->lift = 0;
+			if (size >= 16) {
+				t->ent = (uint16_t)rd16(d + pos + 10), t->model = (uint16_t)rd16(d + pos + 12);
+				t->seq = d[pos + 14], t->lift = d[pos + 15];
+			}
+			if (t->ent && t->ent < MAX_LINKEDICTS) {
+				/* a new sequence starts its clip again; speed from how far it went since the last packet (20 a second) */
+				typeof(anim[0]) *a = &anim[t->ent];
+				int dx = t->org[0] - a->prev[0], dy = t->org[1] - a->prev[1];
+				int sp = (int)sqrtf((float)(dx * dx + dy * dy)) * 20;
+				if (a->seq != t->seq || !a->start)
+					a->seq = t->seq, a->start = linkframe;
+				a->speed = (int16_t)(sp > 2000 ? a->speed : (a->speed + sp) / 2);
+				memcpy(a->prev, t->org, sizeof(a->prev));
+			}
+		}
 	}
 }
 
@@ -645,6 +725,45 @@ static void move_models(void)
 	}
 }
 
+/* the thing's model, once the server has named it and it loads (one new one a frame) */
+static int thing_model(const thing_t *t, bool *loaded_one)
+{
+	int16_t *m;
+	if (!t->model || t->model >= MAX_STUDIO || !studioname[t->model])
+		return -1;
+	m = &studiomdl[t->model];
+	if (*m == -2 && !*loaded_one) {
+		*loaded_one = true;
+		*m = (int16_t)Ents_Model(studioname[t->model]);
+		if (*m < 0 && t->model >= 1000)
+			*m = (int16_t)Ents_Model("models/player.mdl"); /* a model the card doesn't have */
+	}
+	return *m;
+}
+
+/* the things with a model the DS has, into the model list Ents_Draw draws */
+static void add_studio_things(void)
+{
+	bool loaded_one = false;
+	Ents_Clear();
+	for (int i = 0; i < link.numthings; i++) {
+		const thing_t *t = &link.things[i];
+		int mdl = thing_model(t, &loaded_one);
+		if (mdl >= 0) {
+			int16_t org[3] = {t->org[0], t->org[1], (int16_t)(t->org[2] + t->lift)};
+			int seq = t->seq, start = 0, speed = 0;
+			if (t->ent && t->ent < MAX_LINKEDICTS)
+				start = anim[t->ent].start, speed = anim[t->ent].speed;
+			Ents_AddLinked(mdl, org, t->yaw * 128, seq, linkframe - start, speed);
+		}
+	}
+}
+
+static bool has_model(const thing_t *t)
+{
+	return t->model && t->model < MAX_STUDIO && studiomdl[t->model] >= 0;
+}
+
 /* everything else the server sends: boxes, turned to face the way the thing does */
 static void draw_things(void)
 {
@@ -653,7 +772,11 @@ static void draw_things(void)
 	for (int i = 0; i < link.numthings; i++) {
 		const thing_t *t = &link.things[i];
 		int16_t mins[3], maxs[3];
-		int32_t h = t->half * 8, z = t->kind == 4 ? 4 * 8 : t->height * 8;
+		int32_t h;
+		if (has_model(t) || t->half > 128)
+			continue; /* drawn as itself, or too big to be anything but in the way */
+		h = t->half * 8;
+		int32_t z = t->kind == 4 ? 4 * 8 : t->height * 8;
 		int32_t c4[4][2];
 		int s, c;
 		for (int k = 0; k < 2; k++) {
@@ -698,6 +821,14 @@ static void draw_markers(const ndscam_t *cam)
 	glBindTexture(GL_TEXTURE_2D, 0);
 	for (int i = 0; i < link.nummarkers; i++) {
 		const marker_t *m = &link.markers[i];
+		bool covered = false;
+		/* a player the DS draws with a model needs no marker */
+		for (int k = 0; k < link.numthings && !covered; k++) {
+			const thing_t *t = &link.things[k];
+			covered = has_model(t) && abs(t->org[0] - m->org[0]) < 24 && abs(t->org[1] - m->org[1]) < 24;
+		}
+		if (covered)
+			continue;
 		int hw = m->kind ? 8 : 16, lo = m->kind ? -8 : -24, hi = m->kind ? 8 : 32;
 		int x = BW_NDS_CLAMP(m->org[0], -4000, 4000) * 8, y = BW_NDS_CLAMP(m->org[1], -4000, 4000) * 8;
 		int z = BW_NDS_CLAMP(m->org[2], -4000, 4000) * 8;
@@ -803,6 +934,8 @@ static const char *play(ndscam_t *cam)
 				handle_view(d, len, cam);
 			else if (type == L_ENTS)
 				handle_ents(d, len);
+			else if (type == L_MODELS)
+				handle_models(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -824,9 +957,14 @@ static const char *play(ndscam_t *cam)
 			World_ResetModels();
 		else
 			move_models();
-		if (World_Loaded())
-			World_Draw(cam, &st);
-		else
+		linkframe = frame;
+		if (World_Loaded()) {
+			if (debugview == 0)
+				add_studio_things();
+			else
+				Ents_Clear();
+			Ents_Draw(cam, &st);
+		} else
 			World_SetView(cam);
 		if (debugview == 0)
 			draw_things();
@@ -848,8 +986,10 @@ static const char *play(ndscam_t *cam)
 			if (now - secstart >= 60) {
 				link.fps = frames * 60 / (now - secstart), link.minfps = 60 / (worst ? worst : 1);
 				link.peakpolys = peak;
-				int n = snprintf(line, sizeof(line), "%2d/%2d %4dp t%dk f%d%s", link.fps, link.minfps, peak,
-				                 World_TextureBytes() >> 10, World_TextureFails(), debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
+				int mok, mbad;
+				Ents_Counts(&mok, &mbad);
+				int n = snprintf(line, sizeof(line), "%2d/%2d %4dp t%dk f%d m%d/%d%s", link.fps, link.minfps, peak,
+				                 World_TextureBytes() >> 10, World_TextureFails(), mok, mbad, debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
 				fill(0, 184, 256, 8, RGB15(2, 2, 4) | BIT(15));
 				text(0, 184, RGB15(20, 31, 20) | BIT(15), (const uint8_t *)line, n);
 				secstart = now, frames = 0, worst = 0, peak = 0;
@@ -889,8 +1029,11 @@ void Link_Run(const uint16_t *pal)
 		wait_keys_or(1 << 30, KEY_A | KEY_START);
 		return;
 	}
+	for (int i = 0; i < MAX_STUDIO; i++)
+		studiomdl[i] = -2;
 	iprintf("%s\n", play(&cam));
 	close_socket();
+	reset_studio();
 	World_Free();
 	Nds_ResetTextures();
 	iprintf("A or START: back\n");

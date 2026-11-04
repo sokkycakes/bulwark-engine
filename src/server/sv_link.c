@@ -36,10 +36,12 @@
 #define LOAD_GRACE 60.0 /* seconds a device may take to load a map it was sent to */
 #define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
 #define ENTS_MAXTHINGS 48
+#define THING_SIZE 16 /* bytes a thing in ENTS */
+#define LINK_PLAYERMODEL 1000 /* model indexes from here are the players' own models */
 #define ENTS_RANGE 2048.0f
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -72,6 +74,7 @@ typedef struct {
 	int nummarkers;
 	double nextview;
 	uint16_t viewseq, entsseq;
+	int modelcursor; /* where the next MODELS packet starts in the model list */
 	int fps, minfps, peakpolys, loadms; /* what the device last said about itself; -1 unknown */
 	double loading_until; /* a new map was announced: the device may be quiet while it loads it */
 } link_t;
@@ -173,7 +176,8 @@ static void open_socket(void)
 static link_t *find_session(uint32_t session, const struct sockaddr_in *from)
 {
 	for (int i = 0; i < MAX_LINKS; i++)
-		if (links[i].used && links[i].session == session && links[i].from.sin_addr.s_addr == from->sin_addr.s_addr)
+		if (links[i].used && links[i].session == session && links[i].from.sin_addr.s_addr == from->sin_addr.s_addr &&
+		    links[i].from.sin_port == from->sin_port) /* several DSes behind one router */
 			return &links[i];
 	return NULL;
 }
@@ -503,6 +507,38 @@ static bool ent_shown(int e)
 	return QC_EFloat(sv.vm, e, F.solid) != SOLID_TRIGGER;
 }
 
+/* the model index of a studio (.mdl) model, else 0 */
+static int ent_studio(int e)
+{
+	int mi = (int)QC_EFloat(sv.vm, e, F.modelindex);
+	const char *name = mi > 0 && mi < SV_MAX_MODELS ? sv.models[mi] : NULL;
+	size_t n = name ? strlen(name) : 0;
+	if (n > 4 && !Str_ICmp(name + n - 4, ".mdl"))
+		return mi;
+	/* a player drawn by its own client: the model its userinfo names */
+	return e >= 1 && e <= svs.maxclients ? LINK_PLAYERMODEL + e - 1 : 0;
+}
+
+/* the model a player's userinfo picks, as a path */
+static void player_model(const client_t *c, char *out, size_t size)
+{
+	char m[64] = "";
+	SV_InfoGet(c->userinfo, "model", m, sizeof(m));
+	for (char *q = m; *q; q++)
+		if (*q == '/' || *q == '\\' || *q == '.')
+			*q = 0;
+	if (m[0])
+		snprintf(out, size, "models/player/%s/%s.mdl", m, m);
+	else
+		snprintf(out, size, "models/player.mdl");
+}
+
+/* another player in the game, as a thing: only once it is in the map */
+static bool client_spawned(int e)
+{
+	return e >= 1 && e <= svs.maxclients && svs.clients[e - 1].state == CS_SPAWNED;
+}
+
 typedef struct {
 	int e;
 	float d2;
@@ -512,6 +548,49 @@ static int cmp_thing(const void *a, const void *b)
 {
 	float x = ((const thing_t *)a)->d2, y = ((const thing_t *)b)->d2;
 	return x < y ? -1 : x > y;
+}
+
+/* the names of the studio models, a run at a time (docs/spec/link.md,
+ * MODELS): u32 session, u16 spawncount, u8 count, count x {u16 index, u8
+ * length, name} */
+static void send_models(link_t *l)
+{
+	pkt_t p;
+	int countpos, count = 0, i = l->modelcursor;
+	p_begin(&p, L_MODELS);
+	p_u32(&p, l->session);
+	p_u16(&p, (unsigned)svs.spawncount);
+	countpos = p.len;
+	p_u8(&p, 0);
+	/* the players' models first, every time: they are few and can change */
+	for (int c = 0; c < svs.maxclients && c < 32; c++) {
+		char name[96];
+		size_t n;
+		if (svs.clients[c].state != CS_SPAWNED)
+			continue;
+		player_model(&svs.clients[c], name, sizeof(name));
+		n = strlen(name);
+		p_u16(&p, (unsigned)(LINK_PLAYERMODEL + c));
+		p_u8(&p, (unsigned)n);
+		p_bytes(&p, (const uint8_t *)name, (int)n);
+		count++;
+	}
+	if (i <= 0 || i >= sv.nummodels)
+		i = 1;
+	for (; i < sv.nummodels && i < SV_MAX_MODELS && count < 255; i++) {
+		size_t n = sv.models[i] ? strlen(sv.models[i]) : 0;
+		if (n < 5 || n > 63 || Str_ICmp(sv.models[i] + n - 4, ".mdl"))
+			continue;
+		if (p.len + 3 + (int)n > (int)sizeof(p.data))
+			break;
+		p_u16(&p, (unsigned)i);
+		p_u8(&p, (unsigned)n);
+		p_bytes(&p, (const uint8_t *)sv.models[i], (int)n);
+		count++;
+	}
+	l->modelcursor = i >= sv.nummodels ? 1 : i;
+	p.data[countpos] = (uint8_t)count;
+	send_to(&l->from, &p);
 }
 
 static void send_ents(link_t *l)
@@ -539,7 +618,7 @@ static void send_ents(link_t *l)
 		sm = ent_submodel(e);
 		if (sm > 0 && sm < nummodels)
 			present[sm >> 3] |= (uint8_t)(1 << (sm & 7));
-		else if (sm < 0 && nthings < MAX_EDICTS_LINK && !((int)QC_EFloat(sv.vm, e, F.flags) & FL_CLIENT)) {
+		else if (sm < 0 && nthings < MAX_EDICTS_LINK && !(e <= svs.maxclients && !client_spawned(e))) {
 			const float *o = &QC_EdictFields(sv.vm, e)[F.origin].f;
 			float d2 = 0;
 			for (int c = 0; c < 3; c++)
@@ -552,7 +631,7 @@ static void send_ents(link_t *l)
 	/* the moved brush models: where their origin is now, and their angles */
 	countpos = p.len;
 	p_u8(&p, 0);
-	for (int e = 1; e < sv.vm->num_edicts && count < 255 && p.len + 14 <= (int)sizeof(p.data) - ENTS_MAXTHINGS * 10; e++) {
+	for (int e = 1; e < sv.vm->num_edicts && count < 255 && p.len + 14 <= (int)sizeof(p.data) - 1 - ENTS_MAXTHINGS * THING_SIZE; e++) {
 		int sm;
 		const float *o, *a;
 		if (e == self || !ent_shown(e) || (sm = ent_submodel(e)) <= 0 || sm >= nummodels)
@@ -573,8 +652,9 @@ static void send_ents(link_t *l)
 	qsort(things, (size_t)nthings, sizeof(*things), cmp_thing);
 	countpos = p.len;
 	p_u8(&p, 0);
+	p_u8(&p, THING_SIZE);
 	count = 0;
-	for (int i = 0; i < nthings && count < ENTS_MAXTHINGS && p.len + 10 <= (int)sizeof(p.data); i++) {
+	for (int i = 0; i < nthings && count < ENTS_MAXTHINGS && p.len + THING_SIZE <= (int)sizeof(p.data); i++) {
 		int e = things[i].e, flags = (int)QC_EFloat(sv.vm, e, F.flags);
 		const float *o = &QC_EdictFields(sv.vm, e)[F.origin].f;
 		const float *mn = F.mins >= 0 ? &QC_EdictFields(sv.vm, e)[F.mins].f : NULL;
@@ -594,6 +674,12 @@ static void send_ents(link_t *l)
 		p_u8(&p, (unsigned)BW_CLAMP(half, 1, 255));
 		p_u8(&p, (unsigned)BW_CLAMP(top - bottom, 1, 255));
 		p_u8(&p, (unsigned)kind);
+		/* which studio model it is and the sequence it plays, for a device
+		 * that has the model; the entity number keeps its animation going */
+		p_u16(&p, (unsigned)e);
+		p_u16(&p, (unsigned)ent_studio(e));
+		p_u8(&p, F.frame >= 0 ? (unsigned)BW_CLAMP((int)QC_EFloat(sv.vm, e, F.frame), 0, 255) : 0);
+		p_u8(&p, (unsigned)BW_CLAMP(-bottom, 0, 255)); /* the origin, above the bottom */
 		count++;
 	}
 	p.data[countpos] = (uint8_t)count;
@@ -631,6 +717,8 @@ void SV_LinkSend(void)
 		if (now >= l->nextview) {
 			send_view(l);
 			send_ents(l);
+			if (l->entsseq % 5 == 0)
+				send_models(l);
 			l->nextview = now + VIEW_INTERVAL;
 		}
 	}

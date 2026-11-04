@@ -83,6 +83,14 @@ int Nds_Vblanks(void);        /* screen refreshes since start-up (main_nds.c) */
 void Ents_Load(const uint16_t *palette);                       /* from the loaded map's entities */
 int Ents_AddCrowd(const ndscam_t *cam, const char *model, int count); /* a grid in front of cam */
 void Ents_Free(void);
+/* models the server names, for linked play (link_nds.c): Ents_Model loads
+ * a path such as models/scientist.mdl once (-1 if it can't), Ents_Clear
+ * empties the list each frame and Ents_AddLinked puts one in it, playing
+ * sequence seq (mapped to its baked clip) from ticks since it started */
+int Ents_Model(const char *path);
+void Ents_Clear(void);
+void Ents_Counts(int *loaded, int *failed);
+void Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int ticks, int speed);
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
 /* Ents_Draw in parts, for two passes: Select culls and sorts after World_Begin;
  * DrawPass draws the models on one side of split2 (squared map units) */
