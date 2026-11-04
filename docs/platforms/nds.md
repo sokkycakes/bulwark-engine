@@ -80,17 +80,22 @@ that answer, and A or a tap joins one.
 While linked, the bottom screen is a touch pad, as in Metroid Prime
 Hunters:
 
-- The panel at the top shows health, armour and score in big numbers and
-  the weapon in hand under them (the server's `STATS` packet). Its
-  **GAME** tab swaps the pad for the game's own bottom screen (what the
+- The bar at the top shows the score and the weapon in hand (the server's
+  `STATS` packet). Its **GAME** tab swaps the pad for the game's own bottom screen (what the
   game draws with the `link_*` builtins, or the engine's name, health, map
   and player list); **PAD** swaps back. Touches on the game's screen go to
   the game.
 - Drag in the middle to aim. A double tap jumps.
-- The top screen's first line shows frames a second, the slowest second's
-  rate, polygons, and models loaded and failed, and the second line why the
-  last map didn't load, if it didn't. It is a text layer (BG1, VRAM F) in
-  front of the 3D. `diag=0` hides the first line.
+- The top screen shows health and Barrier (the game's armour) in big
+  numbers at the bottom left. Its first line shows frames a second, the
+  slowest second's rate, polygons, and models loaded and failed, and the
+  second line why the last map didn't load, if it didn't. `diag=0` hides
+  the first line. This HUD is a layer in front of the 3D (BG1 in VRAM F
+  and G, one 4-bit tile per 8x8 cell, so it works as a bitmap), drawn with
+  a 1-pixel black outline in `fonts/hud.dsf` from a base folder or the ROM,
+  else the console's 8x8 font. `tools/nds/dsfont.py font.ttf 8 hud.dsf`
+  bakes a pixel font into it (sokky's pick is 04b09 from the 04 series,
+  which is private: the baked file is not in git).
 - Eight buttons: previous and next weapon, reload, use, jump, duck (stays on
   until pressed again), flashlight and secondary fire.
 

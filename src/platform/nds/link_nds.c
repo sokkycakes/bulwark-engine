@@ -14,7 +14,8 @@
  * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
  * middle to aim, double-tap to jump, and buttons below for weapons, reload,
  * use, jump, duck, flashlight and secondary fire. Above the pad are the
- * player's health, armour, score and weapon (STATS). The tab at the top right
+ * player's score and weapon, and the top screen shows health and Barrier
+ * (armour) in the HUD font (STATS). The tab at the top right
  * swaps it for the game's own bottom screen (SCREEN packets) and back.
  */
 #include <arpa/inet.h>
@@ -399,24 +400,162 @@ static void copy_str(char *dst, int size, const uint8_t *src, int len)
 	dst[n] = 0;
 }
 
+/* --- the top screen's HUD ------------------------------------------------------------ */
+
+/* A layer in front of the 3D (BG1, banks F and G): 768 tiles, one for each
+ * 8x8 cell of the screen, so the tiles are a 4-bit bitmap. The font is
+ * fonts/hud.dsf when there is one (tools/nds/dsfont.py; sokky's pick is the
+ * 04 series' 04b09), else the console's 8x8 font. Text gets a 1-pixel
+ * outline. */
+
+enum { HC_CLEAR, HC_EDGE, HC_TEXT, HC_RED, HC_DIAG, HC_DIM, HC_WARN };
+#define TOP_TILES 768
+
+static uint16_t *topgfx;
+static uint8_t *hudfont; /* the .dsf, or NULL for the built-in font */
+static int hudh = 8;     /* its rows */
+
+static void hud_load_font(void)
+{
+	size_t size;
+	uint8_t *f = Fs_Load("fonts/hud.dsf", &size);
+	hudfont = NULL, hudh = 8;
+	if (f && size >= 8 && !memcmp(f, "DSF1", 4) && f[4] && f[4] <= 16 &&
+	    size >= 8 + (size_t)f[6] * (2 + f[4])) {
+		hudfont = f, hudh = f[4];
+		return;
+	}
+	free(f);
+}
+
+/* a glyph's rows (bit 0 the left pixel), width and advance */
+static const uint8_t *hud_glyph(int c, int *w, int *adv)
+{
+	if (hudfont) {
+		int first = hudfont[5], count = hudfont[6];
+		if (c < first || c >= first + count)
+			c = '?';
+		if (c >= first && c < first + count) {
+			const uint8_t *g = hudfont + 8 + (c - first) * (2 + hudh);
+			*adv = g[0], *w = g[1];
+			return g + 2;
+		}
+		*adv = *w = 0;
+		return NULL;
+	}
+	*adv = *w = 8;
+	return default_font_bin + (c & 255) * 8;
+}
+
+static void top_px(int x, int y, int col)
+{
+	uint16_t *p;
+	int sh;
+	if ((unsigned)x >= 256 || (unsigned)y >= 192)
+		return;
+	/* VRAM takes no byte writes: change the nibble inside its halfword */
+	p = topgfx + ((y >> 3) * 32 + (x >> 3)) * 16 + (y & 7) * 2 + ((x & 7) >> 2);
+	sh = (x & 3) * 4;
+	*p = (uint16_t)((*p & ~(0xF << sh)) | col << sh);
+}
+
+static void top_fill(int x, int y, int w, int h, int col)
+{
+	for (int j = y; j < y + h; j++)
+		for (int i = x; i < x + w; i++)
+			top_px(i, j, col);
+}
+
+static int hud_width(const char *s, int scale)
+{
+	int n = 0, w, adv;
+	for (; *s; s++)
+		hud_glyph((uint8_t)*s, &w, &adv), n += adv * scale;
+	return n;
+}
+
+/* text at (x, y), each font pixel scale x scale, with a 1-pixel outline; returns its width */
+static int hud_text(int x, int y, int scale, int col, const char *s)
+{
+	for (int pass = 0; pass < 2; pass++) {
+		int cx = x;
+		for (const char *c = s; *c; c++) {
+			int w, adv;
+			const uint8_t *g = hud_glyph((uint8_t)*c, &w, &adv);
+			for (int j = 0; g && j < hudh; j++)
+				for (int i = 0; i < w; i++)
+					if (g[j] & (1 << i)) {
+						if (pass == 0)
+							top_fill(cx + i * scale - 1, y + j * scale - 1, scale + 2, scale + 2, HC_EDGE);
+						else
+							top_fill(cx + i * scale, y + j * scale, scale, scale, col);
+					}
+			cx += adv * scale;
+		}
+	}
+	return hud_width(s, scale);
+}
+
+/* health and Barrier (the game's armour), big, at the bottom left */
+#define HUD_Y (192 - 4 - 6 * 3 - 10)
+static void hud_stats(void)
+{
+	char n[12];
+	int x = 6;
+	top_fill(0, HUD_Y - 2, 200, 192 - HUD_Y + 2, HC_CLEAR);
+	hud_text(x, HUD_Y, 1, HC_DIM, "HEALTH");
+	snprintf(n, sizeof(n), "%d", link.health);
+	x += BW_NDS_MAX(hud_text(x, HUD_Y + 9, 3, link.health > 25 ? HC_TEXT : HC_RED, n), hud_width("HEALTH", 1)) + 14;
+	hud_text(x, HUD_Y, 1, HC_DIM, "BARRIER");
+	snprintf(n, sizeof(n), "%d", link.armor);
+	hud_text(x, HUD_Y + 9, 3, HC_TEXT, n);
+}
+
+/* the frame rate and counters along the top, and why the last map didn't load under them */
+static void hud_diag(const char *l1, const char *l2)
+{
+	top_fill(0, 0, 256, 2 * hudh + 4, HC_CLEAR);
+	hud_text(2, 1, 1, HC_DIAG, l1);
+	hud_text(2, hudh + 2, 1, HC_WARN, l2);
+}
+
+static void top_init(void)
+{
+	uint16_t *map;
+	int bg;
+	vramSetBankF(VRAM_F_MAIN_BG_0x06000000);
+	vramSetBankG(VRAM_G_MAIN_BG_0x06004000);
+	/* tiles at 0 (24 KB), the map at 24 KB */
+	bg = bgInit(1, BgType_Text4bpp, BgSize_T_256x256, 12, 0);
+	topgfx = bgGetGfxPtr(bg);
+	map = bgGetMapPtr(bg);
+	for (int i = 0; i < 32 * 32; i++)
+		map[i] = (uint16_t)(i < TOP_TILES ? i : 0);
+	dmaFillHalfWords(0, topgfx, TOP_TILES * 32);
+	BG_PALETTE[HC_EDGE] = RGB15(0, 0, 0);
+	BG_PALETTE[HC_TEXT] = RGB15(31, 31, 31);
+	BG_PALETTE[HC_RED] = RGB15(31, 8, 6);
+	BG_PALETTE[HC_DIAG] = RGB15(18, 31, 18);
+	BG_PALETTE[HC_DIM] = RGB15(24, 26, 31);
+	BG_PALETTE[HC_WARN] = RGB15(31, 26, 8);
+	bgSetPriority(0, 1);
+	bgSetPriority(bg, 0);
+	REG_DISPCNT |= DISPLAY_BG1_ACTIVE;
+	hud_load_font();
+}
+
+static void top_done(void)
+{
+	REG_DISPCNT &= ~DISPLAY_BG1_ACTIVE;
+	bgSetPriority(0, 0);
+	vramSetBankF(VRAM_F_LCD);
+	vramSetBankG(VRAM_G_LCD);
+	topgfx = NULL;
+	free(hudfont);
+	hudfont = NULL;
+}
+
 /* --- the bottom screen --------------------------------------------------------------- */
-
-static PrintConsole topcon;
-
-/* the top screen's two lines: the frame rate and counters, then why a map didn't load */
-static void top_print(const char *l1, const char *l2)
-{
-	PrintConsole *was = consoleSelect(&topcon);
-	iprintf("\x1b[0;0H%-32.32s%-32.32s", l1, l2);
-	consoleSelect(was);
-}
-
-static void top_clear(void)
-{
-	PrintConsole *was = consoleSelect(&topcon);
-	consoleClear();
-	consoleSelect(was);
-}
 
 static void screen_init(void)
 {
@@ -429,21 +568,12 @@ static void screen_init(void)
 	bg = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
 	sub = bgGetGfxPtr(bg);
 	dmaFillHalfWords(0x8000, sub, 256 * 192 * 2);
-	/* the top screen's counters: a text layer over the 3D, in bank F (16 KB:
-	 * the font at 0, the map at 8 KB). BG1 goes in front of the 3D's BG0 */
-	vramSetBankF(VRAM_F_MAIN_BG_0x06000000);
-	consoleInit(&topcon, 1, BgType_Text4bpp, BgSize_T_256x256, 4, 0, true, true);
-	bgSetPriority(0, 1);
-	bgSetPriority(topcon.bgId, 0);
-	top_clear();
-	REG_DISPCNT |= DISPLAY_BG1_ACTIVE;
+	top_init();
 }
 
 static void screen_done(void)
 {
-	REG_DISPCNT &= ~DISPLAY_BG1_ACTIVE;
-	bgSetPriority(0, 0);
-	vramSetBankF(VRAM_F_LCD);
+	top_done();
 	sub = NULL;
 	Nds_InitConsole();
 	Mp_Init();
@@ -506,8 +636,8 @@ static void draw_screen(const uint8_t *d, int len)
 
 /* --- the touch pad on the bottom screen ------------------------------------------------ */
 
-#define PAD_TOP 48     /* rows 0-47: the player's numbers and the tab */
-#define PAD_BOTTOM 144 /* rows 48-143: drag to aim; 144-191: the buttons */
+#define PAD_TOP 24     /* rows 0-23: score, weapon and the tab */
+#define PAD_BOTTOM 144 /* rows 24-143: drag to aim; 144-191: the buttons */
 #define TAB_H 16
 #define TAB_X 200      /* the tab that swaps in the game's own screen */
 
@@ -572,43 +702,20 @@ static void pad_button(int i, bool lit)
 	text_mid(b->x, b->y + (b->h - 8) / 2, b->w, lit ? C_EDGE : C_TEXT, b->label);
 }
 
-/* text at twice the size, for the big numbers */
-static void text2(int x, int y, uint16_t c, const char *s)
-{
-	for (; *s && x + 16 <= 256; s++, x += 16) {
-		const u8 *glyph = default_font_bin + (uint8_t)*s * 8;
-		for (int j = 0; j < 16 && y + j < 192; j++) {
-			uint16_t *row = sub + (y + j) * 256 + x;
-			for (int i = 0; i < 16; i++)
-				if (glyph[j / 2] & (1 << (i / 2)))
-					row[i] = c;
-		}
-	}
-}
-
-/* the panel: health, armour and score in big numbers, the weapon under them, and the tab */
+/* the bar: score and the weapon in hand (health and Barrier are on the top screen), and the tab */
 static void pad_bar(void)
 {
 	char n[12], w[sizeof(link.weapon)];
-	const uint16_t red = RGB15(31, 12, 8) | BIT(15);
 	fill(0, 0, 256, PAD_TOP, C_BAR);
 	fill(0, PAD_TOP - 1, 256, 1, C_EDGE);
-	text(4, 3, C_DIM, (const uint8_t *)"HEALTH", 6);
-	snprintf(n, sizeof(n), "%d", link.health);
-	text2(4, 13, link.health > 25 ? C_TEXT : red, n);
-	text(68, 3, C_DIM, (const uint8_t *)"ARMOR", 5);
-	snprintf(n, sizeof(n), "%d", link.armor);
-	text2(68, 13, C_TEXT, n);
-	text(132, 3, C_DIM, (const uint8_t *)"SCORE", 5);
+	text(4, 8, C_DIM, (const uint8_t *)"SCORE", 5);
 	snprintf(n, sizeof(n), "%d", link.frags);
-	text2(132, 13, C_TEXT, n);
-	text(4, 35, C_DIM, (const uint8_t *)"WEAPON", 6);
+	text(48, 8, C_TEXT, (const uint8_t *)n, (int)strlen(n));
 	for (int i = 0; i < (int)sizeof(w); i++)
 		w[i] = link.weapon[i] == '_' ? ' ' : (char)toupper((unsigned char)link.weapon[i]);
-	text(60, 35, C_TEXT, (const uint8_t *)w, BW_NDS_MIN((int)strlen(w), (256 - 64) / 8));
+	text(88, 8, C_TEXT, (const uint8_t *)w, BW_NDS_MIN((int)strlen(w), (TAB_X - 92) / 8));
 	fill(TAB_X, 1, 256 - TAB_X - 1, TAB_H - 2, C_BTN);
 	text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, pad.gamepage ? "PAD" : "GAME");
-	pad.shownstats = link.statsver;
 }
 
 static void pad_draw(void)
@@ -729,8 +836,12 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 		buttons |= B_CROUCH;
 	if (pad.jumpframes > 0)
 		pad.jumpframes--, buttons |= B_JUMP;
-	if (!pad.gamepage && link.statsver != pad.shownstats)
-		pad_bar();
+	if (link.statsver != pad.shownstats) {
+		hud_stats();
+		if (!pad.gamepage)
+			pad_bar();
+		pad.shownstats = link.statsver;
+	}
 	return buttons;
 }
 
@@ -1380,7 +1491,7 @@ static const char *play(ndscam_t *cam)
 
 				snprintf(pad.diagline, sizeof(pad.diagline), "%2d fps (min %d) %dp m%d/%d%s", link.fps, link.minfps, peak, mok, mbad,
 				         debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
-				top_print(cfg.diag ? pad.diagline : "", link.loaderr);
+				hud_diag(cfg.diag ? pad.diagline : "", link.loaderr);
 				secstart = now, frames = 0, worst = 0, peak = 0;
 			}
 		}
