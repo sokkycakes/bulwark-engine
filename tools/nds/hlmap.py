@@ -271,7 +271,21 @@ def main():
         if lo >= 0:
             struct.pack_into("<i", faces, f * 20 + 16, lo // 3)
 
+    # the planes only the clip hulls used go with them (a third to a half of a
+    # Half-Life map's, and the DS keeps the planes in RAM)
+    nodes = bytearray(lump[L_NODES])
+    used = sorted({struct.unpack_from("<i", nodes, i * 24)[0] for i in range(len(nodes) // 24)} |
+                  {struct.unpack_from("<H", faces, f * 20)[0] for f in range(len(faces) // 20)})
+    remap = {old: new for new, old in enumerate(used)}
+    planes = b"".join(lump[L_PLANES][p * 20:p * 20 + 20] for p in used)
+    for i in range(len(nodes) // 24):
+        struct.pack_into("<i", nodes, i * 24, remap[struct.unpack_from("<i", nodes, i * 24)[0]])
+    for f in range(len(faces) // 20):
+        struct.pack_into("<H", faces, f * 20, remap[struct.unpack_from("<H", faces, f * 20)[0]])
+
     newl = list(lump)
+    newl[L_PLANES] = planes
+    newl[L_NODES] = bytes(nodes)
     newl[L_TEX] = texlump
     newl[L_LIGHT] = mono
     newl[L_FACES] = bytes(faces)

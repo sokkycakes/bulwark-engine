@@ -961,13 +961,21 @@ static bool world_load(const char *path, const uint16_t *palette, char *err, int
 }
 
 /* a big Half-Life map may not fit with its coloured light (three bytes a
- * sample where the BSP has one), so then it loads again with the grey */
+ * sample where the BSP has one), so then it loads again with the grey, and
+ * after that without joining faces (which needs room for the joined ones) */
 bool World_Load(const char *path, const uint16_t *palette, char *err, int errsize)
 {
-	bool triedlit = false;
+	bool triedlit = false, merge = World_MergeFaces, ok;
 	if (world_load(path, palette, err, errsize, true, &triedlit))
 		return true;
-	return triedlit && world_load(path, palette, err, errsize, false, &triedlit);
+	if (triedlit && world_load(path, palette, err, errsize, false, &triedlit))
+		return true;
+	if (!merge)
+		return false;
+	World_MergeFaces = false;
+	ok = world_load(path, palette, err, errsize, false, &triedlit);
+	World_MergeFaces = merge;
+	return ok;
 }
 
 /* brush entities with an "origin": where the map has them to begin with */
