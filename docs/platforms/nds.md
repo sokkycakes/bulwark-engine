@@ -124,6 +124,34 @@ that swing, trains) start where the map's `origin` key puts them.
 Converted Half-Life maps are Valve's data: keep them on your own cards,
 not in this repository or a public package.
 
+### Half-Life models
+
+Linked, the DS draws the server's NPCs and the other players with their
+own Half-Life models, baked on the PC first:
+
+```
+cc -O2 -Isrc/common -o hlmdldump tools/nds/hlmdldump.c <libbwcommon.a> -lm -lz
+python3 tools/nds/hlmdl.py valve/models/scientist.mdl nitro/models/scientist.mdl
+```
+
+`hlmdldump` poses every frame of every sequence (first sub-model of each
+body part, first blend, root motion taken out as the engine does) and
+`hlmdl.py` cuts the mesh to about 200 triangles by collapsing edges, keeps
+one clip for each activity the game uses (idle, walk, run, attacks, deaths,
+flinches) at up to 72 frames in all, and packs the skins into one 128×64
+atlas of 255 colours. The result is a Quake model (IDPO 6) with a `DSHL`
+trailer: the clips, which clip each sequence plays, and the palette. Player
+models go in `models/player/<m>/<m>.mdl`, file names in lower case.
+
+The server names each model index in `MODELS` (docs/spec/link.md). The DS
+loads a named model the first time it sees it, one a frame, plays the
+clip for the sequence the server says, and walks or runs a model the server
+only has standing (other players) from how fast it moves. Things with no DS
+copy of their model stay boxes.
+
+Baked models are Valve's data too: keep them out of git and public
+packages.
+
 ## Map viewer controls
 
 | Button | Action |
@@ -508,6 +536,28 @@ stood at a path node and `link_stats` was read three times (commit
 That proves the maps load, draw and follow the server; it does not prove
 the campaign can be played through by hand, since the script skipped
 every puzzle and fight.
+
+
+### With models and several players
+
+Commit `0f45a65`, three DS (each its own melonDS, `link_god 1`) plus a PC
+client and a bot on one `bulwark-ded` (Nuclide `valve` + `coop`), all 206
+campaign and player models baked:
+
+- `coop_arena`, waves pushed to 40 monsters for 12 minutes: all three DS
+  averaged 60 fps (lowest second 58), 1000 polygons on average, 1300 at
+  most.
+- c2a4e, each DS put 160 units from a group of grunts or headcrabs and
+  facing it, 5 minutes: 30 fps at the busiest spot (1400 polygons), 55 on
+  average at another. With models off (SELECT) the busiest spot was 30
+  too; before the floor light was cached per thing it was 20 to 30.
+- c1a2, the same, after a level change from c2a4e: two DS held 30, one 20
+  (1830 polygons). With models off that one was still 20: it is the world
+  there (c1a2 loads without joining faces), not the models. Few NPCs were
+  in view at that spot.
+- Before `0f45a65`, c1a2 failed to load after a level change: the server
+  started sending again before the DS had loaded, and the DS's network
+  stack kept the 378 packets (244 KB) that came in during the 15 s load.
 
 melonDS's frame rate is not a hardware measurement: these need repeating
 on a DS.

@@ -78,7 +78,7 @@ a type byte. Multi-byte values are little endian. A device keeps sending
 |---|---|---|
 | 0x01 | DISCOVER | nothing (broadcast to the port) |
 | 0x02 | JOIN | u32 session, u16 device (1 = DS), char name[16] |
-| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second), u16 load_ms (its last map load, in 10 ms steps) |
+| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second), u16 load_ms (its last map load, in 10 ms steps), u16 spawncount (the map it has loaded) |
 | 0x04 | LEAVE | u32 session |
 
 Angles use 65536 per turn, and positive pitch looks up.
@@ -93,11 +93,18 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
 | 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags, u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15} |
 | 0x86 | KICK | u32 session, char reason[64] |
-| 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind} |
+| 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (16), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom)} |
+| 0x88 | MODELS | u32 session, u16 spawncount, u8 count, count × {u16 model, u8 len, char name[len]} |
 
 The server sends `WELCOME` again whenever the map changes (new
-`spawncount`). The device then loads `maps/<map>.bsp` from its own storage
-if it has a copy. Without one, it shows no 3D view.
+`spawncount`), and every 2 s in case one was lost. The device then loads
+`maps/<map>.bsp` from its own storage if it has a copy. Without one, it
+shows no 3D view. While it loads it reads nothing, and its network stack
+keeps every packet that arrives, so the server sends nothing else until the
+device's `INPUT` carries the new `spawncount` (a device that leaves the
+field out is taken to have loaded at its first packet after the welcome).
+Several devices can share one address (behind one router): the server tells
+them apart by session and port.
 
 The server resends `SCREEN` every 250 ms until the device's `screen_ack`
 matches its version. One screen fits in one packet, up to 1200 bytes of
@@ -122,14 +129,24 @@ entities itself:
   `origin` and turned by `angles` (yaw about z, then pitch, then roll), and
   eases toward each update.
 - `things` are the nearest other entities with a model (at most 48 within
-  2048 units, players excluded: they come in `VIEW`), drawn as boxes.
-  Kind 1 is a monster (`FL_MONSTER`), 2 something solid, 3 something not
-  solid, 4 a dead monster.
+  2048 units), including the other players. Kind 1 is a monster
+  (`FL_MONSTER`), 2 something solid, 3 something not solid, 4 a dead
+  monster. `thing_size` lets a later version add fields. `model` is the
+  entity's model index when it is a studio model (`.mdl`), or 1000 plus the
+  slot for a player, whose model is `models/player/<m>/<m>.mdl` from their
+  `model` userinfo (or `models/player.mdl`); 0 for none. A device that has
+  a DS copy of that model (tools/nds/hlmdl.py) draws it playing `frame`'s
+  sequence, and otherwise a box.
+
+`MODELS` names the model indexes in `things`, a few at a time with every
+fifth `ENTS`, until the device has had them all for this map.
 
 A device ignores an `ENTS` older than the last one it used.
 
-`link_teleport x y z [yaw]` (with `sv_cheats 1`) puts every link player at
-a point, for testing a map's triggers and level changes, and `link_stats`
+`link_teleport x y z [yaw] [name]` (with `sv_cheats 1`) puts every link
+player, or the one named, at a point, for testing a map's triggers and
+level changes. `link_god [0|1]` (with `sv_cheats 1`) makes the link players
+take no damage, for leaving them in a fight while measuring. `link_stats`
 lists the link players with the frame rate their devices report.
 
 ### Screen commands
