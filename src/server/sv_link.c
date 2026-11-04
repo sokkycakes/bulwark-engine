@@ -33,6 +33,7 @@
 #define FL_MONSTER 32
 #define SCREEN_RESEND 0.25
 #define VIEW_INTERVAL 0.05
+#define LOAD_GRACE 60.0 /* seconds a device may take to load a map it was sent to */
 #define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
 #define ENTS_MAXTHINGS 48
 #define ENTS_RANGE 2048.0f
@@ -71,7 +72,8 @@ typedef struct {
 	int nummarkers;
 	double nextview;
 	uint16_t viewseq, entsseq;
-	int fps, minfps, peakpolys; /* what the device last said about itself; -1 unknown */
+	int fps, minfps, peakpolys, loadms; /* what the device last said about itself; -1 unknown */
+	double loading_until; /* a new map was announced: the device may be quiet while it loads it */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -199,6 +201,8 @@ static void send_welcome(link_t *l)
 	p_u16(&p, (unsigned)svs.spawncount);
 	p_str(&p, sv.mapname, 64);
 	send_to(&l->from, &p);
+	if (l->spawncount != svs.spawncount)
+		l->loading_until = Sys_Seconds() + LOAD_GRACE;
 	l->spawncount = svs.spawncount;
 }
 
@@ -250,7 +254,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	}
 	l->client = c;
 	l->version = 1; /* nothing acknowledged yet */
-	l->fps = l->minfps = l->peakpolys = -1;
+	l->fps = l->minfps = l->peakpolys = l->loadms = -1;
 	send_welcome(l);
 	Con_Printf("link: %s joined from %s\n", name, inet_ntoa(from->sin_addr));
 }
@@ -274,6 +278,8 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 	l->acked = rd16(d + 18);
 	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 4) /* the device's own frame rate, last second */
 		l->fps = d[20], l->minfps = d[21], l->peakpolys = rd16(d + 22);
+	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 6)
+		l->loadms = rd16(d + 24) * 10;
 
 	u = &c->lastucmd;
 	u->angles[0] = -pitch * (360.0f / 65536.0f); /* the device's pitch is up-positive */
@@ -603,7 +609,7 @@ void SV_LinkSend(void)
 		link_t *l = &links[i];
 		if (!l->used || !l->client)
 			continue;
-		if (now - l->lastrecv > BW_MAX(sv_link_timeout->value, 2)) {
+		if (now - l->lastrecv > BW_MAX(sv_link_timeout->value, 2) && now > l->loading_until) {
 			SV_DropClient(l->client, "the link timed out");
 			continue;
 		}
@@ -754,8 +760,8 @@ static void SV_LinkStats_f(int argc, const char **argv)
 		if (!l->used || !l->client || !sv.active || F.origin < 0)
 			continue;
 		o = &QC_EdictFields(sv.vm, l->client->edict)[F.origin].f;
-		Con_Printf("link %s map %s at %.0f %.0f %.0f fps %d min %d polys %d\n", l->client->name, sv.mapname, o[0], o[1],
-		           o[2], l->fps, l->minfps, l->peakpolys);
+		Con_Printf("link %s map %s at %.0f %.0f %.0f fps %d min %d polys %d load %d ms\n", l->client->name, sv.mapname,
+		           o[0], o[1], o[2], l->fps, l->minfps, l->peakpolys, l->loadms);
 	}
 }
 

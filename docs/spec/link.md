@@ -20,7 +20,7 @@ games on the PC.
 |---|---|---|
 | `sv_link_port` | `27901` | UDP port for link players, `0` turns links off |
 | `sv_link_max` | `4` | how many player slots link players may take |
-| `sv_link_timeout` | `10` | seconds without input before a link player is dropped |
+| `sv_link_timeout` | `10` | seconds without input before a link player is dropped (after a map change it gets 60 more, while the device loads the map) |
 
 A link player takes a normal client slot and edict. The game sees it as a
 real player: `clienttype` is `CLIENTTYPE_REAL`, `ClientConnect` and
@@ -78,7 +78,7 @@ a type byte. Multi-byte values are little endian. A device keeps sending
 |---|---|---|
 | 0x01 | DISCOVER | nothing (broadcast to the port) |
 | 0x02 | JOIN | u32 session, u16 device (1 = DS), char name[16] |
-| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second) |
+| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second), u16 load_ms (its last map load, in 10 ms steps) |
 | 0x04 | LEAVE | u32 session |
 
 Angles use 65536 per turn, and positive pitch looks up.

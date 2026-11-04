@@ -287,13 +287,19 @@ static const char *flickstr(int n)
 	return buf;
 }
 
+#define MAX_SPOTS 16
+static int benchspots = 1; /* "spots N": look round from N places in each map, not just the start */
+
 static void bench(const char *line)
 {
+	static ndscam_t spots[MAX_SPOTS];
+	int numspots = 1, perspot;
 	ndscam_t cam;
 	ndsstats_t st;
 	const int steps = 512;
 	char path[300], model[40] = "";
 	int start, worst = 0, sumpolys = 0, peakpolys = 0, peakverts = 0, peakents = 0, peakflicker = 0, skipped = 0, count = 0;
+	int before, leaked;
 	if (!strncmp(line, "maps/multipass ", 15)) {
 		multipass = !strcmp(line + 15, "on");
 		return;
@@ -313,19 +319,35 @@ static void bench(const char *line)
 			Skel_Bench(line + 10, results[numresults++], sizeof(results[0]));
 		return;
 	}
+	if (!strncmp(line, "maps/spots ", 11)) {
+		benchspots = BW_NDS_CLAMP(atoi(line + 11), 1, MAX_SPOTS);
+		return;
+	}
 	if (!strncmp(line, "maps/flicker ", 13)) {
 		Ents_Flicker = !strcmp(line + 13, "on");
 		return;
 	}
-	if (numresults >= MAX_RESULTS || sscanf(line, "%299s %39s %d", path, model, &count) < 1 || !load_map(path, &cam))
+	if (numresults >= MAX_RESULTS || sscanf(line, "%299s %39s %d", path, model, &count) < 1)
 		return;
+	before = mallinfo().uordblks;
+	if (!load_map(path, &cam)) {
+		snprintf(results[numresults++], sizeof(results[0]), "%.20s failed", short_name(path));
+		return;
+	}
 	if (model[0] && count > 0)
 		Ents_AddCrowd(&cam, model, count);
+	spots[0] = cam;
+	if (benchspots > 1 && (numspots = World_Spots(spots, benchspots)) < 1)
+		spots[0] = cam, numspots = 1;
+	perspot = steps / numspots;
+	cam = spots[0];
 	frame(&cam, &st);
 	start = vblanks;
 	for (int i = 0; i < steps; i++) {
 		int took;
-		cam.yaw = (int16_t)(cam.yaw + 32768 / steps);
+		if (i % perspot == 0 && i / perspot < numspots)
+			cam = spots[i / perspot];
+		cam.yaw = (int16_t)(cam.yaw + 32768 / perspot);
 		took = frame(&cam, &st);
 		if (took > worst)
 			worst = took;
@@ -353,6 +375,12 @@ static void bench(const char *line)
 	Ents_Free();
 	World_Free();
 	Nds_ResetTextures();
+	/* memory the map didn't give back, in KB, after the line: "L12" */
+	leaked = (mallinfo().uordblks - before) >> 10;
+	if (leaked > 0) {
+		size_t n = strlen(results[numresults - 1]);
+		snprintf(results[numresults - 1] + n, sizeof(results[0]) - n, " L%d", leaked);
+	}
 }
 
 /* the last few results under the stats; all of them come up a page at a time after the bench */

@@ -34,6 +34,7 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 void World_Free(void);
 bool World_Loaded(void);
 void World_StartPosition(ndscam_t *cam);
+int World_Spots(ndscam_t *out, int max); /* where to look round from: starts, landmarks, path nodes */
 void World_Draw(const ndscam_t *cam, ndsstats_t *stats);
 void World_SetView(const ndscam_t *cam); /* the modelview World_Draw uses, for drawing more */
 /* World_Draw in two halves, for drawing models in the same GPU budget:

@@ -987,6 +987,54 @@ static void place_models(void)
 	}
 }
 
+/* places to look round from, for the bench: where players start, the
+ * level-change landmarks, then the AI's path nodes (Half-Life maps have them
+ * all over the walkable floor) taken evenly; never one inside a wall */
+int World_Spots(ndscam_t *out, int max)
+{
+	static const struct {
+		const char *classname;
+		int up; /* from the entity's origin to the eye */
+	} kinds[] = {{"info_player_start", 22}, {"info_player_coop", 22}, {"info_player_deathmatch", 22},
+	             {"info_landmark", 16}, {"info_node", 48}};
+	int n = 0;
+	if (!w.loaded || max <= 0)
+		return 0;
+	for (int k = 0; k < 5 && n < max; k++) {
+		int total = 0, seen = 0, room = max - n;
+		char key[40];
+		snprintf(key, sizeof(key), "\"%s\"", kinds[k].classname);
+		for (const char *p = w.entities; (p = strstr(p, key)); p++)
+			total++;
+		for (const char *p = w.entities; n < max && (p = strstr(p, key)); p++, seen++) {
+			const char *start = p, *end = strchr(p, '}'), *o, *a;
+			float org[3], angle = 0;
+			int32_t eye[3];
+			int leaf;
+			/* nodes: every so many, to spread the picks over the map */
+			if (k == 4 && total > room && seen * room / total == (seen + 1) * room / total)
+				continue;
+			while (start > w.entities && *start != '{')
+				start--;
+			o = strstr(start, "\"origin\"");
+			a = strstr(start, "\"angle\"");
+			if (!o || (end && o > end) || sscanf(o + 8, " \"%f %f %f\"", &org[0], &org[1], &org[2]) != 3)
+				continue;
+			if (a && (!end || a < end))
+				sscanf(a + 7, " \"%f\"", &angle);
+			for (int c = 0; c < 3; c++)
+				eye[c] = (int32_t)lrintf((org[c] + (c == 2 ? kinds[k].up : 0)) * 8);
+			leaf = point_leaf(eye);
+			if (leaf <= 0 || w.leafs[leaf].contents == -2)
+				continue; /* outside the map, or in a wall */
+			memcpy(out[n].org, eye, sizeof(eye));
+			out[n].yaw = (int)(angle * 32768 / 360), out[n].pitch = 0;
+			n++;
+		}
+	}
+	return n;
+}
+
 /* where info_player_start stands, or the middle of the map */
 void World_StartPosition(ndscam_t *cam)
 {
@@ -1012,6 +1060,8 @@ void World_StartPosition(ndscam_t *cam)
 	}
 	if (found)
 		org[2] += 22; /* eye height */
+	else if (World_Spots(cam, 1))
+		return; /* a Half-Life map past the first: a landmark or a path node */
 	for (int c = 0; c < 3; c++)
 		cam->org[c] = (int32_t)lrintf(org[c] * 8);
 	cam->yaw = (int)(angle * 32768 / 360);

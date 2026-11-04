@@ -77,6 +77,7 @@ static const uint16_t *palette;
 
 static struct {
 	int fps, minfps, peakpolys; /* the last second, sent with the input */
+	int loadms;                 /* the last map load */
 	struct sockaddr_in to;
 	uint32_t session;
 	uint16_t seq, screen_ack, spawncount;
@@ -540,8 +541,12 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	link.numthings = 0;
 	memset(models, 0, sizeof(models));
 	snprintf(path, sizeof(path), "maps/%s.bsp", map);
-	if (World_Load(path, palette, err, sizeof(err)))
-		World_StartPosition(cam);
+	{
+		int start = Nds_Vblanks();
+		if (World_Load(path, palette, err, sizeof(err)))
+			World_StartPosition(cam);
+		link.loadms = (Nds_Vblanks() - start) * 1000 / 60;
+	}
 }
 
 static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
@@ -731,6 +736,7 @@ static void send_input(const ndscam_t *cam, uint32_t held)
 	p_u16(&p, cam->yaw * 2);
 	p_u16(&p, link.screen_ack);
 	p_u8(&p, link.fps), p_u8(&p, link.minfps), p_u16(&p, link.peakpolys);
+	p_u16(&p, link.loadms / 10);
 	send_to(&link.to, &p);
 }
 
@@ -758,9 +764,9 @@ static const char *play(ndscam_t *cam)
 	static char reason[96];
 	uint8_t buf[1500];
 	struct sockaddr_in from;
-	ndsstats_t st;
+	ndsstats_t st = {0};
 	pkt_t p;
-	int secstart = Nds_Vblanks(), lastv = secstart, frames = 0, worst = 0, peak = 0;
+	int secstart = Nds_Vblanks(), lastv = secstart, frames = 0, worst = 0, peak = 0, debugview = 0;
 	screen_init();
 	link.lastrecv = 0;
 	for (int frame = 1;; frame++) {
@@ -772,6 +778,9 @@ static const char *play(ndscam_t *cam)
 			snprintf(reason, sizeof(reason), "You left the game.");
 			break;
 		}
+		/* SELECT: leave out the server's things, then its moved models too, to see what is what */
+		if (keysDown() & KEY_SELECT)
+			debugview = (debugview + 1) % 3;
 		turn(cam, held);
 		if (frame % 3 == 0)
 			send_input(cam, held);
@@ -811,12 +820,16 @@ static const char *play(ndscam_t *cam)
 			int32_t delta = link.target[k] - cam->org[k];
 			cam->org[k] = delta > 2048 || delta < -2048 ? link.target[k] : cam->org[k] + delta / 3;
 		}
-		move_models();
+		if (debugview == 2)
+			World_ResetModels();
+		else
+			move_models();
 		if (World_Loaded())
 			World_Draw(cam, &st);
 		else
 			World_SetView(cam);
-		draw_things();
+		if (debugview == 0)
+			draw_things();
 		draw_markers(cam);
 		{
 			int polys, verts;
@@ -835,7 +848,8 @@ static const char *play(ndscam_t *cam)
 			if (now - secstart >= 60) {
 				link.fps = frames * 60 / (now - secstart), link.minfps = 60 / (worst ? worst : 1);
 				link.peakpolys = peak;
-				int n = snprintf(line, sizeof(line), "%2d fps  min %2d  %4d polys", link.fps, link.minfps, peak);
+				int n = snprintf(line, sizeof(line), "%2d fps min %2d %4dp lf%d%s", link.fps, link.minfps, peak, st.leaf,
+				                 debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
 				fill(0, 184, 256, 8, RGB15(2, 2, 4) | BIT(15));
 				text(0, 184, RGB15(20, 31, 20) | BIT(15), (const uint8_t *)line, n);
 				secstart = now, frames = 0, worst = 0, peak = 0;

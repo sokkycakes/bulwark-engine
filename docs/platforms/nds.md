@@ -96,6 +96,32 @@ to open or WEP networks in Nintendo's own software. The libraries here
 include WPA2 code, but that hasn't been tried on hardware yet. An open
 network or a phone hotspot is the safest first test.
 
+## Half-Life maps
+
+The DS reads Quake's BSP 29, so a Half-Life map (BSP 30, textures often in
+WADs) is converted on the PC first:
+
+```
+python3 tools/nds/hlmap.py valve/maps/c1a0.bsp nitro/maps/c1a0.bsp -wad valve
+```
+
+`hlmap.py` takes the textures from the map or the WADs its worldspawn
+names, halves the ones that cover the least of the world until they fit in
+180 KB of texture memory, and gives the map one shared 255-colour palette
+(`c1a0.pal`; index 255 stays clear for `{` textures). The light becomes
+Quake's one byte a sample, with the colours beside it in `c1a0.lit`
+(QLIT 1). Clip hulls are dropped: the DS doesn't collide. Each texture
+keeps its original size in the header, and a `DSz` tag after it gives the
+size actually stored.
+
+The DS loads one lump at a time, so a map needs about its own size in RAM
+(c1a0: 695 KB). A map too big to fit with its coloured light (t0a0) loads
+again with the grey. Brush entities built round an origin brush (doors
+that swing, trains) start where the map's `origin` key puts them.
+
+Converted Half-Life maps are Valve's data: keep them on your own cards,
+not in this repository or a public package.
+
 ## Map viewer controls
 
 | Button | Action |
@@ -447,10 +473,11 @@ movement and buttons were tested with a script that sends the same packets.
 
 ## Not supported yet
 
-- Half-Life maps (BSP 30, with textures in external WADs) and Quake 3 maps.
-- Game logic: models stand where the map puts them and animate on the
-  spot. Brush entities such as doors are drawn where the map places them,
-  and they don't move. Health and ammo boxes (which are small `.bsp`
+- Half-Life maps straight off the disc (convert them, above) and Quake 3 maps.
+- Game logic on its own: away from a server, models stand where the map
+  puts them and doors don't move. Linked to a server, doors, lifts and
+  trains move and other entities show as boxes (`ENTS` in
+  `docs/spec/link.md`). Health and ammo boxes (which are small `.bsp`
   models) aren't drawn.
 - Collision: you fly through walls.
 - Animated water, sky scrolling, sound.
