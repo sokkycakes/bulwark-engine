@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #define BW_NDS_MIN(a, b) ((a) < (b) ? (a) : (b))
+#define BW_NDS_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define BW_NDS_CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
 
 /* world_nds.c */
@@ -56,6 +57,12 @@ const char *World_Entities(void);
 int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
 bool World_HasLit(void); /* the map came with coloured light (.lit) */
+/* brush entities as a server has them (link play): shown or not, and moved
+ * to org (1/8 units) and turned by ang (pitch yaw roll, libnds angles); org
+ * NULL puts it back where the map built it */
+void World_ModelState(int model, bool shown, const int32_t *org, const int *ang);
+void World_ResetModels(void);
+int World_NumModels(void);
 extern bool World_MergeFaces; /* join coplanar faces at load (default on) */
 int World_MergedFaces(void);  /* faces the last load joined into others */
 extern int World_MergeLight;  /* light steps (of 31) a dropped vertex may be off */

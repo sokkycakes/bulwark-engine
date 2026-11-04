@@ -29,11 +29,16 @@
 #define MAX_LINKS 16
 #define MAX_SCREEN 1200
 #define MAX_MARKERS 64
+#define MAX_EDICTS_LINK 2048
+#define FL_MONSTER 32
 #define SCREEN_RESEND 0.25
 #define VIEW_INTERVAL 0.05
+#define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
+#define ENTS_MAXTHINGS 48
+#define ENTS_RANGE 2048.0f
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -65,7 +70,8 @@ typedef struct {
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
 	double nextview;
-	uint16_t viewseq;
+	uint16_t viewseq, entsseq;
+	int fps, minfps, peakpolys; /* what the device last said about itself; -1 unknown */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -244,6 +250,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	}
 	l->client = c;
 	l->version = 1; /* nothing acknowledged yet */
+	l->fps = l->minfps = l->peakpolys = -1;
 	send_welcome(l);
 	Con_Printf("link: %s joined from %s\n", name, inet_ntoa(from->sin_addr));
 }
@@ -265,6 +272,8 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 	pitch = (int16_t)rd16(d + 14);
 	yaw = (int16_t)rd16(d + 16);
 	l->acked = rd16(d + 18);
+	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 4) /* the device's own frame rate, last second */
+		l->fps = d[20], l->minfps = d[21], l->peakpolys = rd16(d + 22);
 
 	u = &c->lastucmd;
 	u->angles[0] = -pitch * (360.0f / 65536.0f); /* the device's pitch is up-positive */
@@ -468,6 +477,123 @@ static void send_view(link_t *l)
 	send_to(&l->from, &p);
 }
 
+/* the entities a link player draws itself (docs/spec/link.md, ENTS): which
+ * of the map's brush models are there now and where the moved ones are
+ * (doors, lifts, trains), then the nearest other things as boxes. Only what
+ * the game networks counts: triggers and other unsent entities are left out. */
+static int ent_submodel(int e)
+{
+	int mi = (int)QC_EFloat(sv.vm, e, F.modelindex);
+	const char *name = mi > 0 && mi < SV_MAX_MODELS ? sv.models[mi] : NULL;
+	return name && name[0] == '*' ? atoi(name + 1) : -1;
+}
+
+static bool ent_shown(int e)
+{
+	if (sv.vm->edicts[e].free || QC_EFloat(sv.vm, e, F.modelindex) <= 0)
+		return false;
+	if (F.sendentity >= 0 && !QC_EInt(sv.vm, e, F.sendentity))
+		return false;
+	return QC_EFloat(sv.vm, e, F.solid) != SOLID_TRIGGER;
+}
+
+typedef struct {
+	int e;
+	float d2;
+} thing_t;
+
+static int cmp_thing(const void *a, const void *b)
+{
+	float x = ((const thing_t *)a)->d2, y = ((const thing_t *)b)->d2;
+	return x < y ? -1 : x > y;
+}
+
+static void send_ents(link_t *l)
+{
+	static uint8_t present[ENTS_MAXMODELS / 8];
+	static thing_t things[MAX_EDICTS_LINK];
+	pkt_t p;
+	int self = l->client->edict, nummodels = 0, nthings = 0, countpos, count = 0;
+	const float *me = &QC_EdictFields(sv.vm, self)[F.origin].f;
+	if (F.origin < 0 || F.modelindex < 0 || !sv.world)
+		return;
+	memset(present, 0, sizeof(present));
+	for (int i = 1; i < sv.nummodels && i < SV_MAX_MODELS; i++)
+		if (sv.models[i] && sv.models[i][0] == '*' && atoi(sv.models[i] + 1) + 1 > nummodels)
+			nummodels = atoi(sv.models[i] + 1) + 1;
+	nummodels = BW_MIN(nummodels, ENTS_MAXMODELS);
+	p_begin(&p, L_ENTS);
+	p_u32(&p, l->session);
+	p_u16(&p, ++l->entsseq);
+	p_u16(&p, (unsigned)nummodels);
+	for (int e = 1; e < sv.vm->num_edicts; e++) {
+		int sm;
+		if (e == self || !ent_shown(e))
+			continue;
+		sm = ent_submodel(e);
+		if (sm > 0 && sm < nummodels)
+			present[sm >> 3] |= (uint8_t)(1 << (sm & 7));
+		else if (sm < 0 && nthings < MAX_EDICTS_LINK && !((int)QC_EFloat(sv.vm, e, F.flags) & FL_CLIENT)) {
+			const float *o = &QC_EdictFields(sv.vm, e)[F.origin].f;
+			float d2 = 0;
+			for (int c = 0; c < 3; c++)
+				d2 += (o[c] - me[c]) * (o[c] - me[c]);
+			if (d2 < ENTS_RANGE * ENTS_RANGE)
+				things[nthings].e = e, things[nthings++].d2 = d2;
+		}
+	}
+	p_bytes(&p, present, (nummodels + 7) / 8);
+	/* the moved brush models: where their origin is now, and their angles */
+	countpos = p.len;
+	p_u8(&p, 0);
+	for (int e = 1; e < sv.vm->num_edicts && count < 255 && p.len + 14 <= (int)sizeof(p.data) - ENTS_MAXTHINGS * 10; e++) {
+		int sm;
+		const float *o, *a;
+		if (e == self || !ent_shown(e) || (sm = ent_submodel(e)) <= 0 || sm >= nummodels)
+			continue;
+		o = &QC_EdictFields(sv.vm, e)[F.origin].f;
+		a = F.angles >= 0 ? &QC_EdictFields(sv.vm, e)[F.angles].f : NULL;
+		if (!o[0] && !o[1] && !o[2] && (!a || (!a[0] && !a[1] && !a[2])))
+			continue;
+		p_u16(&p, (unsigned)sm);
+		for (int c = 0; c < 3; c++)
+			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(o[c] * 4, -32768, 32767));
+		for (int c = 0; c < 3; c++)
+			p_u16(&p, (uint16_t)(int16_t)((a ? a[c] : 0) * 65536 / 360));
+		count++;
+	}
+	p.data[countpos] = (uint8_t)count;
+	/* the nearest other things, as boxes */
+	qsort(things, (size_t)nthings, sizeof(*things), cmp_thing);
+	countpos = p.len;
+	p_u8(&p, 0);
+	count = 0;
+	for (int i = 0; i < nthings && count < ENTS_MAXTHINGS && p.len + 10 <= (int)sizeof(p.data); i++) {
+		int e = things[i].e, flags = (int)QC_EFloat(sv.vm, e, F.flags);
+		const float *o = &QC_EdictFields(sv.vm, e)[F.origin].f;
+		const float *mn = F.mins >= 0 ? &QC_EdictFields(sv.vm, e)[F.mins].f : NULL;
+		const float *mx = F.maxs >= 0 ? &QC_EdictFields(sv.vm, e)[F.maxs].f : NULL;
+		float yaw = F.angles >= 0 ? QC_EdictFields(sv.vm, e)[F.angles + 1].f : 0;
+		float half = 8, bottom = 0, top = 16;
+		int kind = (flags & FL_MONSTER) ? 1 : QC_EFloat(sv.vm, e, F.solid) == SOLID_NOT ? 3 : 2;
+		if (mn && mx && mx[0] > mn[0]) {
+			half = BW_MAX(BW_MAX(-mn[0], mx[0]), BW_MAX(-mn[1], mx[1]));
+			bottom = mn[2], top = mx[2];
+		}
+		if (QC_EFloat(sv.vm, e, F.health) <= 0 && (flags & FL_MONSTER))
+			kind = 4; /* dead */
+		for (int c = 0; c < 3; c++)
+			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(o[c] + (c == 2 ? bottom : 0), -32768, 32767));
+		p_u8(&p, (unsigned)((int)(yaw * 256 / 360) & 255));
+		p_u8(&p, (unsigned)BW_CLAMP(half, 1, 255));
+		p_u8(&p, (unsigned)BW_CLAMP(top - bottom, 1, 255));
+		p_u8(&p, (unsigned)kind);
+		count++;
+	}
+	p.data[countpos] = (uint8_t)count;
+	send_to(&l->from, &p);
+}
+
 void SV_LinkSend(void)
 {
 	double now = Sys_Seconds();
@@ -495,6 +621,7 @@ void SV_LinkSend(void)
 		}
 		if (now >= l->nextview) {
 			send_view(l);
+			send_ents(l);
 			l->nextview = now + VIEW_INTERVAL;
 		}
 	}
@@ -588,8 +715,54 @@ const qc_builtin_t sv_link_builtins[] = {
 	{"link_clear", bi_link_clear}, {"link_fill", bi_link_fill}, {"link_text", bi_link_text},
 	{"link_present", bi_link_present}, {"link_marker", bi_link_marker}, {NULL, NULL}};
 
+/* link_teleport x y z [yaw]: puts every link player there (sv_cheats 1), for
+ * testing a level's triggers and changes from the server's console or rcon */
+static void SV_LinkTeleport_f(int argc, const char **argv)
+{
+	if (!sv.active || argc < 4 || F.origin < 0)
+		return;
+	if (!Cvar_Value("sv_cheats")) {
+		Con_Printf("link_teleport needs sv_cheats 1\n");
+		return;
+	}
+	for (int i = 0; i < MAX_LINKS; i++) {
+		link_t *l = &links[i];
+		int e;
+		if (!l->used || !l->client)
+			continue;
+		e = l->client->edict;
+		for (int c = 0; c < 3; c++)
+			QC_EdictFields(sv.vm, e)[F.origin + c].f = (float)atof(argv[1 + c]);
+		if (F.velocity >= 0)
+			memset(&QC_EdictFields(sv.vm, e)[F.velocity], 0, sizeof(qcval_t) * 3);
+		if (argc > 4 && F.angles >= 0 && F.fixangle >= 0) {
+			QC_EdictFields(sv.vm, e)[F.angles + 1].f = (float)atof(argv[4]);
+			QC_EdictFields(sv.vm, e)[F.fixangle].f = 1;
+		}
+		SV_LinkEdict(e, true);
+		Con_Printf("link: moved %s\n", l->client->name);
+	}
+}
+
+/* link_stats: each link player's map, where it is, and how fast the device runs */
+static void SV_LinkStats_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	for (int i = 0; i < MAX_LINKS; i++) {
+		const link_t *l = &links[i];
+		const float *o;
+		if (!l->used || !l->client || !sv.active || F.origin < 0)
+			continue;
+		o = &QC_EdictFields(sv.vm, l->client->edict)[F.origin].f;
+		Con_Printf("link %s map %s at %.0f %.0f %.0f fps %d min %d polys %d\n", l->client->name, sv.mapname, o[0], o[1],
+		           o[2], l->fps, l->minfps, l->peakpolys);
+	}
+}
+
 void SV_LinkInit(void)
 {
+	Cmd_AddD("link_stats", SV_LinkStats_f, "Show the link players and how fast their devices run");
+	Cmd_AddD("link_teleport", SV_LinkTeleport_f, "Put the link players at x y z [yaw] (sv_cheats 1)");
 	sv_link_port = Cvar_Get("sv_link_port", "27901", 0, "UDP port for link players (Nintendo DS), 0 for none");
 	sv_link_max = Cvar_Get("sv_link_max", "4", 0, "Player slots link players may take");
 	sv_link_timeout = Cvar_Get("sv_link_timeout", "10", 0, "Seconds without input before a link player is dropped");

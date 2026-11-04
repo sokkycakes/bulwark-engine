@@ -89,6 +89,13 @@ typedef struct {
 typedef struct {
 	int16_t mins[3], maxs[3];
 	int firstface, numfaces;
+	/* where a server (link play) says the brush entity is now: shown or not,
+	 * and moved from where the map built it (doors, lifts, trains) */
+	bool hidden, moved;
+	int32_t org[3]; /* 1/8 units */
+	int ang[3];     /* pitch yaw roll, libnds angles */
+	int32_t home[3]; /* the entity's "origin" in the map: Half-Life builds models with an
+	                    origin brush round 0 0 0 and puts them there */
 } submodel_t;
 
 static struct {
@@ -119,6 +126,7 @@ static struct {
 	uint8_t *leafvis; /* decompressed PVS for lastleaf */
 	int *vislist;     /* this frame's faces: the tree's nearest first, then brush entities' */
 	int32_t *visdist; /* for brush entities' faces: the squared distance to the entity (map units) */
+	int16_t *vismodel; /* for brush entities' faces: which model */
 	int numvis, numtreevis;
 	pt_portals_t portals; /* none (numportals 0) if they couldn't be worked out */
 	int16_t (*leafrect)[4]; /* this frame: the part of the screen each leaf is seen through */
@@ -180,6 +188,7 @@ void World_Free(void)
 	free(w.leafrect), free(w.leafstamp), free(w.queue), free(w.inqueue);
 	free(w.vislist);
 	free(w.visdist);
+	free(w.vismodel);
 	memset(&w, 0, sizeof(w));
 }
 
@@ -540,12 +549,13 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 	w.faces = calloc((size_t)w.numfaces, sizeof(face_t));
 	w.vislist = malloc(sizeof(int) * (size_t)(w.numfaces + 1));
 	w.visdist = malloc(sizeof(int32_t) * (size_t)(w.numfaces + 1));
+	w.vismodel = malloc(sizeof(int16_t) * (size_t)(w.numfaces + 1));
 	int poolsize = numse + (World_MergeFaces ? numse / 2 : 0), poolused = 0;
 	mvert_t *pool = malloc(sizeof(mvert_t) * (size_t)poolsize);
 	mface_t *mf = calloc((size_t)w.numfaces, sizeof(mface_t));
 	const uint8_t *mo = lp[L_MODELS];
 	int nummodels = (int)(len[L_MODELS] / 64);
-	if (!w.faces || !w.vislist || !w.visdist || !pool || !mf) {
+	if (!w.faces || !w.vislist || !w.visdist || !w.vismodel || !pool || !mf) {
 		free(pool), free(mf);
 		return false;
 	}
@@ -815,6 +825,7 @@ static void mark_visible(int leaf)
 
 
 static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t *len);
+static void place_models(void);
 
 /* --- loading ----------------------------------------------------------------------------- */
 
@@ -842,7 +853,7 @@ static void drop_lumps(void)
 		drop_lump(i);
 }
 
-bool World_Load(const char *path, const uint16_t *palette, char *err, int errsize)
+static bool world_load(const char *path, const uint16_t *palette, char *err, int errsize, bool uselit, bool *triedlit)
 {
 	uint32_t ofs[NUM_LUMPS], len[NUM_LUMPS];
 	size_t hsize;
@@ -903,7 +914,8 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 			load_tree(NULL, ofs, len);
 		drop_lump(L_NODES), drop_lump(L_LEAFS);
 		memcpy(side + strlen(side) - 4, ".lit", 4);
-		b = Fs_Load(side, &n);
+		b = uselit ? Fs_Load(side, &n) : NULL;
+		*triedlit = b != NULL;
 		if (b && n >= 8 && !memcmp(b, "QLIT", 4) && rd32(b + 4) == 1)
 			lit = b + 8, litsamples = (int)((n - 8) / 3);
 		w.haslit = lit != NULL;
@@ -925,7 +937,7 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 		}
 	}
 	w.nummodels = (int)(len[L_MODELS] / 64);
-	w.models = malloc(sizeof(submodel_t) * (size_t)(w.nummodels ? w.nummodels : 1));
+	w.models = calloc((size_t)(w.nummodels ? w.nummodels : 1), sizeof(submodel_t));
 	for (int i = 0; i < w.nummodels; i++) {
 		const uint8_t *q = lp[L_MODELS] + i * 64;
 		for (int c = 0; c < 3; c++) {
@@ -938,10 +950,41 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 			w.visleafs = BW_NDS_MIN((int)rd32(q + 52), w.numleafs - 1);
 	}
 	drop_lump(L_MODELS);
+	place_models();
 	build_portals(NULL, ofs, len);
 	drop_lumps();
 	w.loaded = true;
 	return true;
+}
+
+/* a big Half-Life map may not fit with its coloured light (three bytes a
+ * sample where the BSP has one), so then it loads again with the grey */
+bool World_Load(const char *path, const uint16_t *palette, char *err, int errsize)
+{
+	bool triedlit = false;
+	if (world_load(path, palette, err, errsize, true, &triedlit))
+		return true;
+	return triedlit && world_load(path, palette, err, errsize, false, &triedlit);
+}
+
+/* brush entities with an "origin": where the map has them to begin with */
+static void place_models(void)
+{
+	const char *e = w.entities;
+	while (e && (e = strchr(e, '{'))) {
+		const char *end = strchr(e, '}'), *m = strstr(e, "\"model\""), *o = strstr(e, "\"origin\"");
+		int sm;
+		float org[3];
+		if (!end)
+			break;
+		if (m && o && m < end && o < end && sscanf(m + 7, " \"*%d\"", &sm) == 1 && sm > 0 && sm < w.nummodels &&
+		    sscanf(o + 8, " \"%f %f %f\"", &org[0], &org[1], &org[2]) == 3) {
+			for (int c = 0; c < 3; c++)
+				w.models[sm].home[c] = (int32_t)lrintf(org[c] * 8);
+			World_ModelState(sm, true, NULL, NULL);
+		}
+		e = end + 1;
+	}
 }
 
 /* where info_player_start stands, or the middle of the map */
@@ -1321,6 +1364,75 @@ bool World_BoxVisible(const int16_t *mins, const int16_t *maxs)
 	return leaf <= 0 || w.leafs[leaf].visframe == w.visframe;
 }
 
+/* --- brush entities a server moves ------------------------------------------------------ */
+
+void World_ResetModels(void)
+{
+	for (int m = 1; m < w.nummodels; m++)
+		World_ModelState(m, true, NULL, NULL);
+}
+
+void World_ModelState(int m, bool shown, const int32_t *org, const int *ang)
+{
+	submodel_t *sm;
+	if (m <= 0 || m >= w.nummodels)
+		return;
+	sm = &w.models[m];
+	sm->hidden = !shown;
+	if (!org)
+		org = sm->home, ang = NULL;
+	sm->moved = org[0] || org[1] || org[2] || (ang && (ang[0] || ang[1] || ang[2]));
+	memcpy(sm->org, org, sizeof(sm->org));
+	for (int c = 0; c < 3; c++)
+		sm->ang[c] = ang ? (int16_t)ang[c] : 0;
+}
+
+int World_NumModels(void) { return w.nummodels; }
+
+/* rotate v about axis (0 x, 1 y, 2 z) by a, the way glRotate does */
+static void rotate(int32_t *v, int axis, int a)
+{
+	int i = (axis + 1) % 3, j = (axis + 2) % 3;
+	int32_t s = sinLerp((int16_t)a), c = cosLerp((int16_t)a);
+	int32_t x = v[i], y = v[j];
+	v[i] = (int32_t)(((int64_t)c * x - (int64_t)s * y) >> 12);
+	v[j] = (int32_t)(((int64_t)s * x + (int64_t)c * y) >> 12);
+}
+
+/* a point (1/8 units) from the map's terms into the moved model's */
+static void to_model(const submodel_t *sm, const int32_t *p, int32_t *out)
+{
+	for (int c = 0; c < 3; c++)
+		out[c] = p[c] - sm->org[c];
+	if (sm->ang[0] || sm->ang[1] || sm->ang[2]) {
+		rotate(out, 2, -sm->ang[1]);
+		rotate(out, 1, -sm->ang[0]);
+		rotate(out, 0, -sm->ang[2]);
+	}
+}
+
+/* the moved model's box in the map (map units); turned ones get a box round every turn */
+static void model_box(const submodel_t *sm, int16_t *mins, int16_t *maxs)
+{
+	int32_t r = 0;
+	bool turned = sm->ang[0] || sm->ang[1] || sm->ang[2];
+	for (int c = 0; c < 3; c++) {
+		int32_t o = sm->org[c] / 8;
+		if (turned)
+			r += BW_NDS_MAX(-sm->mins[c], sm->maxs[c]);
+		else {
+			mins[c] = (int16_t)BW_NDS_CLAMP(sm->mins[c] + o, -32767, 32767);
+			maxs[c] = (int16_t)BW_NDS_CLAMP(sm->maxs[c] + o, -32767, 32767);
+		}
+	}
+	if (turned)
+		for (int c = 0; c < 3; c++) {
+			int32_t o = sm->org[c] / 8;
+			mins[c] = (int16_t)BW_NDS_CLAMP(o - r, -32767, 32767);
+			maxs[c] = (int16_t)BW_NDS_CLAMP(o + r, -32767, 32767);
+		}
+}
+
 void World_Collect(void)
 {
 	w.numvis = 0;
@@ -1332,20 +1444,32 @@ void World_Collect(void)
 	/* doors, lifts and other brush entities: all their faces, by box */
 	for (int m = 1; m < w.nummodels; m++) {
 		const submodel_t *sm = &w.models[m];
-		int32_t d = 0;
-		if (!box_visible(sm->mins, sm->maxs))
+		int16_t mins[3], maxs[3];
+		int32_t d = 0, saved[3];
+		if (sm->hidden)
+			continue;
+		if (sm->moved)
+			model_box(sm, mins, maxs);
+		else
+			memcpy(mins, sm->mins, sizeof(mins)), memcpy(maxs, sm->maxs, sizeof(maxs));
+		if (!box_visible(mins, maxs))
 			continue;
 		for (int c = 0; c < 3; c++) {
-			int32_t v = (sm->mins[c] + sm->maxs[c]) / 2 - eye[c] / 8;
+			int32_t v = (mins[c] + maxs[c]) / 2 - eye[c] / 8;
 			d += v * v;
 		}
+		/* faces turned away are dropped from where the eye is in the model's terms */
+		memcpy(saved, eye, sizeof(saved));
+		if (sm->moved)
+			to_model(sm, saved, eye);
 		for (int i = 0; i < sm->numfaces; i++)
 			if (sm->firstface + i < w.numfaces) {
 				int before = w.numvis;
 				add_face(sm->firstface + i);
 				if (w.numvis > before)
-					w.visdist[before] = d;
+					w.visdist[before] = d, w.vismodel[before] = (int16_t)m;
 			}
+		memcpy(eye, saved, sizeof(saved));
 	}
 }
 
@@ -1399,10 +1523,32 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 	for (int k = from; k < to && k < w.numtreevis; k++)
 		chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);
 	for (int k = w.numtreevis; k < w.numvis; k++)
-		if ((w.visdist[k] < split2) == nearside)
+		if ((w.visdist[k] < split2) == nearside && !w.models[w.vismodel[k]].moved)
 			chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);
-	st->verts += verts, st->polys += polys;
 	draw_chains();
+	/* the moved ones, each in its own place: a model's faces are together in the list */
+	for (int k = w.numtreevis; k < w.numvis;) {
+		int m = w.vismodel[k], end = k;
+		const submodel_t *sm = &w.models[m];
+		while (end < w.numvis && w.vismodel[end] == m)
+			end++;
+		if (sm->moved && (w.visdist[k] < split2) == nearside) {
+			for (int i = k; i < end; i++)
+				chain_face(w.vislist[i], &verts, &polys, maxverts, maxpolys, st);
+			glPushMatrix();
+			glTranslatef32(sm->org[0], sm->org[1], sm->org[2]);
+			if (sm->ang[1])
+				glRotateZi(sm->ang[1]);
+			if (sm->ang[0])
+				glRotateYi(sm->ang[0]);
+			if (sm->ang[2])
+				glRotateXi(sm->ang[2]);
+			draw_chains();
+			glPopMatrix(1);
+		}
+		k = end;
+	}
+	st->verts += verts, st->polys += polys;
 }
 
 void World_End(ndsstats_t *st, int reserve_verts, int reserve_polys)

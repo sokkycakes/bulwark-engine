@@ -210,7 +210,7 @@ int Nds_Vblanks(void) { return vblanks; }
 
 /* bench.txt in a base directory lists maps (one file name a line) to time
  * one turn on the spot in each, for comparing builds on hardware */
-#define MAX_RESULTS 8
+#define MAX_RESULTS 128
 static char results[MAX_RESULTS][64];
 static int numresults;
 
@@ -336,22 +336,48 @@ static void bench(const char *line)
 		peakflicker = st.entsflicker > peakflicker ? st.entsflicker : peakflicker;
 		skipped += st.skipped;
 	}
-	snprintf(results[numresults++], sizeof(results[0]), "%s%s%.6s%s%.7s %d/%dfps p%d a%d v%d m%d s%d%s", modes(),
-	         modes()[0] ? ":" : "", short_name(path), model[0] ? "+" : "", model,
-	         steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, sumpolys / steps, peakverts, peakents, skipped,
-	         Ents_Flicker ? flickstr(peakflicker) : "");
+	{
+		/* one line of the bottom screen (32 columns): the map without ".bsp" */
+		char name[16];
+		snprintf(name, sizeof(name), "%s", short_name(path));
+		if (strlen(name) > 4 && !strcasecmp(name + strlen(name) - 4, ".bsp"))
+			name[strlen(name) - 4] = 0;
+		if (model[0])
+			snprintf(results[numresults++], sizeof(results[0]), "%s%s%.6s+%.5s %d/%d p%d m%d s%d%s", modes(), modes()[0] ? ":" : "",
+			         name, model, steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, peakents, skipped,
+			         Ents_Flicker ? flickstr(peakflicker) : "");
+		else
+			snprintf(results[numresults++], sizeof(results[0]), "%s%s%.7s %d/%d p%d a%d v%d s%d", modes(), modes()[0] ? ":" : "", name,
+			         steps * 60 / (vblanks - start), 60 / (worst ? worst : 1), peakpolys, sumpolys / steps, peakverts, skipped);
+	}
 	Ents_Free();
 	World_Free();
 	Nds_ResetTextures();
 }
 
+/* the last few results under the stats; all of them come up a page at a time after the bench */
 void Nds_PrintResults(void)
 {
 	if (!numresults)
 		return;
-	iprintf("\nbench: fps avg/worst, peak GPU\npolys, verts, models; faces cut;\nf: models taking turns\n");
-	for (int i = 0; i < numresults; i++)
-		iprintf("%s\n", results[i]);
+	iprintf("\nbench: fps avg/worst, GPU polys\npeak/avg, peak verts, faces cut\n");
+	for (int i = numresults > 6 ? numresults - 6 : 0; i < numresults; i++)
+		iprintf("%.32s\n", results[i]);
+}
+
+static void show_all_results(void)
+{
+	const int perpage = 22;
+	int pages = (numresults + perpage - 1) / perpage;
+	for (int round = 0; round < 2; round++)
+		for (int pg = 0; pg < pages; pg++) {
+			consoleClear();
+			iprintf("bench %d/%d: avg/worst fps, p a v s\n", pg + 1, pages);
+			for (int i = pg * perpage; i < numresults && i < (pg + 1) * perpage; i++)
+				iprintf("%.32s\n", results[i]);
+			for (int f = 0; f < 240; f++)
+				swiWaitForVBlank();
+		}
 }
 
 static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *st, int fps)
@@ -412,6 +438,8 @@ int main(int argc, char **argv)
 	numbench = read_bench(benchmaps, MAX_RESULTS);
 	for (int i = 0; i < numbench; i++)
 		bench(benchmaps[i]);
+	if (numresults > 6)
+		show_all_results();
 	/* a list ending in a skeleton stays on it: "skel <file> <copies>" (docs/platforms/nds.md) */
 	if (numbench && !strncmp(benchmaps[numbench - 1], "maps/skel ", 10)) {
 		Skel_View(benchmaps[numbench - 1] + 10);

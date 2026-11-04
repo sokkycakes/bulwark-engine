@@ -78,7 +78,7 @@ a type byte. Multi-byte values are little endian. A device keeps sending
 |---|---|---|
 | 0x01 | DISCOVER | nothing (broadcast to the port) |
 | 0x02 | JOIN | u32 session, u16 device (1 = DS), char name[16] |
-| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack |
+| 0x03 | INPUT | u32 session, u16 seq, u16 keys, u8 touch (bit 0 down), u8 tx, u8 ty, s8 move[3], s16 pitch, s16 yaw, u16 screen_ack, then optionally u8 fps, u8 min_fps, u16 peak_polys (the device's last second) |
 | 0x04 | LEAVE | u32 session |
 
 Angles use 65536 per turn, and positive pitch looks up.
@@ -93,6 +93,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
 | 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags, u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15} |
 | 0x86 | KICK | u32 session, char reason[64] |
+| 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind} |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`). The device then loads `maps/<map>.bsp` from its own storage
@@ -107,6 +108,29 @@ player (it set `fixangle`, after a teleporter or a respawn): the device
 takes the pitch and yaw in this packet as its own. Otherwise the device
 keeps its own angles, and the ones in `VIEW` echo what it sent. Kinds are 0 for other players and 1 to
 255 for whatever the game passes to `link_marker`.
+
+The server sends `ENTS` with each `VIEW`, so the device can draw the
+entities itself:
+
+- `shown` has a bit for each brush model of the map (`*1` and up): set
+  while an entity the game networks uses that model. Triggers and entities
+  without a `SendEntity` are left out, so a door that breaks or a wall that
+  toggles off disappears.
+- `moved` lists the brush models whose entity has a non-zero origin or
+  angles: doors, lifts, trains and rotating things, and Half-Life models
+  built round an origin brush. The device draws the model translated to
+  `origin` and turned by `angles` (yaw about z, then pitch, then roll), and
+  eases toward each update.
+- `things` are the nearest other entities with a model (at most 48 within
+  2048 units, players excluded: they come in `VIEW`), drawn as boxes.
+  Kind 1 is a monster (`FL_MONSTER`), 2 something solid, 3 something not
+  solid, 4 a dead monster.
+
+A device ignores an `ENTS` older than the last one it used.
+
+`link_teleport x y z [yaw]` (with `sv_cheats 1`) puts every link player at
+a point, for testing a map's triggers and level changes, and `link_stats`
+lists the link players with the frame rate their devices report.
 
 ### Screen commands
 

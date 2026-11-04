@@ -29,7 +29,10 @@
 #define HZ 60
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS };
+
+#define MAX_LINKMODELS 1024 /* brush models the server can move */
+#define MAX_THINGS 48
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 extern const u8 default_font_bin[]; /* libnds' console font: 256 characters, 8x8, 1 bit */
@@ -53,6 +56,18 @@ typedef struct {
 	uint16_t rgb;
 } marker_t;
 
+typedef struct {
+	int16_t org[3]; /* the bottom middle, map units */
+	uint8_t yaw, half, height, kind;
+} thing_t;
+
+/* each brush model as the server last had it, and as drawn (easing toward it) */
+typedef struct {
+	bool moved;
+	int32_t target[3], cur[3]; /* 1/8 units */
+	int16_t tang[3], cang[3];  /* 65536 to a turn */
+} linkmodel_t;
+
 static linkcfg_t cfg;
 static int sock = -1;
 static uint16_t *sub; /* the bottom screen, 256x256 RGB15 (192 rows shown) */
@@ -61,6 +76,7 @@ static int numservers;
 static const uint16_t *palette;
 
 static struct {
+	int fps, minfps, peakpolys; /* the last second, sent with the input */
 	struct sockaddr_in to;
 	uint32_t session;
 	uint16_t seq, screen_ack, spawncount;
@@ -71,7 +87,13 @@ static struct {
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
 	int health;
+	uint16_t entsseq;
+	bool haveents;
+	thing_t things[MAX_THINGS];
+	int numthings;
 } link;
+
+static linkmodel_t models[MAX_LINKMODELS];
 
 /* --- link.txt ------------------------------------------------------------------------ */
 
@@ -514,6 +536,9 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	World_Free();
 	Nds_ResetTextures();
 	link.haveview = false;
+	link.haveents = false;
+	link.numthings = 0;
+	memset(models, 0, sizeof(models));
 	snprintf(path, sizeof(path), "maps/%s.bsp", map);
 	if (World_Load(path, palette, err, sizeof(err)))
 		World_StartPosition(cam);
@@ -544,6 +569,121 @@ static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
 		mk->kind = m[6];
 		mk->rgb = (uint16_t)rd16(m + 7);
 	}
+}
+
+/* which brush models are there and where the moved ones are, then the things
+ * near us (docs/spec/link.md, ENTS) */
+static void handle_ents(const uint8_t *d, int len)
+{
+	uint16_t seq = (uint16_t)rd16(d + 4);
+	int n, pos, count;
+	if (len < 9 || (link.haveents && (int16_t)(seq - link.entsseq) <= 0))
+		return;
+	n = BW_NDS_MIN((int)rd16(d + 6), MAX_LINKMODELS);
+	pos = 8 + ((int)rd16(d + 6) + 7) / 8;
+	if (pos >= len)
+		return;
+	link.entsseq = seq;
+	link.haveents = true;
+	for (int m = 1; m < n; m++)
+		models[m].moved = false;
+	count = d[pos++];
+	for (int i = 0; i < count && pos + 14 <= len; i++, pos += 14) {
+		int m = rd16(d + pos);
+		linkmodel_t *lm;
+		if (m <= 0 || m >= MAX_LINKMODELS)
+			continue;
+		lm = &models[m];
+		for (int c = 0; c < 3; c++) {
+			lm->target[c] = (int16_t)rd16(d + pos + 2 + c * 2) * 2;
+			lm->tang[c] = (int16_t)rd16(d + pos + 8 + c * 2);
+		}
+		if (!lm->moved && !(lm->cur[0] | lm->cur[1] | lm->cur[2]))
+			memcpy(lm->cur, lm->target, sizeof(lm->cur)), memcpy(lm->cang, lm->tang, sizeof(lm->cang));
+		lm->moved = true;
+	}
+	for (int m = 1; m < n; m++) {
+		bool shown = (d[8 + (m >> 3)] >> (m & 7)) & 1;
+		if (!models[m].moved)
+			memset(models[m].cur, 0, sizeof(models[m].cur)), memset(models[m].cang, 0, sizeof(models[m].cang));
+		World_ModelState(m, shown, NULL, NULL);
+	}
+	link.numthings = 0;
+	if (pos >= len)
+		return;
+	count = d[pos++];
+	for (int i = 0; i < count && link.numthings < MAX_THINGS && pos + 10 <= len; i++, pos += 10) {
+		thing_t *t = &link.things[link.numthings++];
+		for (int c = 0; c < 3; c++)
+			t->org[c] = (int16_t)rd16(d + pos + c * 2);
+		t->yaw = d[pos + 6], t->half = d[pos + 7], t->height = d[pos + 8], t->kind = d[pos + 9];
+	}
+}
+
+/* ease the moved brush models toward where the server has them; it updates at 20 Hz */
+static void move_models(void)
+{
+	int n = BW_NDS_MIN(World_NumModels(), MAX_LINKMODELS);
+	for (int m = 1; m < n; m++) {
+		linkmodel_t *lm = &models[m];
+		int ang[3];
+		if (!lm->moved)
+			continue;
+		for (int c = 0; c < 3; c++) {
+			int32_t delta = lm->target[c] - lm->cur[c];
+			int16_t da = (int16_t)(lm->tang[c] - lm->cang[c]);
+			lm->cur[c] = delta > 1024 || delta < -1024 ? lm->target[c] : lm->cur[c] + delta / 3;
+			lm->cang[c] = (int16_t)(lm->cang[c] + (da > 8192 || da < -8192 ? da : da / 3));
+			ang[c] = lm->cang[c] / 2;
+		}
+		World_ModelState(m, true, lm->cur, ang);
+	}
+}
+
+/* everything else the server sends: boxes, turned to face the way the thing does */
+static void draw_things(void)
+{
+	static const uint16_t colours[] = {RGB15(20, 20, 20), RGB15(28, 12, 8), RGB15(28, 26, 8), RGB15(16, 18, 22), RGB15(12, 4, 4)};
+	glBindTexture(GL_TEXTURE_2D, 0);
+	for (int i = 0; i < link.numthings; i++) {
+		const thing_t *t = &link.things[i];
+		int16_t mins[3], maxs[3];
+		int32_t h = t->half * 8, z = t->kind == 4 ? 4 * 8 : t->height * 8;
+		int32_t c4[4][2];
+		int s, c;
+		for (int k = 0; k < 2; k++) {
+			mins[k] = (int16_t)(t->org[k] - t->half), maxs[k] = (int16_t)(t->org[k] + t->half);
+		}
+		mins[2] = t->org[2], maxs[2] = (int16_t)(t->org[2] + (z >> 3));
+		if (!World_BoxVisible(mins, maxs))
+			continue;
+		s = sinLerp((int16_t)(t->yaw * 128)), c = cosLerp((int16_t)(t->yaw * 128));
+		for (int k = 0; k < 4; k++) {
+			int32_t x = (k == 0 || k == 3) ? -h : h, y = k < 2 ? -h : h;
+			c4[k][0] = t->org[0] * 8 + ((c * x - s * y) >> 12);
+			c4[k][1] = t->org[1] * 8 + ((s * x + c * y) >> 12);
+		}
+		{
+			int32_t z0 = t->org[2] * 8, z1 = z0 + z;
+			uint16_t col = colours[t->kind < 5 ? t->kind : 0];
+			glBegin(GL_QUADS);
+			for (int k = 0; k < 4; k++) {
+				int n = (k + 1) & 3;
+				/* the sides a little darker than the top */
+				glColor((uint16_t)((col >> 1) & 0x3def));
+				glVertex3v16(c4[k][0], c4[k][1], z0);
+				glVertex3v16(c4[n][0], c4[n][1], z0);
+				glColor(col);
+				glVertex3v16(c4[n][0], c4[n][1], z1);
+				glVertex3v16(c4[k][0], c4[k][1], z1);
+			}
+			glColor(col);
+			for (int k = 0; k < 4; k++)
+				glVertex3v16(c4[k][0], c4[k][1], z1);
+			glEnd();
+		}
+	}
+	glColor(RGB15(31, 31, 31));
 }
 
 /* players and the game's markers: upright quads that face the camera */
@@ -590,6 +730,7 @@ static void send_input(const ndscam_t *cam, uint32_t held)
 	p_u16(&p, cam->pitch * 2);
 	p_u16(&p, cam->yaw * 2);
 	p_u16(&p, link.screen_ack);
+	p_u8(&p, link.fps), p_u8(&p, link.minfps), p_u16(&p, link.peakpolys);
 	send_to(&link.to, &p);
 }
 
@@ -619,6 +760,7 @@ static const char *play(ndscam_t *cam)
 	struct sockaddr_in from;
 	ndsstats_t st;
 	pkt_t p;
+	int secstart = Nds_Vblanks(), lastv = secstart, frames = 0, worst = 0, peak = 0;
 	screen_init();
 	link.lastrecv = 0;
 	for (int frame = 1;; frame++) {
@@ -650,6 +792,8 @@ static const char *play(ndscam_t *cam)
 				}
 			} else if (type == L_VIEW)
 				handle_view(d, len, cam);
+			else if (type == L_ENTS)
+				handle_ents(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -667,13 +811,36 @@ static const char *play(ndscam_t *cam)
 			int32_t delta = link.target[k] - cam->org[k];
 			cam->org[k] = delta > 2048 || delta < -2048 ? link.target[k] : cam->org[k] + delta / 3;
 		}
+		move_models();
 		if (World_Loaded())
 			World_Draw(cam, &st);
 		else
 			World_SetView(cam);
+		draw_things();
 		draw_markers(cam);
+		{
+			int polys, verts;
+			Gpu_Counts(&polys, &verts);
+			peak = polys > peak ? polys : peak;
+		}
 		glFlush(0);
 		swiWaitForVBlank();
+		/* how fast this runs, on the bottom row: frames a second, the slowest frame, peak polygons */
+		{
+			int now = Nds_Vblanks();
+			char line[33];
+			worst = now - lastv > worst ? now - lastv : worst;
+			lastv = now;
+			frames++;
+			if (now - secstart >= 60) {
+				link.fps = frames * 60 / (now - secstart), link.minfps = 60 / (worst ? worst : 1);
+				link.peakpolys = peak;
+				int n = snprintf(line, sizeof(line), "%2d fps  min %2d  %4d polys", link.fps, link.minfps, peak);
+				fill(0, 184, 256, 8, RGB15(2, 2, 4) | BIT(15));
+				text(0, 184, RGB15(20, 31, 20) | BIT(15), (const uint8_t *)line, n);
+				secstart = now, frames = 0, worst = 0, peak = 0;
+			}
+		}
 	}
 	p_begin(&p, L_LEAVE);
 	p_u32(&p, link.session);
