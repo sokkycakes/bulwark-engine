@@ -1673,11 +1673,15 @@ static void bi_multicast(qcvm_t *vm)
 		return;
 	MSG_WriteByte(&h, svc_qcmessage);
 	MSG_WriteVarUInt(&h, (uint32_t)msg_multicast.len);
+	/* who caused it, for the DS link's bullet effects: self, or what owns self */
+	int cause = QC_GInt(vm, G.self);
+	if (cause > svs.maxclients && cause < vm->num_edicts && QC_EInt(vm, cause, F.owner) > 0)
+		cause = QC_EInt(vm, cause, F.owner);
 	/* PVS multicasts go to clients that may see the point; PHS ones (sounds
 	 * carry around corners) go to everyone */
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state != CS_SPAWNED || c->bot)
+		if (c->state != CS_SPAWNED || (c->bot && !c->link))
 			continue;
 		if (one && c->edict != target)
 			continue;
@@ -1685,6 +1689,10 @@ static void bi_multicast(qcvm_t *vm)
 			continue;
 		if ((to == 2 || to == 5) && !client_sees(c, QC_PVEC(vm, 0)))
 			continue;
+		if (c->link) { /* a DS: it reads none of this but bullet impacts */
+			SV_LinkMulticast(c, (const uint8_t *)msg_multicast.data, msg_multicast.len, cause);
+			continue;
+		}
 		if (reliable)
 			SB_Append(&c->qcrel, msg_multicast.data, msg_multicast.len);
 		else {

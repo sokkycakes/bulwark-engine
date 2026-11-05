@@ -69,6 +69,7 @@ static ent_t ents[MAX_ENTS];
 static int numents;
 static int viewmodel = -1;
 static int viewframe, viewlight = 24; /* its frame now, and its light */
+int32_t Ents_ViewOfs[3];
 static int pal_owner; /* the texture that holds the palette */
 static const uint16_t *palette;
 static int ticks;
@@ -582,9 +583,10 @@ void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool with
 	int sent = 0, drawn = 0, stored = 0, numrest = 0, restcost = 0;
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
 	if (withviewmodel && viewmodel >= 0) {
-		ndscam_t eyecam = {{0, 0, 0}, 0, 0};
+		ndscam_t eyecam = {{0, 0, 0}, 0, 0, 0};
 		const mdl_t *m = &mdls[viewmodel];
 		World_SetView(&eyecam);
+		glTranslatef32(Ents_ViewOfs[0], Ents_ViewOfs[1], Ents_ViewOfs[2]);
 		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
 		draw_mdl(m, viewframe, viewlight);
 		World_SetView(cam);

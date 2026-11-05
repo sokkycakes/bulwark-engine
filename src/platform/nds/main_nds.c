@@ -175,9 +175,10 @@ void Nds_Init3D(void)
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
 }
 
-static void fly(ndscam_t *cam, uint32_t held, int *lasttx, int *lastty)
+/* dt: the refreshes the last frame took, so speeds hold at 30 frames a second */
+static void fly(ndscam_t *cam, uint32_t held, int *lasttx, int *lastty, int dt)
 {
-	const int turn = 32768 / 180, speed = 6 * 8; /* about 360 units a second */
+	const int turn = 32768 / 180 * dt, speed = 6 * 8 * dt; /* 120 degrees and about 360 units a second */
 	int sy = sinLerp(cam->yaw), cy = cosLerp(cam->yaw);
 	if (held & KEY_LEFT)
 		cam->yaw += turn;
@@ -261,6 +262,7 @@ static bool load_map(const char *path, ndscam_t *cam)
 
 /* one frame; returns the vblanks it took */
 static bool multipass;
+static bool fpscap; /* one pass held to 30 frames a second, for testing */
 
 static int frame(const ndscam_t *cam, ndsstats_t *st)
 {
@@ -274,6 +276,8 @@ static int frame(const ndscam_t *cam, ndsstats_t *st)
 		Gpu_Counts(&st->hwpolys, &st->hwverts);
 		glFlush(0);
 		swiWaitForVBlank();
+		if (fpscap && vblanks - last < 2)
+			swiWaitForVBlank();
 	}
 	took = vblanks - last;
 	last = vblanks;
@@ -284,8 +288,8 @@ static int frame(const ndscam_t *cam, ndsstats_t *st)
 static const char *modes(void)
 {
 	static char buf[8];
-	snprintf(buf, sizeof(buf), "%s%s%s%s", World_MergeFaces ? "" : "u", World_Portals == WORLD_PORTALS_ON ? "p" : World_Portals == WORLD_PORTALS_OFF ? "n" : "", multipass ? "2" : "",
-	         Ents_Flicker ? "f" : "");
+	snprintf(buf, sizeof(buf), "%s%s%s%s%s", World_MergeFaces ? "" : "u", World_Portals == WORLD_PORTALS_ON ? "p" : World_Portals == WORLD_PORTALS_OFF ? "n" : "", multipass ? "2" : "",
+	         Ents_Flicker ? "f" : "", fpscap && !multipass ? "c" : "");
 	return buf;
 }
 
@@ -303,7 +307,7 @@ static void bench(const char *line)
 {
 	static ndscam_t spots[MAX_SPOTS];
 	int numspots = 1, perspot;
-	ndscam_t cam;
+	ndscam_t cam = {{0}};
 	ndsstats_t st;
 	const int steps = 512;
 	char path[300], model[40] = "";
@@ -311,6 +315,10 @@ static void bench(const char *line)
 	int before, leaked;
 	if (!strncmp(line, "maps/multipass ", 15)) {
 		multipass = !strcmp(line + 15, "on");
+		return;
+	}
+	if (!strncmp(line, "maps/fps ", 9)) {
+		fpscap = atoi(line + 9) == 30;
 		return;
 	}
 	if (!strncmp(line, "maps/portals ", 13)) {
@@ -420,7 +428,7 @@ static void show_all_results(void)
 static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *st, int fps)
 {
 	consoleClear();
-	iprintf("%s  %d fps  %s%s\n", short_name(map), fps, multipass ? "2 passes" : "1 pass", Ents_Flicker ? " flicker" : "");
+	iprintf("%s  %d fps  %s%s\n", short_name(map), fps, multipass ? "2 passes" : fpscap ? "1 pass @30" : "1 pass", Ents_Flicker ? " flicker" : "");
 	iprintf("world: faces %d polys %d\n", st->faces, st->polys);
 	if (World_MergeFaces)
 		iprintf("merged: %d faces joined at load\n", World_MergedFaces());
@@ -449,9 +457,9 @@ int main(int argc, char **argv)
 {
 	static char benchmaps[MAX_RESULTS][300], crowd[40];
 	int crowdsize = 0;
-	ndscam_t cam;
+	ndscam_t cam = {{0}};
 	ndsstats_t st;
-	int sel = 0, frames = 0, lastvb = 0, lasttx = -1, lastty = -1, numbench;
+	int sel = 0, frames = 0, lastvb = 0, lasttx = -1, lastty = -1, numbench, took = 1;
 	bool fat, nitro;
 
 	Nds_InitConsole();
@@ -514,13 +522,15 @@ int main(int argc, char **argv)
 			scanKeys();
 			if (keysDown() & KEY_START)
 				break;
-			/* SELECT steps through 1 pass, 1 pass + flicker, 2 passes, 2 passes + flicker */
+			/* SELECT steps through 1 pass, 1 pass + flicker, 1 pass at 30, 1 pass at 30 + flicker,
+			 * 2 passes, 2 passes + flicker */
 			if (keysDown() & KEY_SELECT) {
-				multipass ^= Ents_Flicker;
-				Ents_Flicker = !Ents_Flicker;
+				int mode = (multipass ? 4 : fpscap ? 2 : 0) + Ents_Flicker;
+				mode = (mode + 1) % 6;
+				multipass = mode >= 4, fpscap = mode == 2 || mode == 3, Ents_Flicker = mode & 1;
 			}
-			fly(&cam, keysHeld(), &lasttx, &lastty);
-			frame(&cam, &st);
+			fly(&cam, keysHeld(), &lasttx, &lastty, BW_NDS_CLAMP(took, 1, 4));
+			took = frame(&cam, &st);
 			if (++frames >= 60) {
 				show_stats(path, &cam, &st, frames * 60 / (vblanks - lastvb > 0 ? vblanks - lastvb : 1));
 				frames = 0;

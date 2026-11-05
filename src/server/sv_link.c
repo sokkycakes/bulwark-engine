@@ -32,6 +32,8 @@
 #define MAX_EDICTS_LINK 2048
 #define FL_MONSTER 32
 #define SCREEN_RESEND 0.25
+#define MAX_FX 16 /* impacts in one FX packet */
+enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 'from') */
 #define VIEW_INTERVAL 0.05
 #define LOAD_GRACE 60.0 /* seconds a device may take to load a map it was sent to */
 #define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
@@ -41,7 +43,7 @@
 #define ENTS_RANGE 2048.0f
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -84,6 +86,11 @@ typedef struct {
 	int vmseq;                    /* the view model's sequence when last looked at */
 	float vmtime;                 /* and how long it had played */
 	uint8_t vmplays, vmsent;      /* sequences started (the same one again counts), and as last sent */
+	struct {
+		uint8_t flags;      /* FX_ flags */
+		float from[3], to[3];
+	} fx[MAX_FX];
+	int numfx;                    /* impacts waiting for the next FX packet */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -585,6 +592,7 @@ static int cmp_thing(const void *a, const void *b)
 
 static void send_stats(link_t *l);
 static void watch_viewmodel(link_t *l);
+static void send_fx(link_t *l);
 
 /* the names of the studio models, a run at a time (docs/spec/link.md,
  * MODELS): u32 session, u16 spawncount, u8 count, count x {u16 index, u8
@@ -751,6 +759,8 @@ void SV_LinkSend(void)
 		if (l->devspawn >= 0 ? l->devspawn != (svs.spawncount & 0xffff) : l->lastrecv < l->welcomed)
 			continue;
 		watch_viewmodel(l);
+		if (l->numfx)
+			send_fx(l);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -833,6 +843,60 @@ static void send_stats(link_t *l)
 	p_u8(&p, (unsigned)l->vmseq & 255);
 	p_u8(&p, l->vmplays);
 	l->vmsent = l->vmplays;
+	send_to(&l->from, &p);
+}
+
+/* --- bullet impacts ------------------------------------------------------------------------
+ * The PC client draws impacts from the game's CSQC events (Nuclide's
+ * SVC_CGAMEPACKET with EV_SURFIMPACT / EV_SURFIMPACTID, which start with the
+ * impact point) and its muzzle flashes and tracers itself. A DS runs no CSQC,
+ * so the server reads those multicasts as they go to a device's client and
+ * passes the point on, with where the shooter's eye was for a tracer */
+#define CGAMEPACKET 83
+#define EV_SURFIMPACT 33
+#define EV_SURFIMPACTID 34
+
+static float rdfloat(const uint8_t *p)
+{
+	uint32_t u = rd32(p);
+	float f;
+	memcpy(&f, &u, 4);
+	return f;
+}
+
+void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
+{
+	link_t *l;
+	if (len < 14 || data[0] != CGAMEPACKET || (data[1] != EV_SURFIMPACT && data[1] != EV_SURFIMPACTID))
+		return;
+	if (!(l = link_for_edict(c->edict)) || l->numfx >= MAX_FX)
+		return;
+	l->fx[l->numfx].flags = 0;
+	for (int k = 0; k < 3; k++)
+		l->fx[l->numfx].to[k] = rdfloat(data + 2 + k * 4);
+	if (cause >= 1 && cause < sv.vm->num_edicts && !sv.vm->edicts[cause].free) { /* a player's or a monster's shot */
+		const qcval_t *f = QC_EdictFields(sv.vm, cause);
+		l->fx[l->numfx].flags = FX_SHOT | (cause == c->edict ? FX_OWN : 0);
+		for (int k = 0; k < 3; k++)
+			l->fx[l->numfx].from[k] = f[F.origin + k].f + (F.view_ofs >= 0 ? f[F.view_ofs + k].f : 0);
+	}
+	l->numfx++;
+}
+
+static void send_fx(link_t *l)
+{
+	pkt_t p;
+	p_begin(&p, L_FX);
+	p_u32(&p, l->session);
+	p_u8(&p, (unsigned)l->numfx);
+	for (int i = 0; i < l->numfx; i++) {
+		p_u8(&p, l->fx[i].flags);
+		for (int k = 0; k < 3; k++)
+			p_u32(&p, (uint32_t)(int32_t)(l->fx[i].to[k] * 8));
+		for (int k = 0; k < 3; k++)
+			p_u32(&p, (uint32_t)(int32_t)(l->fx[i].from[k] * 8));
+	}
+	l->numfx = 0;
 	send_to(&l->from, &p);
 }
 

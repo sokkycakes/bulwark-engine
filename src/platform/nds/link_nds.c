@@ -10,6 +10,7 @@
  *   ssid=  key=  security=open|wep|wpa|wpa2  server=ip[:port]  name=  autojoin=1
  * and the controls: controls=touch|classic  hand=right|left  sens=100 (percent)
  * diag=0 (hides the frame rate and counters along the top screen's top edge)
+ * fps=30 (holds the frame rate to 30, for testing)
  *
  * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
  * middle to aim, double-tap to jump, and buttons below for weapons, reload,
@@ -41,12 +42,15 @@
 #define HZ 60
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX };
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
 #define MAX_THINGS 48
 #define MAX_STUDIO 1032     /* model indexes the server can name; 1000 on are players' own */
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
+#define MAX_FX 24
+enum { FX_OWN = 1, FX_SHOT = 2 }; /* FX: our own shot; someone's shot (it has a muzzle) */
+#define FX_LIFE 20                /* refreshes an impact puff lasts */
 
 extern const u8 default_font_bin[]; /* libnds' console font: 256 characters, 8x8, 1 bit */
 
@@ -58,6 +62,7 @@ typedef struct {
 	bool classic; /* D-pad turns, as Quake and Half-Life on a pad with one stick */
 	bool lefty;   /* move with A B X Y, fire with R */
 	bool diag;
+	bool fps30; /* fps=30: hold to 30 frames a second */
 	int sens;     /* aim speed, percent: 100 turns 120 degrees across the screen */
 } linkcfg_t;
 
@@ -145,6 +150,8 @@ static struct {
 	char map[65];
 	char loaderr[40];           /* why the last map didn't load */
 	int32_t target[3];
+	int32_t vel[3];   /* how fast target moves, 1/8 units a refresh, from the last two VIEWs */
+	int viewframe;    /* when the last VIEW came */
 	bool haveview;
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
@@ -158,6 +165,12 @@ static struct {
 	bool haveents;
 	thing_t things[MAX_THINGS];
 	int numthings;
+	struct {
+		int32_t to[3], from[3]; /* the impact; the muzzle its tracer starts at */
+		int born;               /* frame */
+		uint8_t flags;          /* FX_ */
+	} fx[MAX_FX];
+	int nextfx;
 } link;
 
 static linkmodel_t models[MAX_LINKMODELS];
@@ -201,6 +214,8 @@ static void read_config(void)
 				cfg.sens = BW_NDS_CLAMP(atoi(v), 10, 1000);
 			else if (!strcmp(line, "diag"))
 				cfg.diag = atoi(v) != 0;
+			else if (!strcmp(line, "fps"))
+				cfg.fps30 = atoi(v) == 30;
 			else if (!strcmp(line, "server")) {
 				char *colon = strchr(v, ':');
 				if (colon)
@@ -677,7 +692,7 @@ static struct {
 	int pressed;             /* the button the stylus holds, -1 for none */
 	bool ducked;             /* DUCK is on */
 	int upframe, upx, upy;   /* when and where the last aim touch ended (double-tap) */
-	int jumpframes;          /* JUMP held for a few more frames */
+	int jumpframes;          /* JUMP held until this frame */
 	uint8_t impulse, impseq; /* the last one-shot press, and its count */
 	uint8_t screen[1300];    /* the game's last screen, to show when asked */
 	int screenlen;
@@ -795,7 +810,7 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 			pad.aiming = true;
 			pad.lastx = tp->px, pad.lasty = tp->py;
 			if (frame - pad.upframe < 18 && abs(tp->px - pad.upx) < 24 && abs(tp->py - pad.upy) < 24)
-				pad.jumpframes = 8; /* double-tap */
+				pad.jumpframes = frame + 8; /* double-tap: held until then */
 			pad_dot(tp->px, tp->py);
 		} else if (tp->py >= PAD_BOTTOM) {
 			for (int i = 0; i < NUM_PADBTNS; i++) {
@@ -836,8 +851,8 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 		buttons |= padbtns[pad.pressed].button & ~B_CROUCH;
 	if (pad.ducked)
 		buttons |= B_CROUCH;
-	if (pad.jumpframes > 0)
-		pad.jumpframes--, buttons |= B_JUMP;
+	if (frame < pad.jumpframes)
+		buttons |= B_JUMP;
 	if (link.statsver != pad.shownstats) {
 		hud_stats();
 		if (!pad.gamepage)
@@ -1069,8 +1084,18 @@ static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
 	int count;
 	if (len < 4 + 2 + 12 + 6 + 2)
 		return;
-	for (int k = 0; k < 3; k++)
-		link.target[k] = (int32_t)rd32(d + 6 + k * 4);
+	{
+		int since = linkframe - link.viewframe;
+		for (int k = 0; k < 3; k++) {
+			int32_t t = (int32_t)rd32(d + 6 + k * 4);
+			/* a jump of more than 2 units a refresh is a teleport, not motion */
+			link.vel[k] = link.haveview && since > 0 && since < 30 && abs(t - link.target[k]) < 16 * since
+			                  ? (t - link.target[k]) / since
+			                  : 0;
+			link.target[k] = t;
+		}
+		link.viewframe = linkframe;
+	}
 	if ((int16_t)rd16(d + 22) != link.health)
 		link.health = (int16_t)rd16(d + 22), link.statsver++;
 	if (d[24] & 1) { /* the game turned us */
@@ -1090,6 +1115,141 @@ static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
 		mk->kind = m[6];
 		mk->rgb = (uint16_t)rd16(m + 7);
 	}
+}
+
+/* bullet impacts (docs/spec/link.md, FX): a puff where each hit, and for a
+ * shot a muzzle flash and a tracer from the muzzle: someone else's a little
+ * ahead of their eye toward the hit, ours at the view model's barrel (draw_fx) */
+static void handle_fx(const uint8_t *d, int len)
+{
+	for (int i = 0; i < d[4] && 5 + (i + 1) * 25 <= len; i++) {
+		const uint8_t *f = d + 5 + i * 25;
+		int32_t to[3], from[3];
+		for (int k = 0; k < 3; k++)
+			to[k] = (int32_t)rd32(f + 1 + k * 4), from[k] = (int32_t)rd32(f + 13 + k * 4);
+		/* a hit point far beyond the map's reach on the DS is skipped */
+		if (abs(to[0]) > 32000 || abs(to[1]) > 32000 || abs(to[2]) > 32000)
+			continue;
+		int fl = f[0];
+		if (fl & FX_SHOT) {
+			float dx = (float)(to[0] - from[0]), dy = (float)(to[1] - from[1]), dz = (float)(to[2] - from[2]);
+			float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+			if (dist < 72 * 8) /* a melee hit: no flash, no tracer */
+				fl &= ~(FX_SHOT | FX_OWN);
+			else {
+				float ahead = 20 * 8 / dist; /* someone else's: their barrel, toward the hit */
+				from[0] += (int32_t)(dx * ahead), from[1] += (int32_t)(dy * ahead), from[2] += (int32_t)(dz * ahead);
+			}
+		}
+		/* a shotgun's pellets share a flash: only the first of a volley keeps one */
+		if (fl & FX_SHOT)
+			for (int j = 0; j < MAX_FX; j++)
+				if (link.fx[j].born == linkframe && link.fx[j].flags & FX_SHOT && (link.fx[j].flags & FX_OWN) == (fl & FX_OWN) &&
+				    abs(link.fx[j].from[0] - from[0]) < 256 && abs(link.fx[j].from[1] - from[1]) < 256)
+					fl |= 4; /* 4: no flash of its own */
+		int n = link.nextfx++ % MAX_FX;
+		memcpy(link.fx[n].to, to, sizeof(to));
+		memcpy(link.fx[n].from, from, sizeof(from));
+		link.fx[n].born = linkframe;
+		link.fx[n].flags = (uint8_t)fl;
+	}
+}
+
+/* a quad facing the camera, centre c and half size h, in 1/8 units; a
+ * diamond (turned 45 degrees) when h is negative */
+static void fx_sprite(const ndscam_t *cam, const int32_t *c, int h)
+{
+	bool diamond = h < 0;
+	h = abs(h);
+	int rx = sinLerp(cam->yaw), ry = -cosLerp(cam->yaw); /* the camera's right, 4.12 */
+	int dx = rx * h >> 12, dy = ry * h >> 12;
+	int x = BW_NDS_CLAMP(c[0], -32000, 32000), y = BW_NDS_CLAMP(c[1], -32000, 32000), z = BW_NDS_CLAMP(c[2], -32000, 32000);
+	glBegin(GL_QUADS);
+	if (diamond) {
+		glVertex3v16(x, y, z - h * 3 / 2);
+		glVertex3v16(x + dx * 3 / 2, y + dy * 3 / 2, z);
+		glVertex3v16(x, y, z + h * 3 / 2);
+		glVertex3v16(x - dx * 3 / 2, y - dy * 3 / 2, z);
+	} else {
+		glVertex3v16(x - dx, y - dy, z - h);
+		glVertex3v16(x + dx, y + dy, z - h);
+		glVertex3v16(x + dx, y + dy, z + h);
+		glVertex3v16(x - dx, y - dy, z + h);
+	}
+	glEnd();
+}
+
+static void draw_fx(const ndscam_t *cam)
+{
+	/* our own gun's barrel, in front of the view model's tip: 10 units ahead,
+	 * a third of the way to the right edge and down (fov 70, the tip near
+	 * pixel 160,140), so it moves with the view and nothing covers it */
+	int32_t muzzle[3];
+	{
+		float sy = sinLerp(cam->yaw) / 4096.0f, cy = cosLerp(cam->yaw) / 4096.0f;
+		float sp = sinLerp(cam->pitch) / 4096.0f, cp = cosLerp(cam->pitch) / 4096.0f;
+		float f[3] = {cy * cp, sy * cp, sp}, r[3] = {sy, -cy, 0}, u[3] = {-cy * sp, -sy * sp, cp};
+		for (int k = 0; k < 3; k++)
+			muzzle[k] = cam->org[k] + (int32_t)((f[k] * 10 + r[k] * 3.2f - u[k] * 1.7f) * 8);
+	}
+	glBindTexture(GL_TEXTURE_2D, 0);
+	for (int i = 0; i < MAX_FX; i++) {
+		int age = linkframe - link.fx[i].born, id = 8 + i;
+		const int32_t *to = link.fx[i].to, *from = link.fx[i].flags & FX_OWN ? muzzle : link.fx[i].from;
+		if (!link.fx[i].flags && !to[0] && !to[1] && !to[2])
+			continue;
+		if (age < 0 || age >= FX_LIFE)
+			continue;
+		/* the muzzle flash, two refreshes; a cross of two quads */
+		if ((link.fx[i].flags & (FX_SHOT | 4)) == FX_SHOT && age < 3) {
+			glPolyFmt(POLY_ALPHA(26) | POLY_CULL_NONE | POLY_ID(id));
+			glColor(RGB15(31, 22, 6));
+			fx_sprite(cam, from, -(link.fx[i].flags & FX_OWN ? 5 : 3 * 8));
+			glPolyFmt(POLY_ALPHA(26) | POLY_CULL_NONE | POLY_ID(id + 16));
+			glColor(RGB15(31, 27, 12));
+			fx_sprite(cam, from, link.fx[i].flags & FX_OWN ? 4 : 2 * 8);
+			glPolyFmt(POLY_ALPHA(26) | POLY_CULL_NONE | POLY_ID(id + 24));
+			glColor(RGB15(31, 31, 24));
+			fx_sprite(cam, from, link.fx[i].flags & FX_OWN ? 3 : 10);
+		}
+		/* the tracer: a streak a third of the way long, crossing in 4 refreshes */
+		if (link.fx[i].flags & FX_SHOT && age < 4) {
+			float t1 = (age + 1) / 4.0f, t0 = BW_NDS_MAX(t1 - 0.35f, 0.0f);
+			float a[3], b[3], d[3], v[3], side[3], len;
+			for (int k = 0; k < 3; k++) {
+				a[k] = from[k] + (to[k] - from[k]) * t0, b[k] = from[k] + (to[k] - from[k]) * t1;
+				d[k] = b[k] - a[k], v[k] = a[k] - cam->org[k];
+			}
+			/* across the streak and the line of sight, so it faces us */
+			side[0] = d[1] * v[2] - d[2] * v[1], side[1] = d[2] * v[0] - d[0] * v[2], side[2] = d[0] * v[1] - d[1] * v[0];
+			len = sqrtf(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+			if (len > 0) {
+				for (int k = 0; k < 3; k++)
+					side[k] = side[k] / len * 4; /* half a unit */
+				glPolyFmt(POLY_ALPHA(20) | POLY_CULL_NONE | POLY_ID(id + 32));
+				glColor(RGB15(31, 29, 18));
+				glBegin(GL_QUADS);
+				glVertex3v16((int)(a[0] - side[0]), (int)(a[1] - side[1]), (int)(a[2] - side[2]));
+				glVertex3v16((int)(a[0] + side[0]), (int)(a[1] + side[1]), (int)(a[2] + side[2]));
+				glVertex3v16((int)(b[0] + side[0]), (int)(b[1] + side[1]), (int)(b[2] + side[2]));
+				glVertex3v16((int)(b[0] - side[0]), (int)(b[1] - side[1]), (int)(b[2] - side[2]));
+				glEnd();
+			}
+		}
+		/* the impact: a spark, then dust that grows and fades */
+		if (age < 3) {
+			glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE | POLY_ID(id));
+			glColor(RGB15(31, 28, 14));
+			fx_sprite(cam, to, 3 * 8);
+		} else {
+			int fade = 24 - age * 24 / FX_LIFE;
+			glPolyFmt(POLY_ALPHA(BW_NDS_MAX(fade, 1)) | POLY_CULL_NONE | POLY_ID(id));
+			glColor(RGB15(20, 19, 17));
+			fx_sprite(cam, to, 3 * 8 + age * 4);
+		}
+	}
+	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
+	glColor(RGB15(31, 31, 31));
 }
 
 /* which brush models are there and where the moved ones are, then the things
@@ -1164,7 +1324,7 @@ static void handle_ents(const uint8_t *d, int len)
 }
 
 /* ease the moved brush models toward where the server has them; it updates at 20 Hz */
-static void move_models(void)
+static void move_models(int dt)
 {
 	int n = BW_NDS_MIN(World_NumModels(), MAX_LINKMODELS);
 	for (int m = 1; m < n; m++) {
@@ -1172,13 +1332,15 @@ static void move_models(void)
 		int ang[3];
 		if (!lm->moved)
 			continue;
-		for (int c = 0; c < 3; c++) {
-			int32_t delta = lm->target[c] - lm->cur[c];
-			int16_t da = (int16_t)(lm->tang[c] - lm->cang[c]);
-			lm->cur[c] = delta > 1024 || delta < -1024 ? lm->target[c] : lm->cur[c] + delta / 3;
-			lm->cang[c] = (int16_t)(lm->cang[c] + (da > 8192 || da < -8192 ? da : da / 3));
+		for (int i = 0; i < dt; i++) /* a step for each refresh the last frame took */
+			for (int c = 0; c < 3; c++) {
+				int32_t delta = lm->target[c] - lm->cur[c];
+				int16_t da = (int16_t)(lm->tang[c] - lm->cang[c]);
+				lm->cur[c] = delta > 1024 || delta < -1024 ? lm->target[c] : lm->cur[c] + delta / 3;
+				lm->cang[c] = (int16_t)(lm->cang[c] + (da > 8192 || da < -8192 ? da : da / 3));
+			}
+		for (int c = 0; c < 3; c++)
 			ang[c] = lm->cang[c] / 2;
-		}
 		World_ModelState(m, true, lm->cur, ang);
 	}
 }
@@ -1388,9 +1550,9 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 }
 
 /* classic: left and right turn, L + up and down look */
-static void turn(ndscam_t *cam, uint32_t held)
+static void turn(ndscam_t *cam, uint32_t held, int dt)
 {
-	const int step = 32768 / 180;
+	const int step = 32768 / 180 * dt; /* 120 degrees a second */
 	if (!cfg.classic)
 		return;
 	if (held & KEY_L) {
@@ -1408,6 +1570,32 @@ static void turn(ndscam_t *cam, uint32_t held)
 	cam->yaw = (int16_t)cam->yaw;
 }
 
+/* the camera as drawn: Half-Life's view bob (cl_bob 0.01, cl_bobcycle 0.8,
+ * cl_bobup 0.5) and roll when strafing (cl_rollangle 2, cl_rollspeed 200),
+ * from how fast the server moves us; the view model bobs with it */
+static void view_motion(const ndscam_t *cam, ndscam_t *view, int dt)
+{
+	static int bobtime; /* refreshes */
+	float vx = link.vel[0] * 7.5f, vy = link.vel[1] * 7.5f; /* units a second */
+	float speed = sqrtf(vx * vx + vy * vy), cycle, bob, side, roll;
+	float yaw = cam->yaw * (6.2831853f / 32768.0f);
+	bobtime += dt;
+	cycle = (float)(bobtime % 48) / 48.0f; /* 0.8 s */
+	cycle = cycle < 0.5f ? 3.14159265f * cycle / 0.5f : 3.14159265f + 3.14159265f * (cycle - 0.5f) / 0.5f;
+	bob = speed * 0.01f;
+	bob = BW_NDS_CLAMP(bob * 0.3f + bob * 0.7f * sinf(cycle), -7.0f, 4.0f);
+	/* right is (sin yaw, -cos yaw) */
+	side = vx * sinf(yaw) - vy * cosf(yaw);
+	roll = fabsf(side) < 200.0f ? side * 2.0f / 200.0f : (side < 0 ? -2.0f : 2.0f);
+	*view = *cam;
+	view->org[2] += (int32_t)(bob * 8);
+	view->roll = (int)(roll * 32768.0f / 360.0f);
+	/* the eye goes up and down with the bob and the gun with it; on top of
+	 * that the gun moves forward and back by 0.4 of it, as in Half-Life */
+	Ents_ViewOfs[0] = (int32_t)(bob * 0.4f * 8);
+	Ents_ViewOfs[1] = Ents_ViewOfs[2] = 0;
+}
+
 /* the linked loop; returns why it ended */
 static const char *play(ndscam_t *cam)
 {
@@ -1417,12 +1605,16 @@ static const char *play(ndscam_t *cam)
 	ndsstats_t st = {0};
 	pkt_t p;
 	int secstart = Nds_Vblanks(), lastv = secstart, frames = 0, worst = 0, peak = 0, debugview = 0;
+	ndscam_t view;
 	screen_init();
 	pad_reset();
 	pad_draw();
-	link.lastrecv = 0;
-	for (int frame = 1;; frame++) {
-		int len, type, buttons;
+	link.lastrecv = Nds_Vblanks();
+	/* frame counts vblanks (60 a second) rather than loops, so turning,
+	 * easing, timeouts and animations keep their speed when drawing takes
+	 * two refreshes; dt is how many the last loop took */
+	for (int frame = Nds_Vblanks(), lastframe = frame - 1, lastsend = frame;; lastframe = frame, frame = Nds_Vblanks()) {
+		int len, type, buttons, dt = BW_NDS_CLAMP(frame - lastframe, 1, 4);
 		uint32_t held;
 		bool togame;
 		touchPosition tp = {0};
@@ -1435,10 +1627,12 @@ static const char *play(ndscam_t *cam)
 		/* SELECT: leave out the server's things, then its moved models too, to see what is what */
 		if (keysDown() & KEY_SELECT)
 			debugview = (debugview + 1) % 3;
-		turn(cam, held);
+		turn(cam, held, dt);
 		buttons = pad_frame(frame, held, cam, &togame, &tp) | key_buttons(held);
-		if (frame % 3 == 0)
+		if (frame - lastsend >= 3) { /* 20 a second */
 			send_input(cam, held, buttons, togame, &tp);
+			lastsend = frame;
+		}
 
 		while ((len = receive(buf, sizeof(buf), &from, &type)) > 0) {
 			const uint8_t *d = buf + 5;
@@ -1465,6 +1659,8 @@ static const char *play(ndscam_t *cam)
 				handle_models(d, len);
 			else if (type == L_STATS)
 				handle_stats(d, len);
+			else if (type == L_FX)
+				handle_fx(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -1478,26 +1674,35 @@ static const char *play(ndscam_t *cam)
 		}
 
 		/* ease toward where the server says we are; it updates at 20 Hz */
-		for (int k = 0; k < 3; k++) {
-			int32_t delta = link.target[k] - cam->org[k];
-			cam->org[k] = delta > 2048 || delta < -2048 ? link.target[k] : cam->org[k] + delta / 3;
+		/* toward where the server's last word says we are by now (moving on
+		 * at the speed the last two showed, for up to 3 refreshes), rather than
+		 * where it was: that is most of the lag that makes jumps feel floaty */
+		{
+			int ahead = BW_NDS_CLAMP(frame - link.viewframe, 0, 3);
+			for (int i = 0; i < dt; i++)
+				for (int k = 0; k < 3; k++) {
+					int32_t goal = link.target[k] + link.vel[k] * ahead, delta = goal - cam->org[k];
+					cam->org[k] = delta > 2048 || delta < -2048 ? goal : cam->org[k] + delta / 2;
+				}
 		}
 		if (debugview == 2)
 			World_ResetModels();
 		else
-			move_models();
+			move_models(dt);
 		linkframe = frame;
+		view_motion(cam, &view, dt);
 		if (World_Loaded()) {
 			if (debugview == 0)
-				add_studio_things(cam);
+				add_studio_things(&view);
 			else
 				Ents_Clear();
-			Ents_Draw(cam, &st);
+			Ents_Draw(&view, &st);
 		} else
-			World_SetView(cam);
+			World_SetView(&view);
 		if (debugview == 0)
 			draw_things();
-		draw_markers(cam);
+		draw_markers(&view);
+		draw_fx(&view);
 		{
 			int polys, verts;
 			Gpu_Counts(&polys, &verts);
@@ -1505,6 +1710,8 @@ static const char *play(ndscam_t *cam)
 		}
 		glFlush(0);
 		swiWaitForVBlank();
+		if (cfg.fps30 && Nds_Vblanks() - frame < 2)
+			swiWaitForVBlank(); /* fps=30: every frame takes two refreshes */
 		/* how fast this runs, on the bottom row: frames a second, the slowest frame, peak polygons */
 		{
 			int now = Nds_Vblanks();
@@ -1535,7 +1742,7 @@ done:
 
 void Link_Run(const uint16_t *pal)
 {
-	ndscam_t cam;
+	ndscam_t cam = {{0}};
 	int pick;
 	palette = pal;
 	read_config();

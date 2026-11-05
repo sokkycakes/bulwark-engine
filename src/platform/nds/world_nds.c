@@ -1222,6 +1222,7 @@ void World_SetView(const ndscam_t *cam)
 	static const m4x4 axes = {{0, 0, -4096, 0, -4096, 0, 0, 0, 0, 4096, 0, 0, 0, 0, 0, 4096}};
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
+	glRotateZi(cam->roll);
 	glRotateXi(-cam->pitch);
 	glRotateYi(-cam->yaw);
 	glMultMatrix4x4(&axes);

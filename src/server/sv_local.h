@@ -350,6 +350,7 @@ void SV_LinkInit(void);
 void SV_LinkReadPackets(void);
 void SV_LinkSend(void);
 void SV_LinkClientDropped(client_t *c, const char *reason);
+void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause); /* bullet impacts for a DS */
 client_t *SV_SpawnLinkClient(const char *name, int link);
 void SV_UpdateStats(client_t *c);
 void SV_ResetStats(client_t *c);

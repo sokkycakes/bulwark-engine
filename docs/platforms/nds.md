@@ -71,6 +71,7 @@ controls=touch      touch (default) or classic, see below
 hand=right          left: move with A B X Y and fire with R
 sens=100            aim speed in percent (100 turns 120 degrees across the screen)
 diag=0              hide the frame rate, polygons and models along the top screen's top edge
+fps=30              optional: cap at 30 fps (every frame takes two refreshes), for testing
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
@@ -199,6 +200,23 @@ shot replays it. It costs about 250 polygons.
 Baked models are Valve's data too: keep them out of git and public
 packages.
 
+## Feel: frame rate, view motion, effects
+
+Turning and the viewer's flying go by the refreshes a frame took, not by
+frames, so they keep their speed when a busy view drops to 30 fps. The
+linked client's jump key is held 8 refreshes, so a 30 fps frame can't drop
+it. The server sends the view 20 times a second; the DS eases toward where
+the last two said it is heading, up to 3 refreshes ahead, which removes
+most of the lag that made jumps feel floaty.
+
+The DS adds Half-Life's view motion itself: bob (`cl_bob` 0.01, cycle 0.8,
+up 0.5, -7..4), roll (2 degrees at 200 units a second) and the gun moving
+forward by 0.4 of the bob. The view model plays the sequence the server
+says (`STATS`). Bullet impacts (`FX`) draw as a spark and fading dust, our
+own shots add a muzzle flash at the view model's barrel and a tracer, and
+other players' and monsters' shots a flash and a tracer from their gun.
+These are untextured shapes; HL's sprites are not used.
+
 ## Map viewer controls
 
 | Button | Action |
@@ -210,7 +228,7 @@ packages.
 | A / Y | rise / sink |
 | touch and drag | look around |
 | START | back to the map list |
-| SELECT | steps through one pass, one pass with flicker, two passes, two passes with flicker |
+| SELECT | steps through one pass, one pass with flicker, one pass capped at 30 fps (with and without flicker), two passes, two passes with flicker |
 
 In the map list, the D-pad and A pick a map, or you can tap a name. The
 bottom screen shows the frame rate, faces, GPU vertices and polygons, and
@@ -284,6 +302,7 @@ there. These lines change a setting for the lines after them:
 | Line | Setting |
 |---|---|
 | `multipass on` / `off` | two passes |
+| `fps 30` / `fps 60` | cap one pass at 30 fps |
 | `flicker on` / `off` | models take turns |
 | `merge on` / `off` / `2` | joining faces at load; a number sets the light step |
 | `portals on` / `off` / `auto` | following portals instead of drawing the PVS |
