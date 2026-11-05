@@ -153,6 +153,8 @@ static struct {
 	int32_t vel[3];   /* how fast target moves, 1/8 units a refresh, from the last two VIEWs */
 	int viewframe;    /* when the last VIEW came */
 	bool haveview;
+	float pvel[3];        /* the player's velocity, units a second (VIEW) */
+	bool onground, crouch; /* VIEW flags 2 and 4 */
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
 	int health;
@@ -1115,6 +1117,13 @@ static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
 		mk->kind = m[6];
 		mk->rgb = (uint16_t)rd16(m + 7);
 	}
+	link.onground = d[24] & 2, link.crouch = d[24] & 4;
+	if (26 + count * 9 + 6 <= len)
+		for (int k = 0; k < 3; k++)
+			link.pvel[k] = (int16_t)rd16(d + 26 + count * 9 + k * 2);
+	else /* an older server: from the last two views */
+		for (int k = 0; k < 3; k++)
+			link.pvel[k] = link.vel[k] * 7.5f;
 }
 
 /* bullet impacts (docs/spec/link.md, FX): a puff where each hit, and for a
@@ -1570,30 +1579,89 @@ static void turn(ndscam_t *cam, uint32_t held, int dt)
 	cam->yaw = (int16_t)cam->yaw;
 }
 
-/* the camera as drawn: Half-Life's view bob (cl_bob 0.01, cl_bobcycle 0.8,
- * cl_bobup 0.5) and roll when strafing (cl_rollangle 2, cl_rollspeed 200),
- * from how fast the server moves us; the view model bobs with it */
+/* the view's motion, as the PC client makes it for the co-op game. This is a
+ * port of Nuclide's client code, which is what runs there (valve/csprogs.dat):
+ * - valve/src/client/viewmodel.qc Viewmodel_CalcBob: the bob (v_bob 0.01,
+ *   v_bobcycle 0.8, v_bobup 0.5, between -8 and 4 units), which
+ *   valve/src/client/camera.qc Camera_RunPosBob adds to the camera along its up;
+ * - camera.qc Camera_StrafeRoll (v_camroll 1): roll by 0.015 degrees per unit
+ *   a second of sideways speed;
+ * - src/client/viewbob.qc, cg_viewBobStyle 3 (the default): the view model
+ *   sits at the camera and swings with each footstep, drifts slowly, and
+ *   kicks down on landing. Nuclide's v_cambob (camera angle bob) is off by
+ *   default, so it isn't here. Velocity, on ground and crouching come from
+ *   the server's VIEW. */
+static struct {
+	float bobtime;                  /* Viewmodel_CalcBob */
+	float phase;                    /* ViewBob_QuakeCalc */
+	bool wasonground;
+	float fallspeed, landtime, landdepth;
+} vb;
+
+static float land_offset(float now)
+{
+	float t = now - vb.landtime;
+	if (vb.landdepth <= 0 || t < 0)
+		return 0;
+	if (t < 0.15f)
+		return vb.landdepth * (t / 0.15f);
+	t -= 0.15f;
+	if (t < 0.3f)
+		return vb.landdepth * (1 - t / 0.3f);
+	vb.landdepth = 0;
+	return 0;
+}
+
 static void view_motion(const ndscam_t *cam, ndscam_t *view, int dt)
 {
-	static int bobtime; /* refreshes */
-	float vx = link.vel[0] * 7.5f, vy = link.vel[1] * 7.5f; /* units a second */
-	float speed = sqrtf(vx * vx + vy * vy), cycle, bob, side, roll;
-	float yaw = cam->yaw * (6.2831853f / 32768.0f);
-	bobtime += dt;
-	cycle = (float)(bobtime % 48) / 48.0f; /* 0.8 s */
-	cycle = cycle < 0.5f ? 3.14159265f * cycle / 0.5f : 3.14159265f + 3.14159265f * (cycle - 0.5f) / 0.5f;
-	bob = speed * 0.01f;
-	bob = BW_NDS_CLAMP(bob * 0.3f + bob * 0.7f * sinf(cycle), -7.0f, 4.0f);
-	/* right is (sin yaw, -cos yaw) */
-	side = vx * sinf(yaw) - vy * cosf(yaw);
-	roll = fabsf(side) < 200.0f ? side * 2.0f / 200.0f : (side < 0 ? -2.0f : 2.0f);
+	const float pi = 3.14159265f, todeg = 32768.0f / 360.0f;
+	float ft = dt / 60.0f, now = Nds_Vblanks() / 60.0f;
+	float vx = link.pvel[0], vy = link.pvel[1];
+	float speed = sqrtf(vx * vx + vy * vy), bob, cyc;
+	float sy = sinLerp(cam->yaw) / 4096.0f, cy = cosLerp(cam->yaw) / 4096.0f;
+	float sp = sinLerp(cam->pitch) / 4096.0f, cp = cosLerp(cam->pitch) / 4096.0f;
+	int icycle;
+
+	/* Viewmodel_CalcBob */
+	icycle = (int)(vb.bobtime / 0.8f);
+	vb.bobtime += ft;
+	cyc = (vb.bobtime - icycle * 0.8f) / 0.8f;
+	cyc = pi * (cyc / 0.5f);
+	bob = BW_NDS_CLAMP(speed * 0.01f * sinf(cyc), -8.0f, 4.0f);
+
 	*view = *cam;
-	view->org[2] += (int32_t)(bob * 8);
-	view->roll = (int)(roll * 32768.0f / 360.0f);
-	/* the eye goes up and down with the bob and the gun with it; on top of
-	 * that the gun moves forward and back by 0.4 of it, as in Half-Life */
-	Ents_ViewOfs[0] = (int32_t)(bob * 0.4f * 8);
-	Ents_ViewOfs[1] = Ents_ViewOfs[2] = 0;
+	/* Camera_RunPosBob: along the camera's up (pitch up positive here) */
+	view->org[0] += (int32_t)(-cy * sp * bob * 8);
+	view->org[1] += (int32_t)(-sy * sp * bob * 8);
+	view->org[2] += (int32_t)(cp * bob * 8);
+	/* Camera_StrafeRoll: the right is (sin yaw, -cos yaw) */
+	view->roll = (int)((vx * sy - vy * cy) * 0.015f * todeg);
+
+	/* ViewBob_QuakeCalc */
+	if (speed < 5)
+		vb.phase = 0;
+	else if (link.onground)
+		vb.phase += ft * (link.crouch ? 2.0f : speed > 200 ? 1.6f : 1.2f);
+	if (!link.onground)
+		vb.fallspeed = BW_NDS_MAX(-link.pvel[2], 0.0f);
+	else if (!vb.wasonground) {
+		if (vb.fallspeed > 100)
+			vb.landdepth = BW_NDS_CLAMP(vb.fallspeed * 0.025f, 4.0f, 24.0f), vb.landtime = now;
+		vb.fallspeed = 0;
+	}
+	vb.wasonground = link.onground;
+
+	/* ViewBob_QuakeApply: the gun's origin is the camera's, so only the
+	 * swing, the drift and the landing move it against the view */
+	{
+		float swing = speed * fabsf(sinf(vb.phase * pi)) * 0.005f, side = (int)vb.phase & 1 ? -swing : swing;
+		float drift = (speed + 40) * sinf(now) * 0.01f, land = land_offset(now);
+		Ents_ViewAng[0] = (int)((swing + drift + land * 0.25f) * todeg);
+		Ents_ViewAng[1] = (int)((side + drift) * todeg);
+		Ents_ViewAng[2] = (int)((side + drift) * todeg);
+		Ents_ViewOfs[0] = Ents_ViewOfs[1] = 0;
+		Ents_ViewOfs[2] = (int32_t)(-land * 0.5f * 8);
+	}
 }
 
 /* the linked loop; returns why it ended */

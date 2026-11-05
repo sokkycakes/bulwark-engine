@@ -94,6 +94,7 @@ void Ents_Counts(int *loaded, int *failed);
 int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int ticks, int speed, int light); /* light -1: look it up; returns it */
 void Ents_SetViewModel(int mdl, int seq, int ticks, int light); /* the weapon in hand, -1 for none; light -1: a default */
 extern int32_t Ents_ViewOfs[3]; /* the view model moved by this (1/8 units: forward, left, up), for bob */
+extern int Ents_ViewAng[3];     /* and turned by this (libnds angles): pitch (nose down), yaw (left), roll (right) */
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
 /* Ents_Draw in parts, for two passes: Select culls and sorts after World_Begin;
  * DrawPass draws the models on one side of split2 (squared map units) */

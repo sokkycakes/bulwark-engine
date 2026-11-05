@@ -469,6 +469,8 @@ static void send_screen(link_t *l)
 	send_to(&l->from, &p);
 }
 
+static float efloat(int e, const char *name);
+
 static void send_view(link_t *l)
 {
 	pkt_t p;
@@ -490,6 +492,8 @@ static void send_view(link_t *l)
 		QC_EdictFields(sv.vm, e)[F.fixangle].f = 0;
 		flags |= 1;
 	}
+	/* 2: on the ground (FL_ONGROUND), 4: crouching (Nuclide's VFL_CROUCHING) */
+	flags |= ((int)efloat(e, "flags") & 512 ? 2 : 0) | ((int)efloat(e, "m_nuclideFlags") & 4 ? 4 : 0);
 	p_begin(&p, L_VIEW);
 	p_u32(&p, l->session);
 	p_u16(&p, ++l->viewseq);
@@ -524,6 +528,13 @@ static void send_view(link_t *l)
 	}
 	l->nummarkers = 0;
 	p.data[countpos] = (uint8_t)count;
+	/* after the markers: the player's velocity (units a second), for the
+	 * device's bob and roll, which the PC client works out from it */
+	{
+		int vofs = QC_FieldOfs(sv.vm, "velocity");
+		for (int k = 0; k < 3; k++)
+			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(vofs >= 0 ? QC_EdictFields(sv.vm, e)[vofs + k].f : 0, -32768, 32767));
+	}
 	send_to(&l->from, &p);
 }
 

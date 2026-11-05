@@ -209,9 +209,15 @@ it. The server sends the view 20 times a second; the DS eases toward where
 the last two said it is heading, up to 3 refreshes ahead, which removes
 most of the lag that made jumps feel floaty.
 
-The DS adds Half-Life's view motion itself: bob (`cl_bob` 0.01, cycle 0.8,
-up 0.5, -7..4), roll (2 degrees at 200 units a second) and the gun moving
-forward by 0.4 of the bob. The view model plays the sequence the server
+The view's motion is a port of the Nuclide client code the PC runs for the
+co-op game (valve/csprogs.dat), from the velocity, on-ground and crouch
+flags in `VIEW`: the camera bob of `valve/src/client/viewmodel.qc`
+(`Viewmodel_CalcBob`) along the camera's up, the strafe roll of
+`valve/src/client/camera.qc` (`Camera_StrafeRoll`, 0.015 degrees per unit a
+second sideways), and the view model swing, drift and landing kick of
+`src/client/viewbob.qc` (`cg_viewBobStyle 3`, the default). The DS turns
+the gun by the bob angles about the eye rather than adding them to the
+camera's angles, which differs only by a fraction of a degree. The view model plays the sequence the server
 says (`STATS`). Bullet impacts (`FX`) draw as a spark and fading dust, our
 own shots add a muzzle flash at the view model's barrel and a tracer, and
 other players' and monsters' shots a flash and a tracer from their gun.

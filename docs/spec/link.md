@@ -97,7 +97,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x82 | WELCOME | u32 session, u8 playernum, u16 spawncount, char map[64] |
 | 0x83 | REFUSE | char reason[64] |
 | 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
-| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags, u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15} |
+| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags (1 the game turned us, 2 on the ground, 4 crouching), u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15}, then s16 velocity[3] (units a second) |
 | 0x86 | KICK | u32 session, char reason[64] |
 | 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (16), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom)} |
 | 0x88 | MODELS | u32 session, u16 spawncount, u8 count, count × {u16 model, u8 len, char name[len]} |

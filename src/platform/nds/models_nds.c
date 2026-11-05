@@ -70,6 +70,7 @@ static int numents;
 static int viewmodel = -1;
 static int viewframe, viewlight = 24; /* its frame now, and its light */
 int32_t Ents_ViewOfs[3];
+int Ents_ViewAng[3];
 static int pal_owner; /* the texture that holds the palette */
 static const uint16_t *palette;
 static int ticks;
@@ -587,6 +588,11 @@ void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool with
 		const mdl_t *m = &mdls[viewmodel];
 		World_SetView(&eyecam);
 		glTranslatef32(Ents_ViewOfs[0], Ents_ViewOfs[1], Ents_ViewOfs[2]);
+		/* turned about the eye the way Quake turns an entity: yaw, then
+		 * pitch, then roll (map axes: x forward, y left, z up) */
+		glRotateZi(Ents_ViewAng[1]);
+		glRotateYi(Ents_ViewAng[0]);
+		glRotateXi(Ents_ViewAng[2]);
 		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
 		draw_mdl(m, viewframe, viewlight);
 		World_SetView(cam);
