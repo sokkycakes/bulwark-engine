@@ -49,6 +49,8 @@ pub struct Player {
     /// "ip:port" as the relay server saw it.
     pub public: String,
     pub lan: Vec<String>,
+    /// Split-screen guests on this console (at most 3).
+    pub guests: Vec<String>,
     pub rtt_ms: u32,
     /// 0 = not in a party.
     pub party: u32,
@@ -119,6 +121,8 @@ pub struct MatchSeat {
     #[index(btree)]
     pub match_id: u64,
     pub identity: Identity,
+    /// 0 = the console's own player, 1-3 = its guests.
+    pub slot: u8,
     pub team: u8,
 }
 
@@ -195,6 +199,16 @@ fn members_of(db: &spacetimedb::Local, party: u32) -> Vec<PartyMember> {
     let mut m: Vec<PartyMember> = db.party_member().party().filter(&party).collect();
     m.sort_by_key(|m| m.order);
     m
+}
+
+/// Local players on a console: its own player plus guests.
+fn locals(db: &spacetimedb::Local, who: Identity) -> usize {
+    db.player().identity().find(who).map(|p| 1 + p.guests.len()).unwrap_or(0)
+}
+
+/// Players in a party, counting split-screen guests.
+fn seats(db: &spacetimedb::Local, party: u32) -> usize {
+    db.party_member().party().filter(&party).map(|m| locals(db, m.identity)).sum()
 }
 
 fn cancel_ticket(ctx: &ReducerContext, party: u32) {
@@ -288,9 +302,19 @@ pub fn init(ctx: &ReducerContext) {
 
 /// Registers or refreshes the caller. Call it every 5 s (it is the
 /// keepalive). `relay_id` and `public` come from the relay server's
-/// `welcome`; `lan` is the client's own LAN endpoints.
+/// `welcome`; `lan` is the client's own LAN endpoints; `guests` names the
+/// console's split-screen guests. A change in guests restarts any search.
 #[reducer]
-pub fn hello(ctx: &ReducerContext, game: String, name: String, relay_id: u32, public: String, lan: Vec<String>) -> R {
+pub fn hello(
+    ctx: &ReducerContext,
+    game: String,
+    name: String,
+    relay_id: u32,
+    public: String,
+    lan: Vec<String>,
+    guests: Vec<String>,
+) -> R {
+    let guests: Vec<String> = guests.iter().take(bwlive_core::wire::MAX_GUESTS).map(|g| rules::clean_name(g)).collect();
     if relay_id == 0 {
         return Err("relay_id comes from the relay server's welcome".into());
     }
@@ -317,6 +341,10 @@ pub fn hello(ctx: &ReducerContext, game: String, name: String, relay_id: u32, pu
             p.relay_id = relay_id;
             p.public = public;
             p.lan = lan;
+            if p.guests != guests && p.party != 0 {
+                cancel_ticket(ctx, p.party);
+            }
+            p.guests = guests;
             p.last_hello = ctx.timestamp;
             ctx.db.player().identity().update(p);
         }
@@ -329,6 +357,7 @@ pub fn hello(ctx: &ReducerContext, game: String, name: String, relay_id: u32, pu
                 status: String::new(),
                 public,
                 lan,
+                guests,
                 rtt_ms: 0,
                 party: 0,
                 last_hello: ctx.timestamp,
@@ -384,7 +413,7 @@ pub fn party_join(ctx: &ReducerContext, code: String) -> R {
     if pt.flags & rules::FLAG_JOINABLE == 0 && invite.is_none() {
         return Err("that party is invite-only".into());
     }
-    if members_of(&ctx.db, pt.id).len() >= pt.max as usize {
+    if seats(&ctx.db, pt.id) + 1 + p.guests.len() > pt.max as usize {
         return Err("party full".into());
     }
     if let Some(i) = invite {
@@ -450,7 +479,7 @@ pub fn queue(ctx: &ReducerContext, playlist: String, seniority: u32) -> R {
     if pt.leader != p.identity {
         return Err("only the party leader can search".into());
     }
-    if members_of(&ctx.db, pid).len() > pl.team_size as usize {
+    if seats(&ctx.db, pid) > pl.team_size as usize {
         return Err("party too big for that playlist".into());
     }
     cancel_ticket(ctx, pid);
@@ -569,8 +598,10 @@ pub fn tick(ctx: &ReducerContext, _arg: MatcherTick) -> R {
 
 fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
     let now = ctx.timestamp;
-    // Members are numbered for the matcher; `who` maps back to identities.
+    // Seats are numbered for the matcher; `who` maps each back to its
+    // console's identity and slot (guests get their own seats).
     let mut who: Vec<Identity> = Vec::new();
+    let mut slot_of: Vec<u8> = Vec::new();
     let mut parties: Vec<u32> = Vec::new();
     let mut tickets: Vec<CoreTicket> = Vec::new();
     for t in ctx.db.ticket().iter().filter(|t| t.playlist == pl.id) {
@@ -580,11 +611,13 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
         let mut nums = Vec::new();
         let mut rtt = 0;
         for m in &members {
-            if let Some(p) = ctx.db.player().identity().find(m.identity) {
-                rtt = rtt.max(p.rtt_ms);
+            let Some(p) = ctx.db.player().identity().find(m.identity) else { continue };
+            rtt = rtt.max(p.rtt_ms);
+            for slot in 0..=p.guests.len() {
+                nums.push(who.len() as u64);
+                who.push(m.identity);
+                slot_of.push(slot as u8);
             }
-            nums.push(who.len() as u64);
-            who.push(m.identity);
         }
         parties.push(t.party);
         tickets.push(CoreTicket {
@@ -614,12 +647,13 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
         };
         ctx.db.game_match().insert(GameMatch { id, playlist: pl.id.clone(), host: who[f.host as usize], made: now });
         for (m, team) in &f.seats {
-            ctx.db.match_seat().insert(MatchSeat { id: 0, match_id: id, identity: who[*m as usize], team: *team });
+            let (identity, slot) = (who[*m as usize], slot_of[*m as usize]);
+            ctx.db.match_seat().insert(MatchSeat { id: 0, match_id: id, identity, slot, team: *team });
         }
         for (i, &ti) in f.tickets.iter().enumerate() {
             for &tj in &f.tickets[i + 1..] {
-                for &a in &tickets[ti].members {
-                    for &b in &tickets[tj].members {
+                for &a in tickets[ti].members.iter().filter(|&&m| slot_of[m as usize] == 0) {
+                    for &b in tickets[tj].members.iter().filter(|&&m| slot_of[m as usize] == 0) {
                         let key = pair_key(who[a as usize], who[b as usize]);
                         if ctx.db.recent_pair().key().find(key.clone()).is_some() {
                             ctx.db.recent_pair().key().update(RecentPair { key, at: now });
@@ -645,14 +679,14 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
 // --- reading --------------------------------------------------------------------
 
 fn member_json(p: &Player) -> Value {
-    json!({ "id": p.relay_id, "name": p.name, "public": p.public, "lan": p.lan })
+    json!({ "id": p.relay_id, "name": p.name, "public": p.public, "lan": p.lan, "guests": p.guests })
 }
 
 /// Everything about the caller as JSON:
 /// `{ "id", "public", "party": {code, leader, max, flags, info, members:
-/// [{id, name, public, lan}]} | null, "invites": [{from, name, code}],
-/// "queue": {playlist, stage, waited, searching} | null, "match": {id,
-/// playlist, host, seats: [{id, team, name, public, lan}]} | null }`.
+/// [{id, name, public, lan, guests}]} | null, "invites": [{from, name,
+/// code}], "queue": {playlist, stage, waited, searching} | null, "match":
+/// {id, playlist, host, seats: [{id, slot, team, name, public, lan}]} | null }`.
 /// Ids are relay ids. Poll it about once a second while something is going on.
 #[procedure]
 pub fn state(ctx: &mut ProcedureContext) -> Result<String, String> {
@@ -681,7 +715,7 @@ pub fn state(ctx: &mut ProcedureContext) -> Result<String, String> {
                     .ticket()
                     .iter()
                     .filter(|x| x.playlist == t.playlist)
-                    .map(|x| db.party_member().party().filter(&x.party).count())
+                    .map(|x| seats(db, x.party))
                     .sum();
                 out["queue"] = json!({
                     "playlist": t.playlist,
@@ -696,9 +730,12 @@ pub fn state(ctx: &mut ProcedureContext) -> Result<String, String> {
                     .filter(&m.id)
                     .filter_map(|s| {
                         db.player().identity().find(s.identity).map(|p| {
-                            let mut v = member_json(&p);
-                            v["team"] = json!(s.team);
-                            v
+                            let name = match s.slot {
+                                0 => p.name.clone(),
+                                n => p.guests.get(n as usize - 1).cloned().unwrap_or_default(),
+                            };
+                            json!({ "id": p.relay_id, "slot": s.slot, "team": s.team, "name": name,
+                                    "public": p.public, "lan": p.lan })
                         })
                     })
                     .collect();

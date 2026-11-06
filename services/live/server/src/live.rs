@@ -1,6 +1,6 @@
 //! All server state and message handling.
 
-use bwlive_core::wire::{self, err, gone, t, Client, Listed, Member, Server, STAGE_NONE};
+use bwlive_core::wire::{self, err, gone, t, Client, Listed, Member, Seat, Server, MAX_GUESTS, STAGE_NONE};
 use bwlive_core::{code, match_tickets, party, Playlist, Ticket};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -72,6 +72,8 @@ struct Player {
     game: String,
     name: String,
     lan: Vec<SocketAddr>,
+    /// Split-screen guests on this console.
+    guests: Vec<String>,
     status: String,
     last_hello: Instant,
     party: Option<u32>,
@@ -192,9 +194,9 @@ impl Live {
         }
         let Some(msg) = Client::decode(ty, body) else { return };
 
-        if let Client::Hello { token, game, name, lan } = msg {
+        if let Client::Hello { token, game, name, lan, guests } = msg {
             if len >= MIN_HELLO {
-                self.hello(from, token, &game, &name, lan, now);
+                self.hello(from, token, &game, &name, lan, guests, now);
             }
             return;
         }
@@ -260,7 +262,17 @@ impl Live {
         }
     }
 
-    fn hello(&mut self, from: SocketAddr, token: u64, game: &str, name: &str, lan: Vec<SocketAddr>, now: Instant) {
+    #[allow(clippy::too_many_arguments)]
+    fn hello(
+        &mut self,
+        from: SocketAddr,
+        token: u64,
+        game: &str,
+        name: &str,
+        lan: Vec<SocketAddr>,
+        guests: Vec<String>,
+        now: Instant,
+    ) {
         let id = match self.by_addr.get(&from).copied() {
             Some(id) if self.players[&id].token == token => id,
             other => {
@@ -299,6 +311,7 @@ impl Live {
                             game: String::new(),
                             name: String::new(),
                             lan: Vec::new(),
+                            guests: Vec::new(),
                             status: String::new(),
                             last_hello: now,
                             party: None,
@@ -323,9 +336,38 @@ impl Live {
         p.game = party::clip(game, 32);
         p.name = party::clean_name(name);
         p.lan = lan.into_iter().take(4).collect();
+        let guests: Vec<String> = guests.iter().take(MAX_GUESTS).map(|g| party::clean_name(g)).collect();
+        let changed = p.guests != guests;
+        p.guests = guests;
+        let pid = p.party;
         p.ping = Some((nonce, now));
         self.send(id, Server::Welcome { id, public: from, interval: HELLO_INTERVAL });
         self.send(id, Server::Ping { nonce });
+        // A guest joined or left the console: the party's seat count
+        // changed, so any search starts over.
+        if let (true, Some(pid)) = (changed, pid) {
+            self.cancel_ticket(pid);
+            self.broadcast_party(pid);
+        }
+    }
+
+    /// Local players on a console: its own player plus guests.
+    fn locals(&self, id: u32) -> usize {
+        self.players.get(&id).map(|p| 1 + p.guests.len()).unwrap_or(0)
+    }
+
+    /// Players in a party, counting split-screen guests.
+    fn seats(&self, pid: u32) -> usize {
+        self.parties[&pid].members.iter().map(|m| self.locals(m.0)).sum()
+    }
+
+    /// Name of a seat: slot 0 is the console's player, then its guests.
+    fn seat_name(&self, id: u32, slot: u8) -> String {
+        let Some(p) = self.players.get(&id) else { return String::new() };
+        match slot {
+            0 => p.name.clone(),
+            n => p.guests.get(n as usize - 1).cloned().unwrap_or_default(),
+        }
     }
 
     /// Removes a player entirely (bye or timeout).
@@ -346,7 +388,7 @@ impl Live {
             .members
             .iter()
             .filter_map(|(m, _)| self.players.get(m).map(|p| (m, p)))
-            .map(|(m, p)| Member { id: *m, name: p.name.clone(), public: p.addr, lan: p.lan.clone() })
+            .map(|(m, p)| Member { id: *m, name: p.name.clone(), public: p.addr, lan: p.lan.clone(), guests: p.guests.clone() })
             .collect();
         Server::Party {
             code: pt.code.clone(),
@@ -421,7 +463,7 @@ impl Live {
         if pt.flags & party::FLAG_JOINABLE == 0 && !pt.invited.contains(&id) {
             return self.error(id, err::NO_CODE, "that party is invite-only");
         }
-        if pt.members.len() >= pt.max as usize {
+        if self.seats(pid) + self.locals(id) > pt.max as usize {
             return self.error(id, err::PARTY_FULL, "party full");
         }
         self.leave_party(id, gone::LEFT);
@@ -504,11 +546,12 @@ impl Live {
                 pid
             }
         };
+        let seats = self.seats(pid);
         let pt = self.parties.get_mut(&pid).unwrap();
         if pt.leader != id {
             return self.error(id, err::NOT_LEADER, "only the party leader can search");
         }
-        if pt.members.len() > pl.team_size as usize {
+        if seats > pl.team_size as usize {
             return self.error(id, err::BAD, "party too big for that playlist");
         }
         pt.ticket = Some(Queued { playlist: pl.id.clone(), seniority, since: now });
@@ -537,7 +580,7 @@ impl Live {
         self.parties
             .values()
             .filter(|p| p.ticket.as_ref().is_some_and(|q| q.playlist == playlist))
-            .map(|p| p.members.len())
+            .flat_map(|p| p.members.iter().map(|m| self.locals(m.0)))
             .sum::<usize>()
             .min(u16::MAX as usize) as u16
     }
@@ -666,7 +709,11 @@ impl Live {
             keys.push(*pid);
             tickets.push(Ticket {
                 key: *pid as u64,
-                members: members.iter().map(|m| m.0 as u64).collect(),
+                // One matcher member per seat: console id << 8 | slot.
+                members: members
+                    .iter()
+                    .flat_map(|m| (0..self.locals(m.0) as u64).map(move |slot| (m.0 as u64) << 8 | slot))
+                    .collect(),
                 seniority: q.seniority,
                 rtt_ms: rtt,
                 waited: now.saturating_duration_since(q.since).as_secs() as u32,
@@ -679,7 +726,7 @@ impl Live {
         let formed = {
             let players = &self.players;
             let recent = &self.recent;
-            let tok = |x: u64| players.get(&(x as u32)).map(|p| p.token).unwrap_or(0);
+            let tok = |x: u64| players.get(&((x >> 8) as u32)).map(|p| p.token).unwrap_or(0);
             let was_recent = |x: u64, y: u64| {
                 let (a, b) = (tok(x), tok(y));
                 let k = if a < b { (a, b) } else { (b, a) };
@@ -690,22 +737,30 @@ impl Live {
 
         for f in formed {
             let mid = self.rand();
-            let seats: Vec<(u32, u8, String)> = f
+            let seats: Vec<Seat> = f
                 .seats
                 .iter()
-                .map(|(m, team)| (*m as u32, *team, self.players.get(&(*m as u32)).map(|p| p.name.clone()).unwrap_or_default()))
+                .map(|(m, team)| {
+                    let (id, slot) = ((*m >> 8) as u32, (*m & 0xff) as u8);
+                    Seat { id, slot, team: *team, name: self.seat_name(id, slot) }
+                })
                 .collect();
-            let msg = Server::Match { id: mid, playlist: pl.id.clone(), host: f.host as u32, seats: seats.clone() };
-            for (m, _, _) in &seats {
-                self.send(*m, msg.clone());
+            let msg = Server::Match { id: mid, playlist: pl.id.clone(), host: (f.host >> 8) as u32, seats: seats.clone() };
+            let mut consoles: Vec<u32> = seats.iter().map(|s| s.id).collect();
+            consoles.dedup();
+            for c in consoles {
+                self.send(c, msg.clone());
             }
             // Introduce and remember every pair from different parties.
             for (i, &ti) in f.tickets.iter().enumerate() {
                 for &tj in &f.tickets[i + 1..] {
-                    for &a in &tickets[ti].members {
-                        for &b in &tickets[tj].members {
-                            self.introduce(a as u32, b as u32);
-                            let (x, y) = (self.players[&(a as u32)].token, self.players[&(b as u32)].token);
+                    // Consoles, not seats: guests share their console's path.
+                    let ca: Vec<u32> = tickets[ti].members.iter().filter(|m| *m & 0xff == 0).map(|m| (m >> 8) as u32).collect();
+                    let cb: Vec<u32> = tickets[tj].members.iter().filter(|m| *m & 0xff == 0).map(|m| (m >> 8) as u32).collect();
+                    for &a in &ca {
+                        for &b in &cb {
+                            self.introduce(a, b);
+                            let (x, y) = (self.players[&a].token, self.players[&b].token);
                             self.recent.insert(if x < y { (x, y) } else { (y, x) }, now);
                         }
                     }
@@ -799,7 +854,11 @@ mod tests {
             self.take(out);
         }
         fn hello(&mut self, n: u16, name: &str) -> u32 {
-            self.send(n, Client::Hello { token: 1000 + n as u64, game: "stiletto".into(), name: name.into(), lan: vec![] });
+            self.hello_with(n, name, &[])
+        }
+        fn hello_with(&mut self, n: u16, name: &str, guests: &[&str]) -> u32 {
+            let guests = guests.iter().map(|g| g.to_string()).collect();
+            self.send(n, Client::Hello { token: 1000 + n as u64, game: "stiletto".into(), name: name.into(), lan: vec![], guests });
             let id = self.inbox[&addr(n)].iter().find_map(|m| match m {
                 Server::Welcome { id, public, .. } => {
                     assert_eq!(*public, addr(n));
@@ -840,7 +899,7 @@ mod tests {
     #[test]
     fn short_hello_and_strangers_get_nothing() {
         let mut n = Net::new(Config::default());
-        let b = Client::Hello { token: 1, game: "g".into(), name: "n".into(), lan: vec![] }.encode();
+        let b = Client::Hello { token: 1, game: "g".into(), name: "n".into(), lan: vec![], guests: vec![] }.encode();
         assert!(n.live.handle(addr(1), &b, n.now).is_empty());
         assert!(n.live.handle(addr(1), &Client::List.encode(), n.now).is_empty());
     }
@@ -928,6 +987,62 @@ mod tests {
     }
 
     #[test]
+    fn split_screen_guests_take_seats() {
+        let mut n = Net::new(Config::default());
+        // A console with two local players queues 2v2 against two solos.
+        let couch = n.hello_with(1, "sokky", &["sokky (2)"]);
+        let b = n.hello(2, "bob");
+        let c = n.hello(3, "cat");
+        n.send(1, Client::Queue { playlist: "2v2".into(), seniority: 5 });
+        let to_couch = n.got(1);
+        assert!(to_couch.iter().any(|m| matches!(m, Server::Party { members, .. } if members[0].guests == vec!["sokky (2)".to_string()])));
+        assert!(to_couch.iter().any(|m| matches!(m, Server::QueueStatus { searching: 2, .. })));
+        n.send(2, Client::Queue { playlist: "2v2".into(), seniority: 5 });
+        n.send(3, Client::Queue { playlist: "2v2".into(), seniority: 5 });
+        n.got(2);
+        n.got(3);
+        n.tick(1);
+        let to_couch = n.got(1);
+        let seats = to_couch
+            .iter()
+            .find_map(|m| match m {
+                Server::Match { seats, host, .. } => {
+                    assert_eq!(*host, couch);
+                    Some(seats.clone())
+                }
+                _ => None,
+            })
+            .expect("match");
+        assert_eq!(seats.len(), 4);
+        let couch_seats: Vec<&Seat> = seats.iter().filter(|s| s.id == couch).collect();
+        assert_eq!(couch_seats.len(), 2);
+        assert_eq!(couch_seats[0].team, couch_seats[1].team);
+        assert_eq!(couch_seats[1].name, "sokky (2)");
+        let other = seats.iter().filter(|s| s.id == b || s.id == c).map(|s| s.team).collect::<Vec<_>>();
+        assert!(other.iter().all(|t| *t != couch_seats[0].team));
+        // One match message per console, not per seat.
+        assert_eq!(to_couch.iter().filter(|m| matches!(m, Server::Match { .. })).count(), 1);
+
+        // Three guests make four local players: too many for a 2v2 party.
+        n.hello_with(4, "dan", &["d2", "d3", "d4"]);
+        n.got(4);
+        n.send(4, Client::Queue { playlist: "2v2".into(), seniority: 1 });
+        assert!(n.got(4).iter().any(|m| matches!(m, Server::Error { code: err::BAD, .. })));
+    }
+
+    #[test]
+    fn guest_counts_against_party_size() {
+        let mut n = Net::new(Config::default());
+        n.hello(1, "alice");
+        n.hello_with(2, "bob", &["bob (2)"]);
+        n.send(1, Client::PartyCreate { max: 2, flags: party::FLAG_JOINABLE, info: String::new() });
+        let code = party_code(&n.got(1));
+        n.got(2);
+        n.send(2, Client::PartyJoin { code });
+        assert!(n.got(2).iter().any(|m| matches!(m, Server::Error { code: err::PARTY_FULL, .. })));
+    }
+
+    #[test]
     fn party_change_cancels_search() {
         let mut n = Net::new(Config::default());
         let _a = n.hello(1, "alice");
@@ -983,7 +1098,7 @@ mod tests {
         let a = n.hello(1, "alice");
         n.send(1, Client::PartyCreate { max: 2, flags: 1, info: String::new() });
         // Same token from a new address keeps the id and the party.
-        n.send(9, Client::Hello { token: 1001, game: "stiletto".into(), name: "alice".into(), lan: vec![] });
+        n.send(9, Client::Hello { token: 1001, game: "stiletto".into(), name: "alice".into(), lan: vec![], guests: vec![] });
         assert!(n.got(9).iter().any(|m| matches!(m, Server::Welcome { id, .. } if *id == a)));
         assert_eq!(n.live.parties.len(), 1);
         n.tick(21);

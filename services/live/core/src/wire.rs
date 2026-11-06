@@ -61,10 +61,14 @@ pub mod gone {
 }
 
 pub const STAGE_NONE: u8 = 255;
+/// Split-screen guests per console (so four local players in all).
+pub const MAX_GUESTS: usize = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Client {
-    Hello { token: u64, game: String, name: String, lan: Vec<SocketAddr> },
+    /// `guests`: names of the other local (split-screen) players on this
+    /// console, at most 3. Zero padding reads as no guests.
+    Hello { token: u64, game: String, name: String, lan: Vec<SocketAddr>, guests: Vec<String> },
     Bye,
     PartyCreate { max: u8, flags: u8, info: String },
     PartyJoin { code: String },
@@ -86,6 +90,18 @@ pub struct Member {
     pub name: String,
     pub public: SocketAddr,
     pub lan: Vec<SocketAddr>,
+    /// Split-screen guests playing on this member's console.
+    pub guests: Vec<String>,
+}
+
+/// A seat in a match: a console (`id`) and which of its local players
+/// (`slot`, 0 = the console's own player, 1-3 = guests).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seat {
+    pub id: u32,
+    pub slot: u8,
+    pub team: u8,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +122,7 @@ pub enum Server {
     Introduce { peer: u32, name: String, public: SocketAddr, lan: Vec<SocketAddr>, nonce: u64 },
     Forward { from: u32, payload: Vec<u8> },
     QueueStatus { playlist: String, stage: u8, waited: u16, searching: u16 },
-    Match { id: u64, playlist: String, host: u32, seats: Vec<(u32, u8, String)> },
+    Match { id: u64, playlist: String, host: u32, seats: Vec<Seat> },
     Players { list: Vec<Listed> },
     Ping { nonce: u32 },
 }
@@ -173,6 +189,15 @@ impl W {
         }
         self
     }
+    /// `u8` count, then that many `str`s (at most 3: guests).
+    pub fn strs(&mut self, list: &[String]) -> &mut Self {
+        let n = list.len().min(MAX_GUESTS);
+        self.0.push(n as u8);
+        for s in &list[..n] {
+            self.str(s);
+        }
+        self
+    }
     pub fn bytes(&mut self, b: &[u8]) -> &mut Self {
         self.0.extend_from_slice(b);
         self
@@ -233,6 +258,10 @@ impl<'a> R<'a> {
         let n = self.u8()?;
         (0..n).map(|_| self.addr()).collect()
     }
+    pub fn strs(&mut self) -> Option<Vec<String>> {
+        let n = (self.u8()? as usize).min(MAX_GUESTS);
+        (0..n).map(|_| self.str()).collect()
+    }
     pub fn rest(&mut self) -> Vec<u8> {
         let r = self.b[self.at..].to_vec();
         self.at = self.b.len();
@@ -251,9 +280,9 @@ pub fn header(b: &[u8]) -> Option<(u8, u8, &[u8])> {
 impl Client {
     pub fn encode(&self) -> Vec<u8> {
         let w = match self {
-            Client::Hello { token, game, name, lan } => {
+            Client::Hello { token, game, name, lan, guests } => {
                 let mut w = W::new(t::HELLO);
-                w.u64(*token).str(game).str(name).addrs(lan);
+                w.u64(*token).str(game).str(name).addrs(lan).strs(guests);
                 w
             }
             Client::Bye => W::new(t::BYE),
@@ -313,7 +342,12 @@ impl Client {
     pub fn decode(ty: u8, body: &[u8]) -> Option<Client> {
         let mut r = R::new(body);
         Some(match ty {
-            t::HELLO => Client::Hello { token: r.u64()?, game: r.str()?, name: r.str()?, lan: r.addrs().unwrap_or_default() },
+            t::HELLO => {
+                let (token, game, name) = (r.u64()?, r.str()?, r.str()?);
+                let lan = r.addrs().unwrap_or_default();
+                let guests = r.strs().unwrap_or_default();
+                Client::Hello { token, game, name, lan, guests }
+            }
             t::BYE => Client::Bye,
             t::PARTY_CREATE => Client::PartyCreate { max: r.u8()?, flags: r.u8()?, info: r.str().unwrap_or_default() },
             t::PARTY_JOIN => Client::PartyJoin { code: r.str()? },
@@ -349,7 +383,7 @@ impl Server {
                 let mut w = W::new(t::PARTY);
                 w.str(code).u32(*leader).u8(*max).u8(*flags).str(info).u8(members.len() as u8);
                 for m in members {
-                    w.u32(m.id).str(&m.name).addr(&m.public).addrs(&m.lan);
+                    w.u32(m.id).str(&m.name).addr(&m.public).addrs(&m.lan).strs(&m.guests);
                 }
                 w
             }
@@ -381,8 +415,8 @@ impl Server {
             Server::Match { id, playlist, host, seats } => {
                 let mut w = W::new(t::MATCH);
                 w.u64(*id).str(playlist).u32(*host).u8(seats.len() as u8);
-                for (p, team, name) in seats {
-                    w.u32(*p).u8(*team).str(name);
+                for s in seats {
+                    w.u32(s.id).u8(s.slot).u8(s.team).str(&s.name);
                 }
                 w
             }
@@ -425,7 +459,7 @@ impl Server {
                 let n = r.u8()?;
                 let mut members = Vec::new();
                 for _ in 0..n {
-                    members.push(Member { id: r.u32()?, name: r.str()?, public: r.addr()?, lan: r.addrs()? });
+                    members.push(Member { id: r.u32()?, name: r.str()?, public: r.addr()?, lan: r.addrs()?, guests: r.strs()? });
                 }
                 Server::Party { code, leader, max, flags, info, members }
             }
@@ -441,7 +475,7 @@ impl Server {
                 let n = r.u8()?;
                 let mut seats = Vec::new();
                 for _ in 0..n {
-                    seats.push((r.u32()?, r.u8()?, r.str()?));
+                    seats.push(Seat { id: r.u32()?, slot: r.u8()?, team: r.u8()?, name: r.str()? });
                 }
                 Server::Match { id, playlist, host, seats }
             }
@@ -512,7 +546,7 @@ mod tests {
     fn round_trips() {
         let a: SocketAddr = "203.0.113.5:27500".parse().unwrap();
         let b6: SocketAddr = "[2001:db8::1]:1234".parse().unwrap();
-        rt_client(Client::Hello { token: 0x0102030405060708, game: "stiletto".into(), name: "sokky".into(), lan: vec![a, b6] });
+        rt_client(Client::Hello { token: 0x0102030405060708, game: "stiletto".into(), name: "sokky".into(), lan: vec![a, b6], guests: vec!["sokky (2)".into()] });
         rt_client(Client::PartyCreate { max: 4, flags: 1, info: "{}".into() });
         rt_client(Client::Relay { to: 9, payload: vec![1, 2, 3] });
         rt_client(Client::Queue { playlist: "duel".into(), seniority: 42 });
@@ -520,15 +554,28 @@ mod tests {
         rt_server(Server::Welcome { id: 3, public: a, interval: 5 });
         rt_server(Server::Party {
             code: "ABCDEF".into(), leader: 1, max: 4, flags: 1, info: "x".into(),
-            members: vec![Member { id: 1, name: "a".into(), public: a, lan: vec![b6] }],
+            members: vec![Member { id: 1, name: "a".into(), public: a, lan: vec![b6], guests: vec!["g".into()] }],
         });
         rt_server(Server::Introduce { peer: 2, name: "b".into(), public: b6, lan: vec![], nonce: 99 });
-        rt_server(Server::Match { id: 5, playlist: "duel".into(), host: 1, seats: vec![(1, 0, "a".into()), (2, 1, "b".into())] });
+        rt_server(Server::Match { id: 5, playlist: "duel".into(), host: 1, seats: vec![
+            Seat { id: 1, slot: 0, team: 0, name: "a".into() },
+            Seat { id: 1, slot: 1, team: 0, name: "a (2)".into() },
+            Seat { id: 2, slot: 0, team: 1, name: "b".into() },
+        ] });
         rt_server(Server::Players { list: vec![Listed { id: 1, name: "a".into(), status: "idle".into(), code: "".into() }] });
         let p = Peer::Punch { from: 1, to: 2, nonce: 3 };
         let enc = p.encode();
         let (_, ty, body) = header(&enc).unwrap();
         assert_eq!(Peer::decode(ty, body), Some(p));
+    }
+
+    #[test]
+    fn padded_hello_has_no_guests() {
+        let mut b = Client::Hello { token: 1, game: "g".into(), name: "n".into(), lan: vec![], guests: vec![] }.encode();
+        b.resize(64, 0);
+        let (_, ty, body) = header(&b).unwrap();
+        let Some(Client::Hello { guests, .. }) = Client::decode(ty, body) else { panic!() };
+        assert!(guests.is_empty());
     }
 
     #[test]

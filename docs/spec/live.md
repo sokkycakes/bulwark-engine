@@ -34,6 +34,16 @@ them.
   present member), a size limit, and an opaque `info` string that the game
   owns (Stiletto puts its lobby summary there as JSON). The party's lobby
   host is the leader; the game decides who hosts a match.
+- **Guests:** split-screen players on the same console, Xbox 360 style. A
+  player's `hello` names up to three guests, so one console holds up to four
+  local players. A guest has no token or id of their own: they ride on their
+  console's connection, address and party, and are always in the same party
+  (so the same team) as their console. Guests count toward a party's size
+  and a match's seats. A match names each seat by console `id` and `slot`
+  (0 the console's own player, 1-3 its guests). Sending `hello` with a
+  different guest list (someone picked up or put down a controller) updates
+  the party and restarts any search. Introductions and punching are per
+  console.
 - **Ticket:** a party waiting in a playlist's queue.
 - **Playlist:** a queue with its rules (team size, teams, how the search
   widens). Defined in `playlists.json` (standalone) or the `playlist` table.
@@ -54,6 +64,7 @@ type byte. Integers are big-endian. Types used below:
 - `str`: `u8` length, then that many bytes of UTF-8 (at most 255).
 - `addr`: `u8` family (`4` or `6`), the address (4 or 16 bytes), `u16` port.
 - `addrs`: `u8` count, then that many `addr`s.
+- `strs`: `u8` count, then that many `str`s (guest names, at most 3).
 
 A datagram is at most 1200 bytes, so it survives any path MTU. Unknown types
 are ignored, and a datagram shorter than its type needs is dropped.
@@ -67,7 +78,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 
 | Type | Name | Body | Answer |
 |---|---|---|---|
-| 1 | `hello` | `u64` token, `str` game, `str` name, `addrs` LAN endpoints | `welcome`, every 5 s; it is also the keepalive |
+| 1 | `hello` | `u64` token, `str` game, `str` name, `addrs` LAN endpoints, `strs` guests | `welcome`, every 5 s; it is also the keepalive |
 | 2 | `bye` | | none; the player is dropped at once |
 | 3 | `party_create` | `u8` max members (2-16), `u8` flags (bit 0: joinable by code), `str` info | `party` |
 | 4 | `party_join` | `str` code | `party`, or `error` |
@@ -88,13 +99,13 @@ client that stops hearing from the server simply keeps sending `hello`.
 |---|---|---|
 | 64 | `welcome` | `u32` player id, `addr` public endpoint as the server saw it, `u16` hello interval in seconds |
 | 65 | `error` | `u8` code (below), `str` text |
-| 66 | `party` | `str` code, `u32` leader id, `u8` max, `u8` flags, `str` info, `u8` member count, then per member: `u32` id, `str` name, `addr` public, `addrs` LAN |
+| 66 | `party` | `str` code, `u32` leader id, `u8` max, `u8` flags, `str` info, `u8` member count, then per member: `u32` id, `str` name, `addr` public, `addrs` LAN, `strs` guests |
 | 67 | `party_gone` | `u8` reason: 0 left, 1 kicked, 2 timed out, 3 server restart |
 | 68 | `invited` | `u32` from id, `str` from name, `str` code |
 | 69 | `introduce` | `u32` peer id, `str` name, `addr` public, `addrs` LAN, `u64` nonce |
 | 70 | `forward` | `u32` from player id, payload |
 | 71 | `queue_status` | `str` playlist, `u8` stage (255 = not queued), `u16` seconds waited, `u16` players searching this playlist |
-| 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per player: `u32` id, `u8` team, `str` name |
+| 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per seat: `u32` id, `u8` slot, `u8` team, `str` name |
 | 73 | `players` | `u8` count, then per player: `u32` id, `str` name, `str` status, `str` party code if joinable else empty |
 | 74 | `ping` | `u32` nonce; sent after each `welcome`, answered at once with `pong` |
 
@@ -193,7 +204,7 @@ Clients call reducers over SpacetimeDB's HTTP API. All tables are private
 
 | Reducer | Same as |
 |---|---|
-| `hello(game, name, relay_id, public, lan)` | `hello`; the caller's SpacetimeDB identity takes the place of `token`; `relay_id` and `public` come from the relay server's `welcome` |
+| `hello(game, name, relay_id, public, lan, guests)` | `hello`; the caller's SpacetimeDB identity takes the place of `token`; `relay_id` and `public` come from the relay server's `welcome` |
 | `bye()` | `bye` |
 | `party_create(max, flags, info)`, `party_join(code)`, `party_leave()`, `party_set(flags, info)` | the party messages |
 | `invite(player)` | `invite` |
