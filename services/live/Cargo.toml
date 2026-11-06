@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["core", "server"]
+# The SpacetimeDB module builds on its own for wasm32 (see stdb/README.md),
+# so it isn't a workspace member.
+exclude = ["stdb"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "ISC"
+
+[profile.release]
+opt-level = 3
+lto = true

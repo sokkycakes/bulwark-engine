@@ -1,0 +1,10 @@
+[package]
+name = "bwlive-core"
+description = "Bulwark Live rules shared by the standalone server and the SpacetimeDB module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
