@@ -74,6 +74,10 @@ seat the server won't allow.
 - Commands are built for every playing seat at the same rate and sent in
   one packet: seat 0's `clc_move`, the voice, then each seat's behind
   `clc_seat`.
+- A change to seat 0's userinfo (`setinfo`, a userinfo cvar) is sent for
+  every seat with a slot too, except `name` and `_playerkey`: guests use the
+  first player's settings, and a client game's `setinfo` (such as co-op's
+  `phud`) has to reach every seat's player.
 - Seat states: free, joining (asked; asked again every 2 s), loading (has a
   slot), playing. Seats survive disconnects and map changes and rejoin the
   next server.
@@ -91,6 +95,10 @@ seat the server won't allow.
   `CSQC_Input_Frame`, its devices' `CSQC_InputEvent`s and its console
   commands, and returns to seat 0 after `CSQC_UpdateView`.
 - `SetListener` is taken from seat 0 only, for now.
+- `getproperty(VF_ACTIVESEAT)` returns a variant: read it as `(float)`, since
+  fteqcc's `(int)` cast keeps the float's bits.
+- A Panorama HUD needs a view per seat (`ui_draw` draws at once, but what
+  was posted to a view stays its state); Nuclide's co-op HUD opens one each.
 - Nuclide needed one fix: `CSQC_UpdateView` read `player_localentnum`
   before switching seats, so each view found the previous seat's player.
   Base's HUD drew the health row at the top of the screen for every seat.

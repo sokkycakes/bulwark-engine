@@ -417,6 +417,22 @@ void CL_SendStringCmd(const char *s)
 		Netchan_WriteReliable(&cl.chan, m.data, m.cursize);
 }
 
+/* a string command from one seat, whether or not it has spawned yet */
+static void send_seat_stringcmd(int seat, const char *s)
+{
+	uint8_t buf[4096];
+	msg_t m;
+	if (cl.state < ca_loading || cl.demoplayback)
+		return;
+	MSG_Init(&m, buf, sizeof(buf));
+	MSG_WriteByte(&m, clc_seat);
+	MSG_WriteByte(&m, seat);
+	MSG_WriteByte(&m, clc_stringcmd);
+	MSG_WriteString(&m, s);
+	if (!m.overflowed)
+		Netchan_WriteReliable(&cl.chan, m.data, m.cursize);
+}
+
 void CL_SendEvent(const msg_t *body)
 {
 	uint8_t *buf;
@@ -1051,6 +1067,13 @@ static void check_userinfo(void)
 			char cmd[1200];
 			snprintf(cmd, sizeof(cmd), "setinfo \"%s\" \"%s\"", v->name, v->string);
 			CL_SendStringCmd(cmd);
+			/* split screen guests use the first player's settings, so a
+			 * change reaches them too (a HUD's phud key, rate, colours),
+			 * except who they are */
+			if (strcmp(v->name, "name") && strcmp(v->name, "_playerkey"))
+				for (int k = 1; k < MAX_SEATS; k++)
+					if (cl_seats[k].state >= SEAT_LOADING)
+						send_seat_stringcmd(k, cmd);
 		}
 	}
 	Str_Copy(sent_userinfo, now, sizeof(sent_userinfo));
