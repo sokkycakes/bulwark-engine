@@ -781,6 +781,7 @@ static void r_setproperty(qcvm_t *vm)
 		cl.viewangles[prop - VF_CL_VIEWANGLES_X] = f;
 		break;
 	case VF_PERSPECTIVE: r_scene.perspective = f != 0; break;
+	case VF_ACTIVESEAT: CSQC_SetActiveSeat((int)f); break;
 	case VF_VIEWENTITY: r_scene.viewentity = (int)f; break;
 	case VF_SKYROOM_CAMERA: memcpy(r_scene.skyroom_origin, v, sizeof(float) * 3), r_scene.skyroom = true; break;
 	default: break;
@@ -826,7 +827,7 @@ static void r_getproperty(qcvm_t *vm)
 		v[0] = cl.viewangles[prop - VF_CL_VIEWANGLES_X];
 		break;
 	case VF_PERSPECTIVE: v[0] = r_scene.perspective; break;
-	case VF_ACTIVESEAT: v[0] = 0; break;
+	case VF_ACTIVESEAT: v[0] = (float)cl.seat; break;
 	case VF_SCREENVSIZE: v[0] = (float)r_vwidth, v[1] = (float)r_vheight; break;
 	case VF_SCREENPSIZE: v[0] = (float)r_pwidth, v[1] = (float)r_pheight; break;
 	case VF_VIEWENTITY: v[0] = (float)r_scene.viewentity; break;

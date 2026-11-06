@@ -13,6 +13,7 @@
 #define SV_MAX_PARTICLES 1024
 #define SV_MAX_LIGHTSTYLES 256
 #define SV_MAX_COMMANDS 512
+#define SV_MAX_SEATS 4 /* local players on one connection, the connection's own included */
 
 /* values shared with QC, from the constants the QC headers define */
 enum {
@@ -100,6 +101,12 @@ typedef struct client_s {
 	clientstate_t state;
 	bool bot;
 	int link; /* link player (sv_link.c): its slot + 1, 0 for none; bot is set too */
+	/* split screen: a local player sharing another client's connection.
+	 * parent is that connection's slot + 1 (0 for a connection itself), seat
+	 * the local player's number on it (1..SV_MAX_SEATS-1). A seat never uses
+	 * its own netchan: what it is sent goes through the parent's, behind
+	 * svc_seat. docs/spec/splitscreen.md */
+	int parent, seat;
 	netchan_t chan;
 	char name[64];
 	char userinfo[2048];

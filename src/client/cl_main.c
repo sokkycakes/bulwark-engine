@@ -156,6 +156,15 @@ static void build_userinfo(char *out, size_t size)
 			info_set(out, size, v->name, v->string);
 }
 
+/* a split screen seat's userinfo: the first player's settings, its own name,
+ * none of the first player's identity */
+void CL_SeatUserinfo(int seat, char *out, size_t size)
+{
+	build_userinfo(out, size);
+	info_set(out, size, "name", cl_seats[seat].name);
+	info_set(out, size, "_playerkey", "");
+}
+
 /* --- models -------------------------------------------------------------- */
 
 void CL_SetModelBounds(int index)
@@ -252,8 +261,19 @@ static void clear_map_state(void)
 		Mem_Free(cl.statstr[i]);
 		cl.statstr[i] = NULL;
 	}
-	memset(cl.stattype, 0, sizeof(cl.stattype));
-	memset(cl.statval, 0, sizeof(cl.statval));
+	memset(cl.stattype, 0, sizeof(cl_seats[0].stattype));
+	memset(cl.statval, 0, sizeof(cl_seats[0].statval));
+	for (int k = 0; k < MAX_SEATS; k++) {
+		clseat_t *s = &cl_seats[k];
+		if (s->stattype == cl.stattype)
+			continue;
+		for (int i = 0; i < 256; i++) {
+			Mem_Free(s->statstr[i]);
+			s->statstr[i] = NULL;
+		}
+		memset(s->stattype, 0, sizeof(s->stattype));
+		memset(s->statval, 0, sizeof(s->statval));
+	}
 	for (int i = 0; i < CL_MAX_PLAYERS; i++)
 		Blob_Clear(cl.playerblobs[i]);
 	memset(blobsent, 0, sizeof(blobsent));
@@ -282,6 +302,8 @@ void CL_Disconnect(const char *reason)
 	}
 	if (cl.state != ca_disconnected)
 		Con_Printf("disconnected%s%s\n", reason ? ": " : "", reason ? reason : "");
+	CL_SetSeat(0);
+	CL_SeatsDisconnected();
 	CL_DemoDisconnected();
 	CL_DownloadsReset();
 	CL_VoipDisconnected();
@@ -380,6 +402,15 @@ void CL_SendStringCmd(const char *s)
 	if (cl.state < ca_loading || cl.demoplayback)
 		return;
 	MSG_Init(&m, buf, sizeof(buf));
+	{
+		/* a split screen player's command: theirs when typed for them
+		 * (p2 ...) or sent while their part of the client game runs */
+		int seat = in_cmdseat ? in_cmdseat : cl.seat;
+		if (seat > 0 && seat < MAX_SEATS && CL_SeatPlaying(seat)) {
+			MSG_WriteByte(&m, clc_seat);
+			MSG_WriteByte(&m, seat);
+		}
+	}
 	MSG_WriteByte(&m, clc_stringcmd);
 	MSG_WriteString(&m, s);
 	if (!m.overflowed)
@@ -392,8 +423,12 @@ void CL_SendEvent(const msg_t *body)
 	msg_t m;
 	if (cl.state != ca_active || cl.demoplayback)
 		return;
-	buf = Mem_Alloc(body->cursize + 1);
-	MSG_Init(&m, buf, body->cursize + 1);
+	buf = Mem_Alloc(body->cursize + 3);
+	MSG_Init(&m, buf, body->cursize + 3);
+	if (cl.seat > 0 && CL_SeatPlaying(cl.seat)) {
+		MSG_WriteByte(&m, clc_seat);
+		MSG_WriteByte(&m, cl.seat);
+	}
 	MSG_WriteByte(&m, clc_event);
 	MSG_WriteData(&m, body->data, body->cursize);
 	Netchan_WriteReliable(&cl.chan, m.data, m.cursize);
@@ -630,6 +665,8 @@ void CL_ParseServerMessage(msg_t *m, bool reliable) { parse_server_message(m, re
 
 static void parse_server_message(msg_t *m, bool reliable)
 {
+	/* every message starts with the first player's; svc_seat moves on */
+	CL_SetSeat(0);
 	while (!m->badread && MSG_Remaining(m)) {
 		int c = MSG_ReadByte(m);
 		if (cl_shownet->ivalue)
@@ -732,7 +769,10 @@ static void parse_server_message(msg_t *m, bool reliable)
 		}
 		case svc_signon: {
 			int stage = MSG_ReadByte(m);
-			if (stage == 1)
+			if (cl.seat) {
+				if (stage == 2)
+					CL_SeatSpawned(cl.seat);
+			} else if (stage == 1)
 				finish_signon();
 			else if (stage == 2 && cl.state == ca_loading) {
 				cl.state = ca_active;
@@ -746,6 +786,21 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_snapshot:
 			parse_snapshot(m);
 			break;
+		case svc_seat: {
+			int k = MSG_ReadByte(m);
+			if (k >= MAX_SEATS) {
+				m->badread = true;
+				break;
+			}
+			CL_SetSeat(k);
+			break;
+		}
+		case svc_seatinfo: {
+			int k = MSG_ReadByte(m), slot = MSG_ReadByte(m), ent = (int)MSG_ReadVarUInt(m);
+			if (!m->badread)
+				CL_SeatInfo(k, slot, ent);
+			break;
+		}
 		case svc_qcmessage: {
 			uint32_t len = MSG_ReadVarUInt(m);
 			if (MSG_Remaining(m) < len) {
@@ -810,8 +865,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 			break;
 		}
 		if (cl.state == ca_disconnected)
-			return;
+			break;
 	}
+	CL_SetSeat(0);
 	if (m->badread)
 		Con_DPrintf("^3server message ended early (%s)\n", reliable ? "reliable" : "unreliable");
 }
@@ -1002,19 +1058,20 @@ static void check_userinfo(void)
 		cl.chan.rate = cl_rate->ivalue;
 }
 
-static void send_move(void)
+/* the active seat's clc_move: its newest command and a few before it */
+static void write_move(msg_t *msg)
 {
-	uint8_t buf[NET_MAX_PACKET];
-	msg_t m;
+	msg_t m = *msg; /* written through, copied back */
 	usercmd_t zero;
 	int count;
 	uint32_t newest = cl.clientcommandframe - 1;
-	MSG_Init(&m, buf, sizeof(buf));
 	memset(&zero, 0, sizeof(zero));
 	count = (int)BW_MIN((uint32_t)(1 + MAX_BACKUP_CMDS), newest);
-	if (count < 1) {
-		Netchan_Transmit(&cl.chan, NULL, 0);
+	if (count < 1)
 		return;
+	if (cl.seat) {
+		MSG_WriteByte(&m, clc_seat);
+		MSG_WriteByte(&m, cl.seat);
 	}
 	MSG_WriteByte(&m, clc_move);
 	MSG_WriteByte(&m, count);
@@ -1061,7 +1118,24 @@ static void send_move(void)
 			MSG_WriteEntity(&m, u->cursor_entity);
 		}
 	}
+	*msg = m;
+}
+
+static void send_move(void)
+{
+	uint8_t buf[NET_MAX_PACKET];
+	msg_t m;
+	MSG_Init(&m, buf, sizeof(buf));
+	write_move(&m);
 	CL_VoipWrite(&m);
+	/* split screen players' moves go after the first player's and the
+	 * voice, each behind clc_seat */
+	for (int k = 1; k < MAX_SEATS; k++)
+		if (CL_SeatPlaying(k)) {
+			CL_SetSeat(k);
+			write_move(&m);
+			CL_SetSeat(0);
+		}
 	Netchan_Transmit(&cl.chan, m.data, m.cursize);
 }
 
@@ -1084,6 +1158,7 @@ void CL_Frame(double dt)
 	CL_VoipFrame();
 	update_clock(dt);
 	check_userinfo();
+	CL_SeatsFrame();
 
 	if (cl.state >= ca_loading && cl.chan.remote.type != NA_LOOPBACK &&
 	    cl.realtime - cl.chan.last_received > cl_timeout->value) {
@@ -1093,9 +1168,19 @@ void CL_Frame(double dt)
 	if (cl.state == ca_active) {
 		/* commands at cl_cmdrate (the server tick rate by default) */
 		double interval = 1.0 / BW_MAX(10.0f, cl_cmdrate->value > 0 ? cl_cmdrate->value : cl.tickrate);
-		CL_UpdateCurrentCommand(cl.realtime);
+		for (int k = 0; k < MAX_SEATS; k++)
+			if (CL_SeatPlaying(k)) {
+				CL_SetSeat(k);
+				CL_UpdateCurrentCommand(cl.realtime);
+			}
+		CL_SetSeat(0);
 		if (cl.realtime >= cl.next_cmd) {
-			CL_BuildCommand(cl.realtime);
+			for (int k = MAX_SEATS - 1; k >= 0; k--)
+				if (CL_SeatPlaying(k)) {
+					CL_SetSeat(k);
+					CL_BuildCommand(cl.realtime);
+				}
+			CL_SetSeat(0);
 			cl.next_cmd = BW_MAX(cl.next_cmd + interval, cl.realtime - interval);
 			if (Netchan_CanSend(&cl.chan))
 				send_move();
@@ -1184,6 +1269,8 @@ static void CL_Netstats_f(int argc, const char **argv)
 void CL_Init(void)
 {
 	memset(&cl, 0, sizeof(cl));
+	CL_InitSeats();
+	CL_InitSeatCommands();
 	cl.nummodels = 1;
 	cl.numsounds = 1;
 	cl_name = Cvar_Get("name", "player", CVAR_ARCHIVE | CVAR_USERINFO, "Your player name");

@@ -41,7 +41,7 @@ void SV_ParseVoice(client_t *c, msg_t *m)
 	uint8_t head[2] = {svc_voice, (uint8_t)slot};
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *to = &svs.clients[i];
-		if (to->state != CS_SPAWNED || to->bot || ignores(to, slot))
+		if (to->state != CS_SPAWNED || to->bot || to->parent || ignores(to, slot))
 			continue;
 		if (to == c && !sv_voip_echo->ivalue)
 			continue;

@@ -270,6 +270,7 @@ add_library(bwclient STATIC
 	src/client/cl_webcore.c
 	src/client/cl_chat.c
 	src/client/cl_tp.c
+	src/client/cl_seat.c
 	src/client/cl_demo.c
 	src/render/r_main.c
 	src/render/r_overlay.c

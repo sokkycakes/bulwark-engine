@@ -496,8 +496,8 @@ held and the matching `-` command when it's let go.
 | `ipdump` | ipdump [file]: write the address log (iplog.txt) |
 | `ipmerge` | ipmerge <file>: read an address log in |
 | `join` | Join the game from spectating |
-| `joy_virtual` | Show the on-screen controller |
-| `joy_virtual_set` | Set up the on-screen controller |
+| `joy_virtual` | joy_virtual [count]: attach pretend controllers (up to 4) for tests |
+| `joy_virtual_set` | joy_virtual_set [pad] axis\|button <n> <value>: move a pretend controller |
 | `jpeg` | jpeg [name]: a JPEG screenshot |
 | `+jump` / `-jump` | Jump (button 2) |
 | `key_findbinding` | key_findbinding <command>: keys bound to a command |
@@ -659,7 +659,7 @@ held and the matching `-` command when it's let go.
 | `observe` | Spectate |
 | `openroute` | Ask the router to forward the server's port (NAT-PMP) |
 | `+p` / `-p` | Following input is for the next seat |
-| `p` | p <seat> <command>: run a command for one splitscreen seat |
+| `p` | p <seat> <command>: run a command as one split screen player |
 | `+p1` / `-p1` | +pN <button>: press a button for split screen player N |
 | `p1` | p1 <command>: run a command for seat 1 |
 | `+p2` / `-p2` | +pN <button>: press a button for split screen player N |
@@ -787,6 +787,10 @@ held and the matching `-` command when it's let go.
 | `screenshot_stereo` | screenshot_stereo [name] [width] [height]: left and right eye side by side |
 | `screenshot_tga` | screenshot_tga [name]: a TGA screenshot |
 | `screenshot_vr` | screenshot_vr [name] [width]: stereo 360, left eye over right |
+| `seat_add` | seat_add [guest\|<name>] [device]: another local player (split screen) |
+| `seat_device` | seat_device <seat> <device>: give a player the keyboard (0) or a controller (1..4) |
+| `seat_list` | The local players and their controllers |
+| `seat_remove` | seat_remove <seat>: a split screen player leaves |
 | `sendcvar` | sendcvar <cvar>: tell the server a cvar's value (servers send this) |
 | `serverinfo` | serverinfo [key value]: the server's settings, or set one on a local server |
 | `set` | set <cvar> <value> [description]: set or create a cvar |

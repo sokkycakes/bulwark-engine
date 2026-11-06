@@ -43,9 +43,42 @@ typedef struct {
 
 typedef struct {
 	int csqc_ent; /* the csprogs entity standing for this server entity, 0 if none */
+	int seat;     /* split screen: the seat whose part of the snapshots it came in */
 	interpsample_t samples[CL_INTERP_SAMPLES];
 	int numsamples;
 } clentity_t;
+
+/* Split screen: what each local player has of their own. The active seat's
+ * scalars live in cl (playerslot, playerent, the command frames, view
+ * angles) so the rest of the client works on whichever seat is active;
+ * CL_SetSeat swaps them. Its arrays (stats, the command ring) are always
+ * here, and cl points at the active seat's. docs/spec/splitscreen.md */
+typedef enum {
+	SEAT_FREE,    /* nobody */
+	SEAT_JOINING, /* asked the server for a slot */
+	SEAT_LOADING, /* has a slot, waiting to spawn */
+	SEAT_ACTIVE   /* playing */
+} seatstate_t;
+
+typedef struct {
+	seatstate_t state;
+	bool guest;
+	unsigned device; /* input devices, a bit each: 0 keyboard and mouse, 1..4 controller slot + 1 */
+	char name[64];
+	double join_time;
+	/* swapped with cl's while active */
+	int playerslot, playerent;
+	uint32_t clientcommandframe, servercommandframe;
+	double cmd_start;
+	float viewangles[3];
+	/* cl points at these while active */
+	uint8_t stattype[256];
+	uint32_t statval[256];
+	char *statstr[256];
+	usercmd_t cmds[CL_CMD_BACKUP];
+} clseat_t;
+
+extern clseat_t cl_seats[MAX_SEATS];
 
 typedef struct {
 	connstate_t state;
@@ -78,10 +111,10 @@ typedef struct {
 	int numsounds;
 	char *particles[CL_MAX_PARTICLES];
 	char *lightstyles[256];
-	/* the player's stats (svc_stats): type 0 none, 1 string, 2 float, 8 integer */
-	uint8_t stattype[256];
-	uint32_t statval[256];
-	char *statstr[256];
+	/* the active seat's stats (svc_stats): type 0 none, 1 string, 2 float, 8 integer */
+	uint8_t *stattype;
+	uint32_t *statval;
+	char **statstr;
 	bspmap_t *world;
 
 	/* timing */
@@ -95,7 +128,7 @@ typedef struct {
 	bool paused;
 
 	/* input */
-	usercmd_t cmds[CL_CMD_BACKUP];
+	usercmd_t *cmds; /* the active seat's */
 	uint32_t clientcommandframe; /* the command being built; earlier ones are sent */
 	double cmd_start;            /* realtime the current command began */
 	double next_cmd;
@@ -109,6 +142,8 @@ typedef struct {
 	int snapshots_received;
 	bool csqc_initialised;
 	bool worldloaded;
+
+	int seat; /* the active split screen seat, 0 outside the places that switch */
 
 	/* local server if this process hosts one */
 	bool listen;
@@ -133,6 +168,23 @@ typedef struct {
 extern clscreen_t cl_screen;
 void CL_InitCommands(void);
 bool SV_ConsoleSay(const char *msg);
+
+/* cl_seat.c: split screen seats */
+void CL_SetSeat(int seat);
+int CL_NumSeats(void);        /* numclientseats: the highest playing seat + 1, 0 while loading */
+bool CL_SeatPlaying(int seat);
+int CL_SeatForDevice(int device); /* -1 for none */
+void CL_SeatUserinfo(int seat, char *out, size_t size); /* cl_main.c */
+void CL_InitSeatCommands(void);
+void IN_ReleaseSeat(int seat);    /* cl_input.c: lets go of the seat's buttons */
+extern int in_cmdseat;            /* cl_input.c: the seat console commands act for (p1..p4) */
+void CL_InitSeats(void);
+void CL_SeatsConnected(void);  /* a new connection: seats 1..3 ask again */
+void CL_SeatsDisconnected(void);
+void CL_SeatsFrame(void);
+void CL_SeatInfo(int seat, int slot, int ent);
+void CL_SeatSpawned(int seat);
+void CL_SeatDevicePressed(int device, int key); /* an unassigned controller's button: press Start to join */
 
 /* cl_main.c */
 void CL_Init(void);
@@ -180,6 +232,8 @@ void CL_DemoAbort(void);
 /* cl_input.c */
 void IN_Init(void);
 void IN_KeyEvent(int key, bool down, int unicode);
+/* a controller's button; device is its slot + 1 (split screen routing) */
+void IN_DeviceKeyEvent(int device, int key, bool down, int unicode);
 void IN_MouseMove(float dx, float dy);
 void IN_MouseAbs(float x, float y);
 void IN_ReleaseAll(void);
@@ -212,6 +266,7 @@ void CSQC_WorldLoaded(void);
 void CSQC_RendererRestarted(void);
 void MQC_RendererRestarted(void);
 void CSQC_Frame(int width, int height);
+void CSQC_SetActiveSeat(int seat); /* setproperty(VF_ACTIVESEAT) */
 bool CSQC_ConsoleCommand(const char *line);
 bool CSQC_InputEvent(int type, float a, float b, int device);
 void CSQC_InputFrame(void);

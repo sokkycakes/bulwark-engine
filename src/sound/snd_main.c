@@ -960,6 +960,10 @@ static void bi_ambientsound(qcvm_t *vm)
 /* SetListener(origin, forward, right, up, reverbslot) */
 static void bi_setlistener(qcvm_t *vm)
 {
+	/* split screen: the first player's ears for now (each seat's view
+	 * calls this; docs/spec/splitscreen.md has the plan for the rest) */
+	if (cl.seat != 0)
+		return;
 	S_SetReverbSlot(vm->argc > 4 ? (int)QC_PFLOAT(vm, 4) : 0);
 	S_Update(QC_PVEC(vm, 0), QC_PVEC(vm, 1), QC_PVEC(vm, 2), QC_PVEC(vm, 3));
 }
