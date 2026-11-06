@@ -1,0 +1,20 @@
+[package]
+name = "bwlive-stdb"
+description = "Bulwark Live as a SpacetimeDB module: parties, invites, queues and matches"
+version = "0.1.0"
+edition = "2021"
+license = "ISC"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bwlive-core = { path = "../core" }
+spacetimedb = "=2.13.0"
+serde_json = "1"
+log = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = true

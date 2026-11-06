@@ -186,22 +186,25 @@ the same party again, or its leader keeps the lobby and starts directly.
 
 The module `bwlive` (in `services/live/stdb`) holds the same state as
 tables and runs the same matcher in a scheduled reducer every second.
-Clients call reducers over SpacetimeDB's HTTP API and read their rows with
-SQL or a subscription.
+Clients call reducers over SpacetimeDB's HTTP API. All tables are private
+(they hold addresses); a client reads what concerns it with the procedures
+`state()` (its party, invites, queue and match as JSON), `players()` and
+`list_playlists()`, polled about once a second while something is going on.
 
 | Reducer | Same as |
 |---|---|
-| `hello(token, game, name, relay_id, public, lan)` | `hello`; `relay_id` and `public` come from the relay server's `welcome` |
+| `hello(game, name, relay_id, public, lan)` | `hello`; the caller's SpacetimeDB identity takes the place of `token`; `relay_id` and `public` come from the relay server's `welcome` |
 | `bye()` | `bye` |
 | `party_create(max, flags, info)`, `party_join(code)`, `party_leave()`, `party_set(flags, info)` | the party messages |
 | `invite(player)` | `invite` |
 | `queue(playlist, seniority)`, `queue_cancel()` | the queue messages |
 | `set_status(status)` | `status` |
 | `set_rtt(ms)` | the relay server's measurement, reported by the client |
-| `add_playlist(json)`, `remove_playlist(id)` | operators only |
+| `match_left(match_id)` | `match_left` |
+| `add_playlist(json)`, `remove_playlist(id)`, `add_operator(identity, note)` | operators only (the publisher is the first) |
 
 A player is the SpacetimeDB identity calling the reducer. Tables: `player`,
-`party`, `party_member`, `invite`, `ticket`, `game_match`, `match_seat`,
+`party`, `party_member`, `party_invite`, `ticket`, `game_match`, `match_seat`,
 `playlist` and `recent_pair`. Players time out 20 s after their last
 `hello`. Punching uses the addresses in `party_member` and `match_seat`;
 relaying goes through `bwlive-server --relay-only` by `relay_id`.
