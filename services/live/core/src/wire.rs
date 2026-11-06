@@ -5,6 +5,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 pub const MAGIC: &[u8; 4] = b"BWLV";
 pub const VERSION: u8 = 1;
 pub const MAX_DATAGRAM: usize = 1200;
+/// `relay`, `forward` and `data` may be bigger, to carry a full game packet
+/// (1400 bytes) plus their headers.
+pub const MAX_CARRY: usize = 1472;
 pub const HEADER: usize = 6;
 
 pub mod t {

@@ -91,7 +91,9 @@ two machines' clocks are never compared.
 
 ## Room codes
 
-Online lobbies get a code like `A41B9C`, but Bulwark has no rendezvous
-service on the internet: a code is resolved by asking this network
-(`discover`, 0.3 s) for a lobby advertising it. Codes therefore work on one
-machine and across a LAN, not across the internet.
+Online lobbies get a code like `A41B9C`. A code is first resolved by asking
+this network (`discover`, 0.3 s) for a lobby advertising it. When Bulwark
+Live is connected (`live_connect`, see [live.md](live.md)), an online
+lobby's code is its Live party's code, and a code not found on the LAN is
+joined over the internet through Live (punched or relayed). Without Live,
+codes work on one machine and across a LAN only.

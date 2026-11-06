@@ -82,6 +82,7 @@ add_library(bwnet STATIC
 	src/net/msg.c
 	src/net/net.c
 	src/net/http.c
+	src/net/live.c
 	src/net/pkg.c
 	src/net/netchan.c)
 target_link_libraries(bwnet PUBLIC bwcommon Threads::Threads ${CMAKE_DL_LIBS})

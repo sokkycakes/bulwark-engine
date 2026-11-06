@@ -9,7 +9,10 @@
  * from the game protocol. Datagrams are "BWLB1 " and a JSON object whose
  * "t" says what it is; the format is Bulwark's own (the reference engine's
  * wasn't documented). Room codes ("online" lobbies) are found by LAN
- * discovery: there is no internet rendezvous service.
+ * discovery, and, when Bulwark Live is connected (live_connect), over the
+ * internet: an online lobby's room code is its Live party's code, and the
+ * lobby's datagrams go to "live:<id>" peers through net/live.c (punched or
+ * relayed, split into pieces that fit a Live datagram).
  * ISC licence, see LICENSE. */
 #include "lobby.h"
 #include "client.h"
@@ -17,6 +20,7 @@
 #include "../common/cvar.h"
 #include "../common/fs.h"
 #include "../common/json.h"
+#include "../net/live.h"
 #include "../net/net.h"
 #include "../server/sv_local.h"
 
@@ -91,6 +95,8 @@ static struct {
 	int sock;
 	struct sockaddr_in hostaddr; /* guests: where the host is */
 	char jointarget[80];
+	bool livejoin;   /* joining by room code over Bulwark Live: waiting for the party */
+	double livejoin_until;
 	int joinattempts;
 	double nextjoin, nextping, nextsnap, lastfromhost;
 	uint32_t token;              /* guests: from the host's accept */
@@ -158,14 +164,55 @@ static void sock_close(void)
 	L.sock = -1;
 }
 
+/* A Bulwark Live peer is kept in a sockaddr_in with this family and the
+ * peer's id in sin_addr, so seats and the host address work unchanged. */
+#define LIVE_FAMILY 0xB7
+/* a Live datagram carries about 1400 bytes; longer lobby messages are cut
+ * into pieces: "u16 message, u8 index, u8 count" then the bytes */
+#define LIVE_PIECE 1200
+
+static bool is_live(const struct sockaddr_in *a) { return a->sin_family == LIVE_FAMILY; }
+
+static void live_addr(uint32_t id, struct sockaddr_in *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->sin_family = LIVE_FAMILY;
+	out->sin_addr.s_addr = id;
+	out->sin_port = LIVE_VPORT_LOBBY;
+}
+
+static void raw_send(const struct sockaddr_in *to, const char *data, size_t len)
+{
+	static uint16_t msgid;
+	if (!is_live(to)) {
+		if (L.sock >= 0)
+			sendto(L.sock, data, len, 0, (const struct sockaddr *)to, sizeof(*to));
+		return;
+	}
+	int count = (int)((len + LIVE_PIECE - 1) / LIVE_PIECE);
+	if (count < 1 || count > 255)
+		return;
+	msgid++;
+	for (int i = 0; i < count; i++) {
+		uint8_t piece[LIVE_PIECE + 4];
+		size_t n = BW_MIN((size_t)LIVE_PIECE, len - (size_t)i * LIVE_PIECE);
+		piece[0] = (uint8_t)(msgid >> 8);
+		piece[1] = (uint8_t)msgid;
+		piece[2] = (uint8_t)i;
+		piece[3] = (uint8_t)count;
+		memcpy(piece + 4, data + (size_t)i * LIVE_PIECE, n);
+		Live_SendLobby(to->sin_addr.s_addr, piece, n + 4);
+	}
+}
+
 static void send_to(const struct sockaddr_in *to, const json_t *msg)
 {
 	strbuf_t sb = {0};
-	if (L.sock < 0)
+	if (L.sock < 0 && !is_live(to))
 		return;
 	SB_AppendStr(&sb, LOBBY_MAGIC);
 	JSON_Write(&sb, msg, -1);
-	sendto(L.sock, sb.data, sb.len, 0, (const struct sockaddr *)to, sizeof(*to));
+	raw_send(to, sb.data, sb.len);
 	SB_Free(&sb);
 }
 
@@ -185,7 +232,7 @@ static bool resolve(const char *target, int defport, struct sockaddr_in *out)
 
 static bool same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b)
 {
-	return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
+	return a->sin_family == b->sin_family && a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
 }
 
 static uint32_t random32(void) { return ((uint32_t)rand() << 16) ^ (uint32_t)rand() ^ (uint32_t)(Sys_Seconds() * 1000); }
@@ -237,6 +284,7 @@ static void reset_session(void)
 	L.localseat = -1;
 	L.numchat = 0;
 	L.numintents = 0;
+	L.livejoin = false;
 	L.roomcode[0] = 0;
 	L.status[0] = 0;
 	L.countdown_end = 0;
@@ -524,7 +572,10 @@ static void LobbyCreate_f(int argc, const char **argv)
 		close_with(va("Couldn't open the lobby port %d", lobby_port->ivalue));
 		return;
 	}
-	if (!strcmp(L.network, "online")) {
+	if (!strcmp(L.network, "online") && Live_Connected()) {
+		/* the room code is the Live party's; Lobby_Frame picks it up */
+		Cbuf_InsertText(va("live_party %d 1\n", L.max));
+	} else if (!strcmp(L.network, "online")) {
 		static const char letters[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 		for (int i = 0; i < 6; i++)
 			L.roomcode[i] = letters[rand() % (int)(sizeof(letters) - 1)];
@@ -573,6 +624,23 @@ static void LobbyJoin_f(int argc, const char **argv)
 				Str_Copy(target, found[i].addr, sizeof(target));
 				ok = true;
 			}
+		if (!ok && Live_Connected()) {
+			/* not on this network: join the Live party with that code, and
+			 * then its leader's lobby */
+			Str_Copy(L.roomcode, argv[1], sizeof(L.roomcode));
+			for (char *p = L.roomcode; *p; p++)
+				*p = (char)toupper((unsigned char)*p);
+			Cbuf_InsertText(va("live_join %s\n", L.roomcode));
+			L.livejoin = true;
+			L.livejoin_until = Sys_Seconds() + 10;
+			L.phase = LOBBY_JOINING;
+			L.joinattempts = 0;
+			L.nextjoin = 0;
+			L.lastfromhost = Sys_Seconds();
+			snprintf(L.status, sizeof(L.status), "Finding room %s...", L.roomcode);
+			changed();
+			return;
+		}
 		if (!ok) {
 			close_with(va("No lobby with room code %s was found on this network", argv[1]));
 			return;
@@ -629,7 +697,7 @@ static void send_intents(void)
 			strbuf_t sb = {0};
 			SB_AppendStr(&sb, LOBBY_MAGIC);
 			SB_AppendStr(&sb, in->json);
-			sendto(L.sock, sb.data, sb.len, 0, (struct sockaddr *)&L.hostaddr, sizeof(L.hostaddr));
+			raw_send(&L.hostaddr, sb.data, sb.len);
 			SB_Free(&sb);
 		}
 	}
@@ -900,7 +968,10 @@ static void guest_start(const json_t *j)
 	if (nonce == L.seenstart)
 		return; /* a repeat: connect once */
 	L.seenstart = nonce;
-	{
+	if (is_live(&L.hostaddr)) {
+		Con_Printf("lobby: the game is on live:%u\n", (unsigned)L.hostaddr.sin_addr.s_addr);
+		Cbuf_InsertText(va("%sconnect live:%u\n", sv.active ? "killserver\n" : "", (unsigned)L.hostaddr.sin_addr.s_addr));
+	} else {
 		char ip[INET_ADDRSTRLEN];
 		inet_ntop(AF_INET, &L.hostaddr.sin_addr, ip, sizeof(ip));
 		Con_Printf("lobby: the game is on %s:%d\n", ip, port);
@@ -981,22 +1052,13 @@ static void handle(const struct sockaddr_in *from, const json_t *j)
 		guest_start(j);
 }
 
-static void receive(void)
+static void datagram(const struct sockaddr_in *fromp, char *buf)
 {
-	char buf[16384];
-	for (;;) {
-		struct sockaddr_in from;
-		socklen_t fl = sizeof(from);
-		ssize_t n;
-		json_t *j;
-		if (L.sock < 0)
-			return;
-		n = recvfrom(L.sock, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&from, &fl);
-		if (n <= 0)
-			return;
-		buf[n] = 0;
+	struct sockaddr_in from = *fromp;
+	json_t *j;
+	{
 		if (strncmp(buf, LOBBY_MAGIC, strlen(LOBBY_MAGIC)))
-			continue;
+			return;
 		if ((j = JSON_Parse(buf + strlen(LOBBY_MAGIC), NULL, 0))) {
 			if (L.phase == LOBBY_IDLE || L.phase == LOBBY_CLOSING) {
 				/* discovery replies arrive on an idle socket */
@@ -1021,6 +1083,85 @@ static void receive(void)
 			}
 			JSON_Free(j);
 		}
+	}
+}
+
+/* pieces of one lobby message from a Live peer, put back together */
+#define LIVE_ASSEMBLY 8
+static struct {
+	uint32_t from;
+	uint16_t msgid;
+	int count, have;
+	uint32_t got[8]; /* bit per piece */
+	char data[255 * 64];
+	size_t len[255];
+	double started;
+} assembly[LIVE_ASSEMBLY];
+
+static void live_piece(uint32_t from, const uint8_t *p, size_t n)
+{
+	if (n < 4)
+		return;
+	uint16_t msgid = (uint16_t)(p[0] << 8 | p[1]);
+	int index = p[2], count = p[3];
+	size_t len = n - 4;
+	if (!count || index >= count || len > LIVE_PIECE || (size_t)count * LIVE_PIECE > sizeof(assembly[0].data))
+		return;
+	int slot = -1, oldest = 0;
+	for (int i = 0; i < LIVE_ASSEMBLY; i++) {
+		if (assembly[i].count && assembly[i].from == from && assembly[i].msgid == msgid)
+			slot = i;
+		if (assembly[i].started < assembly[oldest].started)
+			oldest = i;
+	}
+	if (slot < 0) {
+		slot = oldest;
+		memset(&assembly[slot].got, 0, sizeof(assembly[slot].got));
+		assembly[slot].from = from;
+		assembly[slot].msgid = msgid;
+		assembly[slot].count = count;
+		assembly[slot].have = 0;
+		assembly[slot].started = Sys_Seconds();
+	}
+	if (assembly[slot].count != count || (assembly[slot].got[index / 32] & (1u << (index % 32))))
+		return;
+	assembly[slot].got[index / 32] |= 1u << (index % 32);
+	memcpy(assembly[slot].data + (size_t)index * LIVE_PIECE, p + 4, len);
+	assembly[slot].len[index] = len;
+	if (++assembly[slot].have < count)
+		return;
+	/* whole: pieces before the last are full, so the message is contiguous */
+	size_t total = (size_t)(count - 1) * LIVE_PIECE + assembly[slot].len[count - 1];
+	char *msg = Mem_Alloc(total + 1);
+	memcpy(msg, assembly[slot].data, total);
+	msg[total] = 0;
+	assembly[slot].count = 0;
+	assembly[slot].started = 0;
+	struct sockaddr_in a;
+	live_addr(from, &a);
+	datagram(&a, msg);
+	Mem_Free(msg);
+}
+
+static void receive(void)
+{
+	char buf[16384];
+	uint8_t piece[1500];
+	uint32_t from_id;
+	size_t pn;
+	while ((pn = Live_GetLobby(piece, sizeof(piece), &from_id)))
+		live_piece(from_id, piece, pn);
+	for (;;) {
+		struct sockaddr_in from;
+		socklen_t fl = sizeof(from);
+		ssize_t n;
+		if (L.sock < 0)
+			return;
+		n = recvfrom(L.sock, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&from, &fl);
+		if (n <= 0)
+			return;
+		buf[n] = 0;
+		datagram(&from, buf);
 	}
 }
 
@@ -1348,6 +1489,19 @@ void Lobby_Frame(void)
 		}
 		break;
 	case LOBBY_JOINING:
+		if (L.livejoin) {
+			/* wait for the Live party, then talk to its leader's lobby */
+			if (!Str_ICmp(Live_PartyCode(), L.roomcode) && Live_PartyLeader()) {
+				live_addr(Live_PartyLeader(), &L.hostaddr);
+				L.livejoin = false;
+				L.lastfromhost = now;
+				snprintf(L.status, sizeof(L.status), "Joining %s...", L.roomcode);
+				changed();
+			} else if (now >= L.livejoin_until) {
+				close_with(va("No room %s on Bulwark Live", L.roomcode));
+			}
+			break;
+		}
 		if (now >= L.nextjoin) {
 			json_t *j;
 			char name[64];
@@ -1367,6 +1521,12 @@ void Lobby_Frame(void)
 		break;
 	default:
 		if (L.host) {
+			/* an online lobby takes its Live party's room code */
+			if (!strcmp(L.network, "online") && Live_PartyCode()[0] && strcmp(L.roomcode, Live_PartyCode())) {
+				Str_Copy(L.roomcode, Live_PartyCode(), sizeof(L.roomcode));
+				Con_Printf("lobby: room code %s (Bulwark Live)\n", L.roomcode);
+				changed();
+			}
 			for (int i = 1; i < L.max; i++)
 				if (L.seats[i].used && now - L.seats[i].lastheard > LOBBY_TIMEOUT)
 					remove_seat(i);

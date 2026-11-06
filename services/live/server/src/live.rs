@@ -174,7 +174,7 @@ impl Live {
     /// Handles one datagram; returns what to send.
     pub fn handle(&mut self, from: SocketAddr, data: &[u8], now: Instant) -> Vec<Out> {
         self.stats.datagrams_in += 1;
-        if data.len() <= wire::MAX_DATAGRAM {
+        if data.len() <= wire::MAX_CARRY {
             if let Some((ver, ty, body)) = wire::header(data) {
                 self.dispatch(from, ver, ty, body, data.len(), now);
             }

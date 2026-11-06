@@ -16,6 +16,7 @@
 #include "../common/common.h"
 #include "net_compat.h"
 #include "net.h"
+#include "live.h"
 
 /* --- loopback: a ring of packets per direction. Each slot grows to the
  * largest packet it has held, so the ring costs a few hundred KB rather than
@@ -229,6 +230,21 @@ bool NET_StringToAdr(const char *s, netadr_t *a, int defport)
 		s += 6, tcp = true;
 	else if (!Str_NICmp(s, "udp://", 6))
 		s += 6;
+	if (!Str_NICmp(s, "live:", 5)) {
+		/* live:<player id>[:<virtual port>] */
+		char *end;
+		unsigned long id = strtoul(s + 5, &end, 10);
+		if (end == s + 5 || !id || id > 0xffffffffUL || (*end && *end != ':'))
+			return false;
+		a->type = NA_LIVE;
+		a->ip[0] = (uint8_t)(id >> 24);
+		a->ip[1] = (uint8_t)(id >> 16);
+		a->ip[2] = (uint8_t)(id >> 8);
+		a->ip[3] = (uint8_t)id;
+		/* no port: the peer's game server, which is what "connect" wants */
+		a->port = (uint16_t)(*end == ':' ? atoi(end + 1) : LIVE_VPORT_SERVER);
+		return true;
+	}
 	if (!Str_ICmp(s, "localhost") || !Str_ICmp(s, "loopback") || !Str_ICmp(s, "local")) {
 		a->type = NA_LOOPBACK;
 		return true;
@@ -279,6 +295,14 @@ const char *NET_AdrToString(const netadr_t *a)
 		inet_ntop(AF_INET6, a->ip, ip, sizeof(ip));
 		snprintf(out, sizeof(buf[0]), "%s[%s]:%d", a->tcp ? "tcp://" : "", ip, a->port);
 		return out;
+	case NA_LIVE: {
+		unsigned long id = (unsigned long)a->ip[0] << 24 | (unsigned long)a->ip[1] << 16 | (unsigned long)a->ip[2] << 8 | a->ip[3];
+		if (a->port)
+			snprintf(out, sizeof(buf[0]), "live:%lu:%d", id, a->port);
+		else
+			snprintf(out, sizeof(buf[0]), "live:%lu", id);
+		return out;
+	}
 	default:
 		return "none";
 	}
@@ -317,6 +341,10 @@ static void send_now(netsrc_t src, const void *data, size_t len, const netadr_t 
 		}
 		memcpy(p->data, data, len);
 		p->len = len;
+		return;
+	}
+	if (to->type == NA_LIVE) {
+		Live_SendGame(src, data, len, to);
 		return;
 	}
 	if (to->tcp) {
@@ -392,6 +420,9 @@ size_t NET_GetPacket(netsrc_t src, void *buf, size_t bufsize, netadr_t *from)
 		from->type = NA_LOOPBACK;
 		return n;
 	}
+	size_t live = Live_GetGame(src, buf, bufsize, from);
+	if (live)
+		return live;
 	for (int i = 0; i <= numextras[src]; i++) {
 		int fd = i ? extras[src][i - 1].fd : sockets[src];
 		if (fd < 0)

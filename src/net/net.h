@@ -10,7 +10,9 @@
 #define NET_MAX_PACKET 1400  /* payload size we never exceed, below typical MTU */
 #define NET_MAX_RECV 65536
 
-typedef enum { NA_NONE, NA_LOOPBACK, NA_IP4, NA_IP6 } netadrtype_t;
+/* NA_LIVE: a Bulwark Live peer ("live:<id>"), reached through the live
+ * socket (net/live.c); ip[0..3] is the peer id, port the virtual port */
+typedef enum { NA_NONE, NA_LOOPBACK, NA_IP4, NA_IP6, NA_LIVE } netadrtype_t;
 
 typedef struct {
 	netadrtype_t type;

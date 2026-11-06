@@ -9,6 +9,7 @@
 #include "common/manifest.h"
 #include "common/worker.h"
 #include "net/net.h"
+#include "net/live.h"
 #include "net/pkg.h"
 #include "server/sv_local.h"
 
@@ -68,6 +69,7 @@ int main(int argc, char **argv)
 	FS_Init(basedir);
 	Mf_Startup(games, numgames);
 	NET_Init();
+	Live_Init();
 	PKG_Init();
 	SV_Init();
 	QC_InitDebugCommands();
@@ -103,6 +105,7 @@ int main(int argc, char **argv)
 		}
 		host_time += dt;
 		NET_RunDelayed();
+		Live_Frame();
 		PKG_Frame();
 		Worker_Frame();
 		Plug_Frame();
@@ -115,6 +118,7 @@ int main(int argc, char **argv)
 	if (sv.active)
 		SV_DropClients("server shut down");
 	SV_Shutdown();
+	Live_Shutdown();
 	QC_URIDrain(3);
 	return 0;
 }

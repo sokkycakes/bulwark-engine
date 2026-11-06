@@ -66,7 +66,9 @@ type byte. Integers are big-endian. Types used below:
 - `addrs`: `u8` count, then that many `addr`s.
 - `strs`: `u8` count, then that many `str`s (guest names, at most 3).
 
-A datagram is at most 1200 bytes, so it survives any path MTU. Unknown types
+A datagram is at most 1200 bytes, so it survives any path MTU, except
+`relay`, `forward` and `data`, which may be up to 1472 bytes to carry a full
+1400-byte game packet. Unknown types
 are ignored, and a datagram shorter than its type needs is dropped.
 
 So the server can't be used to amplify traffic at someone else, `hello` is
@@ -219,3 +221,61 @@ A player is the SpacetimeDB identity calling the reducer. Tables: `player`,
 `playlist` and `recent_pair`. Players time out 20 s after their last
 `hello`. Punching uses the addresses in `party_member` and `match_seat`;
 relaying goes through `bwlive-server --relay-only` by `relay_id`.
+
+## The engine client
+
+`src/net/live.c` is the client. It opens one UDP socket for everything:
+the server, punches, direct traffic and the relay.
+
+| Command | Does |
+|---|---|
+| `live_connect [host[:port]]` | registers with a server (`live_server`, port 27950) |
+| `live_disconnect` | sends `bye` |
+| `live_party [max] [open] [info]`, `live_join <code>`, `live_leave`, `live_open <0\|1> [info]` | the party messages |
+| `live_invite <id>`, `live_list` | invites and the player list |
+| `live_queue <playlist> [seniority]`, `live_cancel` | matchmaking |
+| `live_guests <name>... \| -` | the console's split-screen guests (sends `hello` at once) |
+| `live_setstatus <text>` | the friends-list status line |
+| `live_status`, `live_peers` | what the client knows, and which peers are direct or relayed |
+
+Cvars:
+
+- `live_game` names the game. Players only meet players of the same game.
+- `live_onconnect` holds commands to run each time the client (re)connects.
+- `live_hostcmd` holds commands to run when a match picks this game to host.
+- With `live_autoconnect` (1), a client that isn't hosting runs
+  `connect live:<host>`.
+- `live_punch` (1) tries direct paths. Set it to 0 to relay everything.
+- `live_port` is the local UDP port.
+- These are read-only:
+  - `live_state`: everything as JSON, for menus and QC
+  - `live_party`: the room code
+  - `live_match_host`, `live_match_id` and `live_match_playlist`: the last match
+
+Game traffic uses the address type `live:<id>[:<vport>]`, `NA_LIVE` in
+`net.h`. Without a port it means the peer's game server (vport 3). So
+`connect live:12345` reaches a listen server behind a NAT, and the server
+answers to `live:<id>:2`. A server needs no change: its packets to a
+`live:` address go out through the Live socket.
+
+The pre-game lobby ([lobby.md](lobby.md)) uses Live when it is connected:
+
+- An `online` lobby takes its Live party's room code.
+- `lobby_join <code>` falls back to `live_join` when the code isn't on the
+  LAN, then joins the party leader's lobby over vport 1.
+- When the game starts, guests connect to `live:<host>`.
+- Lobby messages longer than one datagram are sent in pieces of 1200 bytes.
+  Each piece starts with a `u16` message number, a `u8` index and a `u8`
+  count, and a message is used only once all its pieces have arrived.
+
+This client is IPv4 only, for now.
+
+Tests:
+
+- `tests/live/run.sh build bwlive-server`: a dedicated host and a client are
+  matched on `duel`, and the client joins the host's game. With
+  `LIVE_PUNCH=0` everything goes through the relay.
+- `tests/live/lobby.sh build bwlive-server`: an online lobby is found by
+  room code over Live and started.
+
+Both tests need `FTEQCC`.
