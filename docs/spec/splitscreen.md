@@ -94,6 +94,11 @@ seat the server won't allow.
 - The engine activates a seat before its entity section, its
   `CSQC_Input_Frame`, its devices' `CSQC_InputEvent`s and its console
   commands, and returns to seat 0 after `CSQC_UpdateView`.
+- The engine decides where each seat's view goes, from the `cl_splitscreen*`
+  settings: `vector splitscreen_pos(float seat)` and `splitscreen_size(seat)`
+  (named builtins, `#0:`) give it as fractions of the screen. Four players
+  always get quarters. The empty quarter of a three player `quad` is left
+  black. Nuclide's `View_CalcViewport` uses them when `checkbuiltin` says so.
 - `SetListener` is taken from seat 0 only, for now.
 - `getproperty(VF_ACTIVESEAT)` returns a variant: read it as `(float)`, since
   fteqcc's `(int)` cast keeps the float's bits.
@@ -127,6 +132,10 @@ seat the server won't allow.
 | `seat_list` | The seats, their slots, entities and devices |
 | `seat_device <seat> <device>` | Give a device to a seat |
 | `cl_seat_autojoin` | Start on a free controller adds a guest (1) |
+| `cl_splitscreen2` | Two players: `horizontal` (one above the other, default) or `vertical` (side by side) |
+| `cl_splitscreen3` | Three players: `top` or `bottom` (a wide view, the other two beside each other), `left` or `right` (a tall view, the other two above each other), or `quad` (quarters, one empty). Default `top` |
+| `cl_splitscreen3_main` | Three players: who gets the wide or tall view (1..3, default 1) |
+| `cl_splitscreen3_empty` | Three players in `quad`: the empty quarter (1 top left .. 4 bottom right, default 4) |
 | `sv_maxseats` | Seats per connection the server allows (4; serverinfo) |
 
 ## Test recipe

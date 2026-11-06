@@ -173,6 +173,7 @@ bool SV_ConsoleSay(const char *msg);
 void CL_SetSeat(int seat);
 int CL_NumSeats(void);        /* numclientseats: the highest playing seat + 1, 0 while loading */
 bool CL_SeatPlaying(int seat);
+void CL_SeatRect(int seat, float r[4]); /* the seat's view: x, y, width, height as fractions of the screen */
 int CL_SeatForDevice(int device); /* -1 for none */
 void CL_SeatUserinfo(int seat, char *out, size_t size); /* cl_main.c */
 void CL_InitSeatCommands(void);

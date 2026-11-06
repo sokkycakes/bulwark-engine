@@ -1297,7 +1297,25 @@ static void cl_gp_rumbletriggers(qcvm_t *vm)
 }
 static void cl_gp_setledcolor(qcvm_t *vm) { VID_SetControllerLED((int)QC_PFLOAT(vm, 0), QC_PVEC(vm, 1)); }
 
+/* splitscreen_pos(seat), splitscreen_size(seat): where a split screen
+ * player's view goes, as fractions of the screen (docs/spec/splitscreen.md) */
+static void cl_splitscreen_pos(qcvm_t *vm)
+{
+	float r[4], v[3] = {0, 0, 0};
+	CL_SeatRect((int)QC_PFLOAT(vm, 0), r);
+	v[0] = r[0], v[1] = r[1];
+	QC_ReturnVector(vm, v);
+}
+static void cl_splitscreen_size(qcvm_t *vm)
+{
+	float r[4], v[3] = {0, 0, 0};
+	CL_SeatRect((int)QC_PFLOAT(vm, 0), r);
+	v[0] = r[2], v[1] = r[3];
+	QC_ReturnVector(vm, v);
+}
+
 const qc_builtin_t cl_builtins[] = {
+	{"splitscreen_pos", cl_splitscreen_pos}, {"splitscreen_size", cl_splitscreen_size},
 	{"gp_rumble", cl_gp_rumble}, {"gp_rumbletriggers", cl_gp_rumbletriggers}, {"gp_setledcolor", cl_gp_setledcolor},
 	{"readbyte", cl_readbyte}, {"readchar", cl_readchar}, {"readshort", cl_readshort}, {"readlong", cl_readlong},
 	{"readint", cl_readint}, {"readcoord", cl_readcoord}, {"readangle", cl_readangle}, {"readfloat", cl_readfloat},

@@ -21,6 +21,7 @@
 clseat_t cl_seats[MAX_SEATS];
 
 static cvar_t *cl_seat_autojoin;
+static cvar_t *cl_splitscreen2, *cl_splitscreen3, *cl_splitscreen3_main, *cl_splitscreen3_empty;
 
 #define JOIN_RETRY 2.0 /* seconds before asking the server again */
 
@@ -343,8 +344,81 @@ static void SeatDevice_f(int argc, const char **argv)
 	cl_seats[k].device |= 1u << d;
 }
 
+/* --- screen layout -------------------------------------------------------- */
+
+/* where seat k's view goes on screen, as fractions of the screen: x, y,
+ * width, height. The client game asks with splitscreen_pos/size, so every
+ * game splits the screen the same way and the player picks how:
+ *   2 players: cl_splitscreen2 horizontal (one above the other) or vertical
+ *              (side by side)
+ *   3 players: cl_splitscreen3 top or bottom (a wide view and two below or
+ *              above it), left or right (a tall view and two beside it), or
+ *              quad (four quarters, one empty); cl_splitscreen3_main is the
+ *              player with the big view, cl_splitscreen3_empty the quarter
+ *              left empty (1 top left .. 4 bottom right)
+ *   4 players: quarters
+ * Panes are filled in seat order, top to bottom and left to right. */
+void CL_SeatRect(int k, float r[4])
+{
+	int n = CL_NumSeats();
+	r[0] = r[1] = 0, r[2] = r[3] = 1;
+	if (n <= 1 || k < 0 || k >= n)
+		return;
+	if (n == 2) {
+		bool side = !strcmp(cl_splitscreen2->string, "vertical") || !strcmp(cl_splitscreen2->string, "1");
+		if (side)
+			r[0] = 0.5f * (float)k, r[2] = 0.5f;
+		else
+			r[1] = 0.5f * (float)k, r[3] = 0.5f;
+		return;
+	}
+	int quarter; /* 0 top left, 1 top right, 2 bottom left, 3 bottom right */
+	if (n == 3) {
+		const char *l = cl_splitscreen3->string;
+		int main = cl_splitscreen3_main->ivalue - 1;
+		if (main < 0 || main > 2)
+			main = 0;
+		if (!strcmp(l, "quad")) {
+			int empty = cl_splitscreen3_empty->ivalue - 1;
+			if (empty < 0 || empty > 3)
+				empty = 3;
+			quarter = k + (k >= empty);
+		} else {
+			/* the big view, then the two small ones in seat order */
+			int small = k == main ? -1 : (k - (k > main));
+			bool tall = !strcmp(l, "left") || !strcmp(l, "right");
+			bool second = !strcmp(l, "bottom") || !strcmp(l, "right"); /* the big view is the second half */
+			float big0 = second ? 0.5f : 0, small0 = second ? 0 : 0.5f;
+			if (tall) {
+				r[2] = 0.5f;
+				r[0] = small < 0 ? big0 : small0;
+				if (small >= 0)
+					r[1] = 0.5f * (float)small, r[3] = 0.5f;
+			} else {
+				r[3] = 0.5f;
+				r[1] = small < 0 ? big0 : small0;
+				if (small >= 0)
+					r[0] = 0.5f * (float)small, r[2] = 0.5f;
+			}
+			return;
+		}
+	} else {
+		quarter = k;
+	}
+	r[0] = 0.5f * (float)(quarter & 1), r[1] = 0.5f * (float)(quarter >> 1);
+	r[2] = r[3] = 0.5f;
+}
+
 void CL_InitSeatCommands(void)
 {
+	cl_splitscreen2 = Cvar_Get("cl_splitscreen2", "horizontal", CVAR_ARCHIVE,
+	                           "Two players: horizontal (one above the other) or vertical (side by side)");
+	cl_splitscreen3 = Cvar_Get("cl_splitscreen3", "top", CVAR_ARCHIVE,
+	                           "Three players: top, bottom (a wide view), left, right (a tall view) or quad (one quarter empty)");
+	cl_splitscreen3_main = Cvar_Get("cl_splitscreen3_main", "1", CVAR_ARCHIVE,
+	                                "Three players: who gets the big view (1..3)");
+	cl_splitscreen3_empty = Cvar_Get("cl_splitscreen3_empty", "4", CVAR_ARCHIVE,
+	                                 "Three players in quad: the empty quarter (1 top left, 2 top right, 3 bottom left, 4 bottom right)");
 	cl_seat_autojoin = Cvar_Get("cl_seat_autojoin", "1", CVAR_ARCHIVE,
 	                            "Start on a controller nobody is using adds a split screen guest");
 	Cmd_AddD("seat_add", SeatAdd_f, "seat_add [guest|<name>] [device]: another local player (split screen)");
