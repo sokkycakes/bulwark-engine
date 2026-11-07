@@ -42,7 +42,10 @@ enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 
 #define LOAD_GRACE 60.0 /* seconds a device may take to load a map it was sent to */
 #define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
 #define ENTS_MAXTHINGS 48
-#define THING_SIZE 16 /* bytes a thing in ENTS */
+#define THING_SIZE 18 /* bytes a thing in ENTS */
+#define ENTS_MAXVEL 8  /* things whose velocity ENTS carries: the players */
+/* what follows the things: u32 time, u8 count, count x {u8 thing, s16 velocity[3]} */
+#define ENTS_TRAILER (4 + 1 + ENTS_MAXVEL * 7)
 #define LINK_PLAYERMODEL 1000 /* model indexes from here are the players' own models */
 #define ENTS_RANGE 2048.0f
 
@@ -807,8 +810,10 @@ static void send_ents(link_t *l)
 	static uint8_t present[ENTS_MAXMODELS / 8];
 	static thing_t things[MAX_EDICTS_LINK];
 	pkt_t p;
-	int self = l->client->edict, nummodels = 0, nthings = 0, countpos, count = 0;
+	int self = l->client->edict, nummodels = 0, nthings = 0, countpos, count = 0, nvel = 0;
 	const float *me = &QC_EdictFields(sv.vm, self)[F.origin].f;
+	int f1t = QC_FieldOfs(sv.vm, "frame1time"), vofs = QC_FieldOfs(sv.vm, "velocity");
+	uint8_t velthing[ENTS_MAXVEL];
 	if (F.origin < 0 || F.modelindex < 0 || !sv.world)
 		return;
 	memset(present, 0, sizeof(present));
@@ -840,7 +845,7 @@ static void send_ents(link_t *l)
 	/* the moved brush models: where their origin is now, and their angles */
 	countpos = p.len;
 	p_u8(&p, 0);
-	for (int e = 1; e < sv.vm->num_edicts && count < 255 && p.len + 14 <= (int)sizeof(p.data) - 1 - ENTS_MAXTHINGS * THING_SIZE; e++) {
+	for (int e = 1; e < sv.vm->num_edicts && count < 255 && p.len + 14 <= (int)sizeof(p.data) - 2 - ENTS_MAXTHINGS * THING_SIZE - ENTS_TRAILER; e++) {
 		int sm;
 		const float *o, *a;
 		if (e == self || !ent_shown(e) || (sm = ent_submodel(e)) <= 0 || sm >= nummodels)
@@ -863,7 +868,7 @@ static void send_ents(link_t *l)
 	p_u8(&p, 0);
 	p_u8(&p, THING_SIZE);
 	count = 0;
-	for (int i = 0; i < nthings && count < ENTS_MAXTHINGS && p.len + THING_SIZE <= (int)sizeof(p.data); i++) {
+	for (int i = 0; i < nthings && count < ENTS_MAXTHINGS && p.len + THING_SIZE <= (int)sizeof(p.data) - ENTS_TRAILER; i++) {
 		int e = things[i].e, flags = (int)QC_EFloat(sv.vm, e, F.flags);
 		const float *o = &QC_EdictFields(sv.vm, e)[F.origin].f;
 		const float *mn = F.mins >= 0 ? &QC_EdictFields(sv.vm, e)[F.mins].f : NULL;
@@ -889,9 +894,26 @@ static void send_ents(link_t *l)
 		p_u16(&p, (unsigned)ent_studio(e));
 		p_u8(&p, F.frame >= 0 ? (unsigned)BW_CLAMP((int)QC_EFloat(sv.vm, e, F.frame), 0, 255) : 0);
 		p_u8(&p, (unsigned)BW_CLAMP(-bottom, 0, 255)); /* the origin, above the bottom */
+		/* the time into that sequence (the game's frame1time, which the PC
+		 * draws the model at), 1/100 s; 0xffff when the game has none */
+		p_u16(&p, f1t < 0 ? 0xffffu : (unsigned)BW_CLAMP((int)lrintf(QC_EdictFields(sv.vm, e)[f1t].f * 100), 0, 0xfffe));
+		if (e <= svs.maxclients && nvel < ENTS_MAXVEL && vofs >= 0)
+			velthing[nvel++] = (uint8_t)count;
 		count++;
 	}
 	p.data[countpos] = (uint8_t)count;
+	/* the game's time for all of the above (the PC's snapshots carry it too),
+	 * milliseconds; then the velocity of the players among the things, which
+	 * the PC's client game moves on from between updates (Nuclide's
+	 * cg_extrapolateClients) */
+	p_u32(&p, (uint32_t)(int64_t)llround(sv.time * 1000));
+	p_u8(&p, (unsigned)nvel);
+	for (int i = 0; i < nvel; i++) {
+		int e = things[velthing[i]].e;
+		p_u8(&p, velthing[i]);
+		for (int c = 0; c < 3; c++)
+			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(QC_EdictFields(sv.vm, e)[vofs + c].f, -32768, 32767));
+	}
 	send_to(&l->from, &p);
 }
 
