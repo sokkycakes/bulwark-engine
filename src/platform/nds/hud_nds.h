@@ -31,6 +31,7 @@ void Hud_Init(void);  /* BG1 on the top screen, and the font */
 void Hud_Done(void);
 void Hud_Packet(const uint8_t *d, int len); /* HUDINFO after the type byte (from the session on) */
 uint16_t Hud_Version(void);                 /* the HUDINFO version we have, for INPUT */
+bool Hud_Down(void);                        /* the co-op rules have us down or dead (*respawn) */
 /* once a frame: view is the camera drawn this frame */
 void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudin_t *in);
 /* the HUD's font, and the event text's own layer (BG2, in front of the HUD: cell i is

@@ -21,6 +21,7 @@ enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, 
 evstats_t Events_Stats;
 
 static uint16_t have;     /* the last record taken, in order */
+static bool wasalive;     /* View.qc _m_bWasAlive */
 static float now, ftime;  /* the link's clock, and the last frame's time (clframetime) */
 static bool started;
 
@@ -327,6 +328,7 @@ void Events_Reset(void)
 {
 	have = 0;
 	started = false;
+	wasalive = false;
 	memset(&sh, 0, sizeof(sh));
 	memset(&fd, 0, sizeof(fd));
 	memset(&dm, 0, sizeof(dm));
@@ -379,11 +381,16 @@ void Events_Frame(uint32_t ms, int health)
 	ftime = started ? t - now : 0;
 	ftime = ftime < 0 ? 0 : ftime > 0.25f ? 0.25f : ftime;
 	now = t, started = true;
-	/* ncView::UpdateView: a dead player's damage cues and shake go */
+	/* ncView::UpdateView (src/client/View.qc:335-345): when the player dies, the damage
+	 * cues and the shake go, once; a shake that starts while dead still plays */
 	if (health <= 0) {
-		dm.alpha = 0;
-		shake_stop();
-	}
+		if (wasalive) {
+			dm.alpha = 0;
+			shake_stop();
+		}
+		wasalive = false;
+	} else
+		wasalive = true;
 	shake_update();
 	fade_update();
 	Events_Stats.shaking = sh.apply[0] != 0 || sh.roll != 0;
@@ -455,7 +462,9 @@ static void arrow(int dir, float a)
 
 void Events_Draw3D(const ndscam_t *view)
 {
-	bool any = fd.active || dm.alpha > 0;
+	/* down or dead: HUD_Draw skips Jtf_DrawFeedback (coop/src/hud/jtf.qc:536-540), so the
+	 * arrows and tint neither show nor fade until the player is up again */
+	bool feedback = dm.alpha > 0 && !Hud_Down(), any = fd.active || feedback;
 	if (!any)
 		return;
 	glBindTexture(GL_TEXTURE_2D, 0);
@@ -485,7 +494,7 @@ void Events_Draw3D(const ndscam_t *view)
 	/* Jtf_DrawFeedback: where the hit came from, against the camera's forward and right
 	 * on the level of the damage, each side as strong as it lines up; then the tint,
 	 * a modulate by (1, 1 - a * fill, 1 - a * fill): here a blend toward a dark red */
-	if (dm.alpha > 0) {
+	if (feedback) {
 		float rel[3], len, fw, rt;
 		float yaw = view->yaw * (2 * (float)M_PI / 32768.0f), pitch = -view->pitch * (2 * (float)M_PI / 32768.0f);
 		float sy = sinf(yaw), cy = cosf(yaw), sp = sinf(pitch), cp = cosf(pitch);
@@ -511,7 +520,12 @@ void Events_Draw3D(const ndscam_t *view)
 			glColor(RGB15(16, 0, 0));
 			rect(0, 0, 256, 192);
 		}
-		dm.alpha -= ftime;
+		/* Jtf_DrawFeedback takes the frame's time off g_damageAlpha (coop/src/hud/jtf.qc:507),
+		 * then HLHUD_ClampTimers again (jtf.qc:516, valve/src/hud/hud.qc:213): twice a frame,
+		 * so the feedback is gone in 0.5 s */
+		dm.alpha -= 2 * ftime;
+		if (dm.alpha < 0)
+			dm.alpha = 0;
 	}
 	glPopMatrix(1);
 	glMatrixMode(GL_PROJECTION);

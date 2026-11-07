@@ -680,6 +680,7 @@ static void w_exec(const widget_t *w)
 
 static const char *key(int k) { return k == HK_HEROHUD ? hud.herohud : hud.keys[k]; }
 static bool down_now(void) { return hud.have && key(HK_RESPAWN)[0]; }
+bool Hud_Down(void) { return down_now(); }
 static int split_bar(const char *s, char out[][96], int max) /* fields cut at 95 */
 {
 	int n = 0;
