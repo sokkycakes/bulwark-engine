@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "hull_nds.h"
+#include "fexact_nds.h"
 
 #define DIST_EPSILON 0.03125f
 #define Q1C_SOLID (-2)
@@ -104,24 +105,12 @@ static float rdf(const uint8_t *p)
 	return f;
 }
 
-/* The DS has no FPU, so float work is kept to what changes the result. Two exact shortcuts:
- * a float comparison made on the bits (fkey orders them as the floats, -0 with +0), and
- * a - b >= 0 being a >= b (a difference of floats is never rounded to zero) */
-static inline uint32_t fbits(float f)
-{
-	uint32_t u;
-	memcpy(&u, &f, 4);
-	return u;
-}
-
-static inline int32_t fkey(float f)
-{
-	uint32_t u = fbits(f);
-	return u & 0x80000000u ? -(int32_t)(u & 0x7fffffffu) : (int32_t)u;
-}
-
-/* +0 + x: x, but -0 becomes +0 */
-static inline float plus0(float x) { return fbits(x) == 0x80000000u ? 0.0f : x; }
+/* The DS has no FPU, so float work is kept to what changes the result: comparisons are made
+ * on the bits (fexact_nds.h), and a - b >= 0 is a >= b (a difference of floats is never
+ * rounded to zero) */
+#define fbits fx_bits
+#define fkey fx_key
+#define plus0 fx_plus0
 
 /* --- the walk (bspfile.c hull_contents, hull_trace) ---------------------------------------- */
 
@@ -155,13 +144,59 @@ static void h_normal(const htree_t *t, uint32_t pl, bool back, float *n)
 	}
 }
 
+/* v * 2^sh truncated, on the float's bits, for |v| <= lim * 2^-sh (lim <= 2^30); false
+ * when it is bigger */
+static inline bool h_fix(float v, int sh, int32_t lim, int32_t *out)
+{
+	uint32_t u = fbits(v), e = (u >> 23) & 0xff, m = (u & 0x7fffffu) | 0x800000u;
+	int k = (int)e - 150 + sh; /* v * 2^sh = m * 2^k */
+	int32_t r;
+	if (k > 7)
+		return false;
+	r = k >= 0 ? (int32_t)(m << k) : k > -32 ? (int32_t)(m >> -k) : 0;
+	if (e == 0)
+		r = 0; /* subnormal: below any precision used here */
+	if (r > lim)
+		return false;
+	*out = u & 0x80000000u ? -r : r;
+	return true;
+}
+
+/* the sign of DotProduct(p, n) - d without the float work, when it can be told: the float
+ * result F is within 2^-21 (|p0| + |p1| + |p2| + |d|) of the exact value (5 roundings of at
+ * most 2^-24 of that each, |n| <= 1), and the value worked out here in 1/2^46 units is
+ * within 2^-13 of it (p and d to 1/65536, n to 2^-30, |p|, |d| < 16384); further from 0
+ * than both, F has its sign and is not 0. Returns 1 back, 0 front, -1 can't tell. */
+static int h_side_general(const float *g, const float *p)
+{
+	int32_t q[3], n[3], d;
+	int64_t e, lim;
+	uint32_t sq;
+	for (int k = 0; k < 3; k++)
+		if (!h_fix(p[k], 16, 16383 << 16, &q[k]) || !h_fix(g[k], 30, 1 << 30, &n[k]))
+			return -1;
+	if (!h_fix(g[3], 16, 16383 << 16, &d))
+		return -1;
+	e = (int64_t)q[0] * n[0] + (int64_t)q[1] * n[1] + (int64_t)q[2] * n[2] - ((int64_t)d << 30);
+	sq = (uint32_t)(q[0] < 0 ? -q[0] : q[0]) + (uint32_t)(q[1] < 0 ? -q[1] : q[1]) +
+	     (uint32_t)(q[2] < 0 ? -q[2] : q[2]) + (uint32_t)(d < 0 ? -d : d); /* < 2^32 */
+	lim = ((int64_t)sq << 10) + ((int64_t)1 << 34);
+	return e > lim ? 0 : e < -lim ? 1 : -1;
+}
+
 /* h_dist(...) < 0 */
 static inline int h_back(const htree_t *t, uint32_t pl, const float *p)
 {
 	uint32_t type = t->wide ? pl >> 30 : pl >> 14, i = t->wide ? pl & 0x3fffffffu : pl & 0x3fffu;
+	int side;
 	if (type < 3)
 		return fkey(p[type]) < fkey(t->axial[i]);
-	return h_dist(t, pl, p) < 0;
+	side = h_side_general(t->general[i], p);
+#ifdef HULL_SELFCHECK /* pmtest built with it: the shortcut must agree with the float test */
+	if (side >= 0 && side != fx_lt(h_dist(t, pl, p), 0))
+		abort();
+#endif
+	return side >= 0 ? side : fx_lt(h_dist(t, pl, p), 0);
 }
 
 static int h_contents(const htree_t *t, int num, const float *p)
@@ -180,36 +215,47 @@ typedef struct {
 	int depth;
 } hwork_t;
 
+/* p1 + (p2 - p1) * frac for each axis; an axis where both ends are the same bits gives
+ * p1 + (+0), with no float work */
+static void h_lerp(const float *p1, const float *p2, float frac, float *mid)
+{
+	for (int k = 0; k < 3; k++)
+		mid[k] = fbits(p1[k]) == fbits(p2[k]) ? plus0(p1[k]) : p1[k] + (p2[k] - p1[k]) * frac;
+}
+
 static bool h_trace(hwork_t *w, int num, float f1, float f2, const float *p1, const float *p2)
 {
 	uint32_t pl;
 	float t1, t2, frac, midf, mid[3];
 	int side;
-	if (num < 0) {
-		if (num != Q1C_SOLID)
-			w->allsolid = false;
-		else
-			w->startsolid = true;
-		return true;
-	}
-	if (++w->depth > 4096)
-		return true;
-	pl = h_plane(w->t, num);
-	{
-		/* which side each end is on, before working out how far */
-		int b1 = h_back(w->t, pl, p1), b2 = p2 == p1 ? b1 : h_back(w->t, pl, p2);
-		if (b1 == b2)
-			return h_trace(w, h_child(w->t, num, b1), f1, f2, p1, p2);
+	for (;;) {
+		if (num < 0) {
+			if (num != Q1C_SOLID)
+				w->allsolid = false;
+			else
+				w->startsolid = true;
+			return true;
+		}
+		if (++w->depth > 4096)
+			return true;
+		pl = h_plane(w->t, num);
+		{
+			/* which side each end is on, before working out how far: both on one side
+			 * goes down that side (bspfile.c's tail call, as a loop) */
+			int b1 = h_back(w->t, pl, p1), b2 = p2 == p1 ? b1 : h_back(w->t, pl, p2);
+			if (b1 != b2)
+				break;
+			num = h_child(w->t, num, b1);
+		}
 	}
 	t1 = h_dist(w->t, pl, p1);
 	t2 = h_dist(w->t, pl, p2);
-	frac = t1 < 0 ? (t1 + DIST_EPSILON) / (t1 - t2) : (t1 - DIST_EPSILON) / (t1 - t2);
-	frac = frac < 1 ? frac : 1;
-	frac = 0 > frac ? 0 : frac;
-	side = t1 < 0;
+	side = fx_lt(t1, 0);
+	frac = side ? (t1 + DIST_EPSILON) / (t1 - t2) : (t1 - DIST_EPSILON) / (t1 - t2);
+	frac = fx_lt(frac, 1) ? frac : 1;
+	frac = fx_gt(0, frac) ? 0 : frac;
 	midf = f1 + (f2 - f1) * frac;
-	for (int k = 0; k < 3; k++)
-		mid[k] = p1[k] + (p2[k] - p1[k]) * frac;
+	h_lerp(p1, p2, frac, mid);
 	if (!h_trace(w, h_child(w->t, num, side), f1, midf, p1, mid))
 		return false;
 	if (h_contents(w->t, h_child(w->t, num, side ^ 1), mid) != Q1C_SOLID)
@@ -219,14 +265,13 @@ static bool h_trace(hwork_t *w, int num, float f1, float f2, const float *p1, co
 	h_normal(w->t, pl, side != 0, w->tr->normal);
 	while (h_contents(w->t, w->head, mid) == Q1C_SOLID) {
 		frac -= 0.1f;
-		if (frac < 0) {
+		if (fx_lt(frac, 0)) {
 			w->tr->fraction = f1;
 			memcpy(w->tr->endpos, p1, sizeof(float) * 3);
 			return false;
 		}
 		midf = f1 + (f2 - f1) * frac;
-		for (int k = 0; k < 3; k++)
-			mid[k] = p1[k] + (p2[k] - p1[k]) * frac;
+		h_lerp(p1, p2, frac, mid);
 	}
 	w->tr->fraction = midf;
 	memcpy(w->tr->endpos, mid, sizeof(float) * 3);
@@ -263,7 +308,7 @@ static void tree_trace(const htree_t *t, int head, const float *off, const float
 		tr->fraction = 0;
 		memcpy(tr->endpos, p1, sizeof(p1));
 	}
-	tr->hit = tr->fraction < 1 || w.startsolid;
+	tr->hit = fx_lt(tr->fraction, 1) || w.startsolid;
 	for (int k = 0; k < 3; k++)
 		tr->endpos[k] = fbits(off[k]) ? tr->endpos[k] + off[k] : plus0(tr->endpos[k]);
 }
@@ -352,8 +397,8 @@ static bool fx_trace(fxwork_t *w, int num, float f1, float f2, const float *p1, 
 	ft1 = (float)t1 * (1.0f / 268435456.0f);
 	ft2 = (float)t2 * (1.0f / 268435456.0f);
 	frac = t1 < 0 ? (ft1 + DIST_EPSILON) / (ft1 - ft2) : (ft1 - DIST_EPSILON) / (ft1 - ft2);
-	frac = frac < 1 ? frac : 1;
-	frac = 0 > frac ? 0 : frac;
+	frac = fx_lt(frac, 1) ? frac : 1;
+	frac = fx_gt(0, frac) ? 0 : frac;
 	side = t1 < 0;
 	midf = f1 + (f2 - f1) * frac;
 	for (int k = 0; k < 3; k++) {
@@ -373,7 +418,7 @@ static bool fx_trace(fxwork_t *w, int num, float f1, float f2, const float *p1, 
 	}
 	while (fx_contents(w, w->head, qm) == Q1C_SOLID) {
 		frac -= 0.1f;
-		if (frac < 0) {
+		if (fx_lt(frac, 0)) {
 			w->tr->fraction = f1;
 			memcpy(w->tr->endpos, p1, sizeof(float) * 3);
 			return false;
@@ -422,7 +467,7 @@ void Hull_Trace0Fixed(const hull_fxnode_t *nodes, int nodestride, const hull_fxp
 		tr->fraction = 0;
 		memcpy(tr->endpos, p1, sizeof(p1));
 	}
-	tr->hit = tr->fraction < 1 || w.startsolid;
+	tr->hit = fx_lt(tr->fraction, 1) || w.startsolid;
 	for (int k = 0; k < 3; k++)
 		tr->endpos[k] = fbits(off[k]) ? tr->endpos[k] + off[k] : plus0(tr->endpos[k]);
 }
@@ -432,32 +477,54 @@ void Hull_Trace0Fixed(const hull_fxnode_t *nodes, int nodestride, const hull_fxp
 static const float q1_hull1[3] = {-16, -16, -24};
 static const float hl_hull1[3] = {-16, -16, -36}, hl_hull3[3] = {-16, -16, -18};
 
+/* the hull a box uses and its offset from the box (hm - mins), worked out once per box: the
+ * player's box changes only when it crouches */
+static struct {
+	uint32_t key[6]; /* mins, maxs bits */
+	int rule, hull, slot;
+	const float *hm;
+	bool same[3];    /* hm[k] and mins[k] the same bits: the offset is the origin's */
+} hsel;
+
+static void select_hull(const float *mins, const float *maxs)
+{
+	uint32_t key[6];
+	float size;
+	for (int k = 0; k < 3; k++)
+		key[k] = fbits(mins[k]), key[3 + k] = fbits(maxs[k]);
+	if (hsel.rule == H.rule && !memcmp(key, hsel.key, sizeof(key)))
+		return;
+	memcpy(hsel.key, key, sizeof(key));
+	hsel.rule = H.rule;
+	size = maxs[0] - mins[0];
+	if (H.rule == HULL_HL)
+		hsel.hull = size <= 8 ? 0 : size <= 36 ? (maxs[2] - mins[2] <= 36 ? 3 : 1) : 2;
+	else
+		hsel.hull = size < 3 ? 0 : size <= 32 ? 1 : 2;
+	/* hull 2 (wider than the player) is not kept: the player's box is 32 wide */
+	hsel.slot = hsel.hull == 3 ? 1 : 0;
+	hsel.hm = H.rule == HULL_HL ? (hsel.hull == 3 ? hl_hull3 : hl_hull1) : q1_hull1;
+	for (int k = 0; k < 3; k++)
+		hsel.same[k] = fbits(hsel.hm[k]) == fbits(mins[k]);
+}
+
 void Hull_TraceModel(int model, const float origin[3], const float start[3], const float mins[3],
                      const float maxs[3], const float end[3], hulltrace_t *tr)
 {
-	float size = maxs[0] - mins[0], off[3];
-	const float *hm;
-	int hull, slot = 0;
+	float off[3];
 	trace_clear(end, tr);
 	if (H.rule == HULL_NONE || model < 0 || model >= H.nummodels)
 		return;
-	if (H.rule == HULL_HL)
-		hull = size <= 8 ? 0 : size <= 36 ? (maxs[2] - mins[2] <= 36 ? 3 : 1) : 2;
-	else
-		hull = size < 3 ? 0 : size <= 32 ? 1 : 2;
-	if (hull == 0) {
+	select_hull(mins, maxs);
+	if (hsel.hull == 0) {
 		const hull0_if *h = H.h0 ? H.h0 : H.own0.trace ? &H.own0 : NULL;
 		if (h)
 			h->trace(h->ctx, model, origin, start, end, tr);
 		return;
 	}
-	/* hull 2 (wider than the player) is not kept: the player's box is 32 wide */
-	if (hull == 3)
-		slot = 1;
-	hm = H.rule == HULL_HL ? (hull == 3 ? hl_hull3 : hl_hull1) : q1_hull1;
 	for (int k = 0; k < 3; k++)
-		off[k] = fbits(hm[k]) == fbits(mins[k]) ? plus0(origin[k]) : hm[k] - mins[k] + origin[k];
-	tree_trace(&H.t, H.heads[model * H.numhulls + slot], off, start, end, tr);
+		off[k] = hsel.same[k] ? plus0(origin[k]) : hsel.hm[k] - mins[k] + origin[k];
+	tree_trace(&H.t, H.heads[model * H.numhulls + hsel.slot], off, start, end, tr);
 }
 
 static void own_hull0(void *ctx, int model, const float origin[3], const float start[3], const float end[3],
@@ -498,6 +565,7 @@ void Hull_Free(void)
 	free(H.nodes0), free(H.general0), free(H.heads0);
 	free(H.fxnodes), free(H.fxplanes), free(H.fxleafs);
 	memset(&H, 0, sizeof(H));
+	memset(&hsel, 0, sizeof(hsel));
 	free(brushes);
 	brushes = NULL;
 	numbrushes = brushcap = numboxes = numcandb = numcandx = 0;
@@ -1029,12 +1097,12 @@ static void merge_bsp(pmhit_t *tr, who_t *who, const hulltrace_t *bt, uint32_t c
 		tr->startsolid = true;
 		if (bt->allsolid)
 			tr->allsolid = true;
-		if (tr->ent < 0 || bt->fraction < tr->fraction) {
+		if (tr->ent < 0 || fx_lt(bt->fraction, tr->fraction)) {
 			set_ent(tr, who, ent, solid, amin, amax);
 			tr->contents = contents;
 		}
 	}
-	if (bt->fraction < tr->fraction) {
+	if (fx_lt(bt->fraction, tr->fraction)) {
 		tr->fraction = bt->fraction;
 		memcpy(tr->normal, bt->normal, sizeof(tr->normal));
 		set_ent(tr, who, ent, solid, amin, amax);
@@ -1042,7 +1110,7 @@ static void merge_bsp(pmhit_t *tr, who_t *who, const hulltrace_t *bt, uint32_t c
 	}
 }
 
-/* sv_world.c trace_aabb (:242-300) */
+/* sv_world.c trace_aabb (:242-300); sign * x is x or its negation, exactly */
 static void trace_aabb(const float *start, const float *mins, const float *maxs, const float *end, const float *bmin,
                        const float *bmax, pmhit_t *tr, who_t *who, const sbox_t *box, uint32_t contents, bool trigger)
 {
@@ -1051,24 +1119,24 @@ static void trace_aabb(const float *start, const float *mins, const float *maxs,
 	for (int i = 0; i < 3; i++) {
 		for (int side = 0; side < 2; side++) {
 			float dist = side == 0 ? bmax[i] - mins[i] : -(bmin[i] - maxs[i]);
-			float sign = side == 0 ? 1.0f : -1.0f;
-			float d1 = sign * start[i] - dist, d2 = sign * end[i] - dist;
-			if (d1 > 0)
+			float d1 = (side == 0 ? start[i] : -start[i]) - dist, d2 = (side == 0 ? end[i] : -end[i]) - dist;
+			bool out1 = fx_gt(d1, 0);
+			if (out1)
 				startout = true;
-			if (d1 > 0 && (d2 >= 0.03125f || d2 >= d1))
+			if (out1 && (fx_ge(d2, 0.03125f) || fx_ge(d2, d1)))
 				return;
-			if (d1 <= 0 && d2 <= 0)
+			if (fx_le(d1, 0) && fx_le(d2, 0))
 				continue;
-			if (d1 > d2) {
+			if (fx_gt(d1, d2)) {
 				float f = (d1 - 0.03125f) / (d1 - d2);
-				if (f > enter) {
+				if (fx_gt(f, enter)) {
 					enter = f;
 					n[0] = n[1] = n[2] = 0;
-					n[i] = sign;
+					n[i] = side == 0 ? 1.0f : -1.0f;
 				}
 			} else {
 				float f = (d1 + 0.03125f) / (d1 - d2);
-				if (f < leave)
+				if (fx_lt(f, leave))
 					leave = f;
 			}
 		}
@@ -1088,8 +1156,8 @@ static void trace_aabb(const float *start, const float *mins, const float *maxs,
 		}
 		return;
 	}
-	if (enter < leave && enter > -1 && enter < tr->fraction) {
-		tr->fraction = enter < 0 ? 0 : enter;
+	if (fx_lt(enter, leave) && fx_gt(enter, -1) && fx_lt(enter, tr->fraction)) {
+		tr->fraction = fx_lt(enter, 0) ? 0 : enter;
 		memcpy(tr->normal, n, sizeof(n));
 		set_ent(tr, who, box->b.edict, box->b.solid, box->amin, box->amax);
 		tr->contents = contents;
@@ -1165,12 +1233,14 @@ void Hull_Move(void *ctx, const float start[3], const float mins[3], const float
 	Hull_TraceModel(0, zero, start, mins, maxs, end, &bt);
 	merge_bsp(tr, &who, &bt, bt.hit ? PM_CB_SOLID : 0, 0, PM_SOLID_BSP, zero, zero);
 
-	for (int i = 0; i < 3; i++) {
-		tmin[i] = (start[i] < end[i] ? start[i] : end[i]) + mins[i] - 1;
-		tmax[i] = (start[i] > end[i] ? start[i] : end[i]) + maxs[i] + 1;
+	if (nb || nx) {
+		for (int i = 0; i < 3; i++) {
+			tmin[i] = (fx_lt(start[i], end[i]) ? start[i] : end[i]) + mins[i] - 1;
+			tmax[i] = (fx_gt(start[i], end[i]) ? start[i] : end[i]) + maxs[i] + 1;
+		}
 	}
 	/* brushes and boxes as one list in edict order, until something leaves fraction 0 */
-	while ((ib < nb || ix < nx) && tr->fraction > 0) {
+	while ((ib < nb || ix < nx) && fx_gt(tr->fraction, 0)) {
 		const sbrush_t *b = ib < nb ? &brushes[focused ? candb[ib] : ib] : NULL;
 		const sbox_t *x = ix < nx ? &boxes[focused ? candx[ix] : ix] : NULL;
 		if (b && (!x || b->b.edict <= x->b.edict)) {
@@ -1183,8 +1253,19 @@ void Hull_Move(void *ctx, const float start[3], const float mins[3], const float
 				move_box(x, start, mins, maxs, end, type, m, tr, &who);
 		}
 	}
-	for (int i = 0; i < 3; i++)
-		tr->endpos[i] = start[i] + (end[i] - start[i]) * tr->fraction;
+	/* start + (end - start) * fraction; an axis that doesn't move, or fraction 0, needs no
+	 * float work: start + (+-0), the zero's sign that of end - start (fraction is +0) */
+	{
+		uint32_t fb = fbits(tr->fraction);
+		for (int i = 0; i < 3; i++) {
+			if (fbits(start[i]) == fbits(end[i]))
+				tr->endpos[i] = plus0(start[i]);
+			else if (fb == 0)
+				tr->endpos[i] = fx_lt(end[i], start[i]) ? start[i] : plus0(start[i]);
+			else
+				tr->endpos[i] = start[i] + (end[i] - start[i]) * tr->fraction;
+		}
+	}
 	if (tr->ent <= 0) {
 		tr->ent = 0;
 		who.solid = PM_SOLID_BSP, who.amin = who.amax = zero;
