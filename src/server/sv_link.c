@@ -2755,7 +2755,7 @@ static void update_hud(link_t *l)
 	if (p.len != l->hudlen || memcmp(p.data, l->hudbody, (size_t)p.len)) {
 		memcpy(l->hudbody, p.data, (size_t)p.len);
 		l->hudlen = p.len;
-		l->hudver = (uint16_t)(l->hudver + 1 ? l->hudver + 1 : 1);
+		l->hudver = (uint16_t)(l->hudver == 65535 ? 1 : l->hudver + 1); /* 0 is none */
 	}
 }
 
