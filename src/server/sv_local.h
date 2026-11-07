@@ -362,6 +362,7 @@ void SV_LinkGameMessages(client_t *c, const uint8_t *data, int len);
 void SV_LinkQCWrite(client_t *c, const void *data, int len);
 /* the server's sound() and pointsound() for a link player (svc_sound skips bots) */
 void SV_LinkSound(client_t *c, int e, int chan, int idx, float vol, float atten, float pitch, int flags, const float *org);
+void SV_LinkSoundLog(int e, int chan, int idx);
 client_t *SV_SpawnLinkClient(const char *name, int link);
 void SV_UpdateStats(client_t *c);
 void SV_ResetStats(client_t *c);
