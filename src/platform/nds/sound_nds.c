@@ -26,6 +26,7 @@
 #include <nds/debug.h>
 
 #include "sndmath_nds.h"
+#include "sndfactor_nds.h"
 #include "sound_nds.h"
 
 void *sbrk(ptrdiff_t);
@@ -64,7 +65,9 @@ void *sbrk(ptrdiff_t);
 #define LF_STOP 4
 #define LF_CLIENTSIDE 8
 #define LF_DELAYSHIFT 4 /* 0x70: made this many 4 ms after the packet's first new record */
-#define LF_KNOWN 0x7f /* the bits a record may have: the rest are dropped */
+#define LF_ATTEN16 0x80 /* the attenuation byte is x16, not x64 */
+#define LF_KNOWN 0xff
+#define AF_ATTEN16 1    /* AMBIENT's flags: the same */
 #define S_DEFER 32      /* SOUND records held for their delay */
 #define VIEW_ENT 0xffff /* the view model: follows the camera */
 
@@ -165,7 +168,6 @@ static struct sheap_s {
 		uint32_t page;
 		uint8_t d[S_PAGE];
 	} pagecache[2];
-	uint32_t f_q8[256]; /* snd_factor_q8 by attenuation byte */
 	samb_t ambnew[S_AMB]; /* handle_ambient's new set (off the stack: DTCM is small) */
 	bool ambstart[S_AMB];
 	int16_t khead[S_KHASH], knext[S_KEYS];
@@ -993,7 +995,7 @@ static int voice_new(const srec_t *r, int src)
 	v->ent = r->ent, v->seq = r->seq, v->at = r->at, v->key = r->key;
 	v->hw = -1, v->amb = -1;
 	v->vol_q16 = (uint32_t)(((uint64_t)r->vol * ((r->sflags & SF_ABSVOLUME) ? SND_ONE : S.master_q16) + 127) / 255);
-	v->f_q8 = H->f_q8[r->atten];
+	v->f_q8 = snd_fq8_table[snd_fq8_index(r->atten, r->lflags & LF_ATTEN16)];
 	for (int c = 0; c < 3; c++)
 		v->org[c] = r->org[c] * 8;
 	v->t_arrive = ticks();
@@ -1173,7 +1175,7 @@ static void amb_start(int ai)
 	srec_t r = {0};
 	int vi;
 	r.ent = a->ent, r.chan = CHAN_BODY, r.key = a->key, r.vol = a->vol, r.atten = a->atten, r.pitch = a->pitch;
-	r.lflags = LF_CLIENTSIDE, r.sflags = a->flags & SF_FORCELOOP;
+	r.lflags = LF_CLIENTSIDE | ((a->flags & AF_ATTEN16) ? LF_ATTEN16 : 0), r.sflags = a->flags & SF_FORCELOOP;
 	memcpy(r.org, a->org, sizeof(r.org));
 	a->voice = -1;
 	if ((vi = voice_new(&r, SRC_AMB)) >= 0) {
@@ -1234,7 +1236,7 @@ static void handle_ambient(const uint8_t *d, int len)
 			svoice_t *v = &S.v[a->voice];
 			v->vol = a->vol, v->atten = a->atten;
 			v->vol_q16 = (uint32_t)(((uint64_t)a->vol * S.master_q16 + 127) / 255);
-			v->f_q8 = H->f_q8[a->atten];
+			v->f_q8 = snd_fq8_table[snd_fq8_index(a->atten, a->flags & AF_ATTEN16)];
 			if (v->pitch != a->pitch) {
 				v->pitch = a->pitch;
 				if (v->hw >= 0 && S.vst[v - S.v] == V_PLAY) {
@@ -1951,8 +1953,6 @@ void Snd_MapLoaded(void)
 	memset(S.vst, 0, sizeof(S.vst));
 	memset(H->khead, 0xff, sizeof(H->khead));
 	S.nkeys = 0;
-	for (int a = 0; a < 256; a++)
-		H->f_q8[a] = snd_factor_q8(a);
 	H->pagecache[0].pack = H->pagecache[1].pack = -1;
 	S.ready = true;
 	logf_("SNDSTAT ready packs=%d cache=%uKB free_after=%uKB\n", S.npacks, (unsigned)(want / 1024),

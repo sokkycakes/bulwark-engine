@@ -732,12 +732,12 @@ bytes (22 with `AT`):
 | Field | |
 |---|---|
 | u16 seq | +1 each record for this device; 0 in an EVENT 12 |
-| u8 lflags | 1 LISTENER (the device's own player, a server sound: heard straight), 2 `AT` follows, 4 STOP (the sample is `common/null`: stop entity and channel), 8 CLIENTSIDE (made for the PC client game's own sounds: a client entity's channel), bits 4-6 (0x70) DELAY: made this many 4 ms after the packet's first new record (0-7; 0 in a repeat, with `AT` and in EVENT 12) |
+| u8 lflags | 1 LISTENER (the device's own player, a server sound: heard straight), 2 `AT` follows, 4 STOP (the sample is `common/null`: stop entity and channel), 8 CLIENTSIDE (made for the PC client game's own sounds: a client entity's channel), bits 4-6 (0x70) DELAY: made this many 4 ms after the packet's first new record (0-7; 0 in a repeat, with `AT` and in EVENT 12), 128 ATTEN16 (the attenuation byte is ×16: only CLIENTSIDE records, when ×64 would pass 255) |
 | u8 sflags | the engine's sound flags as `svc_sound` has them (2 FORCELOOP, 4 NOSPACIALISE, 16 ABSVOLUME, 32 NOREVERB, 64 FOLLOW, 128 NOREPLACE) |
 | u16 entity | 0 none |
 | u8 channel | |
 | u32 key | the sample |
-| u8 volume, attenuation, pitch | ×255, ×64, percent (0 means 100), as `svc_sound` |
+| u8 volume, attenuation, pitch | ×255, ×64 (×16 with ATTEN16), percent (0 means 100), as `svc_sound` |
 | s16 origin[3] | units (the entity's origin and the middle of its box, as `svc_sound`) |
 | s16 at | with `AT`: the server time (ms, the low 16 bits of the `ENTS` clock) at which the PC would start it, less the SoundDef's start offset |
 
@@ -760,8 +760,9 @@ hears them before. The server keeps the last 32 loops
 per device; a device joining late misses loops started before, as a PC does.
 
 **AMBIENT**: u32 session, u16 spawncount, u16 version, u8 count, count ×
-{u16 entity, u32 key, u8 volume (×255), u8 attenuation (×64), u8 pitch, u8
-flags (2 FORCELOOP, 128 an `ncSound`, else an `ambient_generic`), s16
+{u16 entity, u32 key, u8 volume (×255), u8 attenuation (×64, or ×16 with
+flag 1), u8 pitch, u8 flags (1 ATTEN16: the attenuation is ×16, set when ×64
+would pass 255; 2 FORCELOOP, 128 an `ncSound`, else an `ambient_generic`), s16
 origin[3]}: the whole set, the 64 nearest the player. An `ambient_generic`
 (or an entityDef whose `spawnclass` is one) is in it while it loops and is on
 and is not a SoundDef one (`ambient_generic::SendEntity`); its radius is the

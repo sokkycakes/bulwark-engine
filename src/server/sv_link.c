@@ -100,6 +100,21 @@ typedef struct {
 #define AMB_PERIOD 2.0     /* and this often once it has */
 enum { SL_LISTENER = 1, SL_AT = 2, SL_STOP = 4, SL_CLIENTSIDE = 8 };  /* SOUND lflags */
 #define SL_DELAYSHIFT 4 /* lflags 0x70: made this many 4 ms after the packet's first new record */
+#define SL_ATTEN16 0x80 /* lflags: the attenuation byte is x16 (AMBIENT: flags 1) */
+
+/* an attenuation as a byte: x64 as svc_sound has it (sv_client.c write_sound, up to 3.98),
+ * or, for what the PC's client game passes as a float (fine: CLIENTSIDE records, AMBIENT), x16
+ * past that (*x16 set): an ncSound's 1000 / radius is 7.8 at its default radius 128 */
+static uint8_t snd_atten_byte(float atten, bool fine, bool *x16)
+{
+	*x16 = false;
+	atten = BW_MAX(0.0f, atten);
+	if (fine && atten * 64 > 255.5f) {
+		*x16 = true;
+		return (uint8_t)BW_MIN(lrintf(atten * 16), 255);
+	}
+	return (uint8_t)BW_MIN(atten * 64, 255.0f);
+}
 /* the engine's sound() flags (FTE's SOUNDFLAG_*), as E1 sends them */
 enum { SF_FORCELOOP = 2, SF_NOSPACIALISE = 4, SF_ABSVOLUME = 16, SF_NOREVERB = 32, SF_FOLLOW = 64, SF_NOREPLACE = 128 };
 
@@ -4004,7 +4019,12 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 	r.ent = (uint16_t)BW_CLAMP(ent, 0, 0xffff);
 	r.chan = (uint8_t)(chan & 0xff);
 	r.vol = (uint8_t)BW_MAX(0.0f, BW_MIN(vol * 255, 255.0f));
-	r.atten = (uint8_t)BW_MAX(0.0f, BW_MIN(atten * 64, 255.0f));
+	{
+		bool x16;
+		r.atten = snd_atten_byte(atten, cs, &x16);
+		if (x16)
+			r.lflags |= SL_ATTEN16;
+	}
 	r.pitch = (uint8_t)BW_MAX(0.0f, BW_MIN(pitch, 255.0f));
 	for (int k = 0; k < 3; k++)
 		r.org[k] = (int16_t)BW_CLAMP(lrintf(org ? org[k] : 0), -32768, 32767);
@@ -5265,16 +5285,18 @@ static void update_ambient(link_t *l)
 			a->key = snd_key(qstr(e, ag_path));
 			a->vol = (uint8_t)BW_CLAMP(lrintf(qnum(e, ag_vol) * 255), 0, 255);
 			/* SENDENTITY_BYTE: the client gets the radius (an ATTN_ value) as a whole byte */
-			a->atten = (uint8_t)BW_CLAMP((int)qnum(e, ag_rad) * 64, 0, 255);
+			bool x16;
+			a->atten = snd_atten_byte((float)(int)qnum(e, ag_rad), true, &x16);
 			a->pitch = (uint8_t)BW_CLAMP(lrintf(qnum(e, ag_pitch)), 0, 255);
-			a->flags = qnum(e, ag_force) ? SF_FORCELOOP : 0;
+			a->flags = (qnum(e, ag_force) ? SF_FORCELOOP : 0) | (x16 ? 1 : 0);
 		} else {
 			int idx = (int)qnum(e, ns_idx);
 			a->key = idx > 0 && idx < sv.numsounds && sv.sounds[idx] ? snd_key(sv.sounds[idx]) : 0;
 			a->vol = (uint8_t)BW_CLAMP(lrintf(qnum(e, ns_vol) * 255), 0, 255);
-			a->atten = (uint8_t)BW_CLAMP(lrintf(SND_NOMINALDISTANCE / qnum(e, ns_rad) * 64), 0, 255);
+			bool x16;
+			a->atten = snd_atten_byte(SND_NOMINALDISTANCE / qnum(e, ns_rad), true, &x16);
 			a->pitch = (uint8_t)BW_CLAMP(lrintf(qnum(e, ns_pitch)), 0, 255);
-			a->flags = SF_FORCELOOP | 128; /* KIND_SOUND */
+			a->flags = SF_FORCELOOP | 128 | (x16 ? 1 : 0); /* KIND_SOUND */
 		}
 	}
 	if (n == l->namb && !memcmp(set, l->amb, sizeof(set[0]) * (size_t)n))

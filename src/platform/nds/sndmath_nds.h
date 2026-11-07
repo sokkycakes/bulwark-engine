@@ -41,12 +41,24 @@ static inline uint32_t snd_isqrt64(uint64_t x)
 /* the distance factor saturates: past this (units) every distance a map has gives gain 1 */
 #define SND_FMAX_UNITS 131072u
 
-/* f(atten) = 10^((L - snd_refdb)/20) x snd_refdist, L = 50 + 20/a (S_SoundLevel, S_DistanceGain,
- * snd_main.c:140-153), a = atten byte / 64 (the server's x64, sv_client.c:2027). In units,
- * Q8, clamped; 0 for attenuation 0 (G = 1 everywhere) */
-static inline uint32_t snd_factor_q8(int atten_byte)
+/* An attenuation byte is x64 (the server's, sv_client.c:2027: up to 3.98), or x16 (lflags
+ * ATTEN16, AMBIENT flag 1: up to 15.9, for what the PC's client game passes as a float, e.g.
+ * an ncSound's 1000 / radius). The factors are a table of SND_FQ8_N: index the x64 byte, or
+ * 256 + the x16 byte - 64 (an x16 byte under 64 is the x64 byte x 4) */
+#define SND_FQ8_N 448
+static inline int snd_fq8_index(int atten_byte, int x16)
 {
-	float a = atten_byte / 64.0f * 1000.0f / SND_NOMINAL, level, f;
+	return !x16 ? atten_byte : atten_byte < 64 ? atten_byte * 4 : 256 + atten_byte - 64;
+}
+static inline float snd_fq8_atten(int index) { return index < 256 ? index / 64.0f : (index - 256 + 64) / 16.0f; }
+
+/* f(atten) = 10^((L - snd_refdb)/20) x snd_refdist, L = 50 + 20/a (S_SoundLevel, S_DistanceGain,
+ * snd_main.c:140-153). In units, Q8, clamped; 0 for attenuation 0 (G = 1 everywhere). The DS
+ * takes it from the table (sndfactor_nds.h, made from this by tools/nds/sndtest.c -table):
+ * powf costs ~3 KB of soft-float code */
+static inline uint32_t snd_factor_q8a(float atten)
+{
+	float a = atten * 1000.0f / SND_NOMINAL, level, f;
 	if (a <= 0)
 		return 0;
 	level = 50.0f + 20.0f / a;
@@ -55,6 +67,7 @@ static inline uint32_t snd_factor_q8(int atten_byte)
 	f = powf(10.0f, (level - SND_REFDB) / 20.0f) * SND_REFDIST;
 	return f >= (float)SND_FMAX_UNITS ? SND_FMAX_UNITS * 256u : (uint32_t)(f * 256.0f + 0.5f);
 }
+static inline uint32_t snd_factor_q8(int atten_byte) { return snd_factor_q8a(atten_byte / 64.0f); }
 
 typedef struct {
 	int32_t left, right; /* Q16 */
