@@ -1009,7 +1009,9 @@ var CoopMenu = ( function ()
 
 	function mmFacts( pl )
 	{
-		var facts = pl.players + ( pl.teams > 1 ? " players, " + pl.teams + " teams" : pl.players === 1 ? " player" : " players" );
+		var min = pl.min_players || pl.players;
+		var range = min < pl.players ? min + "-" + pl.players : "" + pl.players;
+		var facts = range + ( pl.teams > 1 ? " players, " + pl.teams + " teams" : pl.players === 1 ? " player" : " players" );
 		facts += "  ·  " + ( pl.online !== undefined ? pl.online : pl.searching || 0 ) + " online";
 		return facts;
 	}

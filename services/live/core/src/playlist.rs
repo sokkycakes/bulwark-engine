@@ -139,6 +139,11 @@ impl Playlist {
         self.teams as usize * self.team_size as usize
     }
 
+    /// The fewest players a match can start with.
+    pub fn min_players(&self) -> usize {
+        if self.min_players == 0 { self.players() } else { (self.min_players as usize).min(self.players()) }
+    }
+
     /// Index of the stage a ticket that has waited `waited` seconds is in.
     pub fn stage_index(&self, waited: u32) -> usize {
         self.stages

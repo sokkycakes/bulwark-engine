@@ -682,7 +682,7 @@ impl Live {
                         .collect();
                     serde_json::json!({
                         "id": p.id, "name": p.name, "description": p.description,
-                        "players": p.players(), "teams": p.teams, "drop_in": p.drop_in, "searching": live.searching(&p.id), "online": live.online(&p.id), "modes": modes,
+                        "players": p.players(), "min_players": p.min_players(), "teams": p.teams, "drop_in": p.drop_in, "searching": live.searching(&p.id), "online": live.online(&p.id), "modes": modes,
                     })
                 })
                 .collect();
@@ -1334,6 +1334,8 @@ mod tests {
         assert_eq!(v[2]["drop_in"], true);
         assert_eq!(v[2]["modes"][1]["name"], "Horde: Lives");
         assert_eq!(v[2]["online"], 0);
+        assert_eq!(v[2]["min_players"], 1);
+        assert_eq!(v[0]["min_players"], 2);
         println!("{} bytes", json.len());
     }
 

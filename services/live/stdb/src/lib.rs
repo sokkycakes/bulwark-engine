@@ -886,7 +886,7 @@ pub fn list_playlists(ctx: &mut ProcedureContext) -> Result<String, String> {
             .iter()
             .map(|p| {
                 let modes: Vec<Value> = p.modes.iter().map(|m| json!({ "id": m.id, "name": m.name, "maps": m.maps })).collect();
-                json!({ "id": p.id, "name": p.name, "description": p.description, "game": p.game, "players": p.players(), "teams": p.teams, "modes": modes,
+                json!({ "id": p.id, "name": p.name, "description": p.description, "game": p.game, "players": p.players(), "min_players": p.min_players(), "teams": p.teams, "modes": modes,
                         "drop_in": p.drop_in })
             })
             .collect();
