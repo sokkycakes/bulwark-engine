@@ -819,6 +819,11 @@ static void voice_gain(svoice_t *v)
 	v->loud = BW_NDS_MAX(v->g.left, v->g.right);
 }
 
+static bool voice_isloop(const svoice_t *v)
+{
+	return v->loop || (v->sflags & SF_FORCELOOP) || v->src == SRC_AMB || v->src == SRC_LOOP;
+}
+
 /* how far into its sample a voice is (frames), for stealing as the PC does: by pos */
 static uint32_t voice_pos(const svoice_t *v)
 {
@@ -1365,17 +1370,25 @@ static void loader(void)
 		bool did = false, loop;
 		if (!BUDGET_LEFT())
 			break;
+		/* one-shots in the order they came, then loops loudest first: the pinned cap (half the
+		 * cache) admits the loudest */
 		for (int i = 0; i < S.vtop; i++) {
-			svoice_t *v = &S.v[i];
-			if ((S.vst[v - S.v] == V_WAIT || (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !key_ready(v->ki) &&
-			    S.k[v->ki].state != K_MISS && v->skip != S.use &&
-			    (best < 0 || (int32_t)(v->t_arrive - S.v[best].t_arrive) < 0))
+			svoice_t *v = &S.v[i], *o = best >= 0 ? &S.v[best] : NULL;
+			bool vl, ol;
+			if (!((S.vst[i] == V_WAIT || (S.vst[i] == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !key_ready(v->ki) &&
+			      S.k[v->ki].state != K_MISS && v->skip != S.use))
+				continue;
+			vl = voice_isloop(v);
+			if (vl)
+				voice_gain(v);
+			ol = o && voice_isloop(o);
+			if (!o || (vl != ol ? !vl : vl ? v->loud > o->loud : (int32_t)(v->t_arrive - o->t_arrive) < 0))
 				best = i;
 		}
 		if (best < 0)
 			break;
 		ki = S.v[best].ki;
-		loop = S.v[best].loop || (S.v[best].sflags & SF_FORCELOOP) || S.v[best].src == SRC_AMB || S.v[best].src == SRC_LOOP;
+		loop = voice_isloop(&S.v[best]);
 		while (!key_ready(ki) && BUDGET_LEFT() && load_step(ki, true, loop))
 			reads++, did = true;
 		if (!did && !key_ready(ki) && S.k[ki].state == K_FOUND) {
