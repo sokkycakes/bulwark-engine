@@ -283,7 +283,7 @@ static void makevectors(const float *angles)
 	float sy, cy, sp, cp, sr, cr;
 	uint32_t key[3] = {fx_bits(angles[0]), fx_bits(angles[1]), fx_bits(angles[2])};
 	for (int i = 0; i < 4; i++)
-		if (mvec[i].valid && !memcmp(mvec[i].key, key, sizeof(key))) {
+		if (mvec[i].valid && mvec[i].key[0] == key[0] && mvec[i].key[1] == key[1] && mvec[i].key[2] == key[2]) {
 			vcopy(mvec[i].f, v_forward);
 			vcopy(mvec[i].r, v_right);
 			vcopy(mvec[i].u, v_up);
@@ -301,7 +301,7 @@ static void makevectors(const float *angles)
 	v_up[0] = cr * sp * cy + sr * sy;
 	v_up[1] = cr * sp * sy - sr * cy;
 	v_up[2] = cr * cp;
-	memcpy(mvec[mvec_next].key, key, sizeof(key));
+	mvec[mvec_next].key[0] = key[0], mvec[mvec_next].key[1] = key[1], mvec[mvec_next].key[2] = key[2];
 	mvec[mvec_next].valid = true;
 	vcopy(v_forward, mvec[mvec_next].f);
 	vcopy(v_right, mvec[mvec_next].r);
