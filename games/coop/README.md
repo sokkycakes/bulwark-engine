@@ -228,17 +228,18 @@ and run commands themselves.
   Options, Quit.
 - Pause menu (Escape in a game): Resume, Points shop, Vote, Options,
   Disconnect, Quit.
-- Matchmaking (title menu, and Play's footer): a lobby laid out like
-  Reach's on Bulwark Live (`styles/coop/lobby.css`, layout only, no visual
-  styling yet). The playlist's header (name, description,
-  size, players online) above the options on the left (Start matchmaking,
-  Playlist, Party privacy; the playlist chooser opens under them), the party
-  roster on the right with open seats up to the
-  playlist's size, and a search ribbon along the bottom while queued. Only
-  the party leader starts or stops the search. The page makes a party on
-  its own once online; with no `live_server` set it asks for one. The
-  chosen playlist is `coop_mmPlaylist` (horde). `menu_coop page lobby`
-  opens it from the console.
+- Matchmaking (title menu, and Play's footer): a lobby on Bulwark Live laid
+  out on Halo: Reach's matchmaking lobby (`styles/coop/lobby.css`, layout
+  only, no visual styling; positions are Reach's widescreen ones scaled to
+  1080 lines). Left: an image slot, the playlist's name with its player
+  range and population, its description, a status line (Ready, waiting for
+  the leader, searching with a timer at its right, errors), the rows
+  Playlist, Party privacy and Start matchmaking, and help for the hovered
+  row. Playlist swaps the rows for the playlists. Right: My Party with open
+  seats up to the playlist's size, the party code and invites. Only the
+  party leader starts or stops the search. The page makes a party on its
+  own once online; with no `live_server` set it asks for one. The chosen
+  playlist is `coop_mmPlaylist` (horde). `menu_coop page lobby` opens it.
 - Options: Player, Video, Audio, Mouse and Keys tabs. Changes wait for OK
   or Apply, which write them with `seta` and save the config. In Keys,
   click an action and press a key; Escape cancels, Backspace clears.
