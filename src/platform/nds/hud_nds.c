@@ -77,33 +77,27 @@ static const uint8_t *hud_glyph(int c, int *w, int *adv)
 	return default_font_bin + (c & 255) * 8;
 }
 
+/* Drawing goes to one row of tiles in RAM (8 rows of the screen, 1 KB), clipped
+ * to the columns being redrawn, and is copied to VRAM a tile at a time */
+static uint8_t strip[32 * 32] __attribute__((aligned(4)));
+static int clipx0, clipx1, clipy0, clipy1; /* the part of the screen being drawn */
+
 static inline void top_px(int x, int y, int col)
 {
-	uint16_t *p;
-	int sh;
-	if ((unsigned)x >= 256 || (unsigned)y >= 192)
+	uint8_t *p;
+	if (x < clipx0 || x >= clipx1 || y < clipy0 || y >= clipy1)
 		return;
-	/* VRAM takes no byte writes: change the nibble inside its halfword */
-	p = topgfx + ((y >> 3) * 32 + (x >> 3)) * 16 + (y & 7) * 2 + ((x & 7) >> 2);
-	sh = (x & 3) * 4;
-	*p = (uint16_t)((*p & ~(0xF << sh)) | col << sh);
+	p = strip + (x >> 3) * 32 + (y & 7) * 4 + ((x & 7) >> 1);
+	*p = (uint8_t)(x & 1 ? (*p & 0x0F) | col << 4 : (*p & 0xF0) | col);
 }
 
 static void top_fill(int x, int y, int w, int h, int col)
 {
-	int x1 = BW_NDS_MIN(x + w, 256), y1 = BW_NDS_MIN(y + h, 192);
-	x = BW_NDS_MAX(x, 0), y = BW_NDS_MAX(y, 0);
-	for (int j = y; j < y1; j++) {
-		int i = x;
-		uint16_t v = (uint16_t)(col * 0x1111);
-		for (; i < x1 && (i & 3); i++)
+	int x1 = BW_NDS_MIN(x + w, clipx1), y1 = BW_NDS_MIN(y + h, clipy1);
+	x = BW_NDS_MAX(x, clipx0), y = BW_NDS_MAX(y, clipy0);
+	for (int j = y; j < y1; j++)
+		for (int i = x; i < x1; i++)
 			top_px(i, j, col);
-		/* four pixels a halfword */
-		for (; i + 4 <= x1; i += 4)
-			topgfx[((j >> 3) * 32 + (i >> 3)) * 16 + (j & 7) * 2 + ((i & 7) >> 2)] = v;
-		for (; i < x1; i++)
-			top_px(i, j, col);
-	}
 }
 
 static int text_width(const char *s, int len, int scale)
@@ -122,7 +116,9 @@ static void draw_text(int x, int y, int scale, int col, const char *s, int len, 
 		for (int k = 0; k < len; k++) {
 			int w, adv;
 			const uint8_t *g = hud_glyph((uint8_t)s[k], &w, &adv);
-			for (int j = 0; g && j < hudh; j++)
+			for (int j = 0; g && j < hudh; j++) {
+				if (y + (j + 1) * scale + 1 <= clipy0 || y + j * scale - 1 >= clipy1)
+					continue; /* outside the rows being drawn */
 				for (int i = 0; i < w; i++)
 					if (g[j] & (1 << i)) {
 						if (pass == 0)
@@ -132,6 +128,7 @@ static void draw_text(int x, int y, int scale, int col, const char *s, int len, 
 						else
 							top_fill(cx + i * scale, y + j * scale, scale, scale, col);
 					}
+			}
 			cx += adv * scale;
 		}
 	}
@@ -139,6 +136,8 @@ static void draw_text(int x, int y, int scale, int col, const char *s, int len, 
 
 static void draw_line(int x0, int y0, int x1, int y1, int col)
 {
+	if (BW_NDS_MAX(y0, y1) < clipy0 || BW_NDS_MIN(y0, y1) >= clipy1)
+		return;
 	int dx = abs(x1 - x0), dy = -abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
 	for (int n = 0; n < 512; n++) {
 		top_px(x0, y0, col);
@@ -548,7 +547,8 @@ static void w_exec(const widget_t *w)
 			break;
 		case OP_TEXT:
 			memcpy(v, p + 5, 4);
-			draw_text(v[0], v[1], p[2], p[1], (const char *)p + 9, p[4], p[3] & 1);
+			if (v[1] - 1 < clipy1 && v[1] + hudh * p[2] + 1 > clipy0)
+				draw_text(v[0], v[1], p[2], p[1], (const char *)p + 9, p[4], p[3] & 1);
 			p += 9 + p[4];
 			break;
 		case OP_LINE:
@@ -573,9 +573,14 @@ static void w_exec(const widget_t *w)
 	}
 }
 
-static bool boxes_meet(int ax0, int ay0, int ax1, int ay1, int bx0, int by0, int bx1, int by1)
+static void mark_tiles(uint32_t *dirty, int x0, int y0, int x1, int y1)
 {
-	return ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1 && ax1 > ax0 && bx1 > bx0;
+	x0 = BW_NDS_MAX(x0, 0), y0 = BW_NDS_MAX(y0, 0), x1 = BW_NDS_MIN(x1, 256), y1 = BW_NDS_MIN(y1, 192);
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	for (int ty = y0 >> 3; ty <= (y1 - 1) >> 3; ty++)
+		for (int tx = x0 >> 3; tx <= (x1 - 1) >> 3; tx++)
+			dirty[ty] |= 1u << tx;
 }
 
 /* --- the parts --------------------------------------------------------------------------- */
@@ -1307,9 +1312,7 @@ static void part_cross(void)
 void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudin_t *in)
 {
 	uint32_t t = now_ms();
-	int16_t clr[W_COUNT][4];
-	int nclr = 0;
-	bool draw[W_COUNT] = {false};
+	uint32_t dirty[24] = {0}; /* a bit for each tile */
 	if (!topgfx)
 		return;
 	if (hud.have)
@@ -1333,30 +1336,35 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 		}
 		sig = fnv(w->buf, w->len);
 		if (sig != w->sig || w->nx0 != w->x0 || w->ny0 != w->y0 || w->nx1 != w->x1 || w->ny1 != w->y1) {
-			if (w->x1 > w->x0) {
-				clr[nclr][0] = w->x0, clr[nclr][1] = w->y0, clr[nclr][2] = w->x1, clr[nclr][3] = w->y1, nclr++;
-				top_fill(w->x0, w->y0, w->x1 - w->x0, w->y1 - w->y0, HC_CLEAR);
-			}
+			/* the tiles it covered and covers now are drawn again */
+			mark_tiles(dirty, w->x0, w->y0, w->x1, w->y1);
+			mark_tiles(dirty, w->nx0, w->ny0, w->nx1, w->ny1);
 			w->sig = sig;
 			w->x0 = w->nx0, w->y0 = w->ny0, w->x1 = w->nx1, w->y1 = w->ny1;
-			if (w->x1 <= w->x0)
+			if (w->x1 <= w->x0 || w->y1 <= w->y0)
 				w->x0 = w->y0 = w->x1 = w->y1 = 0;
-			draw[i] = true;
 		}
 	}
-	/* what overlaps a box that was cleared or is drawn again goes on again, in order */
-	for (int i = 0; i < W_COUNT; i++) {
-		if (!draw[i] || wid[i].x1 <= wid[i].x0)
+	/* each row of tiles with any to draw: every widget over them, in order, then the tiles out */
+	for (int ty = 0; ty < 24; ty++) {
+		uint32_t m = dirty[ty];
+		int tx0, tx1;
+		if (!m)
 			continue;
-		clr[nclr][0] = wid[i].x0, clr[nclr][1] = wid[i].y0, clr[nclr][2] = wid[i].x1, clr[nclr][3] = wid[i].y1;
-		nclr++;
+		tx0 = __builtin_ctz(m), tx1 = 32 - __builtin_clz(m);
+		clipx0 = tx0 * 8, clipx1 = tx1 * 8, clipy0 = ty * 8, clipy1 = ty * 8 + 8;
+		memset(strip + tx0 * 32, 0, (size_t)(tx1 - tx0) * 32);
+		for (int i = 0; i < W_COUNT; i++)
+			if (wid[i].x1 > clipx0 && wid[i].x0 < clipx1 && wid[i].y1 > clipy0 && wid[i].y0 < clipy1)
+				w_exec(&wid[i]);
+		for (int tx = tx0; tx < tx1; tx++)
+			if (m & (1u << tx)) {
+				const uint32_t *src = (const uint32_t *)(strip + tx * 32);
+				volatile uint32_t *dst = (volatile uint32_t *)(void *)(topgfx + (ty * 32 + tx) * 16);
+				for (int k = 0; k < 8; k++)
+					dst[k] = src[k];
+			}
 	}
-	for (int i = 0; i < W_COUNT; i++)
-		for (int k = 0; k < nclr && !draw[i]; k++)
-			draw[i] = boxes_meet(wid[i].x0, wid[i].y0, wid[i].x1, wid[i].y1, clr[k][0], clr[k][1], clr[k][2], clr[k][3]);
-	for (int i = 0; i < W_COUNT; i++)
-		if (draw[i])
-			w_exec(&wid[i]);
 }
 
 void Hud_Init(void)
