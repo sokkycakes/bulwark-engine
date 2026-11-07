@@ -200,7 +200,7 @@ static struct {
 	uint32_t wsel_until; /* HLWeaponSelect m_flHUDWeaponSelectTime, ticks */
 	int cmdrr;           /* volume updates go round */
 	uint32_t laststat;
-	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5], statreadsum, dbg[4];
+	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5], statreadsum;
 	uint32_t rnd;
 } S;
 
@@ -442,7 +442,6 @@ static bool key_lookup_step(int ki)
 	skey_t *k = &S.k[ki];
 	while (k->state == K_PENDING) {
 		spack_t *p;
-		S.dbg[1]++;
 		int lo = 0, hi, page, nent, c;
 		uint8_t *d = NULL;
 		bool read = false;
@@ -1399,15 +1398,10 @@ static void loader(void)
 		}
 	/* 4: the map's precache list: looked up, then sorted smallest first and read into free room, up to 75% */
 	while (S.precache && S.precache_done < S.nprecache && BUDGET_LEFT()) {
-		uint32_t kt = ticks();
 		int ki = key_get(S.precache[S.precache_done]);
-		S.dbg[2] += ticks() - kt;
-		S.dbg[0]++;
 		if (ki >= 0 && S.k[ki].state == K_PENDING) {
-			uint32_t lt = ticks();
 			if (key_lookup_step(ki))
 				reads++;
-			S.dbg[3] += ticks() - lt;
 			continue;
 		}
 		S.precache_done++;
@@ -1633,11 +1627,10 @@ stats:
 		for (int h = 0; h < S_HW; h++)
 			nh += S.hw[h].v >= 0;
 		logf_("SNDSTAT voices=%d hw=%d cache=%u/%u pinned=%u misses=%u loads=%u late=%u quiet=%u stolen=%u dups=%u underrun=%u "
-		      "dbg=%u/%u/%u/%u readms=%u.%02u readsum_ms=%u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u\n",
+		      "readms=%u.%02u readsum_ms=%u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u\n",
 		      nv, nh, (unsigned)(used_bytes() / 1024), (unsigned)(S.arenasize / 1024), (unsigned)(pinned_bytes() / 1024),
 		      (unsigned)Snd_Stats.missing, (unsigned)Snd_Stats.starts, (unsigned)Snd_Stats.late, (unsigned)Snd_Stats.quiet,
 		      (unsigned)Snd_Stats.stolen, (unsigned)Snd_Stats.dups, (unsigned)Snd_Stats.underrun,
-		      (unsigned)S.dbg[0], (unsigned)S.dbg[1], (unsigned)ticks_ms(S.dbg[2]), (unsigned)ticks_ms(S.dbg[3]),
 		      (unsigned)(ticks_ms(S.statreadmax * 100) / 100), (unsigned)(ticks_ms(S.statreadmax * 100) % 100),
 		      (unsigned)ticks_ms(S.statreadsum),
 		      (unsigned)(ticks_ms(S.statcmdmax * 100) / 100), (unsigned)(ticks_ms(S.statcmdmax * 100) % 100),
@@ -1649,7 +1642,6 @@ stats:
 		      (unsigned)(S.sec[3] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[4] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)));
 		memset(S.sec, 0, sizeof(S.sec));
 		S.statreadsum = 0;
-		memset(S.dbg, 0, sizeof(S.dbg));
 		S.laststat = ticks();
 		S.statframes = S.statcpu = S.statcpumax = S.statreadmax = S.statcmdmax = S.statactive = 0;
 	}
