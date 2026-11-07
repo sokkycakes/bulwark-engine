@@ -659,9 +659,9 @@ escapes (`\y`, `\n`: a new line).
 | 1 | PRINT | svc_print; `EV_CHAT`, `EV_CHAT_TEAM` (as `Util_ChatFormat` words them), `EV_HUDHINT` ("Hint: ", as a chat line) | u8 level (3 chat), text without its last new line |
 | 2 | CENTER | `centerprint` | text |
 | 3 | SHAKE | `EV_SHAKE` (none for a player whose class is `spectator`) | f32 duration, amplitude, frequency |
-| 4 | FADE | `EV_FADE` | u8 r, g, b, alpha (0-255), f32 duration, hold, u8 flags (1 fade from, 2 modulate) |
+| 4 | FADE | `EV_FADE`; serverinfo `startdark` when the device has the map (WorldSpawn_Init's Fade_StartDark: black, 5 s, 4 s held, fading from) | u8 r, g, b, alpha (0-255), f32 duration, hold, u8 flags (1 fade from, 2 modulate) |
 | 5 | DAMAGE | `EV_DAMAGE` | s16 origin[3] (units: the attacker's, or ours when the attacker is at the world's origin), s16 damage, u32 damage flags |
-| 6 | TEXT | `EV_TEXT`, `EV_TEXT_STRING` (game_text); `EV_MESSAGE` (env_message: its name as the text, with GameMessage_Setup's defaults, channel 255, the queue) | u8 channel, f32 x, y, u8 effect, u8 colour1[3], colour2[3], f32 fade in, fade out, hold, fx time, text |
+| 6 | TEXT | `EV_TEXT`, `EV_TEXT_STRING` (game_text); `EV_MESSAGE` (env_message) and serverinfo `chaptertitle` when the device has the map (WorldSpawn_Init): the name uppercased and looked up in titles.txt (then `titles_<game>.txt`) as `src/client/titles.qc` reads it, that entry's text, place, effect, colours and times (fx time 0, which GameMessage_Setup leaves as the queue's slot had it), or the name itself with GameMessage_Setup's defaults; channel 255, the queue | u8 channel, f32 x, y, u8 effect, u8 colour1[3], colour2[3], f32 fade in, fade out, hold, fx time, text |
 | 7 | FEED | `EV_OBITUARY` for a player's death (as `coop/src/hud/jtf.qc HUD_Obituary` passes it to the Panorama feed: no attacker when the means of death says `self`, the weapon decl's `inv_name`); serverinfo `coop_feed` changes (team events) | u8 about us, u8 length, attacker (or the victim, with weapon "died"), u8 length, weapon, victim |
 | 8 | PICKUP | `EV_PICKUP` | the item's class (`EntityDef_NameFromNetID`) |
 | 9 | TEXTAGAIN | a TEXT on channel 0-4 the same as that channel's last | u8 channel: show it again from its start |

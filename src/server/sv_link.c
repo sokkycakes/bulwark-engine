@@ -209,6 +209,7 @@ typedef struct {
 	uint32_t evcenter;                      /* the last centerprint (a hash), 0 none */
 	double evstamp[EV_RING];                /* when each record last went out (a long time ago: never) */
 	int evmap;                              /* the spawncount evtext, evcenter and the obituaries belong to */
+	int worldmap;                           /* the spawncount WorldSpawn_Init's fade and title went out for */
 	int evqcopen;                           /* 1 + where in evraw the game's MSG_ONE/ALL writes this frame go on, 0 none */
 	bool evqcbad;                           /* one of those writes did not fit: the rest of them this frame go too */
 	uint32_t evstops;                       /* game messages the server could not read to their end */
@@ -871,6 +872,8 @@ static void send_stats(link_t *l);
 static void watch_viewmodel(link_t *l);
 static void send_fx(link_t *l);
 static void ev_read(link_t *l);
+static void ev_mapcheck(link_t *l);
+static void ev_worldspawn(link_t *l);
 static void ev_coopfeed(link_t *l);
 static void send_events(link_t *l, double now);
 
@@ -2412,6 +2415,11 @@ void SV_LinkSend(void)
 		watch_viewmodel(l);
 		if (l->numfx)
 			send_fx(l);
+		if (l->worldmap != svs.spawncount && l->evcap) { /* the device has the map: its CSQC starts */
+			l->worldmap = svs.spawncount;
+			ev_mapcheck(l);
+			ev_worldspawn(l);
+		}
 		send_events(l, now);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
@@ -3143,6 +3151,196 @@ static void ev_text(link_t *l, int type, const uint8_t *head, int hlen, const ch
 	ev_put(l, type, b, hlen + n);
 }
 
+/* --- titles.txt (src/client/titles.qc Titles_Init): what env_message and worldspawn's
+ * chaptertitle name, resolved here as the PC's client does it, for a device that has no
+ * titles of its own. Read again for each map (the PC's CSQC reads it at each start) */
+typedef struct {
+	char name[64];
+	char *msg;
+	float x, y, fadein, fadeout, hold, fx;
+	int effect;
+	uint8_t c1[3], c2[3];
+} title_t;
+static title_t *titles;
+static int numtitles, titlesmap = -1;
+
+/* tokenize_console's first tokens of a line (quotes group, // ends it) */
+static int title_tokens(const char *s, char tok[4][64])
+{
+	int n = 0;
+	while (n < 4) {
+		int k = 0;
+		while (*s && isspace((unsigned char)*s))
+			s++;
+		if (!*s || (s[0] == '/' && s[1] == '/'))
+			break;
+		if (*s == '"') {
+			for (s++; *s && *s != '"'; s++)
+				if (k < 63)
+					tok[n][k++] = *s;
+			if (*s)
+				s++;
+		} else
+			for (; *s && !isspace((unsigned char)*s); s++)
+				if (k < 63)
+					tok[n][k++] = *s;
+		tok[n++][k] = 0;
+	}
+	return n;
+}
+
+static void title_colour(uint8_t *c, int n, char tok[4][64])
+{
+	float v[3] = {0, 0, 0};
+	if (n == 4)
+		for (int k = 0; k < 3; k++)
+			v[k] = (float)atof(tok[k + 1]);
+	else if (n > 1) /* stov of "r g b" */
+		sscanf(tok[1], "%f %f %f", &v[0], &v[1], &v[2]);
+	for (int k = 0; k < 3; k++)
+		c[k] = (uint8_t)BW_CLAMP(v[k], 0, 255);
+}
+
+static void titles_file(const char *path, title_t *st, int *braced, char *msg, size_t msgsize)
+{
+	char *txt = FS_LoadFile(path, NULL), *p, *line;
+	if (!txt)
+		return;
+	for (p = txt; *p;) {
+		char tok[4][64] = {{0}};
+		int n;
+		size_t len;
+		line = p;
+		while (*p && *p != '\n')
+			p++;
+		if (*p)
+			*p++ = 0;
+		len = strlen(line);
+		while (len > 0 && line[len - 1] == '\r') /* fgets gives the line without its end */
+			line[--len] = 0;
+		n = title_tokens(line, tok);
+		if (n == 0)
+			tok[0][0] = 0;
+		if (!strcmp(tok[0], "$position") && n >= 3)
+			st->x = (float)atof(tok[1]), st->y = (float)atof(tok[2]);
+		else if (!strcmp(tok[0], "$effect"))
+			st->effect = atoi(tok[1]);
+		else if (!strcmp(tok[0], "$color"))
+			title_colour(st->c1, n, tok);
+		else if (!strcmp(tok[0], "$color2"))
+			title_colour(st->c2, n, tok);
+		else if (!strcmp(tok[0], "$fxtime"))
+			st->fx = (float)atof(tok[1]);
+		else if (!strcmp(tok[0], "$holdtime"))
+			st->hold = (float)atof(tok[1]);
+		else if (!strcmp(tok[0], "$fadein"))
+			st->fadein = (float)atof(tok[1]);
+		else if (!strcmp(tok[0], "$fadeout"))
+			st->fadeout = (float)atof(tok[1]);
+		else if (!strcmp(tok[0], "{"))
+			*braced = 1;
+		else if (!strcmp(tok[0], "}")) {
+			title_t *t;
+			if (!*braced)
+				continue; /* broken syntax */
+			*braced = 0;
+			t = (title_t *)Mem_Alloc(sizeof(title_t) * (size_t)(numtitles + 1));
+			if (numtitles)
+				memcpy(t, titles, sizeof(title_t) * (size_t)numtitles);
+			Mem_Free(titles);
+			titles = t;
+			t = &titles[numtitles++];
+			*t = *st;
+			t->msg = (char *)Mem_Alloc(strlen(msg) + 1);
+			strcpy(t->msg, msg);
+			msg[0] = st->name[0] = 0;
+		} else if (*braced) /* a line of the message (its escapes go in ev_plain), and a new line */
+			snprintf(msg + strlen(msg), msgsize - strlen(msg), "%s\n", line);
+		else { /* the name: strtoupper of the whole line */
+			snprintf(st->name, sizeof(st->name), "%s", line);
+			for (char *c = st->name; *c; c++)
+				*c = (char)toupper((unsigned char)*c);
+		}
+	}
+	Mem_Free(txt);
+}
+
+static void titles_load(void)
+{
+	title_t st;
+	char msg[1024] = "", path[96];
+	const char *game = FS_GameDir(), *slash;
+	int braced = 0;
+	if (titlesmap == svs.spawncount)
+		return;
+	titlesmap = svs.spawncount;
+	for (int i = 0; i < numtitles; i++)
+		Mem_Free(titles[i].msg);
+	Mem_Free(titles);
+	titles = NULL, numtitles = 0;
+	/* the defaults before any $ line */
+	memset(&st, 0, sizeof(st));
+	st.y = -1, st.fx = 0.5f, st.hold = 2.5f, st.fadein = st.fadeout = 0.5f;
+	memset(st.c1, 255, 3), memset(st.c2, 255, 3);
+	titles_file(FS_FileExists("titles.txt") ? "titles.txt" : "scripts/titles.txt", &st, &braced, msg, sizeof(msg));
+	/* titles_<fs_game>.txt, appended, the settings carrying on */
+	slash = game ? strrchr(game, '/') : NULL;
+	snprintf(path, sizeof(path), "titles_%s.txt", slash ? slash + 1 : game ? game : "");
+	titles_file(path, &st, &braced, msg, sizeof(msg));
+}
+
+/* GameMessage_Setup(name, 0): titles.txt's entry when there is one, else the name itself
+ * (Titles_ParseFunString) with the defaults; on the queue (channel 0) */
+static void ev_titlemsg(link_t *l, const char *name, int len)
+{
+	char find[64];
+	uint8_t b[32];
+	const title_t *t = NULL;
+	float f[6] = {-1, 0.75f, 0.5f, 0.5f, 2.0f, 0};
+	int n = BW_MIN(len, (int)sizeof(find) - 1);
+	for (int i = 0; i < n; i++) /* GameMessage_Parse: strtoupper(readstring()) */
+		find[i] = (char)toupper((unsigned char)name[i]);
+	find[n] = 0;
+	titles_load();
+	for (int i = 0; i < numtitles; i++)
+		if (!strcmp(titles[i].name, find))
+			t = &titles[i];
+	b[0] = 0xff;
+	if (t) {
+		/* GameMessage_Setup copies all but the fx time, which the queue's slot keeps
+		 * from before (0 in a slot not used yet) */
+		f[0] = t->x, f[1] = t->y, f[2] = t->fadein, f[3] = t->fadeout, f[4] = t->hold;
+		b[9] = (uint8_t)t->effect;
+		memcpy(b + 10, t->c1, 3), memcpy(b + 13, t->c2, 3);
+	} else {
+		b[9] = 0;
+		memset(b + 10, 255, 6);
+	}
+	memcpy(b + 1, &f[0], 4), memcpy(b + 5, &f[1], 4);
+	memcpy(b + 16, &f[2], 4), memcpy(b + 20, &f[3], 4), memcpy(b + 24, &f[4], 4), memcpy(b + 28, &f[5], 4);
+	if (t)
+		ev_text(l, LE_TEXT, b, 32, t->msg, (int)strlen(t->msg));
+	else
+		ev_text(l, LE_TEXT, b, 32, find, n);
+}
+
+/* WorldSpawn_Init (src/gs-entbase/shared/worldspawn.qc:326-345), which the PC's client runs
+ * when its CSQC starts on a map: serverinfo startdark is Fade_StartDark (src/client/fade.qc:
+ * black, 5 s and 4 s held, fading from), chaptertitle a GameMessage_Setup on the queue */
+static void ev_worldspawn(link_t *l)
+{
+	char v[64];
+	if (atof(SV_InfoGet(sv.serverinfo, "startdark", v, sizeof(v))) != 0) {
+		uint8_t b[13] = {0, 0, 0, 255};
+		float dur = 5, hold = 4;
+		memcpy(b + 4, &dur, 4), memcpy(b + 8, &hold, 4);
+		b[12] = 1; /* EVF_FADEDROM */
+		ev_put(l, LE_FADE, b, 13);
+	}
+	if (SV_InfoGet(sv.serverinfo, "chaptertitle", v, sizeof(v))[0])
+		ev_titlemsg(l, v, (int)strlen(v));
+}
+
 /* a NUL-terminated string at d (n bytes left): its length, -1 if it runs out */
 static int ev_str(const uint8_t *d, int n)
 {
@@ -3313,18 +3511,7 @@ static int ev_game(link_t *l, int ev, const uint8_t *d, int n)
 	case EVN_MESSAGE: /* text.qc GameMessage_Parse: a titles.txt name (or the text), sound, volume, attenuation */
 		if ((s0 = ev_str(d, n)) < 0 || (s1 = ev_str(d + s0 + 1, n - s0 - 1)) < 0 || n < s0 + s1 + 2 + 5)
 			return -1;
-		{
-			/* GameMessage_Setup's defaults for a name titles.txt lacks; channel 0 is the queue */
-			static const float def[] = {-1, 0.75f, 0.5f, 0.5f, 2.0f, 0};
-			float f[6];
-			memcpy(f, def, sizeof(f));
-			b[0] = 0xff;
-			memcpy(b + 1, &f[0], 4), memcpy(b + 5, &f[1], 4);
-			b[9] = 0;
-			memset(b + 10, 255, 6);
-			memcpy(b + 16, &f[2], 4), memcpy(b + 20, &f[3], 4), memcpy(b + 24, &f[4], 4), memcpy(b + 28, &f[5], 4);
-			ev_text(l, LE_TEXT, b, 32, (const char *)d, s0);
-		}
+		ev_titlemsg(l, (const char *)d, s0);
 		return s0 + s1 + 2 + 5;
 	case EVN_OBITUARY: /* target, attacker, weapon decl, means of death (src/server/api.qc:300) */
 		if ((s0 = ev_str(d, n)) < 0 || (s1 = ev_str(d + s0 + 1, n - s0 - 1)) < 0 ||
