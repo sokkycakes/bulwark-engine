@@ -24,7 +24,9 @@
 # Trailer, at the end of the file: "DSHL", u16 numclips, numclips x {u16
 # first frame, u8 frames, u8 fps, u8 flags (1 loops), u8 activity}, u16
 # numseqs, numseqs x u8 clip, 768 bytes of palette, then u32 offset of
-# "DSHL" from the start of the file and "DSHL" again.
+# "DSHL" from the start of the file and "DSHL" again. Just before it,
+# "DSLP" and numclips x u16: each clip's frames take that many ms (the u8
+# fps, which older loaders read, is rounded: 10 frames over 3 s is 3 fps).
 #
 # The output is the game's model cut down: keep it out of git and packages.
 import re
@@ -106,7 +108,11 @@ def pick_clips(seqs, budget, every=False):
         n = len(s["frames"])
         idx = [min(n - 1, round(f * n / k)) if s["flags"] & 1 else min(n - 1, round(f * (n - 1) / max(1, k - 1))) for f in range(k)]
         dur = n / max(s["fps"], 1)
-        clips.append(dict(seq=i, idx=idx, fps=max(1, min(255, round(k / dur))), flags=s["flags"] & 1, act=s["act"]))
+        # the clip's lap: k frames over the sequence as the PC plays it (a loop of n frames
+        # at fps, frame f at f / fps; one that doesn't loop reaches its last at (n - 1) / fps)
+        lap = dur if s["flags"] & 1 or k < 2 else k * (n - 1) / (max(s["fps"], 1) * (k - 1))
+        clips.append(dict(seq=i, idx=idx, fps=max(1, min(255, round(k / dur))), flags=s["flags"] & 1, act=s["act"],
+                          lap=int(round(lap * 1000)) if 0 < lap * 1000 < 65535.5 else 0))
     return clips
 
 
@@ -320,6 +326,8 @@ def main():
         o += struct.pack("<i", 0) + bytes([0, 0, 0, 0, 255, 255, 255, 0])
         o += ("%.12s%d" % (label, k))[:15].encode().ljust(16, b"\0")
         o += np.concatenate([q, np.zeros((len(q), 1), np.uint8)], 1).tobytes()
+    # each clip's lap in ms (0: by its fps), where an older loader doesn't look
+    o += b"DSLP" + b"".join(struct.pack("<H", c["lap"]) for c in clips)
     at = len(o)
     o += b"DSHL" + struct.pack("<H", len(clips))
     first = 0

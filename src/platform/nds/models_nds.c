@@ -48,7 +48,9 @@ typedef struct {
 	int numclips, numseqs;
 	struct {
 		uint16_t first;
-		uint8_t frames, fps, loop, act;
+		uint16_t lap;          /* ms the clip's frames take (frame f at f * lap / frames) */
+		uint8_t frames : 7, loop : 1;
+		uint8_t act;
 	} clips[MAX_CLIPS];
 	uint8_t *seqclip;
 } mdl_t;
@@ -235,10 +237,26 @@ static bool load_trailer(mdl_t *m, mfile_t *f, long at, uint16_t *ownpal)
 	f->least = BW_NDS_MAX(f->least, at + len);
 	for (int c = 0; c < nc && c < MAX_CLIPS; c++) {
 		const uint8_t *e = t + 6 + c * 6;
+		int frames = BW_NDS_CLAMP(e[2], 1, 127), fps = e[3] ? e[3] : 10;
 		m->clips[c].first = (uint16_t)(e[0] | e[1] << 8);
-		m->clips[c].frames = e[2] ? e[2] : 1, m->clips[c].fps = e[3] ? e[3] : 10;
-		m->clips[c].loop = e[4], m->clips[c].act = e[5];
+		m->clips[c].frames = (uint8_t)frames, m->clips[c].lap = (uint16_t)((frames * 1000 + fps / 2) / fps);
+		m->clips[c].loop = e[4] != 0, m->clips[c].act = e[5];
 		m->numclips = c + 1;
+	}
+	/* hlmdl.py since the u8 fps: each clip's lap in ms, just before the trailer, which
+	 * an older loader doesn't read (the fps rounds a 3 s, 10-frame clip to 3.33 s) */
+	if (nc > 0 && nc <= MAX_CLIPS && at >= 4 + 2 * nc) {
+		/* read with the trailer, which stays where t points */
+		long pre = 4 + 2 * nc;
+		const uint8_t *d = mfile_get(f, at - pre, pre + len, pre + len);
+		if (d) {
+			if (!memcmp(d, "DSLP", 4))
+				for (int c = 0; c < nc; c++)
+					if (d[4 + c * 2] | d[5 + c * 2] << 8)
+						m->clips[c].lap = (uint16_t)(d[4 + c * 2] | d[5 + c * 2] << 8);
+			t = d + pre;
+		} else if (!(t = mfile_get(f, at, len, len)))
+			return false;
 	}
 	t += 6 + nc * 6 + 2;
 	if (ns > 0 && (m->seqclip = malloc((size_t)ns))) {
@@ -545,9 +563,16 @@ void Ents_SetTime(uint32_t ms) { clockms = ms; }
  * that time when Ents_LerpFrames is set */
 static void clip_frames(const mdl_t *m, int clip, uint32_t ms, int *frame, int *frame2, int *blend)
 {
-	uint32_t pos = ms * m->clips[clip].fps; /* frames x 1000 */
-	int n = m->clips[clip].frames, f = (int)(pos / 1000), next;
-	*blend = Ents_LerpFrames ? (int)(pos % 1000) * 256 / 1000 : 0;
+	uint32_t lap = m->clips[clip].lap ? m->clips[clip].lap : 1000, pos;
+	int n = m->clips[clip].frames, f, next;
+	/* frames x 256: under 65536 ms x 127 frames x 256, within 32 bits */
+	if (m->clips[clip].loop)
+		ms %= lap;
+	else if (ms >= lap)
+		ms = lap;
+	pos = ms * (uint32_t)n * 256 / lap;
+	f = (int)(pos >> 8);
+	*blend = Ents_LerpFrames ? (int)(pos & 255) : 0;
 	if (m->clips[clip].loop)
 		f %= n, next = f + 1 < n ? f + 1 : 0;
 	else if (f >= n - 1)
