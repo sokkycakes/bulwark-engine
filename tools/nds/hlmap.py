@@ -4,6 +4,7 @@
 # see LICENSE.
 #
 #   hlmap.py <map.bsp> <out.bsp> [-wad dir]... [-texkb n] [-maxdim n]
+#   hlmap.py --hul-only <map.bsp> <out.hul>
 #
 # The DS keeps one 256-colour palette for the world and has 4 MB of RAM, so
 # the map is rewritten on the PC:
@@ -14,21 +15,34 @@
 #   for this map (index 255 stays clear for "{" textures);
 # - the coloured lightmaps become one brightness a sample in the map, and
 #   the colours go to a Quake-style .lit file beside it (QLIT, version 1);
-# - clip hulls, which only the server needs, are left out;
+# - the clip hulls go beside it as <out>.hul (below), not into the map: the
+#   DS's movement prediction (hull_nds.c) traces through them as the
+#   server does, and the planes only they use stay out of the map's plane
+#   lump, which the DS keeps in RAM for drawing;
 # - tool textures (triggers, clip, origin, null) are renamed to the names
 #   the DS already skips, and "!" water to Quake's "*".
 #
 # The output keeps Quake's layout (version 29), so face, model and texture
 # numbers stay as they are in the original: the server's "*3" is the DS's
-# model 3. Next to it come <out>.pal (the palette, 768 bytes) and <out>.lit.
+# model 3. Next to it come <out>.pal (the palette, 768 bytes), <out>.lit and
+# <out>.hul.
+#
+# The .hul ("BWH1", laid out in src/platform/nds/hull_nds.c) holds the player's hulls as
+# src/platform/nds/hull_nds.c keeps them in RAM: Half-Life's hulls 1 and 3
+# (standing and crouching), or a Quake map's hull 1 with --hul-only, which
+# takes a BSP 29 or 30 map and writes only the sidecar. Only the nodes that
+# some model's hull reaches are kept, renumbered, and the planes they use,
+# as they are in the map (bit for bit, so traces come out the same as the
+# server's); a plane whose normal is exactly +1 on one axis keeps only its
+# distance.
 #
 # The result is the game's data cut down: keep it out of git and packages.
 import os
 import struct
 import sys
 
-import numpy as np
-from PIL import Image
+
+np = Image = None  # numpy and PIL, loaded for a full conversion only (--hul-only needs neither)
 
 NUM_LUMPS = 15
 L_ENT, L_PLANES, L_TEX, L_VERTS, L_VIS, L_NODES, L_TEXINFO, L_FACES, L_LIGHT, L_CLIP, L_LEAFS, L_MARKS, L_EDGES, L_SURFEDGES, L_MODELS = range(15)
@@ -112,8 +126,92 @@ def pot_floor(v):
     return p
 
 
+def build_hul(d):
+    """the .hul of a BSP 29 (Quake rule, hull 1) or 30 (Half-Life rule, hulls 1 and 3) map:
+    (bytes, a line about it). The same as hull_nds.c's load_clipnodes builds from the lumps."""
+    ver = struct.unpack_from("<i", d)[0]
+    hl = ver == 30
+    lumps = [struct.unpack_from("<ii", d, 4 + i * 8) for i in range(NUM_LUMPS)]
+    lump = [d[o:o + l] for o, l in lumps]
+    planes, clip, models = lump[L_PLANES], lump[L_CLIP], lump[L_MODELS]
+    ncl, npl, nm = len(clip) // 8, len(planes) // 20, len(models) // 64
+    hulls = [1, 3] if hl else [1]
+    if not ncl:
+        sys.exit("no clip hulls in this map")
+    # as bspfile.c load_q1 reads them: a bad plane is plane 0; a child past the end is an
+    # unsigned short minus 65536, never -2, so the same as empty (-1) for a trace
+    nodes = []
+    for i in range(ncl):
+        pl, c0, c1 = struct.unpack_from("<ihh", clip, i * 8)
+        if pl < 0 or pl >= npl:
+            pl = 0
+        nodes.append((pl, -1 if c0 >= ncl else c0, -1 if c1 >= ncl else c1))
+    heads, seen = [], [False] * ncl
+    for m in range(nm):
+        for h in hulls:
+            head = struct.unpack_from("<i", models, m * 64 + 36 + h * 4)[0]
+            if head >= ncl:
+                head = -1
+            heads.append(head)
+            stack = [head] if head >= 0 else []
+            while stack:
+                n = stack.pop()
+                if seen[n]:
+                    continue
+                seen[n] = True
+                stack += [c for c in nodes[n][1:] if c >= 0 and not seen[c]]
+    remap, kept = {}, []
+    for i in range(ncl):
+        if seen[i]:
+            remap[i] = len(kept)
+            kept.append(i)
+    # planes: axial when the normal is exactly +1 on one axis and +0 on the others (from the
+    # bits: the type byte of the map is not trusted); kept in the order they come in the map
+    used = sorted({nodes[i][0] for i in kept})
+    axial, general, pref = [], [], {}
+    for p in used:
+        nb = struct.unpack_from("<3I", planes, p * 20)
+        t = next((k for k in range(3) if nb[k] == 0x3f800000 and nb[(k + 1) % 3] == 0 and nb[(k + 2) % 3] == 0), 3)
+        if t < 3:
+            pref[p] = (t, len(axial))
+            axial.append(planes[p * 20 + 12:p * 20 + 16])
+        else:
+            pref[p] = (3, len(general))
+            general.append(planes[p * 20:p * 20 + 16])
+    wide = len(axial) > 0x3fff or len(general) > 0x3fff or len(kept) > 0x7fff
+    out = [b"BWH1", struct.pack("<BBHIIII", 2 if hl else 1, len(hulls), 1 if wide else 0,
+                                len(axial), len(general), len(kept), nm)]
+    out += axial + general
+    for i in kept:
+        pl, c0, c1 = nodes[i]
+        t, idx = pref[pl]
+        c = [remap[x] if x >= 0 else x for x in (c0, c1)]
+        out.append(struct.pack("<Iii", t << 30 | idx, *c) if wide else struct.pack("<Hhh", t << 14 | idx, *c))
+    out.append(struct.pack("<%di" % len(heads), *[remap[h] if h >= 0 else h for h in heads]))
+    data = b"".join(out)
+    ram = len(data) - 24 + 24 * nm  # hull_nds.c also keeps each model's bounds
+    info = "%s rule, %d hull%s: %d nodes (of %d), %d planes (%d axial, %d general)%s; the DS holds %d bytes" % (
+        "Half-Life" if hl else "Quake", len(hulls), "s" if len(hulls) > 1 else "", len(kept), ncl,
+        len(axial) + len(general), len(axial), len(general), ", WIDE" if wide else "", ram)
+    return data, info
+
+
 def main():
+    global np, Image
     args = sys.argv[1:]
+    if args and args[0] == "--hul-only":
+        if len(args) != 3:
+            sys.exit("usage: hlmap.py --hul-only <map.bsp> <out.hul>")
+        d = open(args[1], "rb").read()
+        if struct.unpack_from("<i", d)[0] not in (29, 30):
+            sys.exit("%s: BSP version %d, not 29 or 30" % (args[1], struct.unpack_from("<i", d)[0]))
+        data, info = build_hul(d)
+        with open(args[2], "wb") as f:
+            f.write(data)
+        print("%s: %s" % (args[2], info))
+        return
+    import numpy as np
+    from PIL import Image
     src, out = args[0], args[1]
     wad_dirs, texkb, maxdim = [], 180, 128
     i = 2
@@ -271,8 +369,9 @@ def main():
         if lo >= 0:
             struct.pack_into("<i", faces, f * 20 + 16, lo // 3)
 
-    # the planes only the clip hulls used go with them (a third to a half of a
-    # Half-Life map's, and the DS keeps the planes in RAM)
+    # the planes only the clip hulls use go to the .hul with them, and out of the map, whose
+    # planes the DS keeps in RAM for drawing: most of them (59 of 83 on coop_arena; c5a1 went
+    # from 21126 to 2176)
     nodes = bytearray(lump[L_NODES])
     used = sorted({struct.unpack_from("<i", nodes, i * 24)[0] for i in range(len(nodes) // 24)} |
                   {struct.unpack_from("<H", faces, f * 20)[0] for f in range(len(faces) // 20)})
@@ -308,10 +407,14 @@ def main():
         f.write(bytes(palette))
     with open(base + ".lit", "wb") as f:
         f.write(lit)
+    hul, hulinfo = build_hul(d)
+    with open(base + ".hul", "wb") as f:
+        f.write(hul)
     stored = sum(len(b) for b in blobs)
     print("%s: %d KB (was %d KB), %d textures at most %dpx (%d KB), %d missing%s" % (
         out, os.path.getsize(out) // 1024, len(d) // 1024, count, cap, stored // 1024, len(missing),
         (": " + " ".join(missing[:8])) if missing else ""))
+    print("%s.hul: %s" % (base, hulinfo))
 
 
 main()

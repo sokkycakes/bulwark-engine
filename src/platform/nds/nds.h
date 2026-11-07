@@ -34,6 +34,8 @@ typedef struct {
 bool World_Load(const char *path, const uint16_t *palette, char *err, int errsize);
 void World_Free(void);
 bool World_Loaded(void);
+/* world_nds.c: the clip hulls for the link's movement prediction (hull_nds.c) */
+const char *World_HullError(void); /* why the last map has none, "" if it has */
 void World_StartPosition(ndscam_t *cam);
 int World_Spots(ndscam_t *out, int max); /* where to look round from: starts, landmarks, path nodes */
 void World_Draw(const ndscam_t *cam, ndsstats_t *stats);

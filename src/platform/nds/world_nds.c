@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "nds.h"
+#include "hull_nds.h"
 #include "portals_nds.h"
 
 #define BSPVERSION 29
@@ -96,6 +97,7 @@ typedef struct {
 	int ang[3];     /* pitch yaw roll, libnds angles */
 	int32_t home[3]; /* the entity's "origin" in the map: Half-Life builds models with an
 	                    origin brush round 0 0 0 and puts them there */
+	int headnode0;   /* the model's root in the drawing tree, for hull 0 traces */
 } submodel_t;
 
 static struct {
@@ -191,6 +193,7 @@ void World_Free(void)
 	free(w.visdist);
 	free(w.vismodel);
 	memset(&w, 0, sizeof(w));
+	Hull_Free();
 }
 
 bool World_Loaded(void) { return w.loaded; }
@@ -829,6 +832,7 @@ static void mark_visible(int leaf)
 
 static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t *len);
 static void place_models(void);
+static void load_hulls(const char *path);
 
 /* --- loading ----------------------------------------------------------------------------- */
 
@@ -947,6 +951,7 @@ static bool world_load(const char *path, const uint16_t *palette, char *err, int
 			w.models[i].mins[c] = (int16_t)BW_NDS_CLAMP(lrintf(rdf(q + c * 4)), -32767, 32767);
 			w.models[i].maxs[c] = (int16_t)BW_NDS_CLAMP(lrintf(rdf(q + 12 + c * 4)), -32767, 32767);
 		}
+		w.models[i].headnode0 = (int)rd32(q + 36);
 		w.models[i].firstface = (int)rd32(q + 56);
 		w.models[i].numfaces = (int)rd32(q + 60);
 		if (i == 0)
@@ -957,7 +962,56 @@ static bool world_load(const char *path, const uint16_t *palette, char *err, int
 	build_portals(NULL, ofs, len);
 	drop_lumps();
 	w.loaded = true;
+	load_hulls(path);
 	return true;
+}
+
+/* --- clip hulls for the link's movement prediction (hull_nds.c) ------------------------- */
+
+#define HULL_RESERVE (48 * 1024) /* left free for what loads after the map: the studio models */
+static char hullerr[64];
+
+const char *World_HullError(void) { return hullerr; }
+
+static long hull_read(void *ctx, const char *path, long ofs, long len, void *dst)
+{
+	size_t n = 0;
+	uint8_t *b = Fs_LoadRange(path, ofs, len, &n);
+	if (!b)
+		return -1;
+	n = n < (size_t)len ? n : (size_t)len;
+	memcpy(dst, b, n);
+	free(b);
+	return (long)n;
+}
+
+/* hull 0 is the drawing tree, in the renderer's fixed point (load_tree), placed at origin */
+static void world_hull0(void *ctx, int model, const float origin[3], const float start[3], const float end[3],
+                        hulltrace_t *tr)
+{
+	if (model < 0 || model >= w.nummodels || !w.numnodes || !w.numleafs) {
+		memset(tr, 0, sizeof(*tr));
+		tr->fraction = 1;
+		memcpy(tr->endpos, end, sizeof(tr->endpos));
+		return;
+	}
+	Hull_Trace0Fixed((const hull_fxnode_t *)(const void *)w.nodes, (int)sizeof(node_t),
+	                 (const hull_fxplane_t *)(const void *)w.planes, (int)sizeof(plane_t), &w.leafs[0].contents,
+	                 (int)sizeof(leaf_t), w.models[model].headnode0, origin, start, end, tr);
+}
+
+static const hull0_if world_hull0_if = {NULL, world_hull0};
+_Static_assert(offsetof(node_t, plane) == offsetof(hull_fxnode_t, plane) &&
+               offsetof(node_t, children) == offsetof(hull_fxnode_t, children) && offsetof(leaf_t, contents) == 0 &&
+               sizeof(plane_t) == sizeof(hull_fxplane_t), "the tree as Hull_Trace0Fixed reads it");
+
+/* after the map, so the two loads' peaks don't stack; without them (no .hul, or no room) the
+ * map still loads and the link shows the server's view as before */
+static void load_hulls(const char *path)
+{
+	hullerr[0] = 0;
+	if (Hull_Load(path, 0, hull_read, NULL, HULL_RESERVE, hullerr, sizeof(hullerr)))
+		Hull_SetHull0(&world_hull0_if);
 }
 
 /* a big Half-Life map may not fit with its coloured light (three bytes a
