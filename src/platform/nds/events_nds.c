@@ -644,7 +644,7 @@ static int ev_width(const char *s)
 {
 	int n = 0, w, adv, pal, ml;
 	while (*s) {
-		if ((ml = markup(s, &pal))) {
+		if (*s == '^' && (ml = markup(s, &pal))) {
 			s += ml;
 			continue;
 		}
@@ -672,7 +672,7 @@ ITCM_CODE __attribute__((target("arm"))) static int band_text(int x, int y, int 
 	for (; *s; s++) {
 		int w, adv, pal, ml;
 		const uint8_t *g;
-		if ((ml = markup(s, &pal))) { /* a colour from here on (or the text's own again) */
+		if (*s == '^' && (ml = markup(s, &pal))) { /* a colour from here on (or the text's own again) */
 			if (pal)
 				col = pal > 0 ? pal : col0, colw = (uint32_t)col * 0x11111111u;
 			s += ml - 1;
@@ -745,7 +745,7 @@ static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN], b
 		memcpy(o, cur, (size_t)olen);
 		while (s[len] && s[len] != '\n' && olen < TEXT_LEN - 6) {
 			int w, adv, step = 1;
-			if ((ml = markup(s + len, &pal))) {
+			if (s[len] == '^' && (ml = markup(s + len, &pal))) {
 				if (pal) /* the code itself, as the colour in force (^d: none) */
 					snprintf(linecur, sizeof(linecur), "%.*s", pal > 0 ? BW_NDS_MIN(ml, 5) : 0, s + len);
 				memcpy(o + olen, s + len, (size_t)ml);
