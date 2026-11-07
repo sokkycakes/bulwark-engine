@@ -34,12 +34,22 @@ typedef struct {
 	uint16_t v[3];
 } mtri_t;
 
+/* a corner of a triangle strip: the same TEXCOORD and vertex as mtri_t's, and
+ * whether a strip starts here */
+typedef struct {
+	uint32_t st;
+	uint16_t v;
+	uint16_t begin;
+} mcorner_t;
+
 typedef struct {
 	char name[40];
 	bool bad;
 	int numverts, numtris, numframes;
 	uint8_t *frames; /* numframes * numverts * 4: x, y, z, shade 0..31 */
-	mtri_t *tris;
+	mtri_t *tris;       /* until the strips are made (make_strips), or if they couldn't be */
+	mcorner_t *corners; /* the triangles as strips: 1.8 corners a triangle against 3 on the HL models */
+	int numcorners;
 	int32_t scale[3], trans[3]; /* for the matrix: f32, in 1/8 map units */
 	int16_t mins[3], maxs[3];   /* map units, model space (yaw turns x and y) */
 	int16_t radius;
@@ -142,6 +152,116 @@ static int upload_skin(const uint8_t *src, int sw, int sh, int *tw, int *th, con
 		glDeleteTextures(1, &name);
 	}
 	return 0;
+}
+
+/* the triangles as greedy strips, each triangle in its own winding (the GPU
+ * turns every second triangle of a strip round itself); then the triangles
+ * go. Left as triangles if there's no room */
+static bool same_corner(const mtri_t *a, int i, const mtri_t *b, int j) { return a->v[i] == b->v[j] && a->st[i] == b->st[j]; }
+
+typedef struct {
+	const mtri_t *tris;
+	const int *first, *list; /* the triangles at each vertex: list[first[v]..first[v + 1]) */
+	uint8_t *used;
+} stripper_t;
+
+/* the unused triangle to put after a strip of len triangles whose last two
+ * corners are corner li then lj of triangle lt: the next one's winding starts
+ * with those two (len even) or the other way round (len odd). Returns it, and
+ * k: the corner of it where the shared edge starts */
+static int strip_next(const stripper_t *sp, int lt, int li, int lj, int len, int *k)
+{
+	const mtri_t *p = &sp->tris[lt];
+	int a = len % 2 == 0 ? li : lj, b = len % 2 == 0 ? lj : li;
+	for (int e = sp->first[p->v[a]]; e < sp->first[p->v[a] + 1]; e++) {
+		int u = sp->list[e];
+		const mtri_t *q = &sp->tris[u];
+		if (sp->used[u])
+			continue;
+		for (int j = 0; j < 3; j++)
+			if (same_corner(q, j, p, a) && same_corner(q, (j + 1) % 3, p, b)) {
+				*k = j;
+				return u;
+			}
+	}
+	return -1;
+}
+
+static void make_strips(mdl_t *m)
+{
+	int nt = m->numtris, nv = m->numverts, n = 0;
+	int *first = calloc((size_t)nv + 1, sizeof(int)), *list = malloc(sizeof(int) * (size_t)nt * 3);
+	uint8_t *used = calloc((size_t)nt ? (size_t)nt : 1, 1);
+	mcorner_t *c = malloc(sizeof(mcorner_t) * (size_t)nt * 3);
+	stripper_t sp = {m->tris, first, list, used};
+	if (nt <= 0 || !first || !list || !used || !c) {
+		free(first), free(list), free(used), free(c);
+		return;
+	}
+	for (int t = 0; t < nt; t++)
+		for (int k = 0; k < 3; k++)
+			first[m->tris[t].v[k] + 1]++;
+	for (int v = 0; v < nv; v++)
+		first[v + 1] += first[v];
+	{
+		int *fill = malloc(sizeof(int) * (size_t)nv);
+		if (!fill) {
+			free(first), free(list), free(used), free(c);
+			return;
+		}
+		memcpy(fill, first, sizeof(int) * (size_t)nv);
+		for (int t = 0; t < nt; t++)
+			for (int k = 0; k < 3; k++)
+				list[fill[m->tris[t].v[k]]++] = t;
+		free(fill);
+	}
+	for (int t = 0; t < nt; t++) {
+		int best = 0, bestlen = 0;
+		if (used[t])
+			continue;
+		/* from each of its three turns, as far as it goes (marking with 2 to
+		 * measure, then clearing); keep the longest */
+		for (int r = 0; r < 3; r++) {
+			int len = 1, lt = t, li = (r + 1) % 3, lj = (r + 2) % 3, k, u;
+			used[t] = 2;
+			while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
+				/* the old last corner is the new triangle's corner k + 1 (len was
+				 * even) or k (odd); its third corner is the new last */
+				li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
+				used[u] = 2, len++;
+			}
+			for (int i = 0; i < nt; i++)
+				if (used[i] == 2)
+					used[i] = 0;
+			if (len > bestlen)
+				bestlen = len, best = r;
+		}
+		{
+			const mtri_t *a = &m->tris[t];
+			int len = 1, lt = t, li = (best + 1) % 3, lj = (best + 2) % 3, k, u;
+			used[t] = 1;
+			for (int j = 0; j < 3; j++) {
+				int i = (best + j) % 3;
+				c[n].st = a->st[i], c[n].v = a->v[i], c[n].begin = j == 0;
+				n++;
+			}
+			while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
+				const mtri_t *q = &m->tris[u];
+				c[n].st = q->st[(k + 2) % 3], c[n].v = q->v[(k + 2) % 3], c[n].begin = 0;
+				n++;
+				li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
+				used[u] = 1, len++;
+			}
+		}
+	}
+	free(first), free(list), free(used);
+	{
+		mcorner_t *less = realloc(c, sizeof(mcorner_t) * (size_t)n);
+		m->corners = less ? less : c;
+	}
+	m->numcorners = n;
+	free(m->tris);
+	m->tris = NULL;
 }
 
 /* shade bytes for one frame: light from above and a little in front, by vertex normal */
@@ -436,14 +556,16 @@ static int load_mdl(const char *name)
 			m->frames = less;
 	}
 	free(f.buf);
+	make_strips(m);
 	m->bad = false;
 	return (int)(m - mdls);
 fail:
 	free(f.buf);
 	free(m->tris);
+	free(m->corners);
 	free(m->frames);
 	free(m->seqclip);
-	m->tris = NULL, m->frames = NULL, m->seqclip = NULL;
+	m->tris = NULL, m->corners = NULL, m->numcorners = 0, m->frames = NULL, m->seqclip = NULL;
 	m->numframes = 0;
 	if (m->tex)
 		glDeleteTextures(1, &m->tex), m->tex = 0;
@@ -641,6 +763,7 @@ void Ents_Free(void)
 	for (int i = 0; i < nummdls; i++) {
 		free(mdls[i].frames);
 		free(mdls[i].tris);
+		free(mdls[i].corners);
 		free(mdls[i].seqclip);
 		if (mdls[i].tex)
 			glDeleteTextures(1, &mdls[i].tex);
@@ -687,19 +810,32 @@ ITCM_CODE __attribute__((target("arm"))) static void draw_mdl(const mdl_t *m, in
 	}
 	glBindTexture(GL_TEXTURE_2D, m->tex);
 	glScalef32(m->scale[0], m->scale[1], m->scale[2]);
-	GFX_BEGIN = GL_TRIANGLES;
 	{
 		/* a corner is three loads: its vertex (x, y, z, shade in one word), its TEXCOORD, its index */
 		const uint32_t *fv = (const uint32_t *)(const void *)fr;
-		const mtri_t *tr = m->tris, *end = tr + m->numtris;
-		for (; tr < end; tr++)
-			for (int k = 0; k < 3; k++) {
-				uint32_t v = fv[tr->v[k]];
+		if (m->corners) {
+			const mcorner_t *cn = m->corners, *end = cn + m->numcorners;
+			for (; cn < end; cn++) {
+				uint32_t v = fv[cn->v];
+				if (cn->begin)
+					GFX_BEGIN = GL_TRIANGLE_STRIP;
 				GFX_COLOR = lut[v >> 24];
-				GFX_TEX_COORD = tr->st[k];
+				GFX_TEX_COORD = cn->st;
 				GFX_VERTEX16 = (v & 0xff) | (v & 0xff00) << 8;
 				GFX_VERTEX16 = (v >> 16) & 0xff;
 			}
+		} else {
+			const mtri_t *tr = m->tris, *end = tr + m->numtris;
+			GFX_BEGIN = GL_TRIANGLES;
+			for (; tr < end; tr++)
+				for (int k = 0; k < 3; k++) {
+					uint32_t v = fv[tr->v[k]];
+					GFX_COLOR = lut[v >> 24];
+					GFX_TEX_COORD = tr->st[k];
+					GFX_VERTEX16 = (v & 0xff) | (v & 0xff00) << 8;
+					GFX_VERTEX16 = (v >> 16) & 0xff;
+				}
+		}
 	}
 }
 
