@@ -8,7 +8,7 @@
  *   DS's own hull code instead of the copy of the server's below)
  *
  *   pmtest <map.bsp> <ded.log> [-slot n] [-tol 0.05] [-chain] [-resample ms]
- *          [-bench] [-nofocus] [-dshull0] [-v]
+ *          [-bench] [-nofocus] [-dshull0] [-v] [-dump file [-fuzz n]]
  *
  * The log is the ded's console output with sv_link_log 1: LINKPM lines
  * (docs/spec/link.md, "sv_link_log"). Each logged command runs once from the
@@ -28,6 +28,11 @@
  *   -ownhull      with -DPMTEST_HULL_NDS: trace through the server's copy below
  *   -cmphull      with -DPMTEST_HULL_NDS: run both on every trace and count
  *                 the ones that differ in any bit
+ *   -dump file    writes every result of the step and -chain runs, and of n
+ *                 made-up variants of each step (-fuzz n, default 8: moved,
+ *                 pushed, turned, other keys), as raw bits: two builds of the
+ *                 movement code must write the same file (a speed-up changes
+ *                 no result, even off the logged path)
  *
  * The same file can hold a hand-written script instead (no server, the
  * states are printed): lines starting "PM", see read_script below.
@@ -1160,6 +1165,62 @@ static void scene_of(const step_t *st)
 	          st->nboxes);
 }
 
+/* -dump: every value PM_Run writes, as bits */
+static FILE *dumpf;
+static void dump_state(const pmstate_t *s)
+{
+	if (!dumpf)
+		return;
+	fwrite(s->origin, 4, 3, dumpf), fwrite(s->velocity, 4, 3, dumpf), fwrite(s->basevel, 4, 3, dumpf);
+	fwrite(s->view_ofs, 4, 3, dumpf), fwrite(s->mins, 4, 3, dumpf), fwrite(s->maxs, 4, 3, dumpf);
+	fwrite(s->v_angle, 4, 3, dumpf), fwrite(s->angles, 4, 3, dumpf);
+	fwrite(&s->flags, 4, 1, dumpf), fwrite(&s->vflags, 4, 1, dumpf), fwrite(&s->gflags, 4, 1, dumpf);
+	fwrite(&s->waterlevel, 4, 1, dumpf), fwrite(&s->watertype, 4, 1, dumpf), fwrite(&s->groundent, 4, 1, dumpf);
+	fwrite(&s->friction, 4, 1, dumpf), fwrite(&s->maxspeed, 4, 1, dumpf), fwrite(&s->time_since_jump, 4, 1, dumpf);
+	fwrite(&s->time_since_teleport, 4, 1, dumpf), fwrite(&s->stamina, 4, 1, dumpf);
+	fwrite(&s->landspeed, 4, 1, dumpf), fwrite(&s->events, 1, 1, dumpf);
+}
+
+/* variant k of a step: a deterministic shake of where it starts and what it asks */
+static void fuzz_step(int k, pmstate_t *s, pmcmd_t *c)
+{
+	static const float d[8] = {0.03125f, -0.5f, 1.75f, -3.0f, 7.5f, 0.0078125f, -12.25f, 0.33f};
+	uint32_t h = (uint32_t)k * 2654435761u ^ c->seq * 40503u;
+	switch (k & 7) {
+	case 0: s->origin[0] += d[h % 8], s->origin[1] += d[(h >> 3) % 8]; break;
+	case 1: s->origin[2] += d[h % 8] * 0.25f; break;
+	case 2: s->velocity[0] += d[h % 8] * 40, s->velocity[1] -= d[(h >> 3) % 8] * 40; break;
+	case 3: s->velocity[2] += d[h % 8] * 30, s->flags ^= PM_FL_ONGROUND; break;
+	case 4: c->yaw = (int16_t)(c->yaw + (int)(h % 8192) - 4096), c->pitch = (int16_t)((int)(h >> 13) % 16384 - 8192); break;
+	case 5: c->move[0] = (int16_t)((int)(h % 3) * 400 - 400), c->move[1] = (int16_t)((int)(h >> 4) % 3 * 400 - 400); break;
+	case 6: c->buttons ^= (uint16_t)((h & 1 ? PM_IN_JUMP : 0) | (h & 2 ? PM_IN_CROUCH : 0) | (h & 4 ? PM_IN_SPRINT : 0) | (h & 8 ? PM_IN_USE : 0)); break;
+	case 7: c->msec = (uint8_t)(1 + h % 60); s->origin[0] -= d[h % 8], s->velocity[2] -= 100; break;
+	}
+}
+
+static void dump_all(int nfuzz)
+{
+	pmstate_t cur;
+	for (int i = 0; i < numsteps; i++) {
+		pmstate_t s = steps[i].pre;
+		scene_of(&steps[i]);
+		run_cmd(&s, &steps[i].cmd, &varsets[steps[i].vars]);
+		dump_state(&s);
+		/* the chain: from the first state on, keeping our own */
+		if (i == 0 || steps[i].cmd.seq != steps[i - 1].cmd.seq + 1)
+			cur = steps[i].pre;
+		run_cmd(&cur, &steps[i].cmd, &varsets[steps[i].vars]);
+		dump_state(&cur);
+		for (int k = 0; k < nfuzz; k++) {
+			pmcmd_t c = steps[i].cmd;
+			s = steps[i].pre;
+			fuzz_step(k, &s, &c);
+			run_cmd(&s, &c, &varsets[steps[i].vars]);
+			dump_state(&s);
+		}
+	}
+}
+
 static int compare(float tol, bool chain)
 {
 	int within = 0, exact = 0, clipped = 0, flagbad = 0, n = 0, restarts = 0;
@@ -1342,8 +1403,8 @@ static long file_read(void *ctx, const char *path, long ofs, long len, void *dst
 
 int main(int argc, char **argv)
 {
-	const char *mappath = NULL, *logpath = NULL, *emit = NULL;
-	int slot = 0, resample_ms = 0, status = 0;
+	const char *mappath = NULL, *logpath = NULL, *emit = NULL, *dumppath = NULL;
+	int slot = 0, resample_ms = 0, status = 0, nfuzz = 8;
 	float tol = 0.05f;
 	bool chain = false, dobench = false;
 	for (int i = 1; i < argc; i++) {
@@ -1369,6 +1430,10 @@ int main(int argc, char **argv)
 			verbose = true;
 		else if (!strcmp(argv[i], "-emit") && i + 1 < argc)
 			emit = argv[++i];
+		else if (!strcmp(argv[i], "-dump") && i + 1 < argc)
+			dumppath = argv[++i];
+		else if (!strcmp(argv[i], "-fuzz") && i + 1 < argc)
+			nfuzz = atoi(argv[++i]);
 		else if (!mappath)
 			mappath = argv[i];
 		else if (!logpath)
@@ -1376,7 +1441,8 @@ int main(int argc, char **argv)
 	}
 	if (!mappath || !logpath) {
 		fprintf(stderr, "usage: pmtest <map.bsp> <ded.log | script> [-slot n] [-tol 0.05] [-chain] "
-		                "[-resample ms] [-bench] [-nofocus] [-dshull0] [-ownhull] [-cmphull] [-v] [-emit log]\n");
+		                "[-resample ms] [-bench] [-nofocus] [-dshull0] [-ownhull] [-cmphull] [-v] [-emit log] "
+		                "[-dump file [-fuzz n]]\n");
 		return 2;
 	}
 #ifdef PMTEST_HULL_NDS
@@ -1429,6 +1495,17 @@ int main(int argc, char **argv)
 		printf("PMTEST focus_vs_nofocus differ=%d\n", diff);
 		if (diff)
 			status = 1;
+	}
+	if (dumppath) {
+		dumpf = fopen(dumppath, "wb");
+		if (!dumpf) {
+			fprintf(stderr, "pmtest: can't write %s\n", dumppath);
+			return 2;
+		}
+		dump_all(nfuzz);
+		printf("PMTEST dump %s results=%ld\n", dumppath, (long)numsteps * (2 + nfuzz));
+		fclose(dumpf);
+		dumpf = NULL;
 	}
 	if (cmphull)
 		printf("PMTEST cmphull traces=%ld differ=%ld\n", cmp_traces, cmp_bad);
