@@ -697,9 +697,11 @@ static float gtext_alpha(const gtext_t *t, int *chars)
 }
 
 /* GameText_DrawString: x -1 centres, 0.5 and over right-aligns; y -1 is the middle */
+static char lines_a[MAX_LINES][TEXT_LEN], lines_b[MAX_LINES][TEXT_LEN]; /* off the DTCM stack */
+
 static void draw_gtext(const gtext_t *t, int chars, int bank)
 {
-	char s[TEXT_LEN], lines[MAX_LINES][TEXT_LEN];
+	char s[TEXT_LEN], (*lines)[TEXT_LEN] = lines_b;
 	int n, y0;
 	memcpy(s, t->msg, (size_t)chars);
 	s[chars] = 0;
@@ -744,7 +746,7 @@ static void set_bank(int g, const uint8_t *rgb8, float a)
 /* one group's lines, measured or drawn */
 static void layout(int g, const int *chars)
 {
-	char lines[MAX_LINES][TEXT_LEN];
+	char (*lines)[TEXT_LEN] = lines_a;
 	int n, y;
 	if (g == G_PRINT) { /* prints: hudmins + [16,16], 14 apart */
 		y = BAND_Y0 + 1;
@@ -876,10 +878,10 @@ void Events_Draw2D(void)
 	alpha[G_FEED] = 1;
 	if (tx.feeds)
 		sig[G_FEED] = hash(2166136261u, tx.feed, (int)sizeof(tx.feed[0]) * tx.feeds) | 1;
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0, above = 0; i < 3; i++) { /* a notice's place depends on the ones before it */
 		alpha[G_PICK0 + i] = tx.pickalpha[i] > 1 ? 1 : tx.pickalpha[i];
 		if (tx.pickalpha[i] > 0)
-			sig[G_PICK0 + i] = (uint32_t)tx.pickcount[i] * 2 + 1;
+			sig[G_PICK0 + i] = ((uint32_t)tx.pickcount[i] << 4 | (uint32_t)above << 1) | 1, above++;
 	}
 	for (int g = 0; g < G_COUNT; g++)
 		if (sig[g] != tx.sig[g])
@@ -892,6 +894,12 @@ void Events_Draw2D(void)
 		Events_Stats.redraws++;
 		measuring = true;
 		for (int g = 0; g < G_COUNT; g++) {
+			/* a group whose signature is the same takes the rows it took: only the
+			 * ones that changed are laid out to measure them */
+			if (sig[g] == tx.sig[g]) {
+				now_rows[g] = rows[g];
+				continue;
+			}
 			grouprows = 0;
 			if (sig[g])
 				layout(g, chars);
