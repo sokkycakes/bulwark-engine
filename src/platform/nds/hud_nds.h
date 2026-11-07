@@ -1,4 +1,4 @@
-/* Bulwark engine - the DS link's HUD on the top screen: the co-op HUD the PC
+/* Bulwark engine - the DS link's HUD on the top screen (and the bottom screen's top rows): the co-op HUD the PC
  * draws (Nuclide coop/src/hud/jtf.qc and its Panorama layout, with the
  * Half-Life crosshair and Nuclide's nameplates and target ID), from HUDINFO
  * (docs/spec/link.md). ISC licence, see LICENSE. */
@@ -34,6 +34,11 @@ uint16_t Hud_Version(void);                 /* the HUDINFO version we have, for 
 bool Hud_Down(void);                        /* the co-op rules have us down or dead (*respawn) */
 /* once a frame: view is the camera drawn this frame */
 void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudin_t *in);
+/* the bottom screen's top rows: the experience gauge flush at row 0, then the hero's
+ * abilities and Energy. Drawn into the RGB15 bitmap sub where they changed (all when
+ * force), bg as the clear colour, except the box tab (x y w h) the caller keeps */
+#define HUD_SUB_ROWS 32
+void Hud_Sub(uint16_t *sub, const hudin_t *in, uint16_t bg, const int tab[4], bool force);
 /* the HUD's font, and the event text's own layer (BG2, in front of the HUD: cell i is
  * tile i, 4 bits a pixel, NULL when off), for events_nds.c */
 const uint8_t *Hud_Glyph(int c, int *w, int *adv); /* a glyph's rows (bit 0 the left pixel) */

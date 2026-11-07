@@ -28,6 +28,9 @@
 #include <strings.h>
 
 #include "hud_nds.h"
+/* TallPixelFont by Linklene (SIL OFL 1.1, data/fonts/TallPixelFont-OFL.txt) at 9 px, for the
+ * big numbers and the wave panel: free to ship, so built in (fonts/hudnum.dsf overrides it) */
+#include "hudnum_dsf.h"
 
 extern const u8 default_font_bin[]; /* libnds' console font: 256 characters, 8x8, 1 bit */
 
@@ -43,32 +46,72 @@ enum {
 static uint16_t *topgfx;
 static uint16_t *textgfx[2], *textmap[2]; /* the event text's layers (BG2, BG3: events_nds.c) */
 #define TEXT_TILES TOP_TILES
-static uint8_t *hudfont; /* the .dsf, or NULL for the built-in font */
-static int hudh = 8;     /* its rows */
+/* the fonts: F_HUD fonts/hud.dsf (else the console's 8x8 font), F_NUM the numbers' and the
+ * wave panel's (fonts/hudnum.dsf, else the built-in TallPixelFont, else F_HUD) */
+enum { F_HUD, F_NUM };
+typedef struct {
+	const uint8_t *dsf; /* the .dsf, or NULL for the console's font */
+	uint8_t *owned;     /* dsf when loaded (freed at the end) */
+	int h;              /* its rows */
+	int dtop, dbot;     /* the first and last rows of ink in its digits ('0') */
+} hfont_t;
+static hfont_t fonts[2];
+#define hudh (fonts[F_HUD].h)
+#define TF_BARE 1 /* w_text flags: no outline */
+#define TF_NUM 2  /* in F_NUM */
 
 /* --- pixels --------------------------------------------------------------------------- */
 
+static bool dsf_ok(const uint8_t *f, size_t size)
+{
+	return f && size >= 8 && !memcmp(f, "DSF1", 4) && f[4] && f[4] <= 16 && size >= 8 + (size_t)f[6] * (2 + f[4]);
+}
+
+static const uint8_t *font_glyph(const hfont_t *f, int c, int *w, int *adv);
+
+static void font_set(hfont_t *f, const uint8_t *dsf, uint8_t *owned)
+{
+	int w, adv;
+	const uint8_t *g;
+	f->dsf = dsf, f->owned = owned, f->h = dsf ? dsf[4] : 8;
+	f->dtop = 0, f->dbot = f->h - 1;
+	if ((g = font_glyph(f, '0', &w, &adv))) {
+		while (f->dtop < f->h - 1 && !g[f->dtop])
+			f->dtop++;
+		while (f->dbot > f->dtop && !g[f->dbot])
+			f->dbot--;
+	}
+}
+
 static void hud_load_font(void)
 {
-	size_t size;
-	uint8_t *f = Fs_Load("fonts/hud.dsf", &size);
-	hudfont = NULL, hudh = 8;
-	if (f && size >= 8 && !memcmp(f, "DSF1", 4) && f[4] && f[4] <= 16 && size >= 8 + (size_t)f[6] * (2 + f[4])) {
-		hudfont = f, hudh = f[4];
-		return;
+	static const char *const path[2] = {"fonts/hud.dsf", "fonts/hudnum.dsf"};
+	for (int i = 0; i < 2; i++) {
+		size_t size;
+		uint8_t *f = Fs_Load(path[i], &size);
+		if (dsf_ok(f, size))
+			font_set(&fonts[i], f, f);
+		else {
+			free(f);
+			if (i == F_NUM && dsf_ok(hudnum_dsf, sizeof(hudnum_dsf)))
+				font_set(&fonts[i], hudnum_dsf, NULL);
+			else if (i == F_NUM)
+				fonts[i] = fonts[F_HUD], fonts[i].owned = NULL;
+			else
+				font_set(&fonts[i], NULL, NULL);
+		}
 	}
-	free(f);
 }
 
 /* a glyph's rows (bit 0 the left pixel), width and advance */
-static const uint8_t *hud_glyph(int c, int *w, int *adv)
+static const uint8_t *font_glyph(const hfont_t *f, int c, int *w, int *adv)
 {
-	if (hudfont) {
-		int first = hudfont[5], count = hudfont[6];
+	if (f->dsf) {
+		int first = f->dsf[5], count = f->dsf[6];
 		if (c < first || c >= first + count)
 			c = '?';
 		if (c >= first && c < first + count) {
-			const uint8_t *g = hudfont + 8 + (c - first) * (2 + hudh);
+			const uint8_t *g = f->dsf + 8 + (c - first) * (2 + f->h);
 			*adv = g[0], *w = g[1];
 			return g + 2;
 		}
@@ -78,6 +121,8 @@ static const uint8_t *hud_glyph(int c, int *w, int *adv)
 	*adv = *w = 8;
 	return default_font_bin + (c & 255) * 8;
 }
+
+static const uint8_t *hud_glyph(int c, int *w, int *adv) { return font_glyph(&fonts[F_HUD], c, w, adv); }
 
 /* Drawing goes to one row of tiles in RAM (8 rows of the screen, 1 KB), clipped
  * to the columns being redrawn, and is copied to VRAM a tile at a time */
@@ -120,13 +165,14 @@ static void top_fill(int x, int y, int w, int h, int col)
 	}
 }
 
-static int text_width(const char *s, int len, int scale)
+static int font_width(const hfont_t *f, const char *s, int len, int scale)
 {
 	int n = 0, w, adv;
 	for (int i = 0; i < len && s[i]; i++)
-		hud_glyph((uint8_t)s[i], &w, &adv), n += adv * scale;
+		font_glyph(f, (uint8_t)s[i], &w, &adv), n += adv * scale;
 	return n;
 }
+#define text_width(s, len, scale) font_width(&fonts[F_HUD], s, len, scale)
 
 static inline int strip_px(int x, int y)
 {
@@ -135,26 +181,27 @@ static inline int strip_px(int x, int y)
 }
 
 /* text at (x, y), each font pixel scale x scale, with a 1-pixel outline unless bare */
-static void draw_text(int x, int y, int scale, int col, const char *s, int len, bool bare)
+static void draw_text(const hfont_t *f, int x, int y, int scale, int col, const char *s, int len, bool bare)
 {
+	const int fh = f->h;
 	if (scale == 1) {
 		/* one pass, a glyph's rows with the outline around them (its pixels dilated by one),
 		 * which never covers the text already drawn to the left */
 		int cx = x;
 		for (int k = 0; k < len; k++) {
 			int w, adv;
-			const uint8_t *g = hud_glyph((uint8_t)s[k], &w, &adv);
+			const uint8_t *g = font_glyph(f, (uint8_t)s[k], &w, &adv);
 			if (g && cx + w + 1 > clipx0 && cx - 1 < clipx1)
-				for (int j = bare ? 0 : -1; j < hudh + (bare ? 0 : 1); j++) {
+				for (int j = bare ? 0 : -1; j < fh + (bare ? 0 : 1); j++) {
 					int yy = y + j;
 					unsigned fg, m;
 					if (yy < clipy0 || yy >= clipy1)
 						continue;
-					fg = j >= 0 && j < hudh ? (unsigned)g[j] << 1 : 0;
+					fg = j >= 0 && j < fh ? (unsigned)g[j] << 1 : 0;
 					if (bare)
 						m = fg;
 					else {
-						m = fg | (j > 0 ? (unsigned)g[j - 1] << 1 : 0) | (j + 1 < hudh ? (unsigned)g[j + 1] << 1 : 0);
+						m = fg | (j > 0 ? (unsigned)g[j - 1] << 1 : 0) | (j + 1 < fh ? (unsigned)g[j + 1] << 1 : 0);
 						m |= m << 1 | m >> 1;
 					}
 					for (int b = 0; m; b++, m >>= 1)
@@ -176,12 +223,12 @@ static void draw_text(int x, int y, int scale, int col, const char *s, int len, 
 		int cx = x;
 		for (int k = 0; k < len; k++) {
 			int w, adv;
-			const uint8_t *g = hud_glyph((uint8_t)s[k], &w, &adv);
+			const uint8_t *g = font_glyph(f, (uint8_t)s[k], &w, &adv);
 			if (cx + (w + 1) * scale < clipx0 || cx - 1 >= clipx1) {
 				cx += adv * scale;
 				continue;
 			}
-			for (int j = 0; g && j < hudh; j++) {
+			for (int j = 0; g && j < fh; j++) {
 				if (y + (j + 1) * scale + 1 <= clipy0 || y + j * scale - 1 >= clipy1)
 					continue; /* outside the rows being drawn */
 				for (int i = 0; i < w; i++)
@@ -535,6 +582,24 @@ static void news(void)
  * crosshair over it (entry.qc Nameplates_Draw then HUD_Draw, jtf.qc HUD_Draw) */
 enum { W_DIAG, W_PLATES, W_OBJ, W_FEED, W_NOTICE, W_VITALS, W_WEAPONS, W_DOWN, W_PROMPT, W_TID, W_CROSS, W_COUNT };
 enum { OP_FILL = 1, OP_TEXT, OP_LINE, OP_XHAIR };
+/* the HUD's palette (BG palette 0 on the top screen; HC_CLEAR is transparent there) */
+static const uint16_t hudpal[16] = {
+	[HC_EDGE] = RGB15(0, 0, 0),
+	[HC_TEXT] = RGB15(29, 29, 29),    /* #eeeeec */
+	[HC_RED] = RGB15(28, 10, 7),      /* #e0503a */
+	[HC_DIAG] = RGB15(18, 31, 18),
+	[HC_MUTED] = RGB15(18, 18, 18),   /* #919190 */
+	[HC_AMBER] = RGB15(31, 20, 3),    /* #ffa31a */
+	[HC_ACCENT] = RGB15(6, 18, 26),   /* #3396d4 */
+	[HC_BARRIER] = RGB15(11, 21, 31), /* #5aa8ff */
+	[HC_GOLD] = RGB15(31, 24, 8),     /* #ffc440 */
+	[HC_GREEN] = RGB15(12, 23, 3),    /* the gauge's #4e9a06 .. #8ae234 */
+	[HC_WINDOW] = RGB15(6, 6, 6),     /* #353535 */
+	[HC_FRAME] = RGB15(5, 5, 5),      /* #282828 */
+	[HC_TROUGH] = RGB15(24, 24, 24),  /* #f3f3f3 .. #bdbdbd */
+	[HC_FILL] = RGB15(4, 11, 21),     /* #2063b4, #15539e */
+	[HC_XHAIR] = RGB15(0, 31, 0),
+};
 static const uint16_t wcap[W_COUNT] = {200, 300, 160, 560, 160, 900, 300, 400, 200, 120, 48};
 
 typedef struct {
@@ -550,6 +615,9 @@ typedef struct {
 
 static widget_t wid[W_COUNT];
 static uint8_t warena[2][3400]; /* the lists, and the ones last drawn */
+static widget_t subw;           /* the bottom screen's (part_sub) */
+static uint8_t subarena[2][640];
+#define EXP_H 11                /* the experience gauge's rows, from the bottom screen's top */
 static widget_t *cw; /* the one being written */
 
 static void w_bytes(const void *p, int n)
@@ -591,20 +659,22 @@ static void w_frame(int x, int y, int w, int h, int col)
 	w_fill(x, y + 1, 1, h - 2, col), w_fill(x + w - 1, y + 1, 1, h - 2, col);
 }
 
-/* returns the text's width; flags 1: no outline */
+/* returns the text's width; flags TF_BARE, TF_NUM */
 static int w_text(int x, int y, int scale, int col, const char *s, int flags)
 {
-	int len = (int)BW_NDS_MIN(strlen(s), 64), wd = text_width(s, len, scale);
+	const hfont_t *f = &fonts[flags & TF_NUM ? F_NUM : F_HUD];
+	int len = (int)BW_NDS_MIN(strlen(s), 64), wd = font_width(f, s, len, scale);
 	int16_t v[2] = {(int16_t)x, (int16_t)y};
 	uint8_t op[5] = {OP_TEXT, (uint8_t)col, (uint8_t)scale, (uint8_t)flags, (uint8_t)len};
 	if (!len)
 		return 0;
 	w_bytes(op, 5), w_bytes(v, 4), w_bytes(s, len);
-	w_box(x - 1, y - 1, x + wd + 1, y + hudh * scale + 1);
+	w_box(x - 1, y - 1, x + wd + 1, y + f->h * scale + 1);
 	return wd;
 }
 
 static int t_w(const char *s, int scale) { return text_width(s, (int)BW_NDS_MIN(strlen(s), 64), scale); }
+static int n_w(const char *s, int scale) { return font_width(&fonts[F_NUM], s, (int)BW_NDS_MIN(strlen(s), 64), scale); }
 
 static void w_line(int x0, int y0, int x1, int y1, int col)
 {
@@ -622,9 +692,9 @@ static void w_xhair(int x, int y)
 	w_box(x, y, x + hud.xw, y + hud.xh);
 }
 
-static void w_begin(int i)
+static void w_begin_w(widget_t *w)
 {
-	cw = &wid[i];
+	cw = w;
 	cw->len = 0, cw->overflow = false;
 	memset(cw->ncover, 0, sizeof(cw->ncover));
 }
@@ -648,12 +718,14 @@ static void w_exec(const widget_t *w)
 			top_fill(v[0], v[1], v[2], v[3], p[1]);
 			p += 10;
 			break;
-		case OP_TEXT:
+		case OP_TEXT: {
+			const hfont_t *f = &fonts[p[3] & TF_NUM ? F_NUM : F_HUD];
 			memcpy(v, p + 5, 4);
-			if (v[1] - 1 < clipy1 && v[1] + hudh * p[2] + 1 > clipy0)
-				draw_text(v[0], v[1], p[2], p[1], (const char *)p + 9, p[4], p[3] & 1);
+			if (v[1] - 1 < clipy1 && v[1] + f->h * p[2] + 1 > clipy0)
+				draw_text(f, v[0], v[1], p[2], p[1], (const char *)p + 9, p[4], p[3] & TF_BARE);
 			p += 9 + p[4];
 			break;
+		}
 		case OP_LINE:
 			memcpy(v, p + 2, 8);
 			draw_line(v[0], v[1], v[2], v[3], p[1]);
@@ -712,41 +784,51 @@ static void window(int x, int y, int w, int h)
 	w_frame(x, y, w, h, HC_FRAME);
 }
 
-static int top_y; /* below the diagnostics */
+static int top_y;     /* below the diagnostics */
+static int diag_left; /* where the diagnostics start (256: none) */
 
+/* the diagnostics, right-justified at the top, so the wave panel has the corner */
 static void part_diag(const hudin_t *in)
 {
-	top_y = 0;
-	if (in->diag1[0])
-		w_text(2, 1, 1, HC_DIAG, in->diag1, 0), top_y = hudh + 1;
-	if (in->diag2[0])
-		w_text(2, top_y + 1, 1, HC_AMBER, in->diag2, 0), top_y += hudh + 1;
+	top_y = 0, diag_left = 256;
+	if (in->diag1[0]) {
+		int x = 254 - t_w(in->diag1, 1);
+		w_text(x, 1, 1, HC_DIAG, in->diag1, 0), top_y = hudh + 1, diag_left = x;
+	}
+	if (in->diag2[0]) {
+		int x = 254 - t_w(in->diag2, 1);
+		w_text(x, top_y + 1, 1, HC_AMBER, in->diag2, 0), top_y += hudh + 1, diag_left = BW_NDS_MIN(diag_left, x);
+	}
 	top_y += top_y ? 2 : 0;
 }
 
-/* the objective panel: top left (hud.css .objective x 32 y 32), hud.js wave() */
+/* the objective panel: top left (hud.css .objective x 32 y 32), hud.js wave(), in F_NUM;
+ * below the diagnostics only when they reach over it */
+#define OBJ_W 74
 static void part_obj(void)
 {
 	char st[2][96], v[16];
-	int y, w = 74, x0 = 3, y0 = top_y + 3, wave = atoi(key(HK_WAVE)), left = key(HK_LEFT)[0] ? atoi(key(HK_LEFT)) : -1;
+	const int fl = TF_BARE | TF_NUM, lh = fonts[F_NUM].dbot + 3; /* a line: the caps and 2 rows */
+	int y, w = OBJ_W, x0 = 3, y0 = diag_left < x0 + OBJ_W + 4 ? top_y + 3 : 3;
+	int wave = atoi(key(HK_WAVE)), left = key(HK_LEFT)[0] ? atoi(key(HK_LEFT)) : -1;
 	bool fighting = wave > 0 && left >= 0;
 	if (!hud.have)
 		return;
 	memset(st, 0, sizeof(st));
 	split_bar(key(HK_STATS)[0] ? key(HK_STATS) : "0|0", st, 2);
-	window(x0, y0, w, 4 * 7 + 7);
+	window(x0, y0, w, 4 * lh + 3 + 2);
 	y = y0 + 2;
 	snprintf(v, sizeof(v), "WAVE %d", BW_NDS_MAX(1, wave));
-	w_text(x0 + w - 3 - t_w(v, 1), y, 1, HC_TEXT, v, 1), y += 7;
-	w_text(x0 + 3, y, 1, HC_TEXT, "LEFT", 1);
+	w_text(x0 + w - 3 - n_w(v, 1), y, 1, HC_TEXT, v, fl), y += lh;
+	w_text(x0 + 3, y, 1, HC_TEXT, "LEFT", fl);
 	snprintf(v, sizeof(v), "%d", fighting ? left : 0);
-	w_text(x0 + w - 3 - t_w(v, 1), y, 1, fighting ? HC_RED : HC_MUTED, v, 1), y += 7;
-	w_text(x0 + 3, y, 1, HC_TEXT, "SCORE", 1);
+	w_text(x0 + w - 3 - n_w(v, 1), y, 1, fighting ? HC_RED : HC_MUTED, v, fl), y += lh;
+	w_text(x0 + 3, y, 1, HC_TEXT, "SCORE", fl);
 	snprintf(v, sizeof(v), "%s", st[0][0] ? st[0] : "0");
-	w_text(x0 + w - 3 - t_w(v, 1), y, 1, HC_TEXT, v, 1), y += 7;
-	w_fill(x0 + 3, y + 1, w - 6, 1, HC_FRAME), y += 3;
+	w_text(x0 + w - 3 - n_w(v, 1), y, 1, HC_TEXT, v, fl), y += lh;
+	w_fill(x0 + 3, y, w - 6, 1, HC_FRAME), y += 2;
 	snprintf(v, sizeof(v), "p%.12s", st[1][0] ? st[1] : "0");
-	w_text(x0 + w - 3 - t_w(v, 1), y, 1, HC_TEXT, v, 1);
+	w_text(x0 + w - 3 - n_w(v, 1), y, 1, HC_TEXT, v, fl);
 }
 
 /* the kill feed: top right, newest on top (hud.css .kill-feed, hud.js "feed") */
@@ -807,6 +889,15 @@ static void part_notice(uint32_t t)
 		w_text(128 - sw / 2, y + 15, 1, HC_TEXT, hud.nsub, 0);
 }
 
+/* the big numbers (health, Barrier, ammo) are F_NUM at these scales, their digits' ink
+ * ending on row BIG_BASE - 1 */
+#define BIG_SCALE 3
+#define SMALL_SCALE 2
+#define BIG_BASE 191
+/* the row to draw F_NUM at so its digits end on row base - 1, and their ink's first row */
+static int num_y(int base, int scale) { return base - (fonts[F_NUM].dbot + 1) * scale; }
+static int num_top(int base, int scale) { return num_y(base, scale) + fonts[F_NUM].dtop * scale; }
+
 /* a big number over a faint row of 8s, right-aligned in cells (hud.js bigNum) */
 static int bignum(int x, int y, int scale, int col, const char *v, int cells)
 {
@@ -814,10 +905,10 @@ static int bignum(int x, int y, int scale, int col, const char *v, int cells)
 	int n = (int)strlen(v), c = BW_NDS_MAX(cells, n), w;
 	memset(ghost, '8', sizeof(ghost));
 	ghost[BW_NDS_MIN(c, 7)] = 0;
-	w = t_w(ghost, scale);
-	w_text(x, y, scale, HC_FRAME, ghost, 1);
+	w = n_w(ghost, scale);
+	w_text(x, y, scale, HC_FRAME, ghost, TF_BARE | TF_NUM);
 	if (n)
-		w_text(x + w - t_w(v, scale), y, scale, col, v, 0);
+		w_text(x + w - n_w(v, scale), y, scale, col, v, TF_NUM);
 	return w;
 }
 
@@ -884,8 +975,8 @@ static bool ability_state(const char *line, char keyc, char *state, int size)
 	return false;
 }
 
-/* bottom left (hud.css .vitals): squad, abilities, Cadence, armour or energy, then
- * health, Barrier and level in one row at the bottom */
+/* bottom left (hud.css .vitals): squad, Cadence, then health and Barrier in one row at
+ * the bottom; the level, abilities and energy or armour are on the bottom screen (part_sub) */
 /* the squad: the three closest others with a card (jtf.qc Jtf_Team) */
 static int squad_pick(const ndscam_t *view, const hudent_t *ents, int nents, int pick[3])
 {
@@ -917,67 +1008,29 @@ static int squad_pick(const ndscam_t *view, const hudent_t *ents, int nents, int
 	return n;
 }
 
+/* the top screen's part: health and Barrier at the bottom, then Cadence and the squad above */
 static void part_vitals(const hudin_t *in, const int pick[3], int n)
 {
 	hero_t h;
 	char v[24];
-	int x0 = 4, y = 188, hp = BW_NDS_MAX(0, in->health), ar;
+	int x0 = 4, y, hp = BW_NDS_MAX(0, in->health), ar;
 	if (down_now())
 		return;
 	read_hero(&h);
 	ar = h.on ? h.barrier : in->armor;
-	/* the bottom row: a plus, health, Barrier, level */
+	/* the bottom row: a plus, health, Barrier */
 	{
-		int x = x0, ry = y - 15, col = hp < 25 ? HC_RED : HC_TEXT;
-		char xp[8][96];
-		int nx = key(HK_XPM)[0] ? split_bar(key(HK_XPM), xp, 8) : 0;
-		w_fill(x, ry + 6, 9, 3, col), w_fill(x + 3, ry + 3, 3, 9, col);
+		int x = x0, ry = num_y(BIG_BASE, BIG_SCALE), top = num_top(BIG_BASE, BIG_SCALE), mid = (top + BIG_BASE) / 2;
+		int col = hp < 25 ? HC_RED : HC_TEXT;
+		w_fill(x, mid - 1, 9, 3, col), w_fill(x + 3, mid - 4, 3, 9, col);
 		x += 12;
 		snprintf(v, sizeof(v), "%d", hp);
-		x += bignum(x, ry, 3, col, v, 3) + 6;
+		x += bignum(x, ry, BIG_SCALE, col, v, 3) + 6;
 		if (h.on) {
 			snprintf(v, sizeof(v), ar > 0 ? "%d" : "", ar);
-			x += bignum(x, ry, 3, HC_BARRIER, v, 2) + 5;
+			bignum(x, ry, BIG_SCALE, HC_BARRIER, v, 2);
 		}
-		y = ry - 3;
-		/* the XPM plugin's level, rank and medals over the experience gauge ("xp|need|level|max
-		 * level|rank|medals|max medals|level start"): beside the health on the PC, above it here */
-		if (nx >= 7) {
-			int from = nx > 7 ? atoi(xp[7]) : 0, need = atoi(xp[1]), frac, lx = x0;
-			y -= 11;
-			snprintf(v, sizeof(v), "Lv%.8s", xp[2]);
-			lx += w_text(lx, y, 1, HC_TEXT, v, 0) + 4;
-			lx += w_text(lx, y, 1, HC_TEXT, xp[4], 0) + 4;
-			if (atoi(xp[5]) > 0) {
-				snprintf(v, sizeof(v), "*x%.8s", xp[5]);
-				w_text(lx, y, 1, HC_GOLD, v, 0);
-			}
-			frac = !strcmp(xp[1], "0") ? 1000 : need - from > 0 ? (atoi(xp[0]) - from) * 1000 / (need - from) : 0;
-			meter(x0, y + 7, 100, frac, HC_FILL);
-			y -= 3;
-		}
-	}
-	/* energy (a hero) with Engage's tick, or armour (no hero, some armour) */
-	if (h.on || ar > 0) {
-		int bw = 100, frac;
-		if (h.on) {
-			int ecost = atoi(key(HK_ENGAGECOST));
-			frac = h.emax > 0 ? h.energy * 1000 / h.emax : 0;
-			snprintf(v, sizeof(v), "%d / %d", h.energy, h.emax);
-			y -= 11;
-			w_text(x0, y, 1, HC_MUTED, "ENERGY", 0);
-			w_text(x0 + bw - t_w(v, 1), y, 1, HC_TEXT, v, 0);
-			meter(x0, y + 7, bw, frac, HC_FILL);
-			if (ecost > 0 && h.energy >= ecost && !(h.form > 0) && h.emax > 0)
-				w_fill(x0 + 1 + (bw - 2) * BW_NDS_MIN(ecost, h.emax) / h.emax, y + 7, 1, 4, HC_TEXT);
-		} else {
-			snprintf(v, sizeof(v), "%d", ar);
-			y -= 11;
-			w_text(x0, y, 1, HC_MUTED, "ARMOR", 0);
-			w_text(x0 + bw - t_w(v, 1), y, 1, HC_TEXT, v, 0);
-			meter(x0, y + 7, bw, ar * 10, HC_FILL);
-		}
-		y -= 3;
+		y = top - 4;
 	}
 	/* Choir's Cadence on us: gold, three pips */
 	if (atoi(key(HK_CADENCE)) > 0) {
@@ -989,41 +1042,6 @@ static void part_vitals(const hudin_t *in, const int pick[3], int n)
 		for (int i = 0; i < 3; i++)
 			w_fill(x0 + 100 - 3 - (3 - i) * 6, y + 3, 4, 2, i < c ? HC_GOLD : HC_FRAME);
 		y -= 3;
-	}
-	/* the hero's abilities: T 1 2 ENG EX, from the status line (hud.js SQUARES) */
-	if (h.on) {
-		static const char sq[5][2][4] = {{"C", "T"}, {"G", "1"}, {"X", "2"}, {"Z", "ENG"}, {"V", "EX"}};
-		int x = x0, any = 0;
-		y -= 15;
-		for (int i = 0; i < 5; i++) {
-			char state[16];
-			bool fromform = false, ready, engaged, unavail;
-			int w, glyphw;
-			if (!ability_state(h.status, sq[i][0][0], state, sizeof(state))) {
-				if (!h.formline[0] || !ability_state(h.formline, sq[i][0][0], state, sizeof(state)))
-					continue;
-				fromform = true;
-			}
-			ready = !strcasecmp(state, "ready");
-			engaged = fromform && h.form > 0;
-			unavail = !ready && !engaged;
-			if (unavail && state[0] >= '1' && state[0] <= '9' && strchr(state, '/'))
-				unavail = false;
-			glyphw = t_w(sq[i][1], 1);
-			w = BW_NDS_MAX(15, BW_NDS_MAX(glyphw, ready ? 0 : t_w(state, 1)) + 5);
-			w_fill(x + 1, y + 1, w - 2, 13, engaged ? HC_FILL : unavail ? HC_FRAME : HC_WINDOW);
-			w_frame(x, y, w, 15, engaged ? HC_ACCENT : HC_FRAME);
-			if (ready) /* the corner triangle */
-				for (int k = 0; k < 4; k++)
-					w_fill(x + w - 1 - 4 + k, y + 1, 4 - k, 1, HC_ACCENT);
-			w_text(x + (w - glyphw) / 2, y + 2, 1, unavail ? HC_MUTED : HC_TEXT, sq[i][1], 1);
-			if (!ready && state[0])
-				w_text(x + (w - t_w(state, 1)) / 2, y + 8, 1, unavail ? HC_MUTED : engaged ? HC_TEXT : HC_MUTED, state,
-				       1);
-			x += w + 2, any++;
-		}
-		y -= 3;
-		(void)any;
 	}
 	/* the squad: the three closest others with a card (jtf.qc Jtf_Team) */
 	if (hud.have) {
@@ -1047,6 +1065,106 @@ static void part_vitals(const hudin_t *in, const int pick[3], int n)
 			      dead ? HC_MUTED : st == 'd' ? HC_AMBER : !out && mhp < 25 ? HC_RED : HC_GREEN);
 			y -= 1;
 		}
+	}
+}
+
+/* the bottom screen's part, rows 0 to HUD_SUB_ROWS - 1 (Hud_Sub): the experience gauge
+ * flush along the top with the level, rank and medals in it and the weapon in hand at its
+ * right, then the hero's abilities and Energy (or armour, no hero) on the row under it,
+ * left of the pad's tab (sub_tab) */
+static int sub_tab[4]; /* x y w h */
+static void part_sub(const hudin_t *in)
+{
+	hero_t h;
+	char v[24], xp[8][96];
+	int nx = key(HK_XPM)[0] ? split_bar(key(HK_XPM), xp, 8) : 0, ar, x0 = 4, ry = 14, rh = 15;
+	int xr = sub_tab[2] > 0 ? sub_tab[0] - 6 : 252; /* the row's right end */
+	int ty = (EXP_H - 1 - fonts[F_HUD].dtop - fonts[F_HUD].dbot) / 2; /* F_HUD's digits centred in the gauge */
+	w_fill(0, HUD_SUB_ROWS - 1, 256, 1, HC_EDGE);
+	if (down_now())
+		return;
+	read_hero(&h);
+	ar = h.on ? h.barrier : in->armor;
+	/* the XPM plugin's level, rank and medals in the experience gauge ("xp|need|level|max
+	 * level|rank|medals|max medals|level start"): beside the health on the PC */
+	{
+		int lx = x0, wx = 252;
+		char wname[48];
+		if (nx >= 7) {
+			int from = nx > 7 ? atoi(xp[7]) : 0, need = atoi(xp[1]);
+			int frac = !strcmp(xp[1], "0") ? 1000 : need - from > 0 ? (atoi(xp[0]) - from) * 1000 / (need - from) : 0;
+			w_fill(0, 0, 256, EXP_H, HC_FRAME);
+			w_fill(1, 1, 254, EXP_H - 2, HC_WINDOW); /* dark, so the text in it reads */
+			if (frac > 0)
+				w_fill(1, 1, BW_NDS_MAX(254 * BW_NDS_MIN(frac, 1000) / 1000, 1), EXP_H - 2, HC_FILL);
+			snprintf(v, sizeof(v), "Lv%.8s", xp[2]);
+			lx += w_text(lx, ty, 1, HC_TEXT, v, 0) + 4;
+			lx += w_text(lx, ty, 1, HC_TEXT, xp[4], 0) + 4;
+			if (atoi(xp[5]) > 0) {
+				snprintf(v, sizeof(v), "*x%.8s", xp[5]);
+				lx += w_text(lx, ty, 1, HC_GOLD, v, 0) + 4;
+			}
+		}
+		/* the weapon in hand (what the pad's bar showed), at the right */
+		snprintf(wname, sizeof(wname), "%.47s", in->weapon ? in->weapon : "");
+		for (char *c = wname; *c; c++)
+			*c = *c == '_' ? ' ' : *c;
+		upper(wname);
+		if (wname[0] && wx - t_w(wname, 1) >= lx + 4)
+			w_text(wx - t_w(wname, 1), ty, 1, HC_TEXT, wname, 0);
+	}
+	/* the hero's abilities: T 1 2 ENG EX, from the status line (hud.js SQUARES) */
+	if (h.on) {
+		static const char sq[5][2][4] = {{"C", "T"}, {"G", "1"}, {"X", "2"}, {"Z", "ENG"}, {"V", "EX"}};
+		for (int i = 0; i < 5; i++) {
+			char state[16];
+			bool fromform = false, ready, engaged, unavail;
+			int w, glyphw;
+			if (!ability_state(h.status, sq[i][0][0], state, sizeof(state))) {
+				if (!h.formline[0] || !ability_state(h.formline, sq[i][0][0], state, sizeof(state)))
+					continue;
+				fromform = true;
+			}
+			ready = !strcasecmp(state, "ready");
+			engaged = fromform && h.form > 0;
+			unavail = !ready && !engaged;
+			if (unavail && state[0] >= '1' && state[0] <= '9' && strchr(state, '/'))
+				unavail = false;
+			glyphw = t_w(sq[i][1], 1);
+			w = BW_NDS_MAX(15, BW_NDS_MAX(glyphw, ready ? 0 : t_w(state, 1)) + 5);
+			w_fill(x0 + 1, ry + 1, w - 2, rh - 2, engaged ? HC_FILL : unavail ? HC_FRAME : HC_WINDOW);
+			w_frame(x0, ry, w, rh, engaged ? HC_ACCENT : HC_FRAME);
+			if (ready) /* the corner triangle */
+				for (int k = 0; k < 4; k++)
+					w_fill(x0 + w - 1 - 4 + k, ry + 1, 4 - k, 1, HC_ACCENT);
+			w_text(x0 + (w - glyphw) / 2, ry + 2, 1, unavail ? HC_MUTED : HC_TEXT, sq[i][1], 1);
+			if (!ready && state[0])
+				w_text(x0 + (w - t_w(state, 1)) / 2, ry + 8, 1, unavail ? HC_MUTED : engaged ? HC_TEXT : HC_MUTED,
+				       state, 1);
+			x0 += w + 2;
+		}
+		x0 += x0 > 4 ? 4 : 0;
+	}
+	/* energy (a hero) with Engage's tick, or armour (no hero, some armour), the rest of the row */
+	if (h.on || ar > 0) {
+		int bw = BW_NDS_MAX(xr - x0, 40), frac, y = ry + (rh - 11) / 2;
+		const char *label = h.on ? "ENERGY" : "ARMOR";
+		if (h.on)
+			snprintf(v, sizeof(v), "%d / %d", h.energy, h.emax);
+		else
+			snprintf(v, sizeof(v), "%d", ar);
+		if (t_w(label, 1) + 4 + t_w(v, 1) > bw)
+			label = h.on ? "EN" : "AR";
+		w_text(x0, y, 1, HC_MUTED, label, 0);
+		w_text(x0 + bw - t_w(v, 1), y, 1, HC_TEXT, v, 0);
+		if (h.on) {
+			int ecost = atoi(key(HK_ENGAGECOST));
+			frac = h.emax > 0 ? h.energy * 1000 / h.emax : 0;
+			meter(x0, y + 7, bw, frac, HC_FILL);
+			if (ecost > 0 && h.energy >= ecost && !(h.form > 0) && h.emax > 0)
+				w_fill(x0 + 1 + (bw - 2) * BW_NDS_MIN(ecost, h.emax) / h.emax, y + 7, 1, 4, HC_TEXT);
+		} else
+			meter(x0, y + 7, bw, ar * 10, HC_FILL);
 	}
 }
 
@@ -1075,23 +1193,24 @@ static void part_weapons(const hudin_t *in, uint32_t t)
 	if (title[0] && in->haveweapon) {
 		bool noclip = in->clipsize <= 0, noreserve = h.on && held == 1;
 		bool low = in->clipsize > 0 && in->clip <= BW_NDS_MAX(1, in->clipsize / 4);
-		int x = xr, ry = y - 15;
+		/* clip | reserve in F_NUM, on the health's baseline */
+		int x = xr, ry = num_y(BIG_BASE, BIG_SCALE), stop = num_top(BIG_BASE, SMALL_SCALE);
 		if (!noreserve && !noammo) {
 			snprintf(v, sizeof(v), "%d", in->reserve);
-			x -= t_w(v, 2);
-			w_text(x, ry + 5, 2, HC_MUTED, v, 0);
+			x -= n_w(v, SMALL_SCALE);
+			w_text(x, num_y(BIG_BASE, SMALL_SCALE), SMALL_SCALE, HC_MUTED, v, TF_NUM);
 		}
 		if (!noclip && !noreserve) {
 			x -= 4;
-			w_fill(x - 1, ry + 4, 1, 11, HC_MUTED);
+			w_fill(x - 1, stop, 1, BIG_BASE - stop, HC_MUTED);
 			x -= 4;
 		}
 		if (!noclip) {
 			snprintf(v, sizeof(v), "%d", in->clip);
-			x -= t_w(v, 3);
-			w_text(x, ry, 3, low ? HC_RED : HC_TEXT, v, 0);
+			x -= n_w(v, BIG_SCALE);
+			w_text(x, ry, BIG_SCALE, low ? HC_RED : HC_TEXT, v, TF_NUM);
 		}
-		y = ry - 2;
+		y = num_top(BIG_BASE, BIG_SCALE) - 5;
 		if (!held) { /* the hero slots above name a hero weapon already */
 			char up[48];
 			snprintf(up, sizeof(up), "%.47s", title);
@@ -1451,11 +1570,13 @@ static int op_box(const uint8_t *p, int b[4])
 			b[0] = BW_NDS_MIN(v[0], v[2]), b[1] = BW_NDS_MIN(v[1], v[3]), b[2] = BW_NDS_MAX(v[0], v[2]) + 1,
 			b[3] = BW_NDS_MAX(v[1], v[3]) + 1;
 		return 10;
-	case OP_TEXT:
+	case OP_TEXT: {
+		const hfont_t *f = &fonts[p[3] & TF_NUM ? F_NUM : F_HUD];
 		memcpy(v, p + 5, 4);
-		b[0] = v[0] - 1, b[1] = v[1] - 1, b[2] = v[0] + text_width((const char *)p + 9, p[4], p[2]) + 1;
-		b[3] = v[1] + hudh * p[2] + 1;
+		b[0] = v[0] - 1, b[1] = v[1] - 1, b[2] = v[0] + font_width(f, (const char *)p + 9, p[4], p[2]) + 1;
+		b[3] = v[1] + f->h * p[2] + 1;
 		return 9 + p[4];
+	}
 	case OP_XHAIR:
 		memcpy(v, p + 3, 4);
 		b[0] = v[0], b[1] = v[1], b[2] = v[0] + p[1], b[3] = v[1] + p[2];
@@ -1508,6 +1629,7 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 		/* the panels that only change with what they show are built again only then */
 		if (i == W_OBJ || i == W_VITALS || i == W_WEAPONS) {
 			int32_t k[12] = {hud.version, hud.have, down_now(), top_y};
+			k[10] = diag_left;
 			if (i == W_VITALS)
 				k[4] = in->health, k[5] = in->armor, k[6] = npick, k[7] = pick[0], k[8] = pick[1], k[9] = pick[2];
 			if (i == W_WEAPONS) {
@@ -1520,7 +1642,7 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 				continue;
 		}
 		w->in = ik, w->built = true;
-		w_begin(i);
+		w_begin_w(w);
 		switch (i) {
 		case W_DIAG: part_diag(in); break;
 		case W_OBJ: part_obj(); break;
@@ -1576,6 +1698,52 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 	}
 }
 
+/* the bottom screen's rows 0 to HUD_SUB_ROWS - 1 (part_sub), drawn again where they changed
+ * (all of them when force), each pixel through the palette into the RGB15 bitmap, the HUD's
+ * clear colour as bg; the tab's box (x y w h) is left as the caller drew it */
+void Hud_Sub(uint16_t *sub, const hudin_t *in, uint16_t bg, const int tab[4], bool force)
+{
+	uint32_t dirty[24] = {0}, sig;
+	uint16_t pal[16];
+	if (!sub || !topgfx)
+		return;
+	memcpy(sub_tab, tab, sizeof(sub_tab));
+	w_begin_w(&subw);
+	part_sub(in);
+	sig = fnv(subw.buf, subw.len);
+	if (sig == subw.sig && !force)
+		return;
+	if (force)
+		mark_tiles(dirty, 0, 0, 256, HUD_SUB_ROWS);
+	else
+		mark_changes(dirty, &subw);
+	subw.sig = sig;
+	memcpy(subw.cover, subw.ncover, sizeof(subw.cover));
+	memcpy(subw.prev, subw.buf, (size_t)subw.len), subw.prevlen = subw.len;
+	for (int i = 0; i < 16; i++)
+		pal[i] = (uint16_t)((i ? hudpal[i] : bg) | 0x8000);
+	for (int ty = 0; ty < HUD_SUB_ROWS / 8; ty++)
+		while (dirty[ty]) {
+			uint32_t m = dirty[ty], run;
+			int tx0 = __builtin_ctz(m), tx1 = tx0;
+			while (tx1 < 32 && (m >> tx1 & 1))
+				tx1++;
+			run = (tx1 == 32 ? ~0u : (1u << tx1) - 1) & ~((1u << tx0) - 1);
+			dirty[ty] &= ~run;
+			clipx0 = tx0 * 8, clipx1 = tx1 * 8, clipy0 = ty * 8, clipy1 = ty * 8 + 8;
+			memset(strip + tx0 * 32, 0, (size_t)(tx1 - tx0) * 32);
+			if (subw.cover[ty] & run)
+				w_exec(&subw);
+			for (int y = clipy0; y < clipy1; y++) {
+				uint16_t *row = sub + y * 256;
+				bool intab = y >= tab[1] && y < tab[1] + tab[3];
+				for (int x = clipx0; x < clipx1; x++)
+					if (!intab || x < tab[0] || x >= tab[0] + tab[2])
+						row[x] = pal[strip_px(x, y)];
+			}
+		}
+}
+
 void Hud_Init(void)
 {
 	uint16_t *map;
@@ -1589,21 +1757,8 @@ void Hud_Init(void)
 	for (int i = 0; i < 32 * 32; i++)
 		map[i] = (uint16_t)(i < TOP_TILES ? i : 0);
 	dmaFillHalfWords(0, topgfx, TOP_TILES * 32);
-	BG_PALETTE[HC_EDGE] = RGB15(0, 0, 0);
-	BG_PALETTE[HC_TEXT] = RGB15(29, 29, 29);    /* #eeeeec */
-	BG_PALETTE[HC_RED] = RGB15(28, 10, 7);      /* #e0503a */
-	BG_PALETTE[HC_DIAG] = RGB15(18, 31, 18);
-	BG_PALETTE[HC_MUTED] = RGB15(18, 18, 18);   /* #919190 */
-	BG_PALETTE[HC_AMBER] = RGB15(31, 20, 3);    /* #ffa31a */
-	BG_PALETTE[HC_ACCENT] = RGB15(6, 18, 26);   /* #3396d4 */
-	BG_PALETTE[HC_BARRIER] = RGB15(11, 21, 31); /* #5aa8ff */
-	BG_PALETTE[HC_GOLD] = RGB15(31, 24, 8);     /* #ffc440 */
-	BG_PALETTE[HC_GREEN] = RGB15(12, 23, 3);    /* the gauge's #4e9a06 .. #8ae234 */
-	BG_PALETTE[HC_WINDOW] = RGB15(6, 6, 6);     /* #353535 */
-	BG_PALETTE[HC_FRAME] = RGB15(5, 5, 5);      /* #282828 */
-	BG_PALETTE[HC_TROUGH] = RGB15(24, 24, 24);  /* #f3f3f3 .. #bdbdbd */
-	BG_PALETTE[HC_FILL] = RGB15(4, 11, 21);     /* #2063b4, #15539e */
-	BG_PALETTE[HC_XHAIR] = RGB15(0, 31, 0);
+	for (int i = 1; i < 16; i++)
+		BG_PALETTE[i] = hudpal[i];
 	/* The event text (events_nds.c) has its own layers, so neither it nor the HUD redraws
 	 * the other's tiles: their tiles in bank D (kept from textures for the viewer's two
 	 * passes, which a link session doesn't use; 24 KB of the 32 KB from 0x06020000 and
@@ -1634,6 +1789,8 @@ void Hud_Init(void)
 		wid[i].buf = warena[0] + off, wid[i].prev = warena[1] + off, wid[i].cap = wcap[i];
 		off += wcap[i];
 	}
+	memset(&subw, 0, sizeof(subw));
+	subw.buf = subarena[0], subw.prev = subarena[1], subw.cap = sizeof(subarena[0]);
 }
 
 void Hud_Done(void)
@@ -1645,8 +1802,10 @@ void Hud_Done(void)
 	vramSetBankG(VRAM_G_LCD);
 	vramSetBankD(VRAM_D_LCD); /* back as Mp_Init leaves it */
 	topgfx = textgfx[0] = textgfx[1] = textmap[0] = textmap[1] = NULL;
-	free(hudfont);
-	hudfont = NULL;
+	for (int i = 0; i < 2; i++)
+		free(fonts[i].owned);
+	memset(fonts, 0, sizeof(fonts));
+	fonts[F_HUD].h = fonts[F_NUM].h = 8;
 }
 
 /* the font and the event text's layer, for events_nds.c */

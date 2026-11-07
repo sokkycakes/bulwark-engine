@@ -91,22 +91,33 @@ that answer, and A or a tap joins one.
 While linked, the bottom screen is a touch pad, as in Metroid Prime
 Hunters:
 
-- The bar at the top shows the score and the weapon in hand (the server's
-  `STATS` packet). Its **GAME** tab swaps the pad for the game's own bottom screen (what the
-  game draws with the `link_*` builtins, or the engine's name, health, map
-  and player list); **PAD** swaps back. Touches on the game's screen go to
-  the game.
-- Drag in the middle to aim. A double tap jumps.
+- Its top 32 rows are the HUD's (`Hud_Sub`, below): the experience gauge
+  flush along row 0, the full width and 11 rows high, with the level, rank
+  and medals in it and the weapon in hand at its right; under it (rows
+  14-28) the hero's ability squares and Energy (or armour). The score is not
+  shown here (the objective panel on the top screen has it). The **GAME**
+  tab right of the Energy (x 200-254, rows 14-28) swaps the pad for the
+  game's own bottom screen (what the game draws with the `link_*` builtins,
+  or the engine's name, health, map and player list); **PAD**, in the same
+  place, swaps back. Touches on the game's screen go to the game.
+- Drag in the middle (rows 32-143) to aim. A double tap jumps.
 - The top screen shows health and Barrier (the game's armour) in big
-  numbers at the bottom left. Its first line shows frames a second, the
-  slowest second's rate, polygons, and models loaded and failed, and the
-  second line why the last map didn't load, if it didn't. `diag=0` hides
-  the first line. This HUD is a layer in front of the 3D (BG1 in VRAM F
-  and G, one 4-bit tile per 8x8 cell, so it works as a bitmap), drawn with
-  a 1-pixel black outline in `fonts/hud.dsf` from a base folder or the ROM,
-  else the console's 8x8 font. `tools/nds/dsfont.py font.ttf 8 hud.dsf`
-  bakes a pixel font into it (sokky's pick is 04b09 from the 04 series,
-  which is private: the baked file is not in git).
+  numbers at the bottom left. Its first line, right-justified at the top,
+  shows frames a second, the slowest second's rate, polygons, and models
+  loaded and failed, and the second line why the last map didn't load, if
+  it didn't. `diag=0` hides the first line. This HUD is a layer in front of
+  the 3D (BG1 in VRAM F and G, one 4-bit tile per 8x8 cell, so it works as
+  a bitmap), drawn with a 1-pixel black outline in `fonts/hud.dsf` from a
+  base folder or the ROM, else the console's 8x8 font.
+  `tools/nds/dsfont.py font.ttf 8 hud.dsf` bakes a pixel font into it
+  (sokky's pick is 04b09 from the 04 series, which is private: the baked
+  file is not in git). The big numbers (health, Barrier, clip at 3x, the
+  reserve at 2x) and the objective panel (1x) are in a second font,
+  TallPixelFont at 9 px (SIL OFL, `data/fonts/`): it is free to ship, so
+  it is built into the ROM (`src/platform/nds/hudnum_dsf.h`, made by
+  `tools/nds/dsfont.py data/fonts/tallpixelfont.ttf 9 hudnum_dsf.h`), and a
+  `fonts/hudnum.dsf` in a base folder or the ROM overrides it. No SD-card
+  or ROM file is needed for it.
 - Eight buttons: previous and next weapon, reload, use, jump, duck (stays on
   until pressed again), flashlight and secondary fire.
 
@@ -753,16 +764,19 @@ The PC's co-op HUD is a Panorama layout (`coop/panorama/layout/coop/hud.xml`,
 feeds, under the Half-Life crosshair (`Jtf_DrawFeedback`) and over
 Nuclide's nameplates and target ID (`src/client/nameplates.qc`).
 `hud_nds.c` draws the same parts on the top screen's text layer (BG1,
-4bpp, 16 colours) from `HUDINFO` (`docs/spec/link.md`) and what the device
-predicts itself (health, the clip and reserve):
+4bpp, 16 colours), and the level and abilities on the bottom screen's top
+rows, from `HUDINFO` (`docs/spec/link.md`) and what the device predicts
+itself (health, the clip and reserve):
 
 | Part | Where (the PC's layout, 900 units high, scaled to 192 lines) |
 |---|---|
-| the objective panel: wave, monsters left (red while fighting), score, points | top left |
+| the objective panel: wave, monsters left (red while fighting), score, points, in TallPixelFont | top left (below the diagnostics only when they reach over it) |
 | the feed: obituaries (players only, as `HUD_Obituary`) and `coop_feed`'s team events, 5 lines for 6 s, framed when they name you | top right |
 | the notice (`coop_notice`, split at `": "` or `"! "`), 3 s | centred at y 140, below the feed's lines here |
-| health with the ghost 8s, the hero's Barrier, the XPM level and gauge, Energy with Engage's tick (or armour), the Cadence chip, the ability squares (T 1 2 ENG EX) and the three nearest teammates' cards | bottom left |
-| the clip (red when low), the reserve, the weapon's title, the hero's two slots for 2 s after a switch | bottom right |
+| health with the ghost 8s and the hero's Barrier (TallPixelFont at 3x), the Cadence chip and the three nearest teammates' cards | bottom left |
+| the clip (red when low, TallPixelFont at 3x), the reserve (2x), the weapon's title, the hero's two slots for 2 s after a switch | bottom right |
+| the XPM level, rank and medals in the experience gauge, the weapon in hand | the bottom screen, rows 0-10, full width |
+| the ability squares (T 1 2 ENG EX), Energy with Engage's tick (or armour) | the bottom screen, rows 14-28, left of the GAME tab |
 | the respawn box and the revive bar while down (only these and the objective panel are shown then, as hud.css's `.hud.down`) | centred at y 540 |
 | the use prompt with its key, or a callout with a leader line on the item | y 510, or at the item |
 | the target ID card (the ray against the box grown by 4, then a trace) | y 558 |
@@ -777,11 +791,14 @@ or the weapon (the objective, vitals and weapon panels) are rebuilt only
 then. At most 112 tiles are drawn in a frame; a bigger change (going down,
 getting up) finishes in the next frame or two. Nothing is allocated: the
 lists (2 × 3.4 KB), the HUD's state (6.3 KB), the row (1 KB) and the tiles'
-bookkeeping are static.
+bookkeeping are static. The bottom screen's part is one more list
+(2 × 640 bytes) drawn the same way through the row into the RGB15 bitmap
+(each pixel through the HUD's palette), only where it changed, and in full
+when the pad is drawn again (after the GAME page).
 
 Deviations from the PC, all from the screen's size: the HUD font is 5
 pixels high (04b09), so text is larger next to the screen than the PC's;
-the XPM row sits above the health instead of beside it; the notice moves
+the XPM row, the abilities and Energy are on the bottom screen; the notice moves
 below the feed's lines when the feed is up; fades are steps (nameplates
 shown while their alpha is over half, the target ID for half its 0.5 s
 linger, the notice without its 0.4 s fade); a nameplate's line of sight is

@@ -765,10 +765,11 @@ static void draw_screen(const uint8_t *d, int len)
 
 /* --- the touch pad on the bottom screen ------------------------------------------------ */
 
-#define PAD_TOP 24     /* rows 0-23: score, weapon and the tab */
-#define PAD_BOTTOM 144 /* rows 24-143: drag to aim; 144-191: the buttons */
-#define TAB_H 16
-#define TAB_X 200      /* the tab that swaps in the game's own screen */
+#define PAD_TOP HUD_SUB_ROWS /* rows 0-31: the HUD's (Hud_Sub: experience, abilities, Energy) and the tab */
+#define PAD_BOTTOM 144       /* rows 32-143: drag to aim; 144-191: the buttons */
+#define TAB_X 200            /* the tab that swaps in the game's own screen, right of the abilities */
+#define TAB_Y 14
+#define TAB_H 15
 
 typedef struct {
 	uint8_t x, y, w, h;
@@ -808,7 +809,7 @@ static struct {
 	uint8_t impulse, impseq; /* the last one-shot press, and its count */
 	uint8_t screen[1300];    /* the game's last screen, to show when asked */
 	int screenlen;
-	int shownstats;          /* link.statsver when the panel was drawn */
+	bool hudforce;           /* the HUD's rows to draw again in full (pad_draw cleared them) */
 	char diagline[33];
 } pad;
 
@@ -831,20 +832,21 @@ static void pad_button(int i, bool lit)
 	text_mid(b->x, b->y + (b->h - 8) / 2, b->w, lit ? C_EDGE : C_TEXT, b->label);
 }
 
-/* the bar: score and the weapon in hand (health and Barrier are on the top screen), and the tab */
+static const int pad_tab[4] = {TAB_X, TAB_Y, 256 - TAB_X - 1, TAB_H};
+
+static void pad_tab_draw(void)
+{
+	fill(TAB_X, TAB_Y, 256 - TAB_X - 1, TAB_H, C_BTN);
+	text_mid(TAB_X, TAB_Y + (TAB_H - 8) / 2, 256 - TAB_X, C_TEXT, pad.gamepage ? "PAD" : "GAME");
+}
+
+/* the bar's rows are the HUD's (Hud_Sub, from hud_frame): the experience gauge, the weapon in
+ * hand, the abilities and Energy (health and Barrier are on the top screen); here the tab */
 static void pad_bar(void)
 {
-	char n[12], w[sizeof(link.weapon)];
 	fill(0, 0, 256, PAD_TOP, C_BAR);
-	fill(0, PAD_TOP - 1, 256, 1, C_EDGE);
-	text(4, 8, C_DIM, (const uint8_t *)"SCORE", 5);
-	snprintf(n, sizeof(n), "%d", link.frags);
-	text(48, 8, C_TEXT, (const uint8_t *)n, (int)strlen(n));
-	for (int i = 0; i < (int)sizeof(w); i++)
-		w[i] = link.weapon[i] == '_' ? ' ' : (char)toupper((unsigned char)link.weapon[i]);
-	text(88, 8, C_TEXT, (const uint8_t *)w, BW_NDS_MIN((int)strlen(w), (TAB_X - 92) / 8));
-	fill(TAB_X, 1, 256 - TAB_X - 1, TAB_H - 2, C_BTN);
-	text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, pad.gamepage ? "PAD" : "GAME");
+	pad_tab_draw();
+	pad.hudforce = true;
 }
 
 static void pad_draw(void)
@@ -854,8 +856,7 @@ static void pad_draw(void)
 			draw_screen(pad.screen, pad.screenlen);
 		else
 			fill(0, 0, 256, 192, RGB15(0, 0, 0) | BIT(15));
-		fill(TAB_X, 1, 256 - TAB_X - 1, TAB_H - 2, C_BTN);
-		text_mid(TAB_X, 4, 256 - TAB_X, C_TEXT, "PAD");
+		pad_tab_draw();
 		return;
 	}
 	for (int y = PAD_TOP; y < PAD_BOTTOM; y++) {
@@ -900,7 +901,6 @@ static void pad_reset(void)
 	pad.pressed = -1;
 	pad.dotx = pad.doty = -1;
 	pad.upframe = -100;
-	pad.shownstats = -1;
 }
 
 /* the stylus, once a frame. Returns the buttons the pad holds; aiming turns
@@ -913,7 +913,7 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 	*togame = false;
 	if (down)
 		touchRead(tp);
-	if (began && tp->py < TAB_H && tp->px >= TAB_X) {
+	if (began && tp->py >= TAB_Y && tp->py < TAB_Y + TAB_H && tp->px >= TAB_X) {
 		pad.gamepage = !pad.gamepage;
 		pad.aiming = false, pad.pressed = -2; /* the rest of this touch is the tab's */
 		pad_draw();
@@ -967,11 +967,6 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 		buttons |= B_CROUCH;
 	if (frame < pad.jumpframes)
 		buttons |= B_JUMP;
-	if (link.statsver != pad.shownstats) {
-		if (!pad.gamepage)
-			pad_bar();
-		pad.shownstats = link.statsver;
-	}
 	return buttons;
 }
 
@@ -2964,6 +2959,8 @@ static void hud_frame(const ndscam_t *view)
 	hudin.diag1 = huddiag[0], hudin.diag2 = huddiag[1];
 	hudin.srvms = eclock.now, hudin.srvclock = eclock.have;
 	Hud_Frame(view, hudents, n, &hudin);
+	if (!pad.gamepage)
+		Hud_Sub(sub, &hudin, C_BAR & 0x7FFF, pad_tab, pad.hudforce), pad.hudforce = false;
 }
 
 static const char *play(ndscam_t *cam)
