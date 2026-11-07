@@ -1014,7 +1014,10 @@ static bool seq_new(uint16_t seq)
 		S.seqbits |= bit;
 		return true;
 	}
-	return d > -32000;
+	/* 64 or more behind: only the last packet's records come again, and the server numbers
+	 * records it then drops (a full queue), so this is a repeat already had, or one so late
+	 * it would replace a newer sound (the window resets on a map change: stop_all) */
+	return false;
 }
 
 static void handle_sound(const uint8_t *d, int len)
