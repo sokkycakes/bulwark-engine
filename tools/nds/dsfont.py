@@ -19,18 +19,38 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 
+def load_font(path, size):
+    low = path.lower()
+    if low.endswith((".ttf", ".otf")):
+        return ImageFont.truetype(path, size)
+    if low.endswith((".bdf", ".pcf", ".pcf.gz")):  # PIL reads these only through its own .pil/.pbm pair
+        import gzip, os, tempfile
+        from PIL import BdfFontFile, PcfFontFile
+        with (gzip.open if low.endswith(".gz") else open)(path, "rb") as f:
+            ff = BdfFontFile.BdfFontFile(f) if low.endswith(".bdf") else PcfFontFile.PcfFontFile(f)
+        tmp = tempfile.mkdtemp()
+        ff.save(os.path.join(tmp, "font"))
+        return ImageFont.load(os.path.join(tmp, "font.pil"))
+    return ImageFont.load(path)  # a .pil
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
     path, size, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-    font = ImageFont.truetype(path, size) if path.lower().endswith((".ttf", ".otf")) else ImageFont.load(path)
-    ascent, descent = font.getmetrics()
-    height = ascent + descent
+    font = load_font(path, size)
+    if hasattr(font, "getmetrics"):  # TrueType
+        ascent, descent = font.getmetrics()
+        height = ascent + descent
+        length = font.getlength
+    else:  # a BDF/PCF strike (PIL's bitmap ImageFont has neither): its line box and advances
+        height = max(font.getbbox(chr(c))[3] for c in range(32, 127))
+        length = lambda ch: font.getbbox(ch)[2]
     first, count = 32, 95
     data = bytearray(b"DSF1" + bytes([height, first, count, 0]))
     for c in range(first, first + count):
         ch = chr(c)
-        adv = int(round(font.getlength(ch)))
+        adv = int(round(length(ch)))
         img = Image.new("1", (16, height), 0)
         d = ImageDraw.Draw(img)
         d.fontmode = "1"
