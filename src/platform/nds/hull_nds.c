@@ -94,6 +94,17 @@ static int numboxes;
 static uint16_t candb[HULL_MAX_BRUSHES], candx[HULL_MAX_BOXES];
 static int numcandb, numcandx;
 static bool focused;
+/* what a trace's result depends on besides its arguments: bumped whenever the hulls, the
+ * scene or the boxes Hull_Focus leaves out change (Hull_Move's cache) */
+static uint32_t scene_gen = 1;
+static uint64_t drop_mask; /* the boxes left out (PM_FOCUS_DROPSTUCK) while focused */
+
+static void unfocus(void)
+{
+	focused = false;
+	if (drop_mask)
+		drop_mask = 0, scene_gen++;
+}
 
 const pmtrace_if Hull_Pmove = {NULL, Hull_Move, Hull_Focus};
 
@@ -622,7 +633,7 @@ static void own_hull0(void *ctx, int model, const float origin[3], const float s
 int Hull_Rule(void) { return H.rule; }
 size_t Hull_Bytes(void) { return H.bytes; }
 int Hull_NumModels(void) { return H.nummodels; }
-void Hull_SetHull0(const hull0_if *h) { H.h0 = h; }
+void Hull_SetHull0(const hull0_if *h) { H.h0 = h, scene_gen++; }
 
 void Hull_ModelBounds(int model, float mins[3], float maxs[3])
 {
@@ -645,6 +656,7 @@ void Hull_Free(void)
 	brushes = NULL;
 	numbrushes = brushcap = numboxes = numcandb = numcandx = 0;
 	focused = false;
+	drop_mask = 0, scene_gen++;
 }
 
 static bool read_parts(hull_read_fn read, void *ctx, const char *path, long ofs, long len, void *dst)
@@ -1086,19 +1098,29 @@ void Hull_SetBrushes(const hullbrush_t *b, int n)
 			brushes = nb, brushcap = n;
 	}
 	for (int i = 0; i < n; i++) {
-		brushes[i].b = b[i];
-		place_brush(&brushes[i], b[i].origin);
+		const hullbrush_t *o = &brushes[i].b;
+		if (i >= numbrushes || o->edict != b[i].edict || o->model != b[i].model || o->solid != b[i].solid ||
+		    o->skin != b[i].skin || !same3(o->origin, b[i].origin)) {
+			brushes[i].b = b[i];
+			place_brush(&brushes[i], b[i].origin);
+			scene_gen++;
+		}
 	}
+	if (numbrushes != n)
+		scene_gen++;
 	numbrushes = n;
-	focused = false;
+	unfocus();
 }
 
 void Hull_PlaceBrush(int i, const float origin[3])
 {
 	if (i < 0 || i >= numbrushes)
 		return;
-	place_brush(&brushes[i], origin);
-	focused = false;
+	if (!same3(brushes[i].b.origin, origin)) {
+		place_brush(&brushes[i], origin);
+		scene_gen++;
+	}
+	unfocus();
 }
 
 void Hull_SetBoxes(const hullbox_t *b, int n)
@@ -1106,6 +1128,10 @@ void Hull_SetBoxes(const hullbox_t *b, int n)
 	n = n < 0 ? 0 : n > HULL_MAX_BOXES ? HULL_MAX_BOXES : n;
 	for (int i = 0; i < n; i++) {
 		sbox_t *s = &boxes[i];
+		if (i < numboxes && s->b.edict == b[i].edict && s->b.solid == b[i].solid && same3(s->b.mins, b[i].mins) &&
+		    same3(s->b.maxs, b[i].maxs))
+			continue;
+		scene_gen++;
 		s->b = b[i];
 		for (int k = 0; k < 3; k++) {
 			s->amin[k] = b[i].mins[k] - 1;
@@ -1114,8 +1140,10 @@ void Hull_SetBoxes(const hullbox_t *b, int n)
 			s->ib[3 + k] = fx8_up(s->amax[k]);
 		}
 	}
+	if (numboxes != n)
+		scene_gen++;
 	numboxes = n;
-	focused = false;
+	unfocus();
 }
 
 static bool ib_meets(const int32_t *a, const int32_t *b)
@@ -1143,6 +1171,7 @@ uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const fl
 {
 	int32_t r[6];
 	uint32_t near = 0;
+	uint64_t drop = 0;
 	for (int k = 0; k < 3; k++) {
 		r[k] = fx8_down(org[k] - radius);
 		r[3 + k] = fx8_up(org[k] + radius);
@@ -1156,10 +1185,14 @@ uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const fl
 	for (int i = 0; i < numboxes; i++) {
 		if (!ib_meets(boxes[i].ib, r))
 			continue;
-		if ((flags & PM_FOCUS_DROPSTUCK) && box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs))
+		if ((flags & PM_FOCUS_DROPSTUCK) && box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs)) {
+			drop |= (uint64_t)1 << i;
 			continue;
+		}
 		candx[numcandx++] = (uint16_t)i;
 	}
+	if (drop != drop_mask)
+		drop_mask = drop, scene_gen++;
 	focused = true;
 	return near;
 }
@@ -1317,8 +1350,8 @@ static void move_box(const sbox_t *s, const float *start, const float *mins, con
 	trace_aabb(start, mins, maxs, end, s->b.mins, s->b.maxs, tr, who, s, c, solid == 1);
 }
 
-HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],
-               const float end[3], int type, int32_t mask, pmhit_t *tr)
+static HOT void hull_move(const float start[3], const float mins[3], const float maxs[3], const float end[3],
+                          int type, int32_t mask, pmhit_t *tr)
 {
 	static const float zero[3] = {0, 0, 0};
 	float tmin[3], tmax[3];
@@ -1326,6 +1359,7 @@ HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const f
 	who_t who = {PM_SOLID_BSP, zero, zero};
 	uint32_t m = mask ? (uint32_t)mask : PM_CB_SOLID | PM_CB_BODY | PM_CB_PLAYERCLIP;
 	int nb = focused ? numcandb : numbrushes, nx = focused ? numcandx : numboxes, ib = 0, ix = 0;
+	bool have_t = false;
 	tr->fraction = 1;
 	tr->normal[0] = tr->normal[1] = tr->normal[2] = 0;
 	tr->startsolid = tr->allsolid = false;
@@ -1337,16 +1371,18 @@ HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const f
 	Hull_TraceModel(0, zero, start, mins, maxs, end, &bt);
 	merge_bsp(tr, &who, &bt, bt.hit ? PM_CB_SOLID : 0, 0, PM_SOLID_BSP, zero, zero);
 
-	if (nb || nx) {
-		for (int i = 0; i < 3; i++) {
-			tmin[i] = (fx_lt(start[i], end[i]) ? start[i] : end[i]) + mins[i] - 1;
-			tmax[i] = (fx_gt(start[i], end[i]) ? start[i] : end[i]) + maxs[i] + 1;
-		}
-	}
-	/* brushes and boxes as one list in edict order, until something leaves fraction 0 */
+	/* brushes and boxes as one list in edict order, until something leaves fraction 0; the
+	 * box around the move only once there is one to cull */
 	while ((ib < nb || ix < nx) && fx_gt(tr->fraction, 0)) {
 		const sbrush_t *b = ib < nb ? &brushes[focused ? candb[ib] : ib] : NULL;
 		const sbox_t *x = ix < nx ? &boxes[focused ? candx[ix] : ix] : NULL;
+		if (!have_t) {
+			for (int i = 0; i < 3; i++) {
+				tmin[i] = (fx_lt(start[i], end[i]) ? start[i] : end[i]) + mins[i] - 1;
+				tmax[i] = (fx_gt(start[i], end[i]) ? start[i] : end[i]) + maxs[i] + 1;
+			}
+			have_t = true;
+		}
 		if (b && (!x || b->b.edict <= x->b.edict)) {
 			ib++;
 			if (!culled(b->amin, b->amax, tmin, tmax))
@@ -1377,4 +1413,60 @@ HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const f
 	tr->entsolid = who.solid;
 	memcpy(tr->entmins, who.amin, sizeof(tr->entmins));
 	memcpy(tr->entmaxs, who.amax, sizeof(tr->entmaxs));
+}
+
+/* The same moves come again: from one command to the next while standing or sliding along
+ * the same wall, and when a replay from a server state that matched the prediction asks
+ * what the first run asked (27% / 40% / 59% of the traces repeat one of the last 64 in the
+ * coop_arena / e0m1 / dev replays of pmtest). The last results are kept, keyed on every
+ * argument's bits and on scene_gen, which changes with anything else the result reads: a
+ * result found here is the one hull_move gave for the same question about the same world. */
+#define TC_N 32
+static struct {
+	uint32_t gen, key[14];
+	pmhit_t tr;
+} tcache[TC_N];
+#ifdef HULL_SELFCHECK
+long tc_checked;
+#endif
+
+HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],
+               const float end[3], int type, int32_t mask, pmhit_t *tr)
+{
+	uint32_t key[14], h = 0;
+	int i;
+	(void)ctx;
+	for (i = 0; i < 3; i++) {
+		key[i] = fbits(start[i]), key[3 + i] = fbits(mins[i]);
+		key[6 + i] = fbits(maxs[i]), key[9 + i] = fbits(end[i]);
+	}
+	key[12] = (uint32_t)type, key[13] = (uint32_t)mask;
+	for (i = 0; i < 14; i++)
+		h = (h ^ key[i]) * 0x9e3779b1u;
+	h >>= 27; /* TC_N 32 */
+	if (tcache[h].gen == scene_gen) {
+		for (i = 0; i < 14 && tcache[h].key[i] == key[i]; i++)
+			;
+		if (i == 14) {
+			*tr = tcache[h].tr;
+#ifdef HULL_SELFCHECK /* the kept result must be what the trace gives now */
+			{
+				pmhit_t f;
+				hull_move(start, mins, maxs, end, type, mask, &f);
+				if (fbits(f.fraction) != fbits(tr->fraction) || !same3(f.endpos, tr->endpos) ||
+				    !same3(f.normal, tr->normal) || f.startsolid != tr->startsolid || f.allsolid != tr->allsolid ||
+				    f.contents != tr->contents || f.ent != tr->ent || f.entsolid != tr->entsolid ||
+				    !same3(f.entmins, tr->entmins) || !same3(f.entmaxs, tr->entmaxs))
+					abort();
+				tc_checked++;
+			}
+#endif
+			return;
+		}
+	}
+	hull_move(start, mins, maxs, end, type, mask, tr);
+	tcache[h].gen = scene_gen;
+	for (i = 0; i < 14; i++)
+		tcache[h].key[i] = key[i];
+	tcache[h].tr = *tr;
 }
