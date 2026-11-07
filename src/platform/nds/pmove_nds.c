@@ -78,18 +78,35 @@ static float dot(const float *a, const float *b)
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-/* vlen (qc_builtins_core.c bi_vlen); fx_sqrt is sqrtf to the bit */
+/* vlen (qc_builtins_core.c bi_vlen); fx_sqrt is sqrtf to the bit. A command asks for the
+ * same lengths again (the hull size, a vector it has just normalised), so the last few are
+ * kept, keyed on the vector's bits. */
+static struct {
+	uint32_t key[3];
+	float len;
+} vlen_memo[4];
+static int vlen_next;
+
 static float vlen(const float *v)
 {
-	return fx_sqrt(dot(v, v));
+	uint32_t k0 = fx_bits(v[0]), k1 = fx_bits(v[1]), k2 = fx_bits(v[2]);
+	float len;
+	for (int i = 0; i < 4; i++)
+		if (vlen_memo[i].key[0] == k0 && vlen_memo[i].key[1] == k1 && vlen_memo[i].key[2] == k2)
+			return vlen_memo[i].len;
+	len = fx_sqrt(dot(v, v));
+	vlen_memo[vlen_next].key[0] = k0, vlen_memo[vlen_next].key[1] = k1, vlen_memo[vlen_next].key[2] = k2;
+	vlen_memo[vlen_next].len = len;
+	vlen_next = (vlen_next + 1) & 3;
+	return len;
 }
 
-/* normalize (bi_normalize: VectorNormalize, common.c:343-354) */
+/* normalize (bi_normalize: VectorNormalize, common.c:343-354); its length is vlen's, the
+ * same operations on the same bits */
 static void normalize(const float *v, float *out)
 {
-	float len;
+	float len = vlen(v);
 	vcopy(v, out);
-	len = fx_sqrt(dot(out, out));
 	if (fx_nonzero(len)) { /* len != 0 */
 		float inv = 1.0f / len;
 		out[0] *= inv;
