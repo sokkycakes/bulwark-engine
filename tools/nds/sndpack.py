@@ -955,7 +955,8 @@ def used_names(layers, used_lists, keep_globs, available):
         k = norm_name(n)
         if k not in used:
             used.add(k)
-            why[src] = why.get(src, 0) + 1
+            if k in available:  # count what it adds to the pack
+                why[src] = why.get(src, 0) + 1
 
     missing = set()
     for sh, samples in shaders.items():
@@ -1120,18 +1121,32 @@ def report(samples):
             a[0], a[len(a) // 2], a[-1], len(a)))
 
 
+def music_one(args):
+    rel, buf, out, rate, stereo = args
+    pcm = decode_any(buf, rel)
+    if pcm is None:
+        return rel, out, None
+    size, snrs = write_dsm(out, pcm, min(pcm.rate, rate), stereo)
+    return rel, out, (size, len(pcm.data) / pcm.rate, snrs)
+
+
 def music(opt, layers):
     os.makedirs(opt.music, exist_ok=True)
     found = collect_sounds(layers, prefixes=("music/", "sound/bgm/"))
-    for n in sorted(found):
-        e = found[n]
-        pcm = decode_any(e.reader(), e.rel)
-        if pcm is None:
-            warn("%s: not decodable (skipped)" % e.rel)
+    jobs = [(found[n].rel, found[n].reader(), os.path.join(opt.music, music_name(found[n].rel)), opt.music_rate,
+             opt.music_stereo) for n in sorted(found)]
+    if opt.jobs > 1 and len(jobs) > 1:
+        import multiprocessing as mp
+        with mp.Pool(opt.jobs) as pool:
+            res = pool.map(music_one, jobs, chunksize=1)
+    else:
+        res = [music_one(j) for j in jobs]
+    for rel, out, r in res:
+        if r is None:
+            warn("%s: not decodable (skipped)" % rel)
             continue
-        out = os.path.join(opt.music, music_name(e.rel))
-        size, snrs = write_dsm(out, pcm, min(pcm.rate, opt.music_rate), opt.music_stereo)
-        print("%s: %d bytes, %.1f s, SNR %s dB" % (out, size, len(pcm.data) / pcm.rate, "/".join(fmt_db(v) for v in snrs)))
+        size, sec, snrs = r
+        print("%s: %d bytes, %.1f s, SNR %s dB" % (out, size, sec, "/".join(fmt_db(v) for v in snrs)))
 
 
 def check(files, against, opt):

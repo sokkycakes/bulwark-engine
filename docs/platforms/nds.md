@@ -206,6 +206,87 @@ shot replays it. It costs about 250 polygons.
 Baked models are Valve's data too: keep them out of git and public
 packages.
 
+### Sound packs
+
+The DS plays the game's sounds from sound packs (`.dsp`) and its music from
+streams (`.dsm`), made on the PC:
+
+```
+python3 tools/nds/sndpack.py nitro/sound/10base.dsp games/base --report
+python3 tools/nds/sndpack.py nitro/sound/40coop.dsp games/coop
+python3 tools/nds/sndpack.py nitro/sound/10base.dsp games/base --music nitro/music
+python3 tools/nds/sndpack.py --check nitro/sound/*.dsp nitro/music/*.dsm [--thorough] [--against games/base]
+```
+
+Each source is a game directory (its loose files beat its own `.pk3`
+and `.pak` files, which go alphabetically, as the engine searches them), a
+`.pk3`, `.pk3dir` or `.pak`; later sources win. Every `sound/**/*.wav`,
+`.ogg` and `.mp3` goes in, named by the hash the server sends
+(`docs/spec/link.md`, "Sound"); when one name has a `.wav` and an `.ogg`, the
+`.wav` wins, as the PC tries it first. `.ogg` and `.mp3` need `ffmpeg` on
+the PATH. Packs go in `sound/` of a DS base directory; the DS looks a sound
+up in the pack whose name sorts last first (`10base.dsp`, `20valve.dsp`,
+`30hldata.dsp`, `40coop.dsp`), like game directories layered. Music goes in
+`music/`, one file a track, named after what the game plays with `/` as
+`_` (`music/track02.ogg` is `music_track02.dsm`).
+
+What the tool does to each sound:
+
+- Mono (a stereo sample is mixed down: the PC plays stereo effects in
+  stereo), at most 22050 Hz, and at most 11025 Hz for a sample that loops
+  (a WAV `cue ` point, as `snd_mem.c` reads it); higher rates are
+  resampled with a windowed sinc. The DS's mixer runs at about 32.7 kHz,
+  so it would lose most of the rest anyway.
+- IMA-ADPCM as the DS's sound hardware decodes it (4 bits a sample, no CPU
+  cost), encoded against a copy of melonDS 1.1's decoder, so the SNR the
+  tool prints is what melonDS plays. PCM8 instead when ADPCM comes out
+  under 18 dB and PCM8 does better (`--adpcm-min-snr`), when the sample is
+  under 1 KB, or when `--pcm8 GLOB` names it. 8-bit sources (Half-Life's,
+  co-op's) are often such: PCM8 keeps them exactly.
+- Lengths are whole hardware words: the end loses up to 7 samples, and a
+  loop starts at the next multiple of 8 samples (ADPCM) or 4 (PCM8) at or
+  after its cue point. `--report` lists both, per sound.
+- A sound over 96 KB as ADPCM (`--stream-kb`) is a stream that the ARM9
+  decodes as it plays (in base, only `ambience/wind2`, 172 KB).
+- The hardware won't play a sample under 16 bytes; shorter ones are padded.
+
+`--only-used` keeps only the sounds something names: the sound decls
+(`decls/sound/*.sndshd`), `sound/sentences.txt`, strings in the progs,
+BSP entity lumps and model events, the server's `LINKSNDUSED` dump
+(`--used-list`, from `sv_link_log 1`), always `misc/talk`, `common/null` and
+the weapon-select sounds, and `--keep GLOB`. It misses names the game
+builds at run time (`sprintf("player/pain%d.wav", n)`), so a full pack is
+the safe choice; SD cards have room. `--decls DIR` scans more game
+directories and lists the samples the decls name that no source has (with
+Half-Life's sounds absent, most of valve's).
+
+`--check` reads packs and music files back: the layout, the directory's
+order and pages, each sample's header against its entry, the name against
+its hash, word alignment and loop points, every block state of a stream;
+`--thorough` plays every ADPCM sample through the melonDS model, loops
+included; `--against SRC...` converts the sources again and prints each
+sound's SNR. `tools/nds/test_sndpack.py` tests the tool with generated
+tones.
+
+Measured on base and co-op (the tool's own SNR, against the source as
+resampled; melonDS's decoder, not hardware):
+
+| Pack | Sounds | Size | Formats | SNR |
+|---|---|---|---|---|
+| `10base.dsp` (`games/base`) | 233 | 2.67 MB | 212 ADPCM, 20 PCM8, 1 stream | median 28.1 dB, 10% under 19.7, worst 13.0 (`player/footsteps/tile`, quiet noise) |
+| `40coop.dsp` (`zz_coopguns`, `zz_coopweapons`) | 139 | 2.11 MB | 69 ADPCM, 70 PCM8 (exact) | ADPCM median 21.7 dB, worst 18.1 |
+| `--only-used`, base | 80 | 0.91 MB | | |
+| `--only-used`, co-op | 101 | 1.46 MB | | |
+
+The SNR leaves out base's 37 placeholder files (silent but for noise at 7 of
+32767, about −73 dB). Building `10base.dsp` takes about 11 s on 4 cores.
+
+Packs and music made from Half-Life's `valve/sound`, `hldata` or co-op's
+`zz_*.pk3` are Valve's or the mod's data: keep them on your own cards, out
+of git (the `.gitignore` has `*.dsp` and `*.dsm`) and out of public
+packages. The tool won't write into a git work tree without `--allow-repo`,
+and says PRIVATE when a pack comes from such a source.
+
 ## Feel: frame rate, view motion, effects
 
 Turning and the viewer's flying go by the refreshes a frame took, not by
