@@ -40,11 +40,16 @@
 enum { L_ENTITIES, L_PLANES, L_TEXTURES, L_VERTEXES, L_VISIBILITY, L_NODES, L_TEXINFO, L_FACES, L_LIGHTING,
        L_CLIPNODES, L_LEAFS, L_MARKSURFACES, L_EDGES, L_SURFEDGES, L_MODELS, NUM_LUMPS };
 
+/* in the order the GPU takes them, so a vertex is three words: s t is
+ * TEXCOORD's parameter, x y VTX_16's first and z its second (the GPU
+ * ignores the top half, where the colour is) */
 typedef struct {
-	int16_t x, y, z; /* 1/8 map units */
 	int16_t s, t;    /* t16: texels * 16 */
+	int16_t x, y;    /* 1/8 map units */
+	int16_t z;
 	uint16_t color;  /* RGB15 */
 } dvert_t;
+_Static_assert(sizeof(dvert_t) == 12, "three words a vertex");
 
 typedef struct {
 	int32_t n[3]; /* 4.12 */
@@ -54,6 +59,7 @@ typedef struct {
 typedef struct {
 	int plane;
 	bool back;      /* the face looks along -normal */
+	int8_t ptype;   /* the plane's axis when it is one (normal +x, +y or +z), else -1 */
 	int firstvert;  /* into verts[], in strip order */
 	int numverts;
 	int tex;        /* -1: not drawn */
@@ -66,7 +72,8 @@ typedef struct {
 	int plane;
 	int children[2]; /* >= 0 node, < 0 leaf -(c + 1) */
 	int16_t mins[3], maxs[3];
-	int parent;
+	int16_t parent;
+	int8_t ptype;    /* as face_t's */
 	int visframe;
 } node_t;
 
@@ -217,6 +224,7 @@ static void stored_size(const uint8_t *mt, int avail, int *pw, int *ph)
 		*pw = (uint16_t)rd16(mt + 44), *ph = (uint16_t)rd16(mt + 46);
 }
 
+static int plane_type(int p);
 static void load_textures(const uint8_t *lump, int len, const uint16_t *palette)
 {
 	static uint16_t pal[256], palswap[256];
@@ -586,6 +594,7 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		tex_t *tex;
 		face->plane = rd16(f);
 		face->back = rd16(f + 2) != 0;
+		face->ptype = (int8_t)plane_type(face->plane);
 		face->frame = -1;
 		face->next = -1;
 		face->tex = -1;
@@ -710,6 +719,20 @@ int World_TotalPolys(void)
 
 /* --- tree and visibility ---------------------------------------------------------------- */
 
+/* the axis a plane's normal is (exactly +x, +y or +z), so the eye's side is one
+ * compare: n . eye - dist with n = 4096 on that axis; -1 for any other */
+static int plane_type(int p)
+{
+	const plane_t *pl;
+	if (p < 0 || p >= w.numplanes)
+		return -1;
+	pl = &w.planes[p];
+	for (int c = 0; c < 3; c++)
+		if (pl->n[c] == 4096 && !pl->n[(c + 1) % 3] && !pl->n[(c + 2) % 3])
+			return c;
+	return -1;
+}
+
 static void load_tree(const uint8_t *d, const uint32_t *ofs, const uint32_t *len)
 {
 	const uint8_t *p = lp[L_PLANES], *n = lp[L_NODES], *l = lp[L_LEAFS], *m = w.markbuf;
@@ -721,7 +744,9 @@ static void load_tree(const uint8_t *d, const uint32_t *ofs, const uint32_t *len
 		w.planes[i].dist = (int32_t)lrintf(rdf(p + i * 20 + 12) * 32768);
 	}
 	w.numnodes = (int)(len[L_NODES] / 24);
-	w.nodes = malloc(sizeof(node_t) * (size_t)w.numnodes);
+	if (w.numnodes > 32767)
+		w.numnodes = 0; /* children are 16-bit: no such map */
+	w.nodes = malloc(sizeof(node_t) * (size_t)(w.numnodes ? w.numnodes : 1));
 	for (int i = 0; i < w.numnodes; i++) {
 		const uint8_t *q = n + i * 24;
 		node_t *nd = &w.nodes[i];
@@ -731,6 +756,7 @@ static void load_tree(const uint8_t *d, const uint32_t *ofs, const uint32_t *len
 		for (int c = 0; c < 3; c++)
 			nd->mins[c] = rd16(q + 8 + c * 2), nd->maxs[c] = rd16(q + 14 + c * 2);
 		nd->parent = -1;
+		nd->ptype = (int8_t)plane_type(nd->plane);
 		nd->visframe = 0;
 	}
 	w.numleafs = (int)(len[L_LEAFS] / 28);
@@ -751,7 +777,7 @@ static void load_tree(const uint8_t *d, const uint32_t *ofs, const uint32_t *len
 		for (int s = 0; s < 2; s++) {
 			int c = w.nodes[i].children[s];
 			if (c >= 0 && c < w.numnodes)
-				w.nodes[c].parent = i;
+				w.nodes[c].parent = (int16_t)i;
 			else if (c < 0 && -(c + 1) < w.numleafs)
 				w.leafs[-(c + 1)].parent = i;
 		}
@@ -834,6 +860,7 @@ static void mark_visible(int leaf)
 
 static void build_portals(const uint8_t *d, const uint32_t *ofs, const uint32_t *len);
 static void place_models(void);
+static void resolve_marks(void);
 static void load_hulls(const char *path);
 
 /* --- loading ----------------------------------------------------------------------------- */
@@ -960,6 +987,7 @@ static bool world_load(const char *path, const uint16_t *palette, char *err, int
 			w.visleafs = BW_NDS_MIN((int)rd32(q + 52), w.numleafs - 1);
 	}
 	drop_lump(L_MODELS);
+	resolve_marks();
 	place_models();
 	build_portals(NULL, ofs, len);
 	drop_lumps();
@@ -1036,6 +1064,31 @@ bool World_Load(const char *path, const uint16_t *palette, char *err, int errsiz
 }
 
 /* brush entities with an "origin": where the map has them to begin with */
+/* each leaf's marks as the tree walk wants them: a face merged away becomes
+ * the face that took it in, faces that aren't drawn go, and each face once.
+ * In place: a leaf's list only gets shorter (World_LightAt reads them too) */
+static void resolve_marks(void)
+{
+	for (int l = 0; l < w.numleafs; l++) {
+		leaf_t *lf = &w.leafs[l];
+		int out = lf->firstmark, end = BW_NDS_MIN(lf->firstmark + lf->nummarks, w.nummarks);
+		for (int m = lf->firstmark; m < end; m++) {
+			int i = w.marks[m], k;
+			if (i >= w.numfaces)
+				continue;
+			if (w.faces[i].alias >= 0)
+				i = w.faces[i].alias;
+			if (w.faces[i].tex < 0)
+				continue;
+			for (k = lf->firstmark; k < out && w.marks[k] != i; k++)
+				;
+			if (k == out)
+				w.marks[out++] = (uint16_t)i;
+		}
+		lf->nummarks = BW_NDS_MAX(out - lf->firstmark, 0);
+	}
+}
+
 static void place_models(void)
 {
 	const char *e = w.entities;
@@ -1195,6 +1248,40 @@ static inline bool box_clip(const int16_t *mins, const int16_t *maxs, int *clip)
 	return true;
 }
 
+/* what the tree walk reads for every node and face, in DTCM, so it isn't
+ * read again through w after each call (World_Collect fills it) */
+DTCM_BSS static struct {
+	node_t *nodes;
+	leaf_t *leafs;
+	const plane_t *planes;
+	face_t *faces;
+	const uint16_t *marks;
+	int *vislist;
+	int numnodes, visframe, frame, numvis;
+} wk;
+
+/* the eye's side of a plane: n . eye - dist, one compare for an axial plane */
+static inline int32_t plane_dist(const plane_t *pl, int ptype)
+{
+	if (ptype >= 0)
+		return (eye[ptype] << 12) - pl->dist;
+	return pl->n[0] * eye[0] + pl->n[1] * eye[1] + pl->n[2] * eye[2] - pl->dist;
+}
+
+/* a leaf's face (marks already resolved: drawn, not merged away) */
+static inline void add_leafface(int i)
+{
+	face_t *f = &wk.faces[i];
+	int32_t d;
+	if (f->frame == wk.frame)
+		return;
+	f->frame = wk.frame;
+	d = plane_dist(&wk.planes[f->plane], f->ptype);
+	if (f->back ? d > 0 : d < 0)
+		return; /* turned away */
+	wk.vislist[wk.numvis++] = i;
+}
+
 static inline void add_face(int i)
 {
 	face_t *f = &w.faces[i];
@@ -1216,28 +1303,25 @@ static inline void add_face(int i)
 ITCM_CODE ARM_CODE static void walk(int n, int clip)
 {
 	while (n >= 0) {
-		node_t *nd = &w.nodes[n];
-		const plane_t *pl;
+		const node_t *nd = &wk.nodes[n];
 		int near;
-		if (nd->visframe != w.visframe || (clip && !box_clip(nd->mins, nd->maxs, &clip)))
+		if (nd->visframe != wk.visframe || (clip && !box_clip(nd->mins, nd->maxs, &clip)))
 			return;
 		/* the eye's side first, so faces come out nearest first */
-		pl = &w.planes[nd->plane];
-		near = pl->n[0] * eye[0] + pl->n[1] * eye[1] + pl->n[2] * eye[2] - pl->dist < 0;
+		near = plane_dist(&wk.planes[nd->plane], nd->ptype) < 0;
 		walk(nd->children[near], clip);
 		n = nd->children[!near];
-		if (n >= w.numnodes)
+		if (n >= wk.numnodes)
 			return;
 	}
 	{
-		leaf_t *lf = &w.leafs[-(n + 1)];
-		if (-(n + 1) == 0 || lf->visframe != w.visframe || (clip && !box_clip(lf->mins, lf->maxs, &clip)))
+		const leaf_t *lf = &wk.leafs[-(n + 1)];
+		const uint16_t *mk, *end;
+		if (-(n + 1) == 0 || lf->visframe != wk.visframe || (clip && !box_clip(lf->mins, lf->maxs, &clip)))
 			return;
-		for (int m = 0; m < lf->nummarks; m++) {
-			int idx = lf->firstmark + m;
-			if (idx < w.nummarks)
-				add_face(w.marks[idx]);
-		}
+		/* resolve_marks kept every list inside the lump */
+		for (mk = wk.marks + lf->firstmark, end = mk + lf->nummarks; mk < end; mk++)
+			add_leafface(*mk);
 	}
 }
 
@@ -1293,18 +1377,20 @@ ITCM_CODE ARM_CODE static void draw_chains(void)
 		glBindTexture(GL_TEXTURE_2D, tex->name);
 		for (; i >= 0; i = w.faces[i].next) {
 			const face_t *f = &w.faces[i];
-			const dvert_t *v = &w.verts[f->firstvert];
-			glBegin(GL_QUAD_STRIP);
-			for (int k = 0; k < f->numverts; k++, v++) {
-				glColor(v->color);
-				glTexCoord2t16(v->s, v->t);
-				glVertex3v16(v->x, v->y, v->z);
+			const uint32_t *v = (const uint32_t *)&w.verts[f->firstvert];
+			int n = f->numverts;
+			GFX_BEGIN = GL_QUAD_STRIP;
+			for (int k = 0; k < n; k++, v += 3) {
+				uint32_t st = v[0], xy = v[1], zc = v[2];
+				GFX_COLOR = zc >> 16;
+				GFX_TEX_COORD = st;
+				GFX_VERTEX16 = xy;
+				GFX_VERTEX16 = zc;
 			}
-			if (f->numverts & 1) {
-				v--;
-				glVertex3v16(v->x, v->y, v->z);
+			if (n & 1) {
+				GFX_VERTEX16 = v[-2];
+				GFX_VERTEX16 = v[-1];
 			}
-			glEnd();
 		}
 		tex->chain = -1;
 	}
@@ -1594,8 +1680,13 @@ void World_Collect(void)
 	w.numvis = 0;
 	if (!w.loaded)
 		return;
-	if (w.numnodes)
+	if (w.numnodes) {
+		wk.nodes = w.nodes, wk.leafs = w.leafs, wk.planes = w.planes, wk.faces = w.faces;
+		wk.marks = w.marks, wk.vislist = w.vislist;
+		wk.numnodes = w.numnodes, wk.visframe = w.visframe, wk.frame = w.frame, wk.numvis = w.numvis;
 		walk(0, 15);
+		w.numvis = wk.numvis;
+	}
 	w.numtreevis = w.numvis;
 	/* doors, lifts and other brush entities: all their faces, by box */
 	for (int m = 1; m < w.nummodels; m++) {
