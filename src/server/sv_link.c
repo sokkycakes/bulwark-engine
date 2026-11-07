@@ -13,6 +13,7 @@
 #include "sv_local.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/fs.h"
 #include "../common/studio.h"
 
 #include <arpa/inet.h>
@@ -52,7 +53,7 @@ enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -76,6 +77,11 @@ typedef struct {
 #define CMD_WINDOW 1024    /* the most newer than the last run an INPUT may be (17 s of commands) */
 #define PSTATE_IDLE 0.1    /* PSTATE with a VIEW when no command ran for this long (movers, boxes) */
 #define BRUSH_CHECK 0.25   /* how often the brush list is compared */
+#define MAX_HUDBODY 1300   /* HUDINFO after the version */
+#define HUD_OBITS 4        /* obituaries HUDINFO carries */
+#define HUD_RESEND 0.25    /* HUDINFO again this soon while the device has not acknowledged it */
+#define HUD_NPCRANGE 2000.0f /* friendly NPCs HUDINFO lists: Nameplates' cg_targetIDRange */
+#define HUD_MAXNPC 8
 
 typedef struct {
 	uint16_t e, model; /* edict; the * number of its brush model */
@@ -164,6 +170,23 @@ typedef struct {
 	bool wiheard;                           /* an INPUT with 'W' came since the last send (a device
 	                                         * loading its map sends none: those don't count) */
 	int32_t wiclass;                        /* the weapon's classname (a QC string) */
+	/* HUDINFO: what the co-op HUD shows, for a device that draws it itself */
+	bool hudcap;                            /* its INPUT carried 'H': it takes HUDINFO */
+	uint16_t hudver, hudack, hudsentver;    /* the version now (0 none yet); the device's; the last sent */
+	uint8_t hudbody[MAX_HUDBODY];           /* the packet after the version */
+	int hudlen;
+	double hudsent;
+	uint8_t obitseq;                        /* obituaries seen, mod 256 */
+	struct {
+		char who[32], by[32], weapon[32], how[16];
+		bool named; /* weapon is the decl's inv_name now */
+	} obit[HUD_OBITS];                      /* the newest, obit[(obitseq - 1) % HUD_OBITS] */
+	int32_t hudwclass;                      /* the weapon class its crosshair was looked up for */
+	int hudmap;                             /* the spawncount hudwclass and the names belong to */
+	uint8_t xw, xh;                         /* that crosshair: size (0 none), colour, pixels */
+	uint16_t xrgb;
+	uint8_t xmask[128];
+	char hudstatic[64], hudstaticname[64], huddynamic[64], huddynamicname[64]; /* *herohud's weapons, named */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -2179,6 +2202,8 @@ static void log_wstate(link_t *l, int e, const char *what, float land, strbuf_t 
 
 /* --- v2 INPUT: the device's commands, each run once --- */
 
+static void hud_heard(link_t *l, uint16_t ack);
+
 static void input_v2(link_t *l, const uint8_t *d, int len)
 {
 	client_t *c = l->client;
@@ -2202,7 +2227,11 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 			l->wicap = l->wiheard = true; /* it takes WEAPONINFO (version 0: has none yet) */
 			if (rd16(t + 3) == l->wiedict)
 				l->wiack = (uint16_t)rd16(t + 1);
+			t += 5;
 		}
+		/* then 'H', the HUDINFO version the device has: it draws the HUD itself */
+		if (t + 3 <= d + len && t[0] == 'H')
+			hud_heard(l, (uint16_t)rd16(t + 1));
 	}
 	if (!here) {
 		/* not in the game, or the device is on another map: nothing runs,
@@ -2280,6 +2309,9 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 	}
 }
 
+static void update_hud(link_t *l);
+static void send_hud(link_t *l, double now);
+
 void SV_LinkSend(void)
 {
 	double now = Sys_Seconds();
@@ -2341,6 +2373,12 @@ void SV_LinkSend(void)
 		}
 		if (l->v2)
 			send_v2(l, now, view);
+		if (l->hudcap) {
+			if (view)
+				update_hud(l);
+			if (l->hudver && l->hudack != l->hudver && (l->hudsentver != l->hudver || now >= l->hudsent + HUD_RESEND))
+				send_hud(l, now);
+		}
 	}
 }
 
@@ -2416,6 +2454,349 @@ static void send_stats(link_t *l)
 	send_to(&l->from, &p);
 }
 
+/* --- HUDINFO: what the co-op HUD shows ------------------------------------------------------
+ * The PC's co-op HUD (coop/src/hud/jtf.qc, Jtf_Post) reads infokeys the rules
+ * set (coop/src/rules/hud_info.qc: *herohud *respawn *revive *prompt
+ * *promptAt *usable *stats *xpm *cadence *cadenceN *mate) and serverinfo
+ * (coop_wave coop_left coop_notice coop_feed coop_engageCost, Nameplates'
+ * nameplates and targetid), the weapon in hand (title, ammoRequired, its
+ * decl's crosshair sprite: valve/src/hud/hud.qc HUD_WeaponSwitched), the
+ * other players' names, health and teams, the friendly NPCs (Nameplates_Draw)
+ * and the obituaries (EV_OBITUARY, HUD_Obituary). A link player gets none of
+ * that from the engine (it is a bot to the networking), so it all goes in one
+ * packet, a new version whenever any of it differs (docs/spec/link.md) */
+
+enum {
+	HK_HEROHUD, HK_RESPAWN, HK_REVIVE, HK_PROMPT, HK_PROMPTAT, HK_USABLE, HK_STATS, HK_XPM, HK_CADENCE, HK_CADENCEN,
+	HK_SELFKEYS,
+	HK_WAVE = 16, HK_LEFT, HK_NOTICE, HK_FEED, HK_ENGAGECOST, HK_NAMEPLATES, HK_TARGETID, HK_SERVERKEYS_END,
+	HK_WTITLE = 32, HK_STATICNAME, HK_DYNAMICNAME, HK_NOAMMO
+};
+static const char *const hud_selfkeys[HK_SELFKEYS] = {"*herohud", "*respawn", "*revive", "*prompt", "*promptAt",
+                                                      "*usable", "*stats", "*xpm", "*cadence", "*cadenceN"};
+static const char *const hud_serverkeys[HK_SERVERKEYS_END - HK_WAVE] = {
+	"coop_wave", "coop_left", "coop_notice", "coop_feed", "coop_engageCost", "nameplates", "targetid"};
+#define EV_OBITUARY 25
+
+static void hud_heard(link_t *l, uint16_t ack)
+{
+	if (!l->hudcap) {
+		/* the HUD a device draws is the Panorama one: the rules leave out the
+		 * text lines and centerprints it replaces (jtf.qc Jtf_SetPhud) */
+		SV_SetPlayerKey(l->client, "phud", "1", true);
+		l->hudcap = true;
+	}
+	l->hudack = ack;
+}
+
+/* EntityDef_GetKeyValue(cls, key) (src/shared/system/entityDef.qc), "" without */
+static void def_key(const char *cls, const char *key, char *out, size_t size)
+{
+	int fn = cls[0] ? QC_FindFunction(sv.vm, "EntityDef_GetKeyValue") : 0;
+	const char *s = NULL;
+	if (fn > 0) {
+		qcval_t r = qc_call(fn, 0, 2, cls, key);
+		s = r.i ? QC_GetString(sv.vm, r.i) : NULL;
+	}
+	snprintf(out, size, "%s", s ? s : "");
+}
+
+/* jtf.qc Jtf_WeaponName: a def's inv_name, else the def's name */
+static void def_title(const char *def, char *out, size_t size)
+{
+	def_key(def, "inv_name", out, size);
+	if (!out[0])
+		snprintf(out, size, "%s", def);
+}
+
+/* a token of a sprite list line, as tokenize_console splits it */
+static const char *spr_token(const char **p, char *tok, size_t size)
+{
+	size_t n = 0;
+	while (**p == ' ' || **p == '\t' || **p == '\r')
+		(*p)++;
+	if (!**p || **p == '\n')
+		return NULL;
+	while (**p && **p != ' ' && **p != '\t' && **p != '\r' && **p != '\n')
+		if (n + 1 < size)
+			tok[n++] = *(*p)++;
+		else
+			(*p)++;
+	tok[n] = 0;
+	return tok;
+}
+
+/* the crosshair the PC draws for weapon class cls (hud.qc HUD_WeaponSwitched: the
+ * decl's "crosshair", else "<cls>.crosshair"; src/client/InterfaceSpriteSheet.qc
+ * finds "<file>.<name>" in sprites/<file>.txt, a name alone in sprites/hud.txt, at
+ * resolution 640, and draws that part of the .spr at its size): its pixels as a
+ * mask, in its commonest colour. None (w 0) when the PC draws none */
+static void hud_crosshair(link_t *l, const char *cls)
+{
+	char name[128], file[192], want[128], *txt, tok[7][64];
+	const char *dot, *p;
+	size_t len;
+	int sx = 0, sy = 0, sw = 0, sh = 0;
+	bool found = false;
+	uint8_t *spr;
+	l->xw = l->xh = 0;
+	def_key(cls, "crosshair", name, sizeof(name));
+	if (!name[0])
+		snprintf(name, sizeof(name), "%s.crosshair", cls);
+	if ((dot = strrchr(name, '.'))) {
+		snprintf(file, sizeof(file), "sprites/%.*s.txt", (int)(dot - name), name);
+		snprintf(want, sizeof(want), "%s", dot + 1);
+	} else {
+		snprintf(file, sizeof(file), "sprites/hud.txt");
+		snprintf(want, sizeof(want), "%s", name);
+	}
+	if (!(txt = FS_LoadFile(file, NULL)))
+		return;
+	for (p = txt; *p && !found;) {
+		int c = 0;
+		while (c < 7 && spr_token(&p, tok[c], sizeof(tok[c])))
+			c++;
+		if (c == 7 && spr_token(&p, tok[0], 1))
+			c = 8; /* more than 7: not an entry */
+		while (*p && *p != '\n')
+			p++;
+		if (*p)
+			p++;
+		if (c == 7 && !strcmp(tok[1], "640") && !strcmp(tok[0], want)) {
+			snprintf(file, sizeof(file), "sprites/%s.spr", tok[2]);
+			sx = atoi(tok[3]), sy = atoi(tok[4]), sw = atoi(tok[5]), sh = atoi(tok[6]);
+			found = true;
+		}
+	}
+	Mem_Free(txt);
+	if (!found || sw <= 0 || sh <= 0 || sw > 32 || sh > 32 || !(spr = (uint8_t *)FS_LoadFile(file, &len)))
+		return;
+	/* Half-Life's IDSP version 2: 40 bytes of header, the palette, then frame 0 */
+	if (len > 42 && !memcmp(spr, "IDSP", 4) && rd32(spr + 4) == 2) {
+		int fmt = (int)rd32(spr + 12), ncol = rd16(spr + 40), counts[256] = {0}, best = -1;
+		size_t pal = 42, fr = pal + (size_t)ncol * 3;
+		if (ncol <= 256 && fr + 20 <= len) {
+			int fw = (int)rd32(spr + fr + 12), fh = (int)rd32(spr + fr + 16);
+			const uint8_t *px = spr + fr + 20;
+			if (fw > 0 && fh > 0 && sx >= 0 && sy >= 0 && sx + sw <= fw && sy + sh <= fh &&
+			    fr + 20 + (size_t)fw * fh <= len) {
+				memset(l->xmask, 0, sizeof(l->xmask));
+				for (int y = 0; y < sh; y++)
+					for (int x = 0; x < sw; x++) {
+						int i = px[(sy + y) * fw + sx + x], c = i;
+						const uint8_t *rgb;
+						bool on;
+						/* SPR_ALPHTEST: 255 is see-through; SPR_INDEXALPHA: the index is the
+						 * alpha of colour 255; SPR_ADDITIVE: dark adds nothing */
+						if (fmt == 2)
+							on = i >= 128, c = 255;
+						else if (fmt == 1) {
+							rgb = spr + pal + (size_t)BW_MIN(i, ncol - 1) * 3;
+							on = rgb[0] + rgb[1] + rgb[2] >= 192;
+						} else
+							on = fmt != 3 || i != 255;
+						if (!on)
+							continue;
+						l->xmask[(y * sw + x) >> 3] |= (uint8_t)(1 << ((y * sw + x) & 7));
+						counts[c]++;
+						if (best < 0 || counts[c] > counts[best])
+							best = c;
+					}
+				if (best >= 0 && best < ncol) {
+					float rgb[3];
+					for (int k = 0; k < 3; k++)
+						rgb[k] = spr[pal + (size_t)best * 3 + k] / 255.0f;
+					l->xw = (uint8_t)sw, l->xh = (uint8_t)sh, l->xrgb = rgb15(rgb);
+				}
+			}
+		}
+	}
+	Mem_Free(spr);
+}
+
+static void p_hstr(pkt_t *p, const char *s)
+{
+	size_t n = BW_MIN(strlen(s), 255);
+	p_u8(p, (unsigned)n);
+	p_bytes(p, s, (int)n);
+}
+
+static void p_hkey(pkt_t *p, int *count, int id, const char *v)
+{
+	if (!v[0] || p->len + 2 + (int)BW_MIN(strlen(v), 255) > MAX_HUDBODY - 400)
+		return; /* the roster, NPCs and crosshair keep at least 400 bytes */
+	p_u8(p, (unsigned)id);
+	p_hstr(p, v);
+	(*count)++;
+}
+
+/* the body after the version, built once a VIEW; a new version when it differs */
+static void update_hud(link_t *l)
+{
+	pkt_t p;
+	char v[512], tok[64];
+	int e = l->client->edict, w = active_weapon(e), countat, count = 0, nat, n = 0;
+	qfld_t title = qfld("ncWeapon::__mm_weaponTitle"), ammoreq = qfld("ncWeapon::__mm_fiAmmoRequired");
+	qfld_t alliance = qfld("m_iAlliance");
+	const float *org = &QC_EdictFields(sv.vm, e)[F.origin].f;
+	if (l->hudmap != svs.spawncount) { /* another progs: its strings are others */
+		l->hudmap = svs.spawncount;
+		l->hudwclass = 0;
+		l->hudstatic[0] = l->huddynamic[0] = l->hudstaticname[0] = l->huddynamicname[0] = 0;
+	}
+	p.len = 0;
+	p_u8(&p, (unsigned)(e - 1));
+	countat = p.len;
+	p_u8(&p, 0);
+	for (int k = 0; k < HK_SELFKEYS; k++)
+		p_hkey(&p, &count, k, SV_InfoGet(l->client->userinfo, hud_selfkeys[k], v, sizeof(v)));
+	for (int k = HK_WAVE; k < HK_SERVERKEYS_END; k++)
+		p_hkey(&p, &count, k, SV_InfoGet(sv.serverinfo, hud_serverkeys[k - HK_WAVE], v, sizeof(v)));
+	/* the weapon in hand: jtf.qc's title, noAmmo, and held (title against the hero's two) */
+	if (w) {
+		int32_t cls = QC_EInt(sv.vm, w, F.classname);
+		if (cls != l->hudwclass) { /* its crosshair (HUD_WeaponSwitched): looked up on a switch */
+			l->hudwclass = cls;
+			hud_crosshair(l, QC_GetString(sv.vm, cls));
+		}
+		p_hkey(&p, &count, HK_WTITLE, qstr(w, title));
+		if (ammoreq.ofs >= 0 && !qnum(w, ammoreq))
+			p_hkey(&p, &count, HK_NOAMMO, "1");
+	}
+	/* *herohud's static and dynamic weapons (fields 8 and 9) by their inv_name */
+	SV_InfoGet(l->client->userinfo, "*herohud", v, sizeof(v));
+	{
+		const char *f = v;
+		char *outs[2] = {l->hudstatic, l->huddynamic}, *names[2] = {l->hudstaticname, l->huddynamicname};
+		for (int i = 0; i < 8 && f; i++)
+			f = (f = strchr(f, '|')) ? f + 1 : NULL;
+		for (int i = 0; i < 2; i++) {
+			const char *end = f ? strchr(f, '|') : NULL;
+			size_t len = f ? (end ? (size_t)(end - f) : strlen(f)) : 0;
+			snprintf(tok, sizeof(tok), "%.*s", (int)BW_MIN(len, sizeof(tok) - 1), f ? f : "");
+			if (strcmp(tok, outs[i])) {
+				snprintf(outs[i], 64, "%s", tok);
+				if (tok[0])
+					def_title(tok, names[i], 64);
+				else
+					names[i][0] = 0;
+			}
+			f = end ? end + 1 : NULL;
+		}
+		p_hkey(&p, &count, HK_STATICNAME, l->hudstaticname);
+		p_hkey(&p, &count, HK_DYNAMICNAME, l->huddynamicname);
+	}
+	p.data[countat] = (uint8_t)count;
+	/* everyone else with a name (getplayerkeyvalue's players), by slot */
+	nat = p.len;
+	p_u8(&p, 0);
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		char name[64], mate[32], cad[8], team[16];
+		if (c->state < CS_CONNECTED || c->edict == e || !SV_InfoGet(c->userinfo, "name", name, sizeof(name))[0])
+			continue;
+		SV_InfoGet(c->userinfo, "*mate", mate, sizeof(mate));
+		SV_InfoGet(c->userinfo, "*cadence", cad, sizeof(cad));
+		SV_InfoGet(c->userinfo, "*team", team, sizeof(team));
+		if (p.len + 8 + (int)strlen(name) + (int)strlen(mate) + (int)strlen(team) > MAX_HUDBODY - 160)
+			break;
+		p_u8(&p, (unsigned)i);
+		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(c->state == CS_SPAWNED ? QC_EFloat(sv.vm, c->edict, F.health) : 0,
+		                                     -32768, 32767));
+		p_hstr(&p, name);
+		p_hstr(&p, mate);
+		p_u8(&p, (unsigned)BW_CLAMP(atoi(cad), 0, 255));
+		p_hstr(&p, team);
+		n++;
+	}
+	p.data[BW_MIN(nat, (int)sizeof(p.data) - 1)] = (uint8_t)n;
+	/* friendly NPCs within the target ID's reach (Nameplates_Draw: FL_MONSTER, alive, MAL_FRIEND) */
+	nat = p.len, n = 0;
+	p_u8(&p, 0);
+	for (int i = svs.maxclients + 1; alliance.ofs >= 0 && i < sv.vm->num_edicts && n < HUD_MAXNPC; i++) {
+		const float *o;
+		float d2 = 0, hp, mx;
+		if (!ent_live(i) || !((int)QC_EFloat(sv.vm, i, F.flags) & FL_MONSTER) || (hp = QC_EFloat(sv.vm, i, F.health)) <= 0 ||
+		    (int)qnum(i, alliance) != 1)
+			continue;
+		o = &QC_EdictFields(sv.vm, i)[F.origin].f;
+		for (int k = 0; k < 3; k++)
+			d2 += (o[k] - org[k]) * (o[k] - org[k]);
+		if (d2 > HUD_NPCRANGE * HUD_NPCRANGE)
+			continue;
+		mx = efloat(i, "max_health");
+		p_u16(&p, (unsigned)i);
+		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(ceilf(hp), -32768, 32767));
+		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(mx > 0 ? mx : hp, -32768, 32767));
+		p_hstr(&p, F.netname >= 0 ? QC_GetString(sv.vm, QC_EInt(sv.vm, i, F.netname)) : "");
+		n++;
+	}
+	p.data[nat] = (uint8_t)n;
+	/* the crosshair */
+	p_u8(&p, l->xw), p_u8(&p, l->xh);
+	if (l->xw) {
+		p_u16(&p, l->xrgb);
+		p_bytes(&p, l->xmask, (l->xw * l->xh + 7) / 8);
+	}
+	/* the newest obituaries */
+	n = BW_MIN(l->obitseq, HUD_OBITS);
+	p_u8(&p, l->obitseq), p_u8(&p, (unsigned)n);
+	for (int i = n; i >= 1; i--) {
+		int k = (uint8_t)(l->obitseq - i) % HUD_OBITS;
+		if (!l->obit[k].named) { /* by its inv_name (jtf.qc HUD_Obituary), outside the multicast */
+			char def[32];
+			snprintf(def, sizeof(def), "%s", l->obit[k].weapon);
+			if (def[0])
+				def_title(def, l->obit[k].weapon, sizeof(l->obit[k].weapon));
+			l->obit[k].named = true;
+		}
+		p_hstr(&p, l->obit[k].who), p_hstr(&p, l->obit[k].by), p_hstr(&p, l->obit[k].weapon), p_hstr(&p, l->obit[k].how);
+	}
+	if (p.len != l->hudlen || memcmp(p.data, l->hudbody, (size_t)p.len)) {
+		memcpy(l->hudbody, p.data, (size_t)p.len);
+		l->hudlen = p.len;
+		l->hudver = (uint16_t)(l->hudver + 1 ? l->hudver + 1 : 1);
+	}
+}
+
+static void send_hud(link_t *l, double now)
+{
+	pkt_t p;
+	p_begin(&p, L_HUDINFO);
+	p_u32(&p, l->session);
+	p_u16(&p, l->hudver);
+	p_bytes(&p, l->hudbody, l->hudlen);
+	send_to(&l->from, &p);
+	l->hudsent = now, l->hudsentver = l->hudver;
+}
+
+/* an EV_OBITUARY (SVPF_combat_Obituary: target, attacker, weapon decl, means of death) */
+static void hud_obituary(link_t *l, const uint8_t *data, int len)
+{
+	char s[4][32]; /* as kept: longer is cut */
+	int pos = 2;
+	for (int k = 0; k < 4; k++) {
+		int n = 0;
+		while (pos < len && data[pos]) {
+			if (n + 1 < (int)sizeof(s[k]))
+				s[k][n++] = (char)data[pos];
+			pos++;
+		}
+		s[k][n] = 0;
+		if (pos++ >= len)
+			return;
+	}
+	{
+		int k = l->obitseq % HUD_OBITS;
+		snprintf(l->obit[k].who, sizeof(l->obit[k].who), "%s", s[0]);
+		snprintf(l->obit[k].by, sizeof(l->obit[k].by), "%s", s[1]);
+		snprintf(l->obit[k].weapon, sizeof(l->obit[k].weapon), "%s", s[2]);
+		l->obit[k].named = false;
+		snprintf(l->obit[k].how, sizeof(l->obit[k].how), "%.15s", s[3]);
+		l->obitseq++;
+	}
+}
+
 /* --- bullet impacts ------------------------------------------------------------------------
  * The PC client draws impacts from the game's CSQC events (Nuclide's
  * SVC_CGAMEPACKET with EV_SURFIMPACT / EV_SURFIMPACTID, which start with the
@@ -2441,6 +2822,11 @@ void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
 	if (len >= 14 && data[0] == CGAMEPACKET && data[1] == EV_ANGLE) {
 		if ((l = link_for_edict(c->edict)))
 			raise_fix(l, rdfloat(data + 2), rdfloat(data + 6));
+		return;
+	}
+	if (len >= 6 && data[0] == CGAMEPACKET && data[1] == EV_OBITUARY) {
+		if ((l = link_for_edict(c->edict)) && l->hudcap)
+			hud_obituary(l, data, len);
 		return;
 	}
 	if (len < 14 || data[0] != CGAMEPACKET || (data[1] != EV_SURFIMPACT && data[1] != EV_SURFIMPACTID))
