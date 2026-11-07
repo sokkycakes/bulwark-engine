@@ -125,7 +125,17 @@ pub enum Server {
     Introduce { peer: u32, name: String, public: SocketAddr, lan: Vec<SocketAddr>, nonce: u64 },
     Forward { from: u32, payload: Vec<u8> },
     QueueStatus { playlist: String, stage: u8, waited: u16, searching: u16 },
-    Match { id: u64, playlist: String, host: u32, seats: Vec<Seat> },
+    /// `mode`, `map` and `settings` come from the playlist's pick; all
+    /// empty when the playlist has no modes.
+    Match {
+        id: u64,
+        playlist: String,
+        host: u32,
+        seats: Vec<Seat>,
+        mode: String,
+        map: String,
+        settings: Vec<(String, String)>,
+    },
     Players { list: Vec<Listed> },
     Ping { nonce: u32 },
 }
@@ -415,11 +425,15 @@ impl Server {
                 w.str(playlist).u8(*stage).u16(*waited).u16(*searching);
                 w
             }
-            Server::Match { id, playlist, host, seats } => {
+            Server::Match { id, playlist, host, seats, mode, map, settings } => {
                 let mut w = W::new(t::MATCH);
                 w.u64(*id).str(playlist).u32(*host).u8(seats.len() as u8);
                 for s in seats {
                     w.u32(s.id).u8(s.slot).u8(s.team).str(&s.name);
+                }
+                w.str(mode).str(map).u8(settings.len() as u8);
+                for (k, v) in settings {
+                    w.str(k).str(v);
                 }
                 w
             }
@@ -480,7 +494,14 @@ impl Server {
                 for _ in 0..n {
                     seats.push(Seat { id: r.u32()?, slot: r.u8()?, team: r.u8()?, name: r.str()? });
                 }
-                Server::Match { id, playlist, host, seats }
+                let mode = r.str()?;
+                let map = r.str()?;
+                let n = r.u8()?;
+                let mut settings = Vec::new();
+                for _ in 0..n {
+                    settings.push((r.str()?, r.str()?));
+                }
+                Server::Match { id, playlist, host, seats, mode, map, settings }
             }
             t::PLAYERS => {
                 let n = r.u8()?;
@@ -564,7 +585,11 @@ mod tests {
             Seat { id: 1, slot: 0, team: 0, name: "a".into() },
             Seat { id: 1, slot: 1, team: 0, name: "a (2)".into() },
             Seat { id: 2, slot: 0, team: 1, name: "b".into() },
-        ] });
+        ], mode: String::new(), map: String::new(), settings: vec![] });
+        rt_server(Server::Match { id: 6, playlist: "firefight".into(), host: 2, seats: vec![
+            Seat { id: 2, slot: 0, team: 0, name: "b".into() },
+        ], mode: "horde".into(), map: "coop_arena".into(),
+           settings: vec![("coop_waves".into(), "1".into()), ("coop_survival".into(), "1".into())] });
         rt_server(Server::Players { list: vec![Listed { id: 1, name: "a".into(), status: "idle".into(), code: "".into() }] });
         let p = Peer::Punch { from: 1, to: 2, nonce: 3 };
         let enc = p.encode();

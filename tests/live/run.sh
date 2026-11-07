@@ -30,12 +30,12 @@ PORT=${LIVE_PORT:-27960}
 LIVEPID=$!
 sleep 0.5
 # the host queues first, so it waited longest and hosts
-"$BUILD/bulwark-ded" -basedir "$OUT" -game game +set name host +set live_punch ${LIVE_PUNCH:-1} +set live_game livetest \
+"$BUILD/bulwark-ded" -basedir "$OUT" -game game +set name host +set live_punch ${LIVE_PUNCH:-1} +set live_game stiletto \
 	+set live_onconnect "live_queue duel 5" +live_connect 127.0.0.1:$PORT +maxplayers 4 +map botmap \
 	> "$OUT/host.log" 2>&1 &
 HOSTPID=$!
 sleep 2
-"$BUILD/bulwark" -headless -basedir "$OUT/client" -game game +set name guest +set live_punch ${LIVE_PUNCH:-1} +set live_game livetest \
+"$BUILD/bulwark" -headless -basedir "$OUT/client" -game game +set name guest +set live_punch ${LIVE_PUNCH:-1} +set live_game stiletto \
 	+set live_onconnect "live_queue duel 6" +live_connect 127.0.0.1:$PORT \
 	> "$OUT/client.log" 2>&1 &
 CLIENTPID=$!

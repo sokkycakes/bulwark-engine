@@ -16,7 +16,8 @@ Rendezvous, relay and matchmaking for Bulwark games. The spec is
 
 It uses one UDP port. The status page is JSON and should be kept on
 localhost or behind a proxy. Without `--playlists` it serves Stiletto's
-`duel` and `2v2`. Players run `live_connect host` in the game.
+`duel` and `2v2` and the co-op mod's `campaign`, `firefight` and `horde`
+(see "Game modes in the hopper" in docs/spec/live.md). Players run `live_connect host` in the game.
 
 ## SpacetimeDB
 

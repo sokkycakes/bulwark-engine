@@ -5,6 +5,7 @@
  * through the server's relay. Game traffic rides on it as "live:<id>"
  * addresses, so connect live:<id> reaches a listen server behind a NAT.
  * Original code, ISC licence. */
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@ enum {
 #define MAX_MEMBERS 16
 #define MAX_GUESTS 3
 #define MAX_SEATS 16
+#define MAX_SETTINGS 32
 #define MAX_INVITES 8
 #define QUEUE_LEN 128
 
@@ -110,6 +112,11 @@ static struct {
 	uint64_t match_id;
 	char match_playlist[64];
 	uint32_t match_host;
+	char match_mode[40], match_map[72];
+	struct {
+		char key[56], value[72];
+	} settings[MAX_SETTINGS];
+	int nsettings;
 	struct {
 		uint32_t id;
 		int slot, team;
@@ -375,7 +382,19 @@ static void update_state(void)
 			}
 			SB_AppendStr(&sb, "]}");
 		}
-		SB_AppendStr(&sb, "]}");
+		SB_AppendStr(&sb, "],\"mode\":");
+		json_str(&sb, L.match_mode);
+		SB_AppendStr(&sb, ",\"map\":");
+		json_str(&sb, L.match_map);
+		SB_AppendStr(&sb, ",\"settings\":{");
+		for (int i = 0; i < L.nsettings; i++) {
+			if (i)
+				SB_AppendStr(&sb, ",");
+			json_str(&sb, L.settings[i].key);
+			SB_AppendStr(&sb, ":");
+			json_str(&sb, L.settings[i].value);
+		}
+		SB_AppendStr(&sb, "}}");
 	} else {
 		SB_AppendStr(&sb, "null");
 	}
@@ -620,20 +639,72 @@ static void deliver(uint32_t from, const uint8_t *payload, size_t len)
 
 /* --- from the server -------------------------------------------------------- */
 
+/* The same rules bwlive-core applies to playlists, checked again here so a
+ * bad server can't slip a command into the host's console. */
+static bool ident_ok(const char *s, const char *extra)
+{
+	if (!*s)
+		return false;
+	for (; *s; s++)
+		if (!isalnum((unsigned char)*s) && *s != '_' && !strchr(extra, *s))
+			return false;
+	return true;
+}
+
+static bool setting_allowed(const char *key, const char *value)
+{
+	if (!ident_ok(key, ""))
+		return false;
+	for (const char *v = value; *v; v++)
+		if ((unsigned char)*v < 0x20 || (unsigned char)*v > 0x7e || *v == '"' || *v == ';' || *v == '\\')
+			return false;
+	/* never the console's own secrets or Live's own settings */
+	char low[64];
+	size_t n = 0;
+	for (; key[n] && n + 1 < sizeof(low); n++)
+		low[n] = (char)tolower((unsigned char)key[n]);
+	low[n] = 0;
+	if (!strncmp(low, "live_", 5) || !strncmp(low, "rcon", 4) || strstr(low, "password"))
+		return false;
+	return true;
+}
+
+static void apply_settings(void)
+{
+	for (int i = 0; i < L.nsettings; i++) {
+		const char *k = L.settings[i].key, *v = L.settings[i].value;
+		if (!setting_allowed(k, v)) {
+			Con_Printf("live: ignored setting %s\n", k);
+			continue;
+		}
+		Con_Printf("live: %s \"%s\"\n", k, v);
+		Cvar_Set(k, v);
+	}
+}
+
 static void on_match(void)
 {
-	char buf[64];
+	char buf[96];
 	snprintf(buf, sizeof(buf), "%u", L.match_host);
 	Cvar_Set("live_match_host", buf);
 	snprintf(buf, sizeof(buf), "%llu", (unsigned long long)L.match_id);
 	Cvar_Set("live_match_id", buf);
 	Cvar_Set("live_match_playlist", L.match_playlist);
-	Con_Printf("live: match on %s, %d players, host %u%s\n", L.match_playlist, L.nseats, L.match_host,
-	           L.match_host == L.id ? " (you)" : "");
+	Cvar_Set("live_match_mode", L.match_mode);
+	Cvar_Set("live_match_map", L.match_map);
+	Con_Printf("live: match on %s%s%s%s%s, %d players, host %u%s\n", L.match_playlist,
+	           L.match_mode[0] ? ", " : "", L.match_mode, L.match_map[0] ? " on " : "", L.match_map, L.nseats,
+	           L.match_host, L.match_host == L.id ? " (you)" : "");
 	if (L.match_host == L.id) {
+		/* the mode's settings go in before the map loads, so the game's
+		 * rules see them from the first frame */
+		apply_settings();
 		if (live_hostcmd->string[0]) {
 			Cbuf_AddText(live_hostcmd->string);
 			Cbuf_AddText("\n");
+		} else if (L.match_map[0]) {
+			snprintf(buf, sizeof(buf), "map %s\n", L.match_map);
+			Cbuf_AddText(buf);
 		}
 	} else if (live_autoconnect->ivalue) {
 		/* the client resends its challenge every second until the host's
@@ -821,8 +892,28 @@ static void from_server(int type, rbuf_t *r)
 				L.nseats++;
 			}
 		}
+		char mode[sizeof(L.match_mode)], map[sizeof(L.match_map)];
+		r_str(r, mode, sizeof(mode));
+		r_str(r, map, sizeof(map));
+		int ns = (int)r_u8(r);
+		int kept = 0;
+		for (int i = 0; i < ns && !r->bad; i++) {
+			char k[sizeof(L.settings[0].key)], v[sizeof(L.settings[0].value)];
+			r_str(r, k, sizeof(k));
+			r_str(r, v, sizeof(v));
+			if (kept < MAX_SETTINGS && id != L.match_id) {
+				Str_Copy(L.settings[kept].key, k, sizeof(k));
+				Str_Copy(L.settings[kept].value, v, sizeof(v));
+				kept++;
+			}
+		}
 		if (r->bad || id == L.match_id)
 			return;
+		if (map[0] && (!ident_ok(map, "-./") || strstr(map, "..") || map[0] == '/' || map[0] == '.'))
+			map[0] = 0;
+		L.nsettings = kept;
+		Str_Copy(L.match_mode, mode, sizeof(L.match_mode));
+		Str_Copy(L.match_map, map, sizeof(L.match_map));
 		L.match_id = id;
 		Str_Copy(L.match_playlist, pl, sizeof(L.match_playlist));
 		L.match_host = host;
@@ -1206,6 +1297,8 @@ void Live_Init(void)
 	Cvar_Get("live_match_host", "", CVAR_NOSAVE, "Player id hosting the last Bulwark Live match");
 	Cvar_Get("live_match_id", "", CVAR_NOSAVE, "The last Bulwark Live match");
 	Cvar_Get("live_match_playlist", "", CVAR_NOSAVE, "The last Bulwark Live match's playlist");
+	Cvar_Get("live_match_mode", "", CVAR_NOSAVE, "The last Bulwark Live match's game mode, from its playlist");
+	Cvar_Get("live_match_map", "", CVAR_NOSAVE, "The last Bulwark Live match's map; the host loads it when live_hostcmd is empty");
 	Cmd_AddD("live_connect", Connect_f, "Connect to a Bulwark Live server");
 	Cmd_AddD("live_disconnect", Disconnect_f, "Leave Bulwark Live");
 	Cmd_AddD("live_party", Party_f, "Create a party: live_party [max] [open 0/1] [info]");

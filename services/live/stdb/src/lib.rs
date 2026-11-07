@@ -111,6 +111,11 @@ pub struct GameMatch {
     pub playlist: String,
     pub host: Identity,
     pub made: Timestamp,
+    /// The playlist's pick: game mode id, map and settings as a JSON
+    /// object (all empty when the playlist has no modes).
+    pub mode: String,
+    pub map: String,
+    pub settings: String,
 }
 
 #[table(accessor = match_seat)]
@@ -645,7 +650,26 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
                 break id;
             }
         };
-        ctx.db.game_match().insert(GameMatch { id, playlist: pl.id.clone(), host: who[f.host as usize], made: now });
+        // don't repeat the playlist's previous mode and map
+        let last = ctx
+            .db
+            .game_match()
+            .iter()
+            .filter(|m| m.playlist == pl.id)
+            .max_by_key(|m| m.made)
+            .map(|m| (m.mode, m.map));
+        let pick = pl.pick(ctx.random::<u64>(), last.as_ref().map(|(a, b)| (a.as_str(), b.as_str())));
+        let settings: serde_json::Map<String, Value> =
+            pick.settings.into_iter().map(|(k, v)| (k, Value::String(v))).collect();
+        ctx.db.game_match().insert(GameMatch {
+            id,
+            playlist: pl.id.clone(),
+            host: who[f.host as usize],
+            made: now,
+            mode: pick.mode,
+            map: pick.map,
+            settings: Value::Object(settings).to_string(),
+        });
         for (m, team) in &f.seats {
             let (identity, slot) = (who[*m as usize], slot_of[*m as usize]);
             ctx.db.match_seat().insert(MatchSeat { id: 0, match_id: id, identity, slot, team: *team });
@@ -686,7 +710,7 @@ fn member_json(p: &Player) -> Value {
 /// `{ "id", "public", "party": {code, leader, max, flags, info, members:
 /// [{id, name, public, lan, guests}]} | null, "invites": [{from, name,
 /// code}], "queue": {playlist, stage, waited, searching} | null, "match":
-/// {id, playlist, host, seats: [{id, slot, team, name, public, lan}]} | null }`.
+/// {id, playlist, host, seats: [{id, slot, team, name, public, lan}], mode, map, settings} | null }`.
 /// Ids are relay ids. Poll it about once a second while something is going on.
 #[procedure]
 pub fn state(ctx: &mut ProcedureContext) -> Result<String, String> {
@@ -739,7 +763,9 @@ pub fn state(ctx: &mut ProcedureContext) -> Result<String, String> {
                         })
                     })
                     .collect();
-                out["match"] = json!({ "id": m.id, "playlist": m.playlist, "host": relay_of(m.host), "seats": seats });
+                let settings: Value = serde_json::from_str(&m.settings).unwrap_or(json!({}));
+                out["match"] = json!({ "id": m.id, "playlist": m.playlist, "host": relay_of(m.host), "seats": seats,
+                                       "mode": m.mode, "map": m.map, "settings": settings });
             }
         }
         let invites: Vec<Value> = db
@@ -789,7 +815,13 @@ pub fn players(ctx: &mut ProcedureContext) -> Result<String, String> {
 #[procedure]
 pub fn list_playlists(ctx: &mut ProcedureContext) -> Result<String, String> {
     ctx.try_with_tx(|tx| {
-        let v: Vec<Value> = playlists(&tx.db).iter().map(|p| json!({ "id": p.id, "name": p.name, "game": p.game })).collect();
+        let v: Vec<Value> = playlists(&tx.db)
+            .iter()
+            .map(|p| {
+                let modes: Vec<Value> = p.modes.iter().map(|m| json!({ "id": m.id, "name": m.name, "maps": m.maps })).collect();
+                json!({ "id": p.id, "name": p.name, "game": p.game, "players": p.players(), "teams": p.teams, "modes": modes })
+            })
+            .collect();
         Ok::<String, String>(Value::Array(v).to_string())
     })
 }

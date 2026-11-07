@@ -126,6 +126,8 @@ pub struct Live {
     codes: HashMap<String, u32>,
     /// Recent pairings by token pair (smaller first), for rematch avoidance.
     recent: HashMap<(u64, u64), Instant>,
+    /// Each playlist's last (mode, map), so the next match plays something else.
+    last_pick: HashMap<String, (String, String)>,
     rng: u64,
     order: u64,
     next_party: u32,
@@ -143,6 +145,7 @@ impl Live {
             parties: HashMap::new(),
             codes: HashMap::new(),
             recent: HashMap::new(),
+            last_pick: HashMap::new(),
             rng: seed | 1,
             order: 0,
             next_party: 1,
@@ -737,6 +740,11 @@ impl Live {
 
         for f in formed {
             let mid = self.rand();
+            let roll = self.rand();
+            let pick = pl.pick(roll, self.last_pick.get(&pl.id).map(|(a, b)| (a.as_str(), b.as_str())));
+            if !pl.modes.is_empty() {
+                self.last_pick.insert(pl.id.clone(), (pick.mode.clone(), pick.map.clone()));
+            }
             let seats: Vec<Seat> = f
                 .seats
                 .iter()
@@ -745,7 +753,15 @@ impl Live {
                     Seat { id, slot, team: *team, name: self.seat_name(id, slot) }
                 })
                 .collect();
-            let msg = Server::Match { id: mid, playlist: pl.id.clone(), host: (f.host >> 8) as u32, seats: seats.clone() };
+            let msg = Server::Match {
+                id: mid,
+                playlist: pl.id.clone(),
+                host: (f.host >> 8) as u32,
+                seats: seats.clone(),
+                mode: pick.mode,
+                map: pick.map,
+                settings: pick.settings,
+            };
             let mut consoles: Vec<u32> = seats.iter().map(|s| s.id).collect();
             consoles.dedup();
             for c in consoles {
@@ -781,7 +797,15 @@ impl Live {
             .cfg
             .playlists
             .iter()
-            .map(|p| serde_json::json!({ "id": p.id, "name": p.name, "searching": self.searching(&p.id) }))
+            .map(|p| {
+                let modes: Vec<serde_json::Value> =
+                    p.modes.iter().map(|m| serde_json::json!({ "id": m.id, "name": m.name, "maps": m.maps })).collect();
+                serde_json::json!({
+                    "id": p.id, "name": p.name, "game": p.game,
+                    "players": p.players(), "teams": p.teams,
+                    "searching": self.searching(&p.id), "modes": modes,
+                })
+            })
             .collect();
         let top_relays: Vec<serde_json::Value> = {
             let mut v: Vec<(&u32, &Player)> = self.players.iter().filter(|(_, p)| p.relayed_bytes > 0).collect();
@@ -857,8 +881,11 @@ mod tests {
             self.hello_with(n, name, &[])
         }
         fn hello_with(&mut self, n: u16, name: &str, guests: &[&str]) -> u32 {
+            self.hello_game(n, name, "stiletto", guests)
+        }
+        fn hello_game(&mut self, n: u16, name: &str, game: &str, guests: &[&str]) -> u32 {
             let guests = guests.iter().map(|g| g.to_string()).collect();
-            self.send(n, Client::Hello { token: 1000 + n as u64, game: "stiletto".into(), name: name.into(), lan: vec![], guests });
+            self.send(n, Client::Hello { token: 1000 + n as u64, game: game.into(), name: name.into(), lan: vec![], guests });
             let id = self.inbox[&addr(n)].iter().find_map(|m| match m {
                 Server::Welcome { id, public, .. } => {
                     assert_eq!(*public, addr(n));
@@ -949,6 +976,71 @@ mod tests {
         assert!(n.got(2).iter().any(|m| matches!(m, Server::Invited { code: c, .. } if *c == code)));
         n.send(2, Client::PartyJoin { code });
         assert!(n.got(2).iter().any(|m| matches!(m, Server::Party { members, .. } if members.len() == 2)));
+    }
+
+    fn find_match(msgs: &[Server]) -> Option<(u32, Vec<Seat>, String, String, Vec<(String, String)>)> {
+        msgs.iter().find_map(|m| match m {
+            Server::Match { host, seats, mode, map, settings, .. } => {
+                Some((*host, seats.clone(), mode.clone(), map.clone(), settings.clone()))
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn coop_firefight_fills_one_team_and_picks_a_mode() {
+        let mut n = Net::new(Config::default());
+        let a = n.hello_game(1, "alice", "coop", &["alice (2)"]);
+        n.hello_game(2, "bob", "coop", &[]);
+        n.hello_game(3, "carol", "coop", &[]);
+        n.hello(4, "stiletto player");
+        n.send(4, Client::Queue { playlist: "firefight".into(), seniority: 0 });
+        assert!(n.got(4).iter().any(|m| matches!(m, Server::Error { code: err::NO_PLAYLIST, .. })));
+        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 0 });
+        assert!(n.got(1).iter().any(|m| matches!(m, Server::Error { code: err::NO_PLAYLIST, .. })));
+
+        // seniority means nothing in co-op: wildly different values still meet
+        n.send(1, Client::Queue { playlist: "firefight".into(), seniority: 1 });
+        n.send(2, Client::Queue { playlist: "firefight".into(), seniority: 900 });
+        n.send(3, Client::Queue { playlist: "firefight".into(), seniority: 40 });
+        for c in 1..=3 {
+            n.got(c);
+        }
+        n.tick(1);
+        let (host, seats, mode, map, settings) = find_match(&n.got(1)).expect("match");
+        assert_eq!(host, a);
+        assert_eq!(seats.len(), 4);
+        assert!(seats.iter().all(|s| s.team == 0));
+        assert!(seats.iter().any(|s| s.id == a && s.slot == 1 && s.name == "alice (2)"));
+        assert!(mode == "firefight" || mode == "grunt_rush", "mode {mode}");
+        assert_eq!(map, "coop_arena");
+        assert!(settings.contains(&("coop_waves".into(), "1".into())));
+        let first = mode.clone();
+        // everyone gets the same pick
+        for c in 2..=3 {
+            let (_, _, m2, map2, _) = find_match(&n.got(c)).expect("match");
+            assert_eq!((m2, map2), (mode.clone(), map.clone()));
+        }
+
+        // the next firefight match plays the other mode
+        n.send(2, Client::Queue { playlist: "firefight".into(), seniority: 0 });
+        n.send(3, Client::Queue { playlist: "firefight".into(), seniority: 0 });
+        n.got(2);
+        // two players aren't a full team, so they wait for the last stage (45 s)
+        let mut found = None;
+        for i in 0..6 {
+            n.tick(10);
+            n.hello_game(2, "bob", "coop", &[]);
+            n.hello_game(3, "carol", "coop", &[]);
+            if let Some(m) = find_match(&n.got(2)) {
+                assert!(i >= 4, "matched short-handed after {}0 s", i + 1);
+                found = Some(m);
+                break;
+            }
+        }
+        let (_, seats, mode, _, _) = found.expect("short-handed match after the last stage");
+        assert_eq!(seats.len(), 2);
+        assert_ne!(mode, first);
     }
 
     #[test]

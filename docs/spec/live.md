@@ -107,7 +107,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 69 | `introduce` | `u32` peer id, `str` name, `addr` public, `addrs` LAN, `u64` nonce |
 | 70 | `forward` | `u32` from player id, payload |
 | 71 | `queue_status` | `str` playlist, `u8` stage (255 = not queued), `u16` seconds waited, `u16` players searching this playlist |
-| 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per seat: `u32` id, `u8` slot, `u8` team, `str` name |
+| 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per seat: `u32` id, `u8` slot, `u8` team, `str` name; then `str` mode, `str` map, `u8` count, then per setting: `str` name, `str` value (all empty for a playlist without modes) |
 | 73 | `players` | `u8` count, then per player: `u32` id, `str` name, `str` status, `str` party code if joinable else empty |
 | 74 | `ping` | `u32` nonce; sent after each `welcome`, answered at once with `pong` |
 
@@ -187,6 +187,50 @@ ticket that has waited longest, then the closest seniority. With
 the last stage starts with fewer players (for games that fill seats with
 bots).
 
+### Game modes in the hopper
+
+A playlist may list **modes**, as Reach's and Gears 3's hoppers do (Firefight
+and its variants under one playlist, Horde under another). Each match picks
+one mode, weighted by `weight`, then one of its `maps` at random, and never
+the previous match's mode and map on that playlist while anything else is
+left. `match` carries the pick; the host sets each of the mode's `settings`
+as a console variable and then loads the map. A co-op playlist is one team
+(`"teams": 1`) and needs no seniority, so its stages only widen ping:
+
+```json
+{
+  "id": "firefight", "name": "Firefight", "game": "coop",
+  "team_size": 4, "teams": 1, "min_players": 2,
+  "stages": [
+    { "after": 0,  "max_rtt_sum": 150 },
+    { "after": 20, "max_rtt_sum": 300 },
+    { "after": 45 }
+  ],
+  "modes": [
+    { "id": "firefight", "name": "Firefight", "maps": ["coop_arena"], "weight": 3,
+      "settings": { "coop_waves": "1", "coop_survival": "0", "coop_waveDelay": "10" } },
+    { "id": "grunt_rush", "name": "Grunt Rush", "maps": ["coop_arena"],
+      "settings": { "coop_waves": "1", "coop_waveMonsters": "monster_human_grunt" } }
+  ]
+}
+```
+
+- `modes`: at most 16. `id` is letters, digits, `_` and `-`; `name` is
+  for menus. `weight` defaults to 1; 0 takes a mode out of the rotation.
+- `maps`: at most 32 names of letters, digits, `_ - . /` (no `..`). An
+  empty list means the host's own default map.
+- `settings`: console variable names (letters, digits, `_`) and values
+  (printable ASCII without `" ; \`), at most 360 bytes encoded, so a
+  16-seat `match` still fits a datagram. Names starting with `live_` or
+  `rcon` or holding `password` are refused. The engine checks all of this
+  again before applying anything.
+
+The built-in playlists are Stiletto's `duel` and `2v2` (game `stiletto`)
+and the co-op mod's `campaign` (Half-Life chapters, no waves, 4 players),
+`firefight` (Firefight and Grunt Rush on `coop_arena`, 4 players) and
+`horde` (waves with no respawns, 30 s between waves, 5 players), all game
+`coop`.
+
 The host of a match is the leader of the longest-waiting party. (A later
 version may prefer the member with the best direct connections, once clients
 report them.) The game is told with `match`; the host starts its listen server and
@@ -243,6 +287,9 @@ Cvars:
 - `live_game` names the game. Players only meet players of the same game.
 - `live_onconnect` holds commands to run each time the client (re)connects.
 - `live_hostcmd` holds commands to run when a match picks this game to host.
+  When it is empty and the match names a map, the host runs `map <map>`.
+  Either way the mode's settings are applied first (each is printed as
+  `live: <name> "<value>"`). `$live_match_map` works inside it.
 - With `live_autoconnect` (1), a client that isn't hosting runs
   `connect live:<host>`.
 - `live_punch` (1) tries direct paths. Set it to 0 to relay everything.
@@ -250,7 +297,8 @@ Cvars:
 - These are read-only:
   - `live_state`: everything as JSON, for menus and QC
   - `live_party`: the room code
-  - `live_match_host`, `live_match_id` and `live_match_playlist`: the last match
+  - `live_match_host`, `live_match_id`, `live_match_playlist`,
+    `live_match_mode` and `live_match_map`: the last match
 
 Game traffic uses the address type `live:<id>[:<vport>]`, `NA_LIVE` in
 `net.h`. Without a port it means the peer's game server (vport 3). So
@@ -277,5 +325,8 @@ Tests:
   `LIVE_PUNCH=0` everything goes through the relay.
 - `tests/live/lobby.sh build bwlive-server`: an online lobby is found by
   room code over Live and started.
+- `tests/live/coop.sh build bwlive-server`: a one-team playlist with a game
+  mode; the host applies the mode's settings, loads its map without a
+  `live_hostcmd`, and the client joins.
 
-Both tests need `FTEQCC`.
+All three need `FTEQCC`.
