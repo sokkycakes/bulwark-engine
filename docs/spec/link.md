@@ -282,7 +282,8 @@ After the 32 bytes of the v1 fields (all present):
 | 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has (0 none yet), and its edict; a device that sends it takes WEAPONINFO |
 | then | u8, u16 | optional, after `'W'` when that is there: `'H'`, the HUDINFO version the device has (0 none yet); a device that sends it draws the HUD and takes HUDINFO |
 | then | u8, u16 | optional (after `'W'` and `'H'` when they are there, or at 32 without commands): `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
-| then | u8, u16, u8 | optional, last, after `'E'`: `'S'`, the AMBIENT version the device has (0 none), caps (bit 0: it plays sound); a device that sends it with bit 0 takes SOUND, AMBIENT, EVENT records 12-15 and WEAPONINFO's sound events |
+| then | u8, u16, u8 | optional, after `'E'`: `'S'`, the AMBIENT version the device has (0 none), caps (bit 0: it plays sound); a device that sends it with bit 0 takes SOUND, AMBIENT, EVENT records 12-15 and WEAPONINFO's sound events |
+| then | u8, u8 | optional, last, after `'S'`: `'L'`, the count of the device's last-weapon presses (the PC's `weaplast`, Q), mod 256. Each change after the first one heard switches the player to `m_lastWeapon` while they still own it, as the next command's `input_cursor_entitynumber` (the PC's client sends its weapon choice the same way), or else sends impulse 12 (the previous weapon, `GetLastWeapon`'s own fallback) |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -745,6 +746,7 @@ the server works those out as the client game would and sends them as
 | env_message | `EV_MESSAGE`'s sound, `CHAN_ITEM` | SOUND, entity 0, at the player's eye |
 | music | `EV_MUSIC_ONCE`/`EV_MUSIC_LOOP` (a `*M:` model name; "once" loops too, as the PC's `music X 0`), `EV_MUSIC_STOP`, serverinfo `bgm` (`sound/bgm/<x>.mp3`); the CD tracks (`EV_MUSICTRACK`, `EV_MUSICLOOP`) only when the game's `menu.dat` has `menu_musictrack`, which co-op's lacks (the PC stays silent) | EVENT 14 |
 | stuffcmd | `play`, `play2`, `playvol` (a local sound at the listener), `music`, `stopmusic` | SOUND entity 0 at the eye; EVENT 14 |
+| stuffcmd | `selectItem <weapon>` (the PC's client switches through its next command's `input_cursor_entitynumber`; the co-op heroes use it after a floor gun is taken) | the server finds the weapon the player owns by classname and sets it as the next link command's cursor entity |
 | view model | `HandleAnimEvent` 1004, 1008, 5004 on the view model | WEAPONINFO's `'S'` table |
 | model events | 1004, 1008, 5004 of the other studio entities, played as the client draws them | SOUND with `AT` |
 | loops | looping `ambient_generic` (not a SoundDef one) and `ncSound` entities | AMBIENT |
