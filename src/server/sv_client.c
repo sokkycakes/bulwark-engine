@@ -1774,6 +1774,8 @@ static void bi_stuffcmd(qcvm_t *vm)
 	client_t *c = SV_ClientForEdict(QC_PENT(vm, 0));
 	LOCALMSG(m, 4200);
 	concat_from(vm, 1, text, sizeof(text));
+	if (c && c->state != CS_FREE && c->link)
+		SV_LinkStuffCmd(c, text); /* its sounds and music (sv_link.c) */
 	if (!c || c->state == CS_FREE || c->bot)
 		return;
 	MSG_WriteByte(&m, svc_stufftext);
@@ -1788,6 +1790,8 @@ static void bi_stuffcmdflags(qcvm_t *vm)
 	client_t *c = SV_ClientForEdict(QC_PENT(vm, 0));
 	LOCALMSG(m, 4200);
 	concat_from(vm, 2, text, sizeof(text));
+	if (c && c->state != CS_FREE && c->link)
+		SV_LinkStuffCmd(c, text); /* its sounds and music (sv_link.c) */
 	if (!c || c->state == CS_FREE || c->bot)
 		return;
 	MSG_WriteByte(&m, svc_stufftext);
