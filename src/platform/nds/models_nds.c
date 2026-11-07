@@ -224,19 +224,21 @@ static void make_strips(mdl_t *m)
 			if (used[t])
 				continue;
 			/* from each of its three turns, as far as it goes (marking with 2 to
-			 * measure, then clearing); keep the longest */
+			 * measure, then clearing the ones marked); keep the longest. The marked
+			 * ones are listed past refs[n]: a strip took at most 3 refs a triangle, so
+			 * there is a place there for every triangle not used yet */
 			for (int r = 0; r < 3; r++) {
 				int len = 1, lt = t, li = (r + 1) % 3, lj = (r + 2) % 3, k, u;
-				used[t] = 2;
+				uint16_t *marked = refs + n;
+				used[t] = 2, marked[0] = (uint16_t)t;
 				while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
 					/* the old last corner is the new triangle's corner k + 1 (len was
 					 * even) or k (odd); its third corner is the new last */
 					li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
-					used[u] = 2, len++;
+					used[u] = 2, marked[len++] = (uint16_t)u;
 				}
-				for (int i = 0; i < nt; i++)
-					if (used[i] == 2)
-						used[i] = 0;
+				for (int i = 0; i < len; i++)
+					used[marked[i]] = 0;
 				if (len > bestlen)
 					bestlen = len, best = r;
 			}
