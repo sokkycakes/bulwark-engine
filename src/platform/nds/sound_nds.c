@@ -32,6 +32,7 @@ void *sbrk(ptrdiff_t);
 #define S_VOICES 96     /* snd_main.c:16-17: MAX_CHANNELS 128 less NUM_AMBIENT 32 */
 #define S_HW 16
 #define S_KEYS 512      /* keys resolved (or missed) this map, least recently used replaced */
+#define S_KHASH 256
 #define S_BLOCKS 192    /* samples in the cache */
 #define S_PACKS 8
 #define S_PAGE 512      /* a directory page: 21 entries of 24 bytes */
@@ -157,6 +158,7 @@ static struct sheap_s {
 		uint8_t d[S_PAGE];
 	} pagecache[2];
 	uint32_t f_q8[256]; /* snd_factor_q8 by attenuation byte */
+	int16_t khead[S_KHASH], knext[S_KEYS];
 } *H;
 
 static struct {
@@ -172,7 +174,7 @@ static struct {
 	uint32_t *precache;
 	int nprecache, precache_done, preload_next;
 	uint32_t preload_bytes;
-	int nblk;
+	int nblk, nkeys, khand;
 	uint8_t vst[S_VOICES]; /* each voice's V_ state, apart: the frame's passes read only these for free ones */
 	spack_t pack[S_PACKS];
 	int npacks;
@@ -198,7 +200,7 @@ static struct {
 	uint32_t wsel_until; /* HLWeaponSelect m_flHUDWeaponSelectTime, ticks */
 	int cmdrr;           /* volume updates go round */
 	uint32_t laststat;
-	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5];
+	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5], statreadsum, dbg[4];
 	uint32_t rnd;
 } S;
 
@@ -335,6 +337,7 @@ static bool pread_(spack_t *p, uint32_t pos, void *buf, uint32_t n)
 	bool ok = !fseek(p->f, (long)pos, SEEK_SET) && fread(buf, 1, n, p->f) == n;
 	t = ticks() - t0;
 	Snd_Stats.reads++, Snd_Stats.readbytes += n;
+	S.statreadsum += t;
 	if (t > S.statreadmax)
 		S.statreadmax = t;
 	if (t > Snd_Stats.read_ticks_max)
@@ -342,12 +345,23 @@ static bool pread_(spack_t *p, uint32_t pos, void *buf, uint32_t n)
 	return ok;
 }
 
+/* the key table is hashed (a scan of all 512 is ~18 KB of memory, past the 4 KB data cache) */
+#define KHASH(key) ((key) ^ (key) >> 9 ^ (key) >> 18) & (S_KHASH - 1)
 static int key_find(uint32_t key)
 {
-	for (int i = 0; i < S_KEYS; i++)
-		if (S.k[i].state != K_FREE && S.k[i].key == key)
+	for (int i = H->khead[KHASH(key)]; i >= 0; i = H->knext[i])
+		if (S.k[i].key == key)
 			return i;
 	return -1;
+}
+
+static void key_unlink(int ki)
+{
+	int16_t *pp = &H->khead[KHASH(S.k[ki].key)];
+	while (*pp >= 0 && *pp != ki)
+		pp = &H->knext[*pp];
+	if (*pp == ki)
+		*pp = H->knext[ki];
 }
 
 static bool key_busy(int ki)
@@ -370,19 +384,26 @@ static int key_get(uint32_t key)
 		S.k[ki].lastuse = S.use;
 		return ki;
 	}
-	for (int i = 0; i < S_KEYS; i++) {
-		if (S.k[i].state == K_FREE) {
-			old = i;
-			break;
+	if (S.nkeys < S_KEYS)
+		old = S.nkeys++; /* the table fills in order; then the least recently used of the next 16 goes
+		                  * (a clock hand: scanning all 512 costs ~0.4 ms in melonDS) */
+	else
+		for (int n = 0; n < S_KEYS && (n < 16 || old < 0); n++) {
+			int i = S.khand;
+			S.khand = (S.khand + 1) % S_KEYS;
+			if ((old < 0 || S.k[i].lastuse < S.k[old].lastuse) && !key_busy(i))
+				old = i;
 		}
-		if ((old < 0 || S.k[i].lastuse < S.k[old].lastuse) && !key_busy(i))
-			old = i;
-	}
 	if (old < 0)
 		return -1;
-	if (S.k[old].state != K_FREE && S.k[old].block >= 0)
-		block_free(S.k[old].block);
+	if (S.k[old].state != K_FREE) {
+		if (S.k[old].block >= 0)
+			block_free(S.k[old].block);
+		key_unlink(old);
+	}
 	memset(&S.k[old], 0, sizeof(S.k[old]));
+	H->knext[old] = H->khead[KHASH(key)];
+	H->khead[KHASH(key)] = (int16_t)old;
 	S.k[old].key = key;
 	S.k[old].state = S.npacks ? K_PENDING : K_MISS;
 	S.k[old].trypack = (int8_t)(S.npacks - 1);
@@ -421,6 +442,7 @@ static bool key_lookup_step(int ki)
 	skey_t *k = &S.k[ki];
 	while (k->state == K_PENDING) {
 		spack_t *p;
+		S.dbg[1]++;
 		int lo = 0, hi, page, nent, c;
 		uint8_t *d = NULL;
 		bool read = false;
@@ -1377,10 +1399,15 @@ static void loader(void)
 		}
 	/* 4: the map's precache list: looked up, then sorted smallest first and read into free room, up to 75% */
 	while (S.precache && S.precache_done < S.nprecache && BUDGET_LEFT()) {
+		uint32_t kt = ticks();
 		int ki = key_get(S.precache[S.precache_done]);
+		S.dbg[2] += ticks() - kt;
+		S.dbg[0]++;
 		if (ki >= 0 && S.k[ki].state == K_PENDING) {
+			uint32_t lt = ticks();
 			if (key_lookup_step(ki))
 				reads++;
+			S.dbg[3] += ticks() - lt;
 			continue;
 		}
 		S.precache_done++;
@@ -1606,11 +1633,13 @@ stats:
 		for (int h = 0; h < S_HW; h++)
 			nh += S.hw[h].v >= 0;
 		logf_("SNDSTAT voices=%d hw=%d cache=%u/%u pinned=%u misses=%u loads=%u late=%u quiet=%u stolen=%u dups=%u underrun=%u "
-		      "readms=%u.%02u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u\n",
+		      "dbg=%u/%u/%u/%u readms=%u.%02u readsum_ms=%u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u\n",
 		      nv, nh, (unsigned)(used_bytes() / 1024), (unsigned)(S.arenasize / 1024), (unsigned)(pinned_bytes() / 1024),
 		      (unsigned)Snd_Stats.missing, (unsigned)Snd_Stats.starts, (unsigned)Snd_Stats.late, (unsigned)Snd_Stats.quiet,
 		      (unsigned)Snd_Stats.stolen, (unsigned)Snd_Stats.dups, (unsigned)Snd_Stats.underrun,
+		      (unsigned)S.dbg[0], (unsigned)S.dbg[1], (unsigned)ticks_ms(S.dbg[2]), (unsigned)ticks_ms(S.dbg[3]),
 		      (unsigned)(ticks_ms(S.statreadmax * 100) / 100), (unsigned)(ticks_ms(S.statreadmax * 100) % 100),
+		      (unsigned)ticks_ms(S.statreadsum),
 		      (unsigned)(ticks_ms(S.statcmdmax * 100) / 100), (unsigned)(ticks_ms(S.statcmdmax * 100) % 100),
 		      (unsigned)((uint64_t)S.statactive * 1000000 / TICK_FREQ),
 		      (unsigned)((uint64_t)S.statcpu * 1000000 / TICK_FREQ / BW_NDS_MAX(S.statframes, 1)),
@@ -1619,6 +1648,8 @@ stats:
 		      (unsigned)(S.sec[1] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[2] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)),
 		      (unsigned)(S.sec[3] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[4] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)));
 		memset(S.sec, 0, sizeof(S.sec));
+		S.statreadsum = 0;
+		memset(S.dbg, 0, sizeof(S.dbg));
 		S.laststat = ticks();
 		S.statframes = S.statcpu = S.statcpumax = S.statreadmax = S.statcmdmax = S.statactive = 0;
 	}
@@ -1737,6 +1768,8 @@ void Snd_MapLoaded(void)
 	for (int i = 0; i < S_KEYS; i++)
 		S.k[i].block = -1;
 	memset(S.vst, 0, sizeof(S.vst));
+	memset(H->khead, 0xff, sizeof(H->khead));
+	S.nkeys = 0;
 	for (int a = 0; a < 256; a++)
 		H->f_q8[a] = snd_factor_q8(a);
 	H->pagecache[0].pack = H->pagecache[1].pack = -1;
