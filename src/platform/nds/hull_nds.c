@@ -50,12 +50,13 @@ typedef struct {
 	bool wide;
 	const float *axial;
 	const float (*general)[4];
+	const int32_t (*gfix)[4]; /* each general plane as h_side_general reads it, or NULL */
 } htree_t;
 
 static struct {
 	int rule, numhulls, nummodels;
 	htree_t t;
-	int numnodes, numaxial, numgeneral;
+	int numnodes, numaxial, numgeneral, numgeneral0;
 	void *nodes;
 	float *axial;
 	float (*general)[4];
@@ -69,6 +70,7 @@ static struct {
 	void *nodes0;
 	float (*general0)[4];
 	int32_t *heads0;
+	int32_t (*gfix)[4], (*gfix0)[4];
 	hull_fxnode_t *fxnodes;
 	hull_fxplane_t *fxplanes;
 	int *fxleafs;
@@ -205,14 +207,22 @@ static inline void hpt_set(hpt_t *a)
  * most 2^-24 of that each, |n| <= 1), and the value worked out here in 1/2^46 units is
  * within 2^-13 of it (p and d to 1/65536, n to 2^-30, |p|, |d| < 16384); further from 0
  * than both, F has its sign and is not 0. Returns 1 back, 0 front, -1 can't tell. */
-static int h_side_general(const float *g, const hpt_t *a)
+/* the plane's normal in 2^-30 units and its distance in 1/65536 units, for h_side_general;
+ * f[0] INT32_MIN when they don't fit */
+static void h_gfix(const float *g, int32_t *f)
 {
-	int32_t n[3], d;
+	if (!h_fix(g[0], 30, 1 << 30, &f[0]) || !h_fix(g[1], 30, 1 << 30, &f[1]) ||
+	    !h_fix(g[2], 30, 1 << 30, &f[2]) || !h_fix(g[3], 16, 16383 << 16, &f[3]))
+		f[0] = INT32_MIN;
+}
+
+static inline __attribute__((always_inline)) int h_side_general(const int32_t *f, const hpt_t *a)
+{
+	int32_t d = f[3];
 	int64_t e, lim;
-	if (!a->q_ok || !h_fix(g[0], 30, 1 << 30, &n[0]) || !h_fix(g[1], 30, 1 << 30, &n[1]) ||
-	    !h_fix(g[2], 30, 1 << 30, &n[2]) || !h_fix(g[3], 16, 16383 << 16, &d))
+	if (!a->q_ok || f[0] == INT32_MIN)
 		return -1;
-	e = (int64_t)a->q[0] * n[0] + (int64_t)a->q[1] * n[1] + (int64_t)a->q[2] * n[2] - ((int64_t)d << 30);
+	e = (int64_t)a->q[0] * f[0] + (int64_t)a->q[1] * f[1] + (int64_t)a->q[2] * f[2] - ((int64_t)d << 30);
 	lim = ((int64_t)(a->qsum + (uint32_t)(d < 0 ? -d : d)) << 10) + ((int64_t)1 << 34); /* the sum < 2^32 */
 	return e > lim ? 0 : e < -lim ? 1 : -1;
 }
@@ -225,7 +235,13 @@ static inline __attribute__((always_inline)) int h_back(const htree_t *t, bool w
 	int side;
 	if (type < 3)
 		return a->k[type] < fkey(t->axial[i]);
-	side = h_side_general(t->general[i], a);
+	if (t->gfix) {
+		side = h_side_general(t->gfix[i], a);
+	} else {
+		int32_t f[4];
+		h_gfix(t->general[i], f);
+		side = h_side_general(f, a);
+	}
 #ifdef HULL_SELFCHECK /* pmtest built with it: the shortcut must agree with the float test */
 	if (side >= 0 && side != fx_lt(h_dist(t, pl, a->p), 0))
 		abort();
@@ -621,7 +637,7 @@ void Hull_ModelBounds(int model, float mins[3], float maxs[3])
 void Hull_Free(void)
 {
 	free(H.nodes), free(H.axial), free(H.general), free(H.heads), free(H.bounds);
-	free(H.nodes0), free(H.general0), free(H.heads0);
+	free(H.nodes0), free(H.general0), free(H.heads0), free(H.gfix), free(H.gfix0);
 	free(H.fxnodes), free(H.fxplanes), free(H.fxleafs);
 	memset(&H, 0, sizeof(H));
 	memset(&hsel, 0, sizeof(hsel));
@@ -929,6 +945,7 @@ static bool load_hull0(const char *path, const uint32_t *lo, const uint32_t *ll,
 		hwnode_t *n0 = malloc(sizeof(hwnode_t) * (size_t)nn + 1);
 		H.nodes0 = n0;
 		H.general0 = malloc(16 * (size_t)np + 1);
+		H.numgeneral0 = np;
 		ok = n0 && H.general0;
 		for (int i = 0; ok && i < np; i++)
 			for (int k = 0; k < 4; k++)
@@ -956,6 +973,23 @@ static bool load_hull0(const char *path, const uint32_t *lo, const uint32_t *ll,
 		return fail(err, errsize, "can't load hull 0");
 	H.own0.ctx = NULL, H.own0.trace = own_hull0;
 	return true;
+}
+
+/* the general planes in fixed point, if that leaves the reserve free (the walk works them
+ * out on each test otherwise) */
+static int32_t (*make_gfix(htree_t *t, int n, size_t reserve))[4]
+{
+	int32_t (*f)[4] = n > 0 ? malloc(16 * (size_t)n) : NULL;
+	void *probe = f && reserve ? malloc(reserve) : NULL;
+	if (f && reserve && !probe) {
+		free(f);
+		return NULL;
+	}
+	free(probe);
+	for (int i = 0; f && i < n; i++)
+		h_gfix(t->general[i], f[i]);
+	t->gfix = (const int32_t (*)[4])f;
+	return f;
 }
 
 bool Hull_Load(const char *bsppath, int flags, hull_read_fn read, void *ctx, size_t reserve,
@@ -1007,6 +1041,9 @@ bool Hull_Load(const char *bsppath, int flags, hull_read_fn read, void *ctx, siz
 	}
 	if ((flags & (HULL_WITH_HULL0 | HULL_HULL0_FIXED)) && !load_hull0(bsppath, lo, ll, flags, read, ctx, err, errsize))
 		return false;
+	H.gfix = make_gfix(&H.t, H.numgeneral, reserve);
+	if (H.t0.nodes)
+		H.gfix0 = make_gfix(&H.t0, H.numgeneral0, reserve);
 	return true;
 }
 
