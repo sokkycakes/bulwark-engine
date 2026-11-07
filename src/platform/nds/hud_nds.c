@@ -809,13 +809,22 @@ static void part_obj(void)
 {
 	char st[2][96], v[16];
 	const int fl = TF_BARE | TF_NUM, lh = fonts[F_NUM].dbot + 3; /* a line: the caps and 2 rows */
-	int y, w = OBJ_W, x0 = 3, y0 = diag_left < x0 + OBJ_W + 4 ? top_y + 3 : 3;
+	int y, w, x0 = 3, y0;
 	int wave = atoi(key(HK_WAVE)), left = key(HK_LEFT)[0] ? atoi(key(HK_LEFT)) : -1;
 	bool fighting = wave > 0 && left >= 0;
 	if (!hud.have)
 		return;
 	memset(st, 0, sizeof(st));
 	split_bar(key(HK_STATS)[0] ? key(HK_STATS) : "0|0", st, 2);
+	/* only as wide as its lines (sokky: narrower than the PC's panel), at most OBJ_W */
+	snprintf(v, sizeof(v), "WAVE %d", BW_NDS_MAX(1, wave));
+	w = n_w(v, 1);
+	snprintf(v, sizeof(v), "%d", fighting ? left : 0);
+	w = BW_NDS_MAX(w, n_w("LEFT", 1) + 4 + n_w(v, 1));
+	w = BW_NDS_MAX(w, n_w("SCORE", 1) + 4 + n_w(st[0][0] ? st[0] : "0", 1));
+	snprintf(v, sizeof(v), "p%.12s", st[1][0] ? st[1] : "0");
+	w = BW_NDS_MIN(OBJ_W, BW_NDS_MAX(w, n_w(v, 1)) + 6);
+	y0 = diag_left < x0 + w + 4 ? top_y + 3 : 3;
 	window(x0, y0, w, 4 * lh + 3 + 2);
 	y = y0 + 2;
 	snprintf(v, sizeof(v), "WAVE %d", BW_NDS_MAX(1, wave));
