@@ -11,6 +11,9 @@
  * and the controls: controls=touch|classic  hand=right|left  sens=100 (percent)
  * diag=0 (hides the frame rate and counters along the top screen's top edge)
  * fps=30 (holds the frame rate to 30, for testing)
+ * predict=0 (shows where the server says the player is, as before link v2)
+ * cmdvb=2 (a movement command every 2 refreshes instead of every one, for testing)
+ * botwalk=1 (walks, strafes, jumps and crouches by itself in a fixed pattern, for testing)
  *
  * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
  * middle to aim, double-tap to jump, and buttons below for weapons, reload,
@@ -35,6 +38,7 @@
 #include <wfc.h>
 
 #include "nds.h"
+#include "hull_nds.h"
 
 #define LINK_PORT 27901
 #define MAX_SERVERS 8
@@ -42,7 +46,9 @@
 #define HZ 60
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO };
+#define LINK_VER 2 /* JOIN and WELCOME's linkver: 2 sends movement commands (docs/spec/link.md) */
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
 #define MAX_THINGS 48
@@ -63,11 +69,14 @@ typedef struct {
 	bool lefty;   /* move with A B X Y, fire with R */
 	bool diag;
 	bool fps30; /* fps=30: hold to 30 frames a second */
+	bool nopredict; /* predict=0 */
+	int cmdvb;      /* refreshes a movement command covers: 1, or 2 with cmdvb=2 */
+	bool botwalk;   /* botwalk=1 */
 	int sens;     /* aim speed, percent: 100 turns 120 degrees across the screen */
 } linkcfg_t;
 
 /* what the game reads in input_buttons (Nuclide's INPUT_BUTTON*) */
-enum { B_ATTACK = 0x01, B_JUMP = 0x02, B_RELOAD = 0x08, B_ATTACK2 = 0x10, B_USE = 0x20, B_CROUCH = 0x80 };
+enum { B_ATTACK = 0x01, B_JUMP = 0x02, B_RELOAD = 0x08, B_USE = 0x10, B_ATTACK2 = 0x20, B_SPRINT = 0x40, B_CROUCH = 0x80 };
 /* Quake's next and previous weapon, Half-Life's flashlight */
 enum { IMP_NEXT = 10, IMP_PREV = 12, IMP_LIGHT = 100 };
 
@@ -177,6 +186,74 @@ static struct {
 
 static linkmodel_t models[MAX_LINKMODELS];
 
+/* movement prediction (link v2, docs/spec/link.md "Prediction"): the DS makes
+ * movement commands, numbered, and runs each through pmove_nds.c (a port of
+ * the Nuclide movement code the PC runs) against the map's clip hulls
+ * (hull_nds.c); the server runs each once and says, in PSTATE, which it ran
+ * last and where that left the player. Commands the server hasn't run yet
+ * are run again from its state whenever ours turns out to differ, as
+ * ncPlayer::PreFrame does on the PC (src/shared/game/Player.qc). */
+#define PR_CMDS 64 /* commands kept, by seq & 63 */
+#define PR_RING 32 /* states predicted after them, by seq & 31 */
+#define PR_MOVERS 8
+static struct {
+	int srvver;            /* WELCOME's linkver: 0 an old server */
+	uint32_t seq;          /* the newest command */
+	uint32_t floor;        /* commands up to here were made for another map: never sent */
+	uint32_t ack;          /* the newest the server ran (or dropped) */
+	int cmdvb;             /* the refresh the newest command ends at */
+	uint32_t cmdms;        /* and its millisecond clock */
+	uint8_t impseq;        /* the pad's one-shot count the commands have taken */
+	pmcmd_t cmd[PR_CMDS];
+	pmstate_t pred[PR_RING];
+	uint32_t predseq[PR_RING]; /* the command each holds the state after, 0 none */
+	pmstate_t cur;         /* after the newest command: what the view shows */
+	bool on;               /* predicting; else the view eases toward VIEW */
+	pmvars_t vars;
+	uint16_t varsver;      /* PMOVEVARS applied, 0 none */
+	/* BRUSHINFO: the version being put together from its pages, and the last complete one */
+	hullbrush_t *bnew, *bcur, *bscene;
+	uint8_t *bhave;
+	int bnewtotal, bnewgot, bcurn;
+	uint16_t bnewver, bcurver;
+	/* the newest PSTATE, kept while packets drain, handled after */
+	uint8_t pstate[1024];
+	int pstatelen;
+	bool havepseq;
+	uint16_t pseq;
+	uint8_t fixseq;
+	struct {
+		uint16_t e;
+		float vel[3];
+	} movers[PR_MOVERS];
+	int nmovers;
+	float stairz;          /* ncView::StairSmooth's last eye height */
+	bool stair;            /* stairz holds one */
+	int botstart;          /* botwalk: the refresh the pattern started */
+} pr;
+
+/* what prediction did, for the rig's measurement build (it reads and resets it each second) */
+typedef struct {
+	uint32_t compared, within, snaps;       /* PSTATEs compared; within 0.5 units; corrections over 64 units */
+	uint32_t err_sum_cu, err_max_cu;        /* origin error at the acked command, 1/100 units */
+	uint32_t verr_max;                      /* velocity error, units a second */
+	uint32_t replays, replayed, replay_max; /* PSTATE replays; commands replayed */
+	uint32_t rp_skip, rp_exact;             /* replays skipped (matched); of those, bit-identical */
+	uint32_t pm_runs, cmds, frames;         /* PM_Run calls; commands made; frames */
+	uint64_t pm_ticks;
+	uint32_t pm_ticks_max;                  /* per PM_Run (LINK_PM_TICKS) */
+	uint64_t fr_ticks;
+	uint32_t fr_ticks_max;                  /* prediction per frame */
+	uint16_t gaps, clipped;                 /* the server's counters, last PSTATE */
+	uint8_t hullrule, on;
+	uint16_t hullkb;
+} linkpred_stats_t;
+linkpred_stats_t Link_PredStats;
+#ifndef LINK_PM_TICKS
+#define LINK_PM_TICKS() 0 /* the rig's measurement build makes this tickGetCount() */
+#endif
+static void pred_newmap(void);
+
 /* --- link.txt ------------------------------------------------------------------------ */
 
 static void read_config(void)
@@ -186,6 +263,7 @@ static void read_config(void)
 	cfg.port = LINK_PORT;
 	cfg.sens = 100;
 	cfg.diag = true;
+	cfg.cmdvb = 1;
 	snprintf(cfg.name, sizeof(cfg.name), "DS");
 	for (int b = 0; b < NDS_NUMBASEDIRS; b++) {
 		FILE *f;
@@ -218,6 +296,12 @@ static void read_config(void)
 				cfg.diag = atoi(v) != 0;
 			else if (!strcmp(line, "fps"))
 				cfg.fps30 = atoi(v) == 30;
+			else if (!strcmp(line, "predict"))
+				cfg.nopredict = atoi(v) == 0;
+			else if (!strcmp(line, "cmdvb"))
+				cfg.cmdvb = BW_NDS_CLAMP(atoi(v), 1, 2);
+			else if (!strcmp(line, "botwalk"))
+				cfg.botwalk = atoi(v) != 0;
 			else if (!strcmp(line, "server")) {
 				char *colon = strchr(v, ':');
 				if (colon)
@@ -355,7 +439,7 @@ static bool wifi_connect(void)
 /* --- packets ------------------------------------------------------------------------- */
 
 typedef struct {
-	uint8_t d[96];
+	uint8_t d[192]; /* INPUT with 8 commands is 161 */
 	int n;
 } pkt_t;
 
@@ -954,6 +1038,8 @@ static bool join(const server_t *s, ndscam_t *cam)
 	struct sockaddr_in from;
 	pkt_t p;
 	memset(&link, 0, sizeof(link));
+	pred_newmap(); /* frees what the last game left */
+	memset(&pr, 0, sizeof(pr));
 	link.to = s->addr;
 	/* different on every DS and every join: the time, how long since power-on and the name */
 	link.session = (uint32_t)rand() ^ (uint32_t)time(NULL) << 8 ^ Wifi_GetIP() ^ (uint32_t)Nds_Vblanks() * 2654435761u;
@@ -967,6 +1053,7 @@ static bool join(const server_t *s, ndscam_t *cam)
 	p_u16(&p, 1); /* a DS */
 	for (int i = 0; i < 16; i++)
 		p_u8(&p, i < (int)strlen(cfg.name) ? cfg.name[i] : 0);
+	p_u8(&p, LINK_VER);
 	for (int frame = 0; frame < 6 * HZ; frame++) {
 		int len, type;
 		if (frame % HZ == 0)
@@ -1057,8 +1144,10 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 {
 	char map[65], path[300], err[96];
 	uint16_t spawncount = (uint16_t)rd16(d + 5);
-	copy_str(map, sizeof(map), d + 7, len - 7);
+	copy_str(map, sizeof(map), d + 7, BW_NDS_MIN(len - 7, 64));
 	link.spawncount = spawncount;
+	pr.srvver = len >= 72 ? d[71] : 0;
+	pred_newmap();
 	if (World_Loaded() && !strcmp(map, link.map))
 		return;
 	snprintf(link.map, sizeof(link.map), "%s", map);
@@ -1534,11 +1623,14 @@ static void key_move(uint32_t held, int *fwd, int *side)
 		*fwd = 0; /* L + up / down looks */
 }
 
+/* INPUT: the v1 part for old servers (from the newest command), then the
+ * commands the server hasn't run, made on this map, up to the newest 8 */
 static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool togame, const touchPosition *tp)
 {
 	pkt_t p;
-	int fwd, side;
-	key_move(held, &fwd, &side);
+	const pmcmd_t *c = &pr.cmd[pr.seq & (PR_CMDS - 1)];
+	int fwd = BW_NDS_CLAMP(c->move[0] * 127 / 400, -127, 127), side = BW_NDS_CLAMP(c->move[1] * 127 / 400, -127, 127);
+	uint32_t first = BW_NDS_MAX(pr.ack, pr.floor) + 1;
 	p_begin(&p, L_INPUT);
 	p_u32(&p, link.session);
 	p_u16(&p, ++link.seq);
@@ -1555,6 +1647,23 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 	p_u16(&p, link.spawncount); /* the map this device has */
 	p_u16(&p, buttons);         /* what the game reads, mapped here */
 	p_u8(&p, pad.impulse), p_u8(&p, pad.impseq);
+	if (pr.seq > pr.floor) {
+		first = BW_NDS_CLAMP(first, pr.seq >= 8 ? pr.seq - 7 : 1, pr.seq);
+		first = BW_NDS_MAX(first, pr.floor + 1);
+		p_u8(&p, 'C'), p_u8(&p, LINK_VER);
+		p_u32(&p, pr.seq);
+		p_u8(&p, (int)(pr.seq - first + 1)), p_u8(&p, 14);
+		p_u16(&p, pr.varsver), p_u16(&p, pr.bcurver);
+		for (uint32_t s = first; s <= pr.seq; s++) {
+			c = &pr.cmd[s & (PR_CMDS - 1)];
+			p_u8(&p, c->msec);
+			p_u16(&p, c->pitch), p_u16(&p, c->yaw);
+			for (int k = 0; k < 3; k++)
+				p_u16(&p, c->move[k]);
+			p_u16(&p, c->buttons);
+			p_u8(&p, c->impulse);
+		}
+	}
 	send_to(&link.to, &p);
 }
 
@@ -1664,6 +1773,407 @@ static void view_motion(const ndscam_t *cam, ndscam_t *view, int dt)
 	}
 }
 
+/* --- movement prediction (link v2) ---------------------------------------------------- */
+
+static float rdf32(const uint8_t *d)
+{
+	uint32_t u = rd32(d);
+	float f;
+	memcpy(&f, &u, 4);
+	return f;
+}
+
+static void rdvec(const uint8_t *d, float *v)
+{
+	for (int k = 0; k < 3; k++)
+		v[k] = rdf32(d + k * 4);
+}
+
+static void pred_freebrushes(void)
+{
+	free(pr.bnew), free(pr.bcur), free(pr.bscene), free(pr.bhave);
+	pr.bnew = pr.bcur = pr.bscene = NULL, pr.bhave = NULL;
+	pr.bnewtotal = pr.bnewgot = pr.bcurn = 0;
+	pr.bnewver = pr.bcurver = 0;
+}
+
+/* a WELCOME for another map (or the first): nothing of the last map's holds,
+ * and commands made for it are never sent again (the server drops them) */
+static void pred_newmap(void)
+{
+	pred_freebrushes();
+	pr.varsver = 0;
+	pr.on = false;
+	pr.stair = false;
+	pr.havepseq = false;
+	pr.pstatelen = 0;
+	memset(pr.predseq, 0, sizeof(pr.predseq));
+	pr.floor = pr.seq;
+	Hull_SetBrushes(NULL, 0);
+	Hull_SetBoxes(NULL, 0);
+}
+
+/* PMOVEVARS: the game's movement values, the global set and the player's own */
+static void handle_pmovevars(const uint8_t *d, int len)
+{
+	uint16_t ver;
+	if (len < 10 + 2 * PMV_COUNT * 4 || (uint16_t)rd16(d + 4) != link.spawncount || d[8] != PMV_COUNT)
+		return;
+	ver = (uint16_t)rd16(d + 6);
+	if (!ver || ver == pr.varsver)
+		return;
+	for (int i = 0; i < PMV_COUNT; i++) {
+		pr.vars.g[i] = rdf32(d + 10 + i * 4);
+		pr.vars.p[i] = rdf32(d + 10 + (PMV_COUNT + i) * 4);
+	}
+	PM_SetVars(&pr.vars);
+	pr.varsver = ver;
+}
+
+/* BRUSHINFO: the brush entities that collide, in pages; a version counts once all its entries came */
+static void handle_brushinfo(const uint8_t *d, int len)
+{
+	uint16_t ver;
+	int total, first, count;
+	if (len < 13 || (uint16_t)rd16(d + 4) != link.spawncount)
+		return;
+	ver = (uint16_t)rd16(d + 6), total = rd16(d + 8), first = rd16(d + 10), count = d[12];
+	if (!ver || ver == pr.bcurver || total > HULL_MAX_BRUSHES || first + count > total || len < 13 + count * 18)
+		return;
+	if (ver != pr.bnewver || total != pr.bnewtotal || (!pr.bnew && total)) {
+		free(pr.bnew), free(pr.bhave);
+		pr.bnew = total ? malloc(sizeof(hullbrush_t) * (size_t)total) : NULL;
+		pr.bhave = total ? calloc((size_t)total, 1) : NULL;
+		if (total && (!pr.bnew || !pr.bhave)) {
+			free(pr.bnew), free(pr.bhave);
+			pr.bnew = NULL, pr.bhave = NULL, pr.bnewver = 0;
+			return;
+		}
+		pr.bnewver = ver, pr.bnewtotal = total, pr.bnewgot = 0;
+	}
+	for (int i = 0; i < count; i++) {
+		const uint8_t *e = d + 13 + i * 18;
+		hullbrush_t *b = &pr.bnew[first + i];
+		b->edict = (uint16_t)rd16(e);
+		b->model = (uint16_t)rd16(e + 2);
+		b->solid = e[4];
+		b->skin = (int8_t)e[5];
+		rdvec(e + 6, b->origin);
+		if (!pr.bhave[first + i])
+			pr.bhave[first + i] = 1, pr.bnewgot++;
+	}
+	if (pr.bnewgot < total)
+		return;
+	/* complete: it becomes the list, with a copy to put the movers in */
+	free(pr.bcur), free(pr.bscene), free(pr.bhave);
+	pr.bcur = pr.bnew, pr.bcurn = total, pr.bcurver = ver;
+	pr.bscene = total ? malloc(sizeof(hullbrush_t) * (size_t)total) : NULL;
+	pr.bnew = NULL, pr.bhave = NULL, pr.bnewver = 0, pr.bnewtotal = 0;
+}
+
+/* keeps the newest PSTATE for this map; handled once the packets are drained */
+static void keep_pstate(const uint8_t *d, int len)
+{
+	uint16_t pseq;
+	if (len < 180 || len > (int)sizeof(pr.pstate) || (uint16_t)rd16(d + 14) != link.spawncount)
+		return;
+	pseq = (uint16_t)rd16(d + 8);
+	if (pr.havepseq && (int16_t)(pseq - pr.pseq) <= 0)
+		return;
+	pr.havepseq = true, pr.pseq = pseq;
+	memcpy(pr.pstate, d, (size_t)len);
+	pr.pstatelen = len;
+}
+
+/* boxes are where the server had them at the acked command: one that has
+ * since walked into us must not pin the prediction (PM_FOCUS_DROPSTUCK) */
+static void focus_dropstuck(void *ctx, const float org[3], const float mins[3], const float maxs[3], float radius,
+                            int flags)
+{
+	Hull_Focus(ctx, org, mins, maxs, radius, flags | PM_FOCUS_DROPSTUCK);
+}
+
+static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck};
+
+static void run_cmd(pmstate_t *s, const pmcmd_t *c)
+{
+	uint64_t t0 = LINK_PM_TICKS();
+	uint32_t t;
+	PM_Run(s, c, &pr.vars, &pred_trace);
+	t = (uint32_t)(LINK_PM_TICKS() - t0);
+	Link_PredStats.pm_runs++;
+	Link_PredStats.pm_ticks += t;
+	Link_PredStats.pm_ticks_max = BW_NDS_MAX(Link_PredStats.pm_ticks_max, t);
+}
+
+/* close enough that replaying would change nothing worth seeing (and bit for bit, for the count) */
+static bool state_matches(const pmstate_t *a, const pmstate_t *b, bool *exact)
+{
+	for (int k = 0; k < 3; k++)
+		if (fabsf(a->origin[k] - b->origin[k]) > 1.0f / 32 || fabsf(a->velocity[k] - b->velocity[k]) > 0.5f)
+			return false;
+	if (a->flags != b->flags || a->vflags != b->vflags || a->gflags != b->gflags || a->movetype != b->movetype ||
+	    a->waterlevel != b->waterlevel || a->groundent != b->groundent || memcmp(a->mins, b->mins, 12) ||
+	    memcmp(a->maxs, b->maxs, 12) || memcmp(a->view_ofs, b->view_ofs, 12) || memcmp(a->basevel, b->basevel, 12) ||
+	    memcmp(a->hookvel, b->hookvel, 12) || a->gravity != b->gravity || a->friction != b->friction)
+		return false;
+	*exact = !memcmp(a->origin, b->origin, 12) && !memcmp(a->velocity, b->velocity, 12);
+	return true;
+}
+
+/* PSTATE (docs/spec/link.md): the server's state after the command it ran
+ * last, the movers and boxes round the player; from it the commands it
+ * hasn't run are run again, unless what we predicted for that one holds */
+static void handle_pstate(ndscam_t *cam)
+{
+	const uint8_t *d = pr.pstate;
+	int len = pr.pstatelen, nmovers, nboxes, status;
+	uint32_t ack;
+	uint16_t varsver, brushver;
+	pmstate_t srv;
+	bool had, exact, turned;
+	float err = 0;
+	if (!len)
+		return;
+	pr.pstatelen = 0;
+	ack = rd32(d + 4), status = d[10];
+	Link_PredStats.clipped = d[11], Link_PredStats.gaps = (uint16_t)rd16(d + 12);
+	varsver = (uint16_t)rd16(d + 16), brushver = (uint16_t)rd16(d + 18);
+	nmovers = BW_NDS_MIN(d[21], PR_MOVERS), nboxes = BW_NDS_MIN(d[178], HULL_MAX_BOXES);
+	if (180 + d[21] * 26 + d[178] * 27 > len)
+		return;
+	if (ack > pr.ack && ack <= pr.seq)
+		pr.ack = ack;
+
+	memset(&srv, 0, sizeof(srv));
+	rdvec(d + 26, srv.origin), rdvec(d + 38, srv.velocity), rdvec(d + 50, srv.basevel), rdvec(d + 62, srv.hookvel);
+	rdvec(d + 74, srv.view_ofs), rdvec(d + 86, srv.mins), rdvec(d + 98, srv.maxs);
+	srv.flags = rd32(d + 110), srv.vflags = rd32(d + 114), srv.gflags = rd32(d + 118);
+	srv.movetype = d[122], srv.solid = d[123], srv.waterlevel = (int8_t)d[124], srv.watertype = (int8_t)d[125];
+	srv.groundent = rd16(d + 126);
+	srv.gravity = rdf32(d + 128), srv.friction = rdf32(d + 132), srv.maxspeed = rdf32(d + 136);
+	srv.time_since_jump = rdf32(d + 140), srv.time_since_teleport = rdf32(d + 144);
+	srv.stamina = rdf32(d + 148), srv.speed_target = rdf32(d + 152);
+	srv.wsm = rdf32(d + 160), srv.wsmfire = rdf32(d + 164), srv.wsmzoom = rdf32(d + 168), srv.viewzoom = rdf32(d + 172);
+	srv.health = (int16_t)rd16(d + 176);
+	srv.rules = (uint8_t)((status >> 2) & 7);
+
+	/* the game turned us (a teleport, a respawn) */
+	if ((turned = d[20] != pr.fixseq)) {
+		pr.fixseq = d[20];
+		cam->pitch = (int16_t)rd16(d + 22) / 2;
+		cam->yaw = (int16_t)rd16(d + 24) / 2;
+	}
+
+	/* everything prediction needs, for this state; else the view shows VIEW as before */
+	if (cfg.nopredict || pr.srvver < LINK_VER || !(status & 1) || Hull_Rule() == HULL_NONE || !pr.varsver ||
+	    (int16_t)(pr.varsver - varsver) < 0 || !pr.bcurver || pr.bcurver != brushver) {
+		pr.on = false;
+		return;
+	}
+
+	/* the scene as the server had it: the brush list with the movers where they are, and the boxes */
+	pr.nmovers = nmovers;
+	if (pr.bcurn)
+		memcpy(pr.bscene, pr.bcur, sizeof(hullbrush_t) * (size_t)pr.bcurn);
+	for (int i = 0; i < nmovers; i++) {
+		const uint8_t *m = d + 180 + i * 26;
+		pr.movers[i].e = (uint16_t)rd16(m);
+		rdvec(m + 14, pr.movers[i].vel);
+		for (int b = 0; b < pr.bcurn; b++)
+			if (pr.bscene[b].edict == pr.movers[i].e)
+				rdvec(m + 2, pr.bscene[b].origin);
+	}
+	Hull_SetBrushes(pr.bscene, pr.bcurn);
+	{
+		static hullbox_t boxes[HULL_MAX_BOXES];
+		for (int i = 0; i < nboxes; i++) {
+			const uint8_t *b = d + 180 + d[21] * 26 + i * 27;
+			boxes[i].edict = (uint16_t)rd16(b);
+			rdvec(b + 2, boxes[i].mins);
+			rdvec(b + 14, boxes[i].maxs);
+			boxes[i].solid = b[26];
+		}
+		Hull_SetBoxes(boxes, nboxes);
+	}
+
+	/* turned: its state as it is (the commands it hasn't run were made facing the old way) */
+	if (turned) {
+		pr.cur = srv;
+		memset(pr.predseq, 0, sizeof(pr.predseq));
+		pr.stair = false;
+		pr.on = true;
+		return;
+	}
+
+	had = pr.on && pr.predseq[ack & (PR_RING - 1)] == ack && ack;
+	if (had) {
+		const pmstate_t *p = &pr.pred[ack & (PR_RING - 1)];
+		float dv = 0;
+		for (int k = 0; k < 3; k++) {
+			float e = p->origin[k] - srv.origin[k], v = p->velocity[k] - srv.velocity[k];
+			err += e * e, dv += v * v;
+		}
+		err = sqrtf(err), dv = sqrtf(dv);
+		Link_PredStats.compared++;
+		Link_PredStats.within += err <= 0.5f;
+		Link_PredStats.err_sum_cu += (uint32_t)BW_NDS_MIN(err * 100, 1e9f);
+		Link_PredStats.err_max_cu = BW_NDS_MAX(Link_PredStats.err_max_cu, (uint32_t)BW_NDS_MIN(err * 100, 1e9f));
+		Link_PredStats.verr_max = BW_NDS_MAX(Link_PredStats.verr_max, (uint32_t)BW_NDS_MIN(dv, 1e9f));
+		if (state_matches(p, &srv, &exact)) {
+			Link_PredStats.rp_skip++;
+			Link_PredStats.rp_exact += exact;
+			return;
+		}
+	}
+	if (pr.seq - ack >= PR_RING) { /* older than the ring: the server's state, and a snap */
+		pr.cur = srv;
+		memset(pr.predseq, 0, sizeof(pr.predseq));
+		Link_PredStats.snaps += pr.on;
+		pr.stair = false;
+		pr.on = true;
+		return;
+	}
+	/* run what the server hasn't, from its state (never what was made for another map) */
+	Link_PredStats.replays++;
+	Link_PredStats.replay_max = BW_NDS_MAX(Link_PredStats.replay_max, pr.seq - ack);
+	for (uint32_t s = BW_NDS_MAX(ack, pr.floor) + 1; s <= pr.seq; s++) {
+		run_cmd(&srv, &pr.cmd[s & (PR_CMDS - 1)]);
+		pr.pred[s & (PR_RING - 1)] = srv;
+		pr.predseq[s & (PR_RING - 1)] = s;
+		Link_PredStats.replayed++;
+	}
+	pr.cur = srv;
+	if (had && err > 64)
+		Link_PredStats.snaps++, pr.stair = false;
+	pr.on = true;
+}
+
+/* botwalk=1: a fixed 12-second pattern instead of the pad, so runs repeat */
+static void bot_input(int frame, int *fwd, int *side, int *buttons, ndscam_t *cam, int dt)
+{
+	int t = (frame - pr.botstart) % (12 * HZ);
+	*fwd = *side = 0, *buttons = 0;
+	if (t < 3 * HZ)
+		*fwd = 127; /* walk, and jump twice */
+	if ((t >= 2 * HZ && t < 2 * HZ + 12) || (t >= 2 * HZ + 40 && t < 2 * HZ + 52))
+		*buttons |= B_JUMP;
+	if (t >= 3 * HZ && t < 5 * HZ)
+		*side = 127;
+	if (t >= 5 * HZ && t < 13 * HZ / 2)
+		*fwd = 127, *buttons |= B_CROUCH;
+	if (t >= 13 * HZ / 2 && t < 8 * HZ)
+		*fwd = -127;
+	if (t >= 8 * HZ && t < 9 * HZ) /* a quarter turn, walking */
+		*fwd = 127, cam->yaw = (int16_t)(cam->yaw - 8192 / HZ * dt);
+	if (t >= 9 * HZ && t < 10 * HZ)
+		*side = -127;
+	if (t >= 9 * HZ + 30 && t < 9 * HZ + 42)
+		*buttons |= B_JUMP;
+}
+
+/* the movement keys as the PC makes a command of them: cl_forwardspeed,
+ * cl_backspeed and cl_sidespeed are 400 (valve/default_cvar.cfg), then
+ * ncPlayer::ClientInputFrame (src/shared/game/Player.qc) normalises the
+ * direction, clears sprint when moving forward (the DS has no sprint) and
+ * floors the values */
+static void make_move(int fwd, int side, int *buttons, int16_t *out)
+{
+	float mv[3] = {fwd > 0 ? 400.0f : fwd < 0 ? -400.0f : 0, side > 0 ? 400.0f : side < 0 ? -400.0f : 0, 0};
+	float dir[3] = {mv[0], mv[1], mv[2]}, len = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+	if (len) {
+		float inv = 1.0f / len;
+		dir[0] *= inv, dir[1] *= inv, dir[2] *= inv;
+	}
+	mv[0] = dir[0] * fabsf(mv[0]);
+	mv[1] = dir[1] * fabsf(mv[1]);
+	if (mv[0] > 0)
+		*buttons &= ~B_SPRINT;
+	for (int k = 0; k < 3; k++)
+		out[k] = (int16_t)floorf(mv[k]);
+}
+
+/* the millisecond clock of a refresh, at the DS's 59.8261 Hz */
+static uint32_t vb_ms(int vb) { return (uint32_t)((uint64_t)(uint32_t)vb * 1000000 / 59826); }
+
+/* the commands due by this refresh, each predicted on from the last; returns how many */
+static int make_commands(int frame, const ndscam_t *cam, int fwd, int side, int buttons)
+{
+	int step = cfg.cmdvb, due = (frame - pr.cmdvb) / step, made = 0;
+	pmcmd_t c;
+	memset(&c, 0, sizeof(c));
+	if (due > 4) { /* a long frame (a map load): the last 4, the first taking up to 100 ms */
+		pr.cmdvb = frame - 4 * step;
+		if ((int32_t)(vb_ms(pr.cmdvb) - pr.cmdms) > 100)
+			pr.cmdms = vb_ms(pr.cmdvb) - 100;
+		due = 4;
+	}
+	c.pitch = (int16_t)(cam->pitch * 2), c.yaw = (int16_t)(cam->yaw * 2);
+	make_move(fwd, side, &buttons, c.move);
+	c.buttons = (uint16_t)buttons;
+	for (; made < due; made++) {
+		int32_t ms;
+		pr.cmdvb += step;
+		ms = BW_NDS_CLAMP((int32_t)(vb_ms(pr.cmdvb) - pr.cmdms), 1, 100);
+		pr.cmdms += (uint32_t)ms;
+		c.seq = ++pr.seq;
+		c.msec = (uint8_t)ms;
+		c.impulse = 0;
+		if (pad.impseq != pr.impseq && pad.impulse) /* a one-shot goes in one command */
+			c.impulse = pad.impulse;
+		pr.impseq = pad.impseq;
+		pr.cmd[c.seq & (PR_CMDS - 1)] = c;
+		Link_PredStats.cmds++;
+		if (pr.on) {
+			run_cmd(&pr.cur, &c);
+			pr.pred[c.seq & (PR_RING - 1)] = pr.cur;
+			pr.predseq[c.seq & (PR_RING - 1)] = c.seq;
+		}
+	}
+	return made;
+}
+
+/* ncView::StairSmooth (src/client/View.qc): on the ground, the eye rises at
+ * most 100 units a second (cg_viewZSmoothingTime 0.1) and lags at most 16
+ * (cg_viewZSmoothingMax); not while standing on something moving up or down,
+ * and a jump of more than 64 units is a teleport */
+static float stair_smooth(float z, float ft)
+{
+	float e = z, gvz = 0;
+	for (int i = 0; i < pr.nmovers; i++)
+		if (pr.movers[i].e == pr.cur.groundent && pr.cur.groundent)
+			gvz = pr.movers[i].vel[2];
+	if (!pr.stair)
+		pr.stair = true, pr.stairz = z;
+	if (gvz != 0) {
+		pr.stairz = z;
+		return z;
+	}
+	if ((pr.cur.flags & PM_FL_ONGROUND) && z - pr.stairz > 0) {
+		e = pr.stairz + ft * 1000 * 0.1f;
+		e = BW_NDS_MIN(e, z);
+		if (z - e > 16)
+			e = z - 16;
+	}
+	if (fabsf(z - pr.stairz) > 64)
+		e = z;
+	pr.stairz = e;
+	return e;
+}
+
+/* the predicted eye as the camera, and what the bob and roll read from it */
+static void pred_view(ndscam_t *cam, int dt)
+{
+	const pmstate_t *s = &pr.cur;
+	float z = stair_smooth(s->origin[2] + s->view_ofs[2], dt / 60.0f);
+	cam->org[0] = lrintf((s->origin[0] + s->view_ofs[0]) * 8);
+	cam->org[1] = lrintf((s->origin[1] + s->view_ofs[1]) * 8);
+	cam->org[2] = lrintf(z * 8);
+	memcpy(link.pvel, s->velocity, sizeof(link.pvel));
+	link.onground = (s->flags & PM_FL_ONGROUND) != 0;
+	link.crouch = (s->vflags & PM_VFL_CROUCHING) != 0;
+}
+
 /* the linked loop; returns why it ended */
 static const char *play(ndscam_t *cam)
 {
@@ -1678,11 +2188,13 @@ static const char *play(ndscam_t *cam)
 	pad_reset();
 	pad_draw();
 	link.lastrecv = Nds_Vblanks();
+	pr.cmdvb = pr.botstart = Nds_Vblanks();
+	pr.cmdms = vb_ms(pr.cmdvb);
 	/* frame counts vblanks (60 a second) rather than loops, so turning,
 	 * easing, timeouts and animations keep their speed when drawing takes
 	 * two refreshes; dt is how many the last loop took */
 	for (int frame = Nds_Vblanks(), lastframe = frame - 1, lastsend = frame;; lastframe = frame, frame = Nds_Vblanks()) {
-		int len, type, buttons, dt = BW_NDS_CLAMP(frame - lastframe, 1, 4);
+		int len, type, buttons, fwd, side, made, dt = BW_NDS_CLAMP(frame - lastframe, 1, 4);
 		uint32_t held;
 		bool togame;
 		touchPosition tp = {0};
@@ -1697,11 +2209,11 @@ static const char *play(ndscam_t *cam)
 			debugview = (debugview + 1) % 3;
 		turn(cam, held, dt);
 		buttons = pad_frame(frame, held, cam, &togame, &tp) | key_buttons(held);
-		if (frame - lastsend >= 3) { /* 20 a second */
-			send_input(cam, held, buttons, togame, &tp);
-			lastsend = frame;
-		}
+		key_move(held, &fwd, &side);
+		if (cfg.botwalk)
+			bot_input(frame, &fwd, &side, &buttons, cam, dt);
 
+		/* all that came, before the commands: the newest PSTATE says where they start from */
 		while ((len = receive(buf, sizeof(buf), &from, &type)) > 0) {
 			const uint8_t *d = buf + 5;
 			if (from.sin_addr.s_addr != link.to.sin_addr.s_addr || len < 4 ||
@@ -1729,6 +2241,12 @@ static const char *play(ndscam_t *cam)
 				handle_stats(d, len);
 			else if (type == L_FX)
 				handle_fx(d, len);
+			else if (type == L_PSTATE)
+				keep_pstate(d, len);
+			else if (type == L_PMOVEVARS)
+				handle_pmovevars(d, len);
+			else if (type == L_BRUSHINFO)
+				handle_brushinfo(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -1741,11 +2259,29 @@ static const char *play(ndscam_t *cam)
 			break;
 		}
 
-		/* ease toward where the server says we are; it updates at 20 Hz */
-		/* toward where the server's last word says we are by now (moving on
-		 * at the speed the last two showed, for up to 3 refreshes), rather than
-		 * where it was: that is most of the lag that makes jumps feel floaty */
+		/* the server's word on our movement, then this frame's commands, each
+		 * predicted, and sent at most 30 times a second */
 		{
+			uint64_t t0 = LINK_PM_TICKS();
+			uint32_t t;
+			handle_pstate(cam);
+			made = make_commands(frame, cam, fwd, side, buttons);
+			t = (uint32_t)(LINK_PM_TICKS() - t0);
+			Link_PredStats.frames++;
+			Link_PredStats.fr_ticks += t;
+			Link_PredStats.fr_ticks_max = BW_NDS_MAX(Link_PredStats.fr_ticks_max, t);
+		}
+		if (made && frame - lastsend >= 2) {
+			send_input(cam, held, buttons, togame, &tp);
+			lastsend = frame;
+		}
+
+		if (pr.on)
+			pred_view(cam, dt);
+		else {
+			/* without prediction: ease toward where the server's last word
+			 * says we are by now (moving on at the speed the last two VIEWs
+			 * showed, for up to 3 refreshes), rather than where it was */
 			int ahead = BW_NDS_CLAMP(frame - link.viewframe, 0, 3);
 			for (int i = 0; i < dt; i++)
 				for (int k = 0; k < 3; k++) {
@@ -1792,9 +2328,12 @@ static const char *play(ndscam_t *cam)
 				int mok, mbad;
 				Ents_Counts(&mok, &mbad);
 
-				snprintf(pad.diagline, sizeof(pad.diagline), "%2d fps (min %d) %dp m%d/%d%s", link.fps, link.minfps, peak, mok, mbad,
-				         debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
-				hud_diag(cfg.diag ? pad.diagline : "", link.loaderr);
+				/* P: predicting */
+				snprintf(pad.diagline, sizeof(pad.diagline), "%2d fps (min %d) %dp m%d/%d%s%s", link.fps, link.minfps, peak, mok,
+				         mbad, pr.on ? " P" : "", debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
+				Link_PredStats.hullrule = (uint8_t)Hull_Rule(), Link_PredStats.on = pr.on;
+				Link_PredStats.hullkb = (uint16_t)(Hull_Bytes() / 1024);
+				hud_diag(cfg.diag ? pad.diagline : "", link.loaderr[0] ? link.loaderr : World_HullError());
 				secstart = now, frames = 0, worst = 0, peak = 0;
 			}
 		}
