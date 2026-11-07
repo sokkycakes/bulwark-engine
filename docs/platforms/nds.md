@@ -1018,11 +1018,20 @@ A pack's directory is read a 512-byte page at a time. Samples are kept in one
 cache, `sndcache=` KB (192 by default, less if the heap would keep under
 384 KB for the models still to load), filled after each map loads and freed
 before the next. A sample is read whole into the cache, 4 KB a read, within
-`sndreadms=` a frame (2 ms by default, at least one read), and starts once
-its first 2 KB are in. One-shots come first, in the order they came, then
-loops, loudest first. After a map loads the DS looks up the map's precache
-list and reads the smallest samples first, until 75% of the cache is full.
-Samples that voices play, and loops, can take up to half the cache.
+`sndreadms=` a frame (2 ms by default): a read goes only while the time
+spent and the slowest read lately still fit, and a frame always has one
+read for what a voice waits for. A one-shot starts once its first 2 KB are
+in (if it then plays past what is loaded, it stops: `underrun`), a loop once
+all of it is. One-shots come first, in the order they came, then loops,
+loudest first. After a map loads the DS looks up the map's precache list
+(and the names it keeps itself, `PRECACHE`'s 0xf000 record) and reads the
+smallest samples first, until 75% of the cache is full; in play only in a
+frame that has read nothing else, one read. A frame over 100 ms (the
+models load after the map at one or two frames a second) gets an eighth of
+its length for reads, up to 60 ms, so most of the list is in before play.
+Samples that voices play, and loops, can take up to half the cache. The
+384 KB left for the models is a guess no run has tested: every map tried
+had over 1.2 MB free after its models.
 
 The 16 channels go to the loudest voices. A new one-shot takes a free
 channel, or the quietest one if it is louder. A loop that loses its channel,
@@ -1034,9 +1043,18 @@ Where it differs from the PC:
 
 - One volume and a pan per channel, not two gains. Each ear gets exactly the
   PC's gain less 6 dB, so 16 loud voices don't clip.
-- 16 voices are heard, not up to 128. A one-shot quieter than every held
+- 16 voices are heard, not up to 96. A one-shot quieter than every held
   channel is dropped (`quiet`), and one that loses its channel ends. The PC
-  keeps mixing both, under 14 louder ones.
+  keeps mixing both, under louder ones (coop_arena under fire: about 20 such
+  in 40 s, observed).
+- Sounds come at most every 1/36 s (`SOUND` waits for every second server
+  frame at 72 Hz), so a sound starts up to ~28 ms later than on the PC;
+  within a packet each starts as long after the first as it was made (the
+  DELAY bits, 4 ms steps), so one that the next frame replaces is heard for
+  a frame, as on the PC.
+- A sound whose sample is in no pack replaces nothing (as on the PC, which
+  can't load it); while its sample is still being looked up, the sound on
+  its channel plays on until the new one starts.
 - A loop that gets a channel back starts again from its loop point (PCM8
   and PCM16), not where it would be. An IMA-ADPCM loop starts again from
   the sample's start, intro and all: the hardware takes ADPCM's decoder
@@ -1057,9 +1075,12 @@ samples over half the cache are not played), the fireInfo's release sound
 
 `tools/nds/sndtest.c` checks the fixed-point gains against the PC's own
 `spatialise` (cut out of `snd_main.c` by `tools/nds/sndtest_ref.py`) over
-yaws, positions, attenuations, volumes and flags: 1,077,126 cases, none
-more than 1 of 2047 in volume or 1 of 127 in pan; the sample-name keys
-match the spec's test values.
+yaws, positions, attenuations (×64 bytes, and ×16 ones up to 15.9 for
+what the PC's client game passes as a float: an `ncSound`'s 1000 / radius
+is 7.8 at radius 128), volumes and flags: 1,860,934 cases, none more than
+1 of 2047 in volume or 1 of 127 in pan; the DS's distance factor table
+(`sndfactor_nds.h`, made by `sndtest -table`, so the DS needs no `powf`)
+equals the function; the sample-name keys match the spec's test values.
 
 ### Measured: sound, in melonDS 1.1 (not hardware)
 
@@ -1074,7 +1095,7 @@ observed. "CPU" is `Snd_Frame` with its reads, from `SNDSTAT`:
 | Start delay | 1 to 6 ms from the packet, at most 13 ms (a cold read) |
 | Gains | e0m1's `ambience/comp1` (`AMBIENT`): vol 9, pan 86 on the DS; the PC formula at the player's position and yaw gives 9 and 86. c2a4e's siren and two lab drones: 130/64, 21/94 and 13/97 on the DS and from the formula |
 | Audio (SDL disk capture) | a test tone at 27 volume and pan settings in three formats: the right-to-left ratio as computed, level linear in the volume (7.3 to 7.8 times the per-ear gain over vol 71 to 1433), onsets within 7 ms of the log (2 ms rms); comp1 looped steadily for 70 s, its spectrum within 1 dB of the WAV's up to 4 kHz; 11 clipped samples in 69 s of heavy fire |
-| CPU a frame | nothing playing 13 to 15 us; one loop 88 us; firing (up to 14 voices) 110 to 190 us on average, worst 320 us; a frame that reads takes up to its 2 ms budget |
+| CPU a frame | nothing playing 13 to 15 us; one loop 88 us; firing (up to 14 voices) 110 to 190 us on average, worst 320 us; a frame that read went past its 2 ms budget (4.5 to 4.7 ms at the merge: the check came before each read); since the review a read goes only if it fits ("Measured after the review") |
 | Reads | 0.3 to 1.2 ms each (melonDS, not a card) |
 | RAM, c2a4e standing | used at peak 2.18 MB against 1.94 MB with `sound=0` (the 192 KB cache and about 46 KB of tables); 1.25 MB still free; the lowest free during the map load 124 KB in both, since sound frees everything first |
 | Frame time, c2a4e | 13.6 to 13.8 ms against 13.5 ms with `sound=0`, 30 fps in both |
@@ -1104,18 +1125,29 @@ breakables make about 380 sounds a second for the PC as well (`SVSND`).
 | e0m1, 58a5bba | 60 / 60 | 2.47 / 3.88 | - | 612 / 613 / 1680 | 19.2 | - |
 | e0m1, sound | 60 / 60 | 2.60 / 4.67 | 0.08 / 0.26 | 844 / 845 / 1648 | 19.8 | the comp1 ambient, vol 8 pan 93 |
 
-- RAM: the lowest free while c2a4e loads falls from 156 KB to 124 KB with
-  sound; in use goes up about 232 KB (the 192 KB cache and the tables).
+- RAM: the lowest free while c2a4e loads fell from 156 KB to 124 KB at the
+  merge. That is the ROM's size, not sound's memory, and `sound=0` doesn't
+  bring it back: sound takes its heap only after a map loads and gives it
+  back before the next, and the measurement ROM's code and data grew 33 KB
+  (text +32,384 bytes, bss +1,376: `sound_nds.o` ~28 KB of code, `powf`
+  ~3 KB). Since then `sound_nds.c` is Thumb at `-Os` and `powf` is a table
+  (11 KB less; "Measured after the review", below). In use goes up about
+  232 KB while a map runs (the 192 KB cache and the tables).
 - The cache: with `snd_log=1`, 98 to 99% of the starts in coop_arena found
   their sample already in (12 samples read in 28 s under fire), 94% in
   c2a4e's flood.
 - Every record accounted for (`snd_log=1`, each `SND` line matched to the
   server's `LINKSND` by seq): coop_arena 674 records: 538 started, 113
-  replaced on their channel before they started (as on the PC), 21 quiet,
+  replaced on their channel before they started, 21 quiet,
   2 missing (`buttons/bell1`, in no source here); at 150 ms 805: 687, 99,
   14 silent, 4 quiet, 1 missing; c2a4e 8789: 2379 started, 6410 replaced.
   None unaccounted for. Starts came 2 ms (median) after the record, at
-  most 23 ms.
+  most 23 ms. Most of the replaced ones are not what the PC does: `SOUND`
+  carried two server frames, and the later frame's record replaced the
+  earlier's before it started, where the PC plays the earlier for a frame
+  (at most ~1000 of c2a4e's 6410 were in one server frame). Fixed since:
+  the DELAY bits, and the server sends only what the PC hears of two in
+  one frame ("Measured after the review", below).
 - `snd_log=1` costs: each `SND` line goes out of the debug port, so in
   c2a4e's flood the frame took 19.3 ms against 13.3 ms, 33 fps against 57.
   Leave it off except to test.
@@ -1124,6 +1156,63 @@ breakables make about 380 sounds a second for the PC as well (`SVSND`).
 - Audio (SDL disk capture, coop_arena firing, 56 s): no clipped samples,
   peak 22612 of 32767; the level, binned at 100 ms, follows the DS's `SND
   start` lines (r = 0.81 at the best offset).
+
+### Measured after the review (melonDS 1.1, not hardware)
+
+The review's fixes (branch `claude/project-thread-sqgyy6` after `af12e5e`):
+the DELAY bits and same-frame drop on the server, the loader's budget and
+long-frame reads, loops whole before they start, the precache list by
+index, the ×16 attenuation, `sound_nds.c` as Thumb `-Os` with the factor
+table. The same packs, maps, positions and rig as above; the 58a5bba and
+merge rows are the runs above. "First 3 s of play" starts at the first
+second at 20 fps or more after the model load; "first fire" is the second
+fire starts. Sound packets is `SNDSTAT`'s `pktavg`/`pktmax`, the time in
+`Snd_Packet`, `Snd_Event` and `Snd_ViewEvent`, which the merge's
+measurement left out. `snd_log=2`. All observed:
+
+| Run | fps median / lowest (or each second) | CPU ms a frame, median / worst | Sound frame ms, median / worst | Sound packets ms a frame, median / worst call | RAM in use / peak / lowest free (KB) | rx KB/s |
+|---|---|---|---|---|---|---|
+| coop_arena, 58a5bba | 60 / 54 | 11.21 / 18.96 | - | - | 414 / 427 / 2796 | 44.8 |
+| coop_arena, merge | 59 / 55 | 11.17 / 18.55 | 0.14 / 1.84 | not measured | 646 / 656 / 2556 | 43.1 |
+| coop_arena, now | 60 / 53 | 11.75 / 18.22 | 0.12 / 1.57 | 0.01 / 0.52 | 651 / 653 / 2556 | 42.8 |
+| coop_arena first 3 s: 58a5bba, merge, now | 59 60 60; 59 60 60; 60 60 60 | worst 19.55; 21.15; 10.18 | merge worst 4.53, now 0.01 | | | |
+| coop_arena first fire: 58a5bba, merge, now | 59; 54; 57 | worst 15.91; 40.71; 43.54 | merge 2.39, now 0.30 | now 0.11 | | |
+| c2a4e, 58a5bba | 59 / 57 | 12.62 / 41.94 | - | - | 1878 / 1886 / 156 | 33.4 |
+| c2a4e, merge | 57 / 53 | 13.28 / 18.64 | 0.39 / 1.04 | not measured | 2109 / 2128 / 124 | 46.2 |
+| c2a4e, now | 56 / 45 | 13.82 / 48.10 | 0.60 / 2.28 | 0.18 / 1.15 | 2189 / 2194 / 132 | 45.7 |
+| c2a4e first 3 s: 58a5bba, merge, now | 57 59 59; 39 50 59; 32 55 57 | worst 24.96; 36.25; 424.61 | merge worst 4.63, now 0.93 | now 0.61 | | |
+
+- The first seconds: at the merge most of c2a4e's precache list was read in
+  play (4.6 ms sound frames at 39 and 50 fps). Now 645 reads are done in the
+  model load's long frames (up to 60 ms each, against 500 to 900 ms frames),
+  and play reads 3 more in 30 s; the worst sound frame in the first 3 s is
+  0.93 ms. The 32 fps second still holds the load's last frame (424 ms, the
+  models, not sound: that second's worst sound frame is under 1 ms).
+- c2a4e's glass flood (about 420 records a second) costs more than at the
+  merge: the frame's median is 0.54 ms higher, and for 8 s the rate fell to
+  45 to 51 fps while the network and packet time rose. The DS now starts
+  about twice as many of the flood's sounds (5734 in 30 s against 3012):
+  the earlier of two records a frame apart plays for a frame before the
+  later replaces it, as on the PC. The 48 ms worst frame is one frame, not
+  sound (that second's worst sound frame is 2.3 ms; 58a5bba has a 42 ms
+  one). coop_arena's costs are as before.
+- The server's same-frame drop: coop_arena 49 of 956 records (impacts and
+  weapon sounds on one channel in one frame); c2a4e none (one record per
+  entity and frame), so its rx is as at the merge.
+- Every record accounted for (`snd_log=1`, `LINKSND` against the DS's `SND`
+  lines, `LINKSNDGONE` for what the server dropped): coop_arena 956: 891
+  started, 49 dropped by the server (same frame), 15 quiet, 1 missing;
+  c2a4e 8777: 3641 started, 5136 replaced before they started (2379 and
+  6410 at the merge). With `snd_log=1` the DS runs c2a4e at 31 fps, so two
+  frames' records often fall due in one DS frame and the later still
+  replaces the earlier there; at 60 fps (`snd_log=2`) the starts are the
+  5734 above.
+- RAM: the lowest free while c2a4e loads is 132 KB (124 at the merge, 156
+  at 58a5bba): the measurement ROM's text is 488,148 bytes (499,268 at the
+  merge, 466,884 at 58a5bba), bss 248,852 (247,924; 246,548).
+- No `underrun`, `late` or `SNDBUG` in any run; reads are 0 to 1.3 ms in
+  melonDS. A real SD card's read time is unknown: one 4 KB read that takes
+  longer than `sndreadms` still runs, once a frame.
 
 ## Map viewer controls
 
