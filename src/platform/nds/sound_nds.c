@@ -96,7 +96,7 @@ typedef struct {
 } sblock_t;
 
 typedef struct {
-	uint8_t state, src, lflags, sflags, chan, vol, atten, pitch;
+	uint8_t src, lflags, sflags, chan, vol, atten, pitch;
 	uint16_t ent, seq, at;
 	uint32_t key;
 	int16_t ki;
@@ -160,7 +160,8 @@ static struct sheap_s {
 } *H;
 
 static struct {
-	bool on, inited, ready, log;
+	bool on, inited, ready;
+	uint8_t log;
 	uint32_t master_q16, bgm_q16;
 	int cachekb, readms;
 	/* after a map loads */
@@ -169,9 +170,10 @@ static struct {
 	svoice_t *v;
 	skey_t *k;
 	uint32_t *precache;
-	int nprecache, precache_done;
+	int nprecache, precache_done, preload_next;
 	uint32_t preload_bytes;
 	int nblk;
+	uint8_t vst[S_VOICES]; /* each voice's V_ state, apart: the frame's passes read only these for free ones */
 	spack_t pack[S_PACKS];
 	int npacks;
 	int pagenext;
@@ -196,7 +198,7 @@ static struct {
 	uint32_t wsel_until; /* HLWeaponSelect m_flHUDWeaponSelectTime, ticks */
 	int cmdrr;           /* volume updates go round */
 	uint32_t laststat;
-	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax;
+	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5];
 	uint32_t rnd;
 } S;
 
@@ -215,7 +217,7 @@ bool Snd_Enabled(void) { return S.on; }
 static void logf_(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void logf_(const char *fmt, ...)
 {
-	char line[200];
+	static char line[200]; /* not on the stack: that is DTCM, which melonDS's debug port doesn't read */
 	va_list ap;
 	if (!S.log)
 		return;
@@ -237,8 +239,11 @@ static void cmd_end(void)
 		S.statcmdmax = t;
 }
 
+static void defaults(void);
+
 bool Snd_Config(const char *key, const char *val)
 {
+	defaults(); /* the settings read before Snd_Init */
 	if (!strcmp(key, "volume"))
 		S.master_q16 = (uint32_t)(BW_NDS_CLAMP(strtof(val, NULL), 0.0f, 1.0f) * 65536);
 	else if (!strcmp(key, "bgmvolume"))
@@ -248,7 +253,7 @@ bool Snd_Config(const char *key, const char *val)
 	else if (!strcmp(key, "sndreadms"))
 		S.readms = BW_NDS_CLAMP(atoi(val), 1, 16);
 	else if (!strcmp(key, "snd_log"))
-		S.log = atoi(val) != 0;
+		S.log = (uint8_t)BW_NDS_CLAMP(atoi(val), 0, 2); /* 1: each sound and the stats, 2: the stats */
 	else if (!strcmp(key, "sound"))
 		S.on = atoi(val) != 0;
 	else
@@ -350,7 +355,7 @@ static bool key_busy(int ki)
 	if (S.k[ki].block >= 0 && H->blk[S.k[ki].block].pins)
 		return true;
 	for (int i = 0; i < S_VOICES; i++)
-		if (S.v[i].state != V_FREE && S.v[i].ki == ki)
+		if (S.vst[i] != V_FREE && S.v[i].ki == ki)
 			return true;
 	return false;
 }
@@ -609,7 +614,7 @@ static bool load_step(int ki, bool evict, bool loop)
 		}
 		namelen = h[20];
 		dp = k->offset + ((21 + namelen + 3) & ~3u);
-		if (S.log && namelen && pread_(p, k->offset + 21, h + 21, namelen)) {
+		if (S.log == 1 && namelen && pread_(p, k->offset + 21, h + 21, namelen)) {
 			h[21 + namelen] = 0;
 			logf_("SNDLOAD key=%08x %s fmt=%d rate=%d frames=%u bytes=%u loop=%d\n", (unsigned)k->key, (char *)h + 21, k->fmt,
 			      k->rate, (unsigned)k->frames, (unsigned)k->bytes, (int)k->loopstart);
@@ -652,7 +657,7 @@ static void hw_release(int h, bool stop)
 
 static void voice_log(const svoice_t *v, const char *what, int hw, int vol, int pan, uint32_t late)
 {
-	if (S.log)
+	if (S.log == 1)
 		logf_("SND %u %s %s seq=%u key=%08x ent=%u ch=%u hw=%d vol=%d pan=%d late=%u\n", (unsigned)ticks_ms(ticks()), what,
 		      srcname[v->src], v->seq, (unsigned)v->key, v->ent, v->chan, hw, vol, pan, (unsigned)late);
 }
@@ -660,7 +665,7 @@ static void voice_log(const svoice_t *v, const char *what, int hw, int vol, int 
 static void voice_free(int vi, const char *why)
 {
 	svoice_t *v = &S.v[vi];
-	if (v->state == V_FREE)
+	if (S.vst[v - S.v] == V_FREE)
 		return;
 	if (why)
 		voice_log(v, why, v->hw, 0, 0, 0);
@@ -668,7 +673,7 @@ static void voice_free(int vi, const char *why)
 		hw_release(v->hw, true);
 	if (v->amb >= 0 && v->amb < S.namb && H->amb[v->amb].voice == vi)
 		H->amb[v->amb].voice = -1;
-	v->state = V_FREE;
+	S.vst[v - S.v] = V_FREE;
 }
 
 static int sample_timer(const skey_t *k, int pitch)
@@ -747,7 +752,7 @@ static int hw_pick(int32_t loud)
 			hw_release(q, true);
 		} else {
 			hw_release(q, true);
-			v->state = V_FREE;
+			S.vst[v - S.v] = V_FREE;
 			if (v->amb >= 0 && v->amb < S.namb && H->amb[v->amb].voice == vi)
 				H->amb[v->amb].voice = -1;
 		}
@@ -791,7 +796,7 @@ static uint32_t voice_pos(const svoice_t *v)
 {
 	const skey_t *k;
 	uint32_t f;
-	if (v->state != V_PLAY || v->ki < 0)
+	if (S.vst[v - S.v] != V_PLAY || v->ki < 0)
 		return 0;
 	k = &S.k[v->ki];
 	f = (uint32_t)((uint64_t)(ticks() - v->t_start) * 32 / (uint32_t)sample_timer(k, v->pitch));
@@ -813,7 +818,7 @@ static int voice_pick(int ent, int chan, bool clientside, int sflags)
 	if (chan != 0)
 		for (int i = 0; i < S_VOICES; i++) {
 			svoice_t *v = &S.v[i];
-			if (v->state != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside) {
+			if (S.vst[v - S.v] != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside) {
 				if (sflags & SF_NOREPLACE)
 					return -1;
 				voice_free(i, "replace");
@@ -823,7 +828,7 @@ static int voice_pick(int ent, int chan, bool clientside, int sflags)
 	for (int i = 0; i < S_VOICES; i++) {
 		svoice_t *v = &S.v[i];
 		uint32_t pos;
-		if (v->state == V_FREE)
+		if (S.vst[v - S.v] == V_FREE)
 			return i;
 		if (v->lflags & LF_LISTENER)
 			continue;
@@ -844,7 +849,7 @@ static void stop_chan(int ent, int chan, bool clientside)
 		return; /* null.wav on CHAN_AUTO only mixes silence */
 	for (int i = 0; i < S_VOICES; i++) {
 		svoice_t *v = &S.v[i];
-		if (v->state != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside)
+		if (S.vst[v - S.v] != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside)
 			voice_free(i, "stop");
 	}
 }
@@ -873,7 +878,7 @@ static int voice_new(const srec_t *r, int src)
 		return -1;
 	v = &S.v[vi];
 	memset(v, 0, sizeof(*v));
-	v->state = (r->lflags & LF_AT) && S.haveclock ? V_DELAY : V_WAIT;
+	S.vst[v - S.v] = (r->lflags & LF_AT) && S.haveclock ? V_DELAY : V_WAIT;
 	v->src = (uint8_t)src, v->lflags = r->lflags, v->sflags = r->sflags, v->chan = r->chan;
 	v->vol = r->vol, v->atten = r->atten, v->pitch = r->pitch;
 	v->ent = r->ent, v->seq = r->seq, v->at = r->at, v->key = r->key;
@@ -885,7 +890,7 @@ static int voice_new(const srec_t *r, int src)
 	v->t_arrive = ticks();
 	v->ki = (int16_t)key_get(r->key);
 	if (v->ki < 0) {
-		v->state = V_FREE;
+		S.vst[v - S.v] = V_FREE;
 		return -1;
 	}
 	return vi;
@@ -899,7 +904,7 @@ static void voice_start(int vi)
 	int h;
 	uint32_t late = ticks_ms(ticks() - v->t_arrive);
 	v->loop = k->loopstart >= 0 || (v->sflags & SF_FORCELOOP);
-	v->state = V_PLAY;
+	S.vst[v - S.v] = V_PLAY;
 	v->t_start = ticks();
 	voice_gain(v);
 	Snd_Stats.starts++;
@@ -907,7 +912,7 @@ static void voice_start(int vi)
 		if (!v->loop) { /* inaudible from the start (gain under the cull) */
 			voice_log(v, "silent", -1, 0, 0, late);
 			Snd_Stats.quiet++;
-			v->state = V_FREE;
+			S.vst[v - S.v] = V_FREE;
 		}
 		return;
 	}
@@ -915,7 +920,7 @@ static void voice_start(int vi)
 		if (!v->loop) {
 			Snd_Stats.quiet++;
 			voice_log(v, "quiet", -1, 0, 0, late);
-			v->state = V_FREE;
+			S.vst[v - S.v] = V_FREE;
 		}
 		return;
 	}
@@ -1062,7 +1067,7 @@ static void handle_ambient(const uint8_t *d, int len)
 			v->f_q8 = H->f_q8[a->atten];
 			if (v->pitch != a->pitch) {
 				v->pitch = a->pitch;
-				if (v->hw >= 0 && v->state == V_PLAY) {
+				if (v->hw >= 0 && S.vst[v - S.v] == V_PLAY) {
 					cmd_begin();
 					soundChSetTimer((unsigned)v->hw, (unsigned)sample_timer(&S.k[v->ki], v->pitch));
 					cmd_end();
@@ -1197,7 +1202,7 @@ void Snd_Event(int type, const uint8_t *d, int len)
 				S.precache[first + i] = rd32(d + 3 + i * 4);
 				S.nprecache = BW_NDS_MAX(S.nprecache, first + i + 1);
 			}
-		S.precache_done = 0;
+		S.precache_done = 0, S.preload_next = 0;
 	}
 }
 
@@ -1270,7 +1275,7 @@ static void play_shader(int si, bool view, int depth)
 		r.org[c] = (int16_t)(S.lorg[c] / 8);
 	if ((vi = voice_new(&r, SRC_VM)) >= 0 && s->offset_ms < 0) {
 		/* a negative offset delays the start (snd_main.c:204); a positive one would skip in: not done */
-		S.v[vi].state = V_DELAY;
+		S.vst[vi] = V_DELAY;
 		S.v[vi].at = (uint16_t)(ticks_ms(ticks()) - (uint32_t)s->offset_ms);
 		S.v[vi].lflags |= 0x80; /* its at is on our own ms clock */
 	}
@@ -1288,6 +1293,30 @@ void Snd_ViewEvent(int code, int opt)
 }
 
 /* --- the frame -------------------------------------------------------------------------------- */
+
+static int cmp_u64(const void *a, const void *b)
+{
+	uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+	return x < y ? -1 : x > y;
+}
+
+/* once the list is looked up: smallest first (missing ones last) */
+static void preload_sort(void)
+{
+	uint64_t *t = malloc(sizeof(uint64_t) * (size_t)S.nprecache);
+	S.preload_next = 0;
+	if (!t)
+		return;
+	for (int i = 0; i < S.nprecache; i++) {
+		int ki = key_find(S.precache[i]);
+		uint32_t size = ki >= 0 && S.k[ki].state == K_FOUND ? S.k[ki].bytes : 0xffffffffu;
+		t[i] = (uint64_t)size << 32 | S.precache[i];
+	}
+	qsort(t, (size_t)S.nprecache, sizeof(t[0]), cmp_u64);
+	for (int i = 0; i < S.nprecache; i++)
+		S.precache[i] = (uint32_t)t[i];
+	free(t);
+}
 
 static void loader(void)
 {
@@ -1309,7 +1338,7 @@ static void loader(void)
 			break;
 		for (int i = 0; i < S_VOICES; i++) {
 			svoice_t *v = &S.v[i];
-			if ((v->state == V_WAIT || (v->state == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !key_ready(v->ki) &&
+			if ((S.vst[v - S.v] == V_WAIT || (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !key_ready(v->ki) &&
 			    S.k[v->ki].state != K_MISS && v->skip != S.use &&
 			    (best < 0 || (int32_t)(v->t_arrive - S.v[best].t_arrive) < 0))
 				best = i;
@@ -1326,7 +1355,7 @@ static void loader(void)
 			if (S.k[ki].fmt == FMT_STREAM || S.k[ki].bytes > S.arenasize / 2) {
 				Snd_Stats.toobig++;
 				voice_free(best, "toobig");
-			} else if (!loop && S.v[best].state == V_WAIT) {
+			} else if (!loop && S.vst[best] == V_WAIT) {
 				Snd_Stats.quiet++;
 				voice_free(best, "noroom");
 			}
@@ -1346,7 +1375,7 @@ static void loader(void)
 			while (ki >= 0 && !key_complete(ki) && BUDGET_LEFT() && load_step(ki, true, true))
 				reads++;
 		}
-	/* 4: the map's precache list: looked up, then the smallest first into free room, up to 75% */
+	/* 4: the map's precache list: looked up, then sorted smallest first and read into free room, up to 75% */
 	while (S.precache && S.precache_done < S.nprecache && BUDGET_LEFT()) {
 		int ki = key_get(S.precache[S.precache_done]);
 		if (ki >= 0 && S.k[ki].state == K_PENDING) {
@@ -1355,27 +1384,32 @@ static void loader(void)
 			continue;
 		}
 		S.precache_done++;
+		if (S.precache_done == S.nprecache)
+			preload_sort();
 	}
-	if (S.precache && S.precache_done >= S.nprecache)
-		while (BUDGET_LEFT() && S.preload_bytes < S.arenasize / 4 * 3) {
-			int best = -1;
-			for (int i = 0; i < S.nprecache; i++) {
-				int ki = key_find(S.precache[i]);
-				if (ki >= 0 && S.k[ki].state == K_FOUND && S.k[ki].block < 0 && S.k[ki].fmt != FMT_STREAM &&
-				    S.k[ki].bytes <= S.arenasize / 2 && (best < 0 || S.k[ki].bytes < S.k[best].bytes))
-					best = ki;
-			}
-			if (best < 0 || S.preload_bytes + S.k[best].bytes > S.arenasize / 4 * 3)
-				break;
-			if (!load_step(best, false, false)) {
-				S.k[best].lastuse = 0;
-				break;
-			}
-			reads++;
-			S.preload_bytes += S.k[best].bytes;
-			while (!key_complete(best) && BUDGET_LEFT() && load_step(best, false, false))
-				reads++;
+	while (S.precache && S.precache_done >= S.nprecache && S.preload_next < S.nprecache && BUDGET_LEFT()) {
+		int ki = key_find(S.precache[S.preload_next]);
+		if (ki < 0 || S.k[ki].state != K_FOUND || S.k[ki].fmt == FMT_STREAM || S.k[ki].bytes > S.arenasize / 2 ||
+		    (S.k[ki].block >= 0 && key_complete(ki))) {
+			S.preload_next++;
+			continue;
 		}
+		if (S.preload_bytes + S.k[ki].bytes > S.arenasize / 4 * 3) {
+			S.preload_next = S.nprecache; /* (smallest first: none after fits) */
+			break;
+		}
+		if (!load_step(ki, false, false)) {
+			S.preload_next = S.nprecache; /* no free room left */
+			break;
+		}
+		reads++;
+		while (!key_complete(ki) && BUDGET_LEFT() && load_step(ki, false, false))
+			reads++;
+		if (key_complete(ki)) {
+			S.preload_bytes += S.k[ki].bytes;
+			S.preload_next++;
+		}
+	}
 #undef BUDGET_LEFT
 }
 
@@ -1394,9 +1428,27 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	S.selfent = selfent;
 	S.things = things, S.nthings = nthings;
 	S.clock = clock_ms, S.haveclock = have;
+	/* nothing playing, coming or due: only the stats */
+	{
+		bool idle = S.precache_done >= S.nprecache && S.preload_next >= S.nprecache;
+		for (int i = 0; i < S_VOICES && idle; i++)
+			idle = S.vst[i] == V_FREE;
+		for (int h = 0; h < S_HW && idle; h++)
+			idle = S.hw[h].v < 0 && !S.hw[h].draining;
+		for (int i = 0; i < S_SENT && idle; i++)
+			idle = !H->sent[i].on;
+		for (int i = 0; i < S.namb && idle; i++)
+			idle = !H->amb[i].pendkey;
+		if (idle)
+			goto stats;
+	}
 
 	/* the channels: ended, or seen off after a stop */
-	active = soundGetActiveChannels();
+	{
+		uint32_t a0 = ticks();
+		active = soundGetActiveChannels();
+		S.statactive = BW_NDS_MAX(S.statactive, ticks() - a0);
+	}
 	t = ticks();
 	for (int h = 0; h < S_HW; h++) {
 		shw_t *c = &S.hw[h];
@@ -1409,13 +1461,12 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			continue;
 		if ((c->t_end && (int32_t)(t - c->t_end) >= 0) || (!(active & (1u << h)) && t - c->t_start > ms_ticks(60))) {
 			int vi = c->v;
-			if (S.log)
 				voice_log(&S.v[vi], "end", h, 0, 0, 0);
 			hw_release(h, false);
 			if (S.v[vi].loop) /* (a loop the hardware stopped: silent, as when stolen) */
 				;
 			else
-				S.v[vi].state = V_FREE;
+				S.vst[vi] = V_FREE;
 		} else if (!S.v[c->v].loop && c->blk >= 0) {
 			/* played past what is in? */
 			svoice_t *v = &S.v[c->v];
@@ -1430,28 +1481,30 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	/* the delayed (AT records: when the drawn clock passes them) */
 	for (int i = 0; i < S_VOICES; i++) {
 		svoice_t *v = &S.v[i];
-		if (v->state != V_DELAY)
+		if (S.vst[v - S.v] != V_DELAY)
 			continue;
 		if (v->lflags & 0x80 ? (int16_t)((uint16_t)ticks_ms(t) - v->at) >= 0
 		                     : !S.haveclock || (int16_t)((uint16_t)S.clock - v->at) >= 0 || t - v->t_arrive > ms_ticks(2000))
-			v->state = V_WAIT, v->t_arrive = t;
+			S.vst[v - S.v] = V_WAIT, v->t_arrive = t;
 	}
+	S.sec[0] += ticks() - t0;
 	sentence_frame();
 	{
 		uint32_t r0 = ticks();
 		loader();
-		(void)r0;
+		S.sec[1] += ticks() - r0;
 	}
+	t = ticks();
 	/* waiting voices whose sample is in start; one-shots too late, or whose sample isn't anywhere, go */
 	t = ticks();
 	for (int i = 0; i < S_VOICES; i++) {
 		svoice_t *v = &S.v[i];
-		if (v->state != V_WAIT)
+		if (S.vst[v - S.v] != V_WAIT)
 			continue;
 		if (S.k[v->ki].state == K_MISS) {
 			Snd_Stats.missing++;
 			voice_log(v, "missing", -1, 0, 0, 0);
-			v->state = V_FREE;
+			S.vst[v - S.v] = V_FREE;
 			continue;
 		}
 		if (key_ready(v->ki))
@@ -1460,7 +1513,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		         t - v->t_arrive > ms_ticks(S_LATE_MS)) {
 			Snd_Stats.late++;
 			voice_log(v, "late", -1, 0, 0, ticks_ms(t - v->t_arrive));
-			v->state = V_FREE;
+			S.vst[v - S.v] = V_FREE;
 		}
 	}
 	/* ambient_generic sample switches whose new sample is in */
@@ -1477,15 +1530,17 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 				H->amb[i].pendkey = 0;
 			}
 		}
+	S.sec[2] += ticks() - t;
+	t = ticks();
 	/* gains; loops without a channel take one if they are louder than one held */
 	for (int i = 0; i < S_VOICES; i++)
-		if (S.v[i].state == V_PLAY)
+		if (S.vst[i] == V_PLAY)
 			voice_gain(&S.v[i]);
 	for (;;) {
 		int best = -1;
 		for (int i = 0; i < S_VOICES; i++) {
 			svoice_t *v = &S.v[i];
-			if (v->state == V_PLAY && v->loop && v->hw < 0 && v->loud && key_ready(v->ki) &&
+			if (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0 && v->loud && key_ready(v->ki) &&
 			    (best < 0 || v->loud > S.v[best].loud))
 				best = i;
 		}
@@ -1512,6 +1567,8 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			voice_log(&S.v[S.hw[h].v], "silent", h, 0, 0, 0);
 			hw_release(h, true);
 		}
+	S.sec[3] += ticks() - t;
+	t = ticks();
 	/* volume and pan: only on a change worth hearing, a few a frame, round the channels */
 	for (int n = 0; n < S_HW && cmds < S_CMDS; n++) {
 		int h = (S.cmdrr + n) % S_HW, vol, pan;
@@ -1534,6 +1591,8 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		if (n == S_HW - 1 || cmds >= S_CMDS)
 			S.cmdrr = (h + 1) % S_HW;
 	}
+	S.sec[4] += ticks() - t;
+stats:
 	/* the stats, each second */
 	t = ticks() - t0;
 	Snd_Stats.frames++;
@@ -1543,37 +1602,47 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	if (ticks() - S.laststat > TICK_FREQ) {
 		int nv = 0, nh = 0;
 		for (int i = 0; i < S_VOICES; i++)
-			nv += S.v[i].state != V_FREE;
+			nv += S.vst[i] != V_FREE;
 		for (int h = 0; h < S_HW; h++)
 			nh += S.hw[h].v >= 0;
 		logf_("SNDSTAT voices=%d hw=%d cache=%u/%u pinned=%u misses=%u loads=%u late=%u quiet=%u stolen=%u dups=%u underrun=%u "
-		      "readms=%u.%02u creditms=%u.%02u cpu_us avg=%u max=%u reads=%u readkb=%u\n",
+		      "readms=%u.%02u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u\n",
 		      nv, nh, (unsigned)(used_bytes() / 1024), (unsigned)(S.arenasize / 1024), (unsigned)(pinned_bytes() / 1024),
 		      (unsigned)Snd_Stats.missing, (unsigned)Snd_Stats.starts, (unsigned)Snd_Stats.late, (unsigned)Snd_Stats.quiet,
 		      (unsigned)Snd_Stats.stolen, (unsigned)Snd_Stats.dups, (unsigned)Snd_Stats.underrun,
 		      (unsigned)(ticks_ms(S.statreadmax * 100) / 100), (unsigned)(ticks_ms(S.statreadmax * 100) % 100),
 		      (unsigned)(ticks_ms(S.statcmdmax * 100) / 100), (unsigned)(ticks_ms(S.statcmdmax * 100) % 100),
+		      (unsigned)((uint64_t)S.statactive * 1000000 / TICK_FREQ),
 		      (unsigned)((uint64_t)S.statcpu * 1000000 / TICK_FREQ / BW_NDS_MAX(S.statframes, 1)),
 		      (unsigned)((uint64_t)S.statcpumax * 1000000 / TICK_FREQ), (unsigned)Snd_Stats.reads,
-		      (unsigned)(Snd_Stats.readbytes / 1024));
+		      (unsigned)(Snd_Stats.readbytes / 1024), (unsigned)(S.sec[0] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)),
+		      (unsigned)(S.sec[1] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[2] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)),
+		      (unsigned)(S.sec[3] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[4] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)));
+		memset(S.sec, 0, sizeof(S.sec));
 		S.laststat = ticks();
-		S.statframes = S.statcpu = S.statcpumax = S.statreadmax = S.statcmdmax = 0;
+		S.statframes = S.statcpu = S.statcpumax = S.statreadmax = S.statcmdmax = S.statactive = 0;
 	}
 }
 
 /* --- setup ------------------------------------------------------------------------------------ */
 
+static void defaults(void)
+{
+	if (S.inited)
+		return;
+	S.on = true;
+	S.master_q16 = 45875; /* volume 0.7 (snd_main.c:835) */
+	S.bgm_q16 = 32768;    /* bgmvolume 0.5 (:836) */
+	S.cachekb = 192;
+	S.readms = 2;
+	S.inited = true;
+	S.rnd = 1;
+}
+
 void Snd_Init(void)
 {
-	if (!S.inited) {
-		S.on = true;
-		S.master_q16 = 45875; /* volume 0.7 (snd_main.c:835) */
-		S.bgm_q16 = 32768;    /* bgmvolume 0.5 (:836) */
-		S.cachekb = 192;
-		S.readms = 2;
-		S.inited = true;
-		S.rnd = 1;
-	}
+	defaults();
+	logf_("SNDINIT on=%d cache=%dKB readms=%d volume=%u\n", S.on, S.cachekb, S.readms, (unsigned)S.master_q16);
 	for (int h = 0; h < S_HW; h++)
 		S.hw[h].v = S.hw[h].blk = -1;
 	if (!S.on)
@@ -1599,7 +1668,7 @@ static void stop_all(void)
 	}
 	if (S.v)
 		for (int i = 0; i < S_VOICES; i++)
-			S.v[i].state = V_FREE;
+			S.vst[i] = V_FREE;
 	if (H)
 		memset(H->sent, 0, sizeof(H->sent));
 	S.namb = 0, S.ambver = 0;
@@ -1667,6 +1736,7 @@ void Snd_MapLoaded(void)
 	Snd_Stats.cachekb = want / 1024;
 	for (int i = 0; i < S_KEYS; i++)
 		S.k[i].block = -1;
+	memset(S.vst, 0, sizeof(S.vst));
 	for (int a = 0; a < 256; a++)
 		H->f_q8[a] = snd_factor_q8(a);
 	H->pagecache[0].pack = H->pagecache[1].pack = -1;
