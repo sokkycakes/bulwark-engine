@@ -180,6 +180,7 @@ typedef struct {
 	double evsent;
 	uint32_t evdropped, evcount;            /* records lost to a full ring; records made */
 	char evfeed[96];                        /* serverinfo coop_feed as last seen */
+	uint32_t evtext[5];                     /* each game_text channel's last record (a hash), 0 none */
 	bool evfeedinit;
 } link_t;
 
@@ -2538,7 +2539,7 @@ static void send_fx(link_t *l)
  * records the device draws as the PC's client does. Records go in order, each once,
  * and again until the device says it has them (docs/spec/link.md, EVENT) */
 enum { RAW_GAME = 1, RAW_PRINT, RAW_CENTER };
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN };
 /* Nuclide's src/common/c_events.h */
 enum { EVN_PICKUP = 7, EVN_DAMAGE = 8, EVN_HITNOTIFY = 9, EVN_ANGLE = 10, EVN_SHAKE = 15, EVN_HUDHINT = 16, EVN_FADE = 17,
        EVN_TEXT = 18, EVN_TEXT_STRING = 19, EVN_MESSAGE = 20, EVN_OBITUARY = 25, EVN_CHAT = 28, EVN_CHAT_TEAM = 29 };
@@ -2577,6 +2578,13 @@ static void ev_plain(char *out, int size, const char *s, int len)
 {
 	int n = 0;
 	for (int i = 0; i < len && s[i] && n < size - 1; i++) {
+		/* titles.qc Titles_ParseFunString's escapes: colours, \R a space, \n and \N new lines */
+		if (s[i] == '\\' && i + 1 < len && strchr("yrgbwdRnN", s[i + 1]) && s[i + 1]) {
+			char e = s[++i];
+			if (e == 'R' || e == 'n' || e == 'N')
+				out[n++] = e == 'R' ? ' ' : '\n';
+			continue;
+		}
 		if (s[i] == '^' && i + 1 < len) {
 			if (s[i + 1] == 'x' && i + 4 < len && isxdigit((unsigned char)s[i + 2]) && isxdigit((unsigned char)s[i + 3]) &&
 			    isxdigit((unsigned char)s[i + 4])) {
@@ -2610,11 +2618,20 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 	r[0] = (uint8_t)type, r[1] = (uint8_t)len;
 	memcpy(r + 2, d, (size_t)len);
 	l->evlen[l->evnext % EV_RING] = (uint8_t)(len + 2);
+	if (sv_link_log->ivalue) {
+		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again"};
+		char show[64] = "";
+		int off = type == LE_PRINT ? 1 : type == LE_TEXT ? 32 : type == LE_FEED ? 1 : (type == LE_CENTER || type == LE_PICKUP) ? 0 : -1;
+		if (off >= 0 && len > off)
+			snprintf(show, sizeof(show), " \"%.*s\"", BW_MIN(len - off, 48), (const char *)d + off);
+		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 10 ? type : 0], len, show);
+	}
 	l->evnext++;
 	l->evcount++;
 }
 
-/* a record of fixed fields then text (the rest of it) */
+/* a record of fixed fields then text (the rest of it). game_text sent again as it was
+ * (the co-op hero line, 4 times a second) is only its channel: the device starts it over */
 static void ev_text(link_t *l, int type, const uint8_t *head, int hlen, const char *text, int tlen)
 {
 	uint8_t b[EV_REC];
@@ -2624,6 +2641,17 @@ static void ev_text(link_t *l, int type, const uint8_t *head, int hlen, const ch
 	ev_plain(plain, EV_REC - 2 - hlen, text, tlen);
 	n = (int)strlen(plain);
 	memcpy(b + hlen, plain, (size_t)n);
+	if (type == LE_TEXT && b[0] < 5) {
+		uint32_t h = 2166136261u;
+		for (int i = 0; i < hlen + n; i++)
+			h = (h ^ b[i]) * 16777619u;
+		h |= 1;
+		if (h == l->evtext[b[0]]) {
+			ev_put(l, LE_TEXTAGAIN, b, 1);
+			return;
+		}
+		l->evtext[b[0]] = h;
+	}
 	ev_put(l, type, b, hlen + n);
 }
 
