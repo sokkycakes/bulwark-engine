@@ -216,7 +216,7 @@ static uint32_t rd32(const uint8_t *d) { return rd16(d) | rd16(d + 2) << 16; }
 static uint32_t rnd(void) { return S.rnd = S.rnd * 1103515245u + 12345u, S.rnd >> 16; }
 
 uint32_t Snd_Key(const char *name) { return snd_key(name); }
-bool Snd_Enabled(void) { return S.on; }
+bool Snd_Enabled(void) { return S.on && S.ready; } /* (INPUT's caps: sound is wanted only while it can play) */
 
 static void logf_(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void logf_(const char *fmt, ...)
