@@ -682,7 +682,7 @@ impl Live {
                         .collect();
                     serde_json::json!({
                         "id": p.id, "name": p.name, "description": p.description,
-                        "players": p.players(), "teams": p.teams, "drop_in": p.drop_in, "searching": live.searching(&p.id), "modes": modes,
+                        "players": p.players(), "teams": p.teams, "drop_in": p.drop_in, "searching": live.searching(&p.id), "online": live.online(&p.id), "modes": modes,
                     })
                 })
                 .collect();
@@ -696,6 +696,13 @@ impl Live {
             json = "[]".into();
         }
         self.send(id, Server::PlaylistInfo { json });
+    }
+
+    /// Players on a playlist: searching, plus seated in its running
+    /// drop-in matches (other matches aren't tracked once made).
+    fn online(&self, playlist: &str) -> usize {
+        self.searching(playlist) as usize
+            + self.running.values().filter(|r| r.playlist == playlist).map(|r| r.seats.len()).sum::<usize>()
     }
 
     fn list(&mut self, id: u32) {
@@ -1326,6 +1333,7 @@ mod tests {
         assert_eq!(v[2]["players"], 8);
         assert_eq!(v[2]["drop_in"], true);
         assert_eq!(v[2]["modes"][1]["name"], "Horde: Lives");
+        assert_eq!(v[2]["online"], 0);
         println!("{} bytes", json.len());
     }
 

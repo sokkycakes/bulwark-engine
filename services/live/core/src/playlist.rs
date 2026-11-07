@@ -339,7 +339,7 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
                       "coop_waveMonsters": "monster_human_grunt" } }
     ] },
   { "id": "horde", "name": "Horde", "game": "coop",
-    "description": "Up to eight players, drop in any time. The fallen return when the wave is cleared.", "team_size": 8, "teams": 1,
+    "description": "Wave based mode. Hold out for 12 waves and survive the boss!", "team_size": 8, "teams": 1,
     "stages": [
       { "after": 0, "max_rtt_sum": 150 },
       { "after": 8 }

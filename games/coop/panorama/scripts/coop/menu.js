@@ -850,7 +850,6 @@ var CoopMenu = ( function ()
 		var head = make( "Panel", root, "mm-head", { hittest: "false" } );
 		var titles = make( "Panel", head, "mm-titles", { hittest: "false" } );
 		label( titles, "mm-title", "Matchmaking" );
-		mm.net = label( titles, "mm-net", "" );
 		var codebox = make( "Panel", head, "mm-codebox", { hittest: "false" } );
 		mm.codeHint = label( codebox, "mm-codehint", "" );
 		mm.code = label( codebox, "mm-code", "" );
@@ -952,9 +951,6 @@ var CoopMenu = ( function ()
 		if ( online && mm.tick % 32 === 16 )
 			cmd( "live_playlists" );
 
-		mm.net.text = online ? "Bulwark Live  ·  online  ·  " + ( st.rtt || 0 ) + " ms" :
-			server ? "Bulwark Live  ·  connecting to " + server : "Bulwark Live  ·  no server set";
-		mm.net.SetHasClass( "offline", !online );
 		mm.codeHint.text = party ? ( ( party.flags & 1 ) ? "Party code" : "Party code (invite only)" ) : "";
 		mm.code.text = party ? party.code : "";
 
@@ -1013,9 +1009,7 @@ var CoopMenu = ( function ()
 	function mmFacts( pl )
 	{
 		var facts = pl.players + ( pl.teams > 1 ? " players, " + pl.teams + " teams" : pl.players === 1 ? " player" : " players" );
-		if ( pl.drop_in )
-			facts += "  ·  drop-in";
-		facts += "  ·  " + ( pl.searching || 0 ) + " searching";
+		facts += "  ·  " + ( pl.online !== undefined ? pl.online : pl.searching || 0 ) + " online";
 		return facts;
 	}
 
@@ -1033,14 +1027,6 @@ var CoopMenu = ( function ()
 		if ( pl.description )
 			label( mm.area, "mm-card-desc", pl.description );
 		mm.searchingLabel = label( mm.area, "mm-card-facts", mmFacts( pl ) );
-		var modes = make( "Panel", mm.area, "mm-card-modes", { hittest: "false" } );
-		( pl.modes || [] ).forEach( function ( m )
-		{
-			var r = make( "Panel", modes, "mm-mode", { hittest: "false" } );
-			label( r, "", m.name );
-			if ( m.maps && m.maps.length )
-				label( r, "mm-mode-maps", m.maps.length === 1 ? m.maps[ 0 ] : m.maps.length + " maps" );
-		} );
 	}
 
 	function mmDrawPicker( st )

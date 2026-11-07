@@ -228,11 +228,12 @@ and run commands themselves.
   Options, Quit.
 - Pause menu (Escape in a game): Resume, Points shop, Vote, Options,
   Disconnect, Quit.
-- Matchmaking (title menu, and Play's footer): a Reach-style lobby on
-  Bulwark Live (`styles/coop/lobby.css`). Options on the left (Start
+- Matchmaking (title menu, and Play's footer): a lobby laid out like
+  Reach's on Bulwark Live (`styles/coop/lobby.css`, layout only, no visual
+  styling yet). Options on the left (Start
   matchmaking, Playlist, Party privacy, Add a split-screen guest, Join a
-  party by code, Leave party), the playlist card with its modes and maps
-  under them, the party roster on the right with open seats up to the
+  party by code, Leave party), the playlist card (name, description,
+  size, players online) under them, the party roster on the right with open seats up to the
   playlist's size, and a search ribbon along the bottom while queued. Only
   the party leader starts or stops the search. The page makes a party on
   its own once online; with no `live_server` set it asks for one. The

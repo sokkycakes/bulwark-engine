@@ -80,12 +80,6 @@
 	font-size: 58px;
 }
 
-.mm-net
-{
-	margin-top: 4px;
-	font-size: 19px;
-}
-
 .mm-codebox
 {
 	vertical-align: top;
@@ -194,31 +188,6 @@
 {
 	margin-top: 14px;
 	font-size: 18px;
-}
-
-.mm-card-modes
-{
-	width: 100%;
-	margin-top: 16px;
-	flow-children: down;
-}
-
-.mm-mode
-{
-	width: 100%;
-	height: 34px;
-	flow-children: right;
-}
-
-.mm-mode Label
-{
-	vertical-align: center;
-	font-size: 19px;
-}
-
-.mm-mode .mm-mode-maps
-{
-	horizontal-align: right;
 }
 
 /* the playlist chooser takes the card's place */

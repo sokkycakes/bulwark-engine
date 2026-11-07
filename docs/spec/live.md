@@ -111,7 +111,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per seat: `u32` id, `u8` slot, `u8` team, `str` name; then `str` mode, `str` map, `u8` count, then per setting: `str` name, `str` value (all empty for a playlist without modes) |
 | 73 | `players` | `u8` count, then per player: `u32` id, `str` name, `str` status, `str` party code if joinable else empty |
 | 74 | `ping` | `u32` nonce; sent after each `welcome`, answered at once with `pong` |
-| 75 | `playlist_info` | the rest of the datagram is JSON: `[{id, name, description, players, teams, drop_in, searching, modes: [{id, name, maps}]}]` for the caller's game; maps are dropped if it wouldn't fit one datagram |
+| 75 | `playlist_info` | the rest of the datagram is JSON: `[{id, name, description, players, teams, drop_in, searching, online, modes: [{id, name, maps}]}]` (`online` = searching plus seated in its running drop-in matches) for the caller's game; maps are dropped if it wouldn't fit one datagram |
 
 Error codes: 1 not registered (reserved: the server stays silent instead), 2 wrong version, 3 server
 full, 4 no such room code, 5 party full, 6 not the leader, 7 no such
