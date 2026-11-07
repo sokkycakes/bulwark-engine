@@ -336,7 +336,7 @@ static void makevectors(const float *angles)
  * ClampWalkSpeed only), so this one doesn't touch them. */
 static void qc_angle_vectors(const float *angles, float *fwd, float *right)
 {
-	const float k = 0x1.1df45cp-6f;
+	const float k = PM_QC_DEG2RAD;
 	float angle, sr, sp, sy, cr, cp, cy;
 	angle = angles[1] * k;
 	pm_sincos(angle, &sy, &cy);
@@ -355,6 +355,8 @@ static void qc_angle_vectors(const float *angles, float *fwd, float *right)
 		right[2] = (-1.0f * sr) * cp;
 	}
 }
+
+void PM_AnglesToForward(const float angles[3], float fwd[3]) { qc_angle_vectors(angles, fwd, NULL); }
 
 /* fixAngleDelta / fixAngle (src/common/c_math.h:108-133) */
 static float fix_angle_delta(float a)

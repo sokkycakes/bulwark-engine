@@ -130,5 +130,10 @@ void PM_CmdAngles(const pmcmd_t *c, float out[3]);  /* -pitch * (360.0f / 65536.
 void PM_Run(pmstate_t *s, const pmcmd_t *c, const pmvars_t *v, const pmtrace_if *t);
 /* sinf(a) and cosf(a) as the server's C library (x86-64 glibc) gives them */
 void PM_SinCos(float a, float *s, float *c);
+/* QC's degrees to radians: M_PI 3.14159 (fteextensions.qc) * 2 / 360, folded by fteqcc
+ * in float; M_PI / 180 folds to the same */
+#define PM_QC_DEG2RAD 0x1.1df45cp-6f
+/* the QC's anglesToForward (src/common/c_math_vector.h), bit for bit, for the weapon code */
+void PM_AnglesToForward(const float angles[3], float fwd[3]);
 
 #endif

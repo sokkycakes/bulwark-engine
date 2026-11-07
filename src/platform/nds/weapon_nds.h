@@ -12,7 +12,8 @@
 
 #define W_MAX_SEQ 64 /* view model sequences WEAPONINFO carries */
 #define W_MAX_EV 32  /* muzzle flash events, all sequences */
-#define W_MAX_ACT 4  /* sequences one activity picks among */
+#define W_MAX_ACT 8  /* sequences one activity picks among (co-op's machine pistols have 6); a
+                        * longer list makes the weapon one the device doesn't run (WI_TOOMANYACTS) */
 #define W_AMMO 4     /* ammo types PSTATE carries */
 
 /* Weapon.qc's activities ("act_<name>"), in WEAPONINFO's numbering */
@@ -27,7 +28,8 @@ enum { WF_AMMOREQ = 1, WF_SEMIAUTO = 2, WF_UNDERWATER = 4, WF_LOOPING = 8, WF_CO
        WF_RELOADTIMED = 64, WF_ONFIRE = 128, WF_ONRELEASE = 256, WF_DETONATE = 512, WF_SERVERFIRE = 1024 };
 /* the weapon decl's (winfo_t.flags) */
 enum { WI_ALTALTERNATES = 1, WI_REMOVEONEMPTY = 2, WI_POWERAMMO = 4, WI_ALTMODE = 8, WI_BUGGYIDLE = 16,
-       WI_SECONDARY = 32 };
+       WI_SECONDARY = 32,
+       WI_TOOMANYACTS = 128 /* the parser's own: an activity lists more than W_MAX_ACT sequences */ };
 /* wstate_t.flags */
 enum { WST_FIRING = 1, WST_WILLRELEASE = 2 };
 /* the player's flags Weapon.qc reads or sets (src/common/c_flags.h, valve/src/shared/flags.h) */

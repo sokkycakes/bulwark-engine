@@ -42,7 +42,7 @@ static float rdf(const uint8_t *d)
 			return false;                                                                                         \
 	} while (0)
 
-static bool parse_fire(wfire_t *f, const uint8_t **pp, const uint8_t *end)
+static bool parse_fire(wfire_t *f, const uint8_t **pp, const uint8_t *end, uint8_t *wflags)
 {
 	const uint8_t *p = *pp;
 	float *v[25] = {&f->punch[0], &f->punch[1], &f->punch[2], &f->spring[0], &f->spring[1], &f->spring[2],
@@ -70,6 +70,10 @@ static bool parse_fire(wfire_t *f, const uint8_t **pp, const uint8_t *end)
 				f->act[a][k] = (int16_t)rd16(p);
 		if (a < WA_COUNT)
 			f->nact[a] = (uint8_t)(n < W_MAX_ACT ? n : W_MAX_ACT);
+		/* GetSubDefAct picks among all of them (activities.qc:116-122): with only some
+		 * the pick would differ, so the weapon is left to the server */
+		if (a < WA_COUNT && n > W_MAX_ACT)
+			*wflags |= WI_TOOMANYACTS;
 	}
 	*pp = p;
 	return true;
@@ -91,7 +95,7 @@ bool Weapon_ParseInfo(winfo_t *w, const uint8_t *d, int len)
 	if (w->nfi < 1 || w->nfi > 2)
 		return false;
 	for (int i = 0; i < w->nfi; i++)
-		if (!parse_fire(&w->fi[i], &p, end))
+		if (!parse_fire(&w->fi[i], &p, end, &w->flags))
 			return false;
 	NEED(1);
 	w->nseq = *p++;
@@ -146,7 +150,8 @@ int Weapon_ParseState(wstate_t *s, const uint8_t *d, int len)
 
 bool Weapon_Usable(const wstate_t *s, const winfo_t *w)
 {
-	return w && s->edict && s->edict == w->edict && s->infover && s->infover == w->version && s->fi < w->nfi;
+	return w && s->edict && s->edict == w->edict && s->infover && s->infover == w->version && s->fi < w->nfi &&
+	       !(w->flags & WI_TOOMANYACTS);
 }
 
 int Weapon_Ammo(const wstate_t *s, int type)
@@ -342,16 +347,16 @@ static bool TestFireAbility(wrun_t *r, int fi)
 		return true;
 	invert = dist < 0.0f;
 	dist = fabsf(dist);
-	{
-		float p = r->angles[0] * (3.14159265f / 180.0f), y = r->angles[1] * (3.14159265f / 180.0f);
-		fwd[0] = cosf(p) * cosf(y), fwd[1] = cosf(p) * sinf(y), fwd[2] = -sinf(p);
-	}
-	/* Melee_Sweep (src/shared/game/Projectile.qc:1679-1780), without its wall test */
+	PM_AnglesToForward(r->angles, fwd); /* anglesToForward(eyeAngles) */
+	/* Melee_Sweep (src/shared/game/Projectile.qc:1679-1780): cos(bound(0, coneDeg, 89) *
+	 * (M_PI / 180)), fteqcc's M_PI 3.14159 folded to the same constant as anglesToForward's,
+	 * through the engine's cosf (bi_cos) */
 	if (invert && (f->flags & WF_ONFIRE) && f->sweepangle > 0.0f) {
-		float mindot = cosf(boundf(0, f->sweepangle, 89) * (3.14159265f / 180.0f));
+		float mindot, sn;
+		PM_SinCos(boundf(0, f->sweepangle, 89) * PM_QC_DEG2RAD, &sn, &mindot);
 		for (int i = 0; i < r->env->nboxes; i++) {
 			const float *mn = r->env->boxmins[i], *mx = r->env->boxmaxs[i];
-			float near[3], aim[3], c[3], along = 0, d2 = 0, len = 0, dot;
+			float near[3], aim[3], aimpt[3], c[3], along = 0, d2 = 0, len = 0, dot;
 			if (r->env->boxsolid[i] != 2 && r->env->boxsolid[i] != 3)
 				continue;
 			for (int k = 0; k < 3; k++) {
@@ -364,13 +369,27 @@ static bool TestFireAbility(wrun_t *r, int fi)
 				c[k] = (mn[k] + mx[k]) * 0.5f, along += (c[k] - r->env->eye[k]) * fwd[k];
 			along = boundf(0, along, f->sweeprange);
 			for (int k = 0; k < 3; k++) {
-				aim[k] = boundf(mn[k], r->env->eye[k] + fwd[k] * along, mx[k]) - r->env->eye[k];
+				aimpt[k] = boundf(mn[k], r->env->eye[k] + fwd[k] * along, mx[k]);
+				aim[k] = aimpt[k] - r->env->eye[k];
 				len += aim[k] * aim[k];
 			}
 			len = sqrtf(len);
 			dot = len > 0 ? (aim[0] * fwd[0] + aim[1] * fwd[1] + aim[2] * fwd[2]) / len : 1.0f;
-			if (dot >= mindot)
-				return true;
+			if (dot < mindot)
+				continue;
+			/* not through walls (:1745-1756): to the aim point, else to the centre,
+			 * MOVE_NOMONSTERS with the player's own contents (its hitcontentsmaski is
+			 * the default there; TestFireAbility sets its own only after). Without hulls
+			 * nothing can be in the way */
+			if (r->env->trace) {
+				r->env->trace->move(r->env->trace->ctx, r->env->eye, zero, zero, aimpt, PM_MOVE_NOMONSTERS, 0, &tr);
+				if (tr.fraction < 1.0f) {
+					r->env->trace->move(r->env->trace->ctx, r->env->eye, zero, zero, c, PM_MOVE_NOMONSTERS, 0, &tr);
+					if (tr.fraction < 1.0f)
+						continue;
+				}
+			}
+			return true;
 		}
 	}
 	if (!r->env->trace)
@@ -425,8 +444,8 @@ static void FiredWeaponAttack(wrun_t *r)
 {
 	SetState(r, WS_IDLE);
 	if (r->fi->knockback != 0.0f && r->env->velocity) {
-		float p = r->angles[0] * (3.14159265f / 180.0f), y = r->angles[1] * (3.14159265f / 180.0f);
-		float fwd[3] = {cosf(p) * cosf(y), cosf(p) * sinf(y), -sinf(p)};
+		float fwd[3];
+		PM_AnglesToForward(r->angles, fwd); /* anglesToForward(ourOwner.v_angle) */
 		for (int k = 0; k < 3; k++)
 			r->env->velocity[k] += fwd[k] * -r->fi->knockback;
 	}
@@ -439,8 +458,8 @@ static void ReleasedWeaponAttack(wrun_t *r)
 {
 	SetState(r, WS_RELEASED);
 	if (r->fi->knockbackrel != 0.0f && r->env->velocity) {
-		float p = r->angles[0] * (3.14159265f / 180.0f), y = r->angles[1] * (3.14159265f / 180.0f);
-		float fwd[3] = {cosf(p) * cosf(y), cosf(p) * sinf(y), -sinf(p)};
+		float fwd[3];
+		PM_AnglesToForward(r->angles, fwd); /* anglesToForward(ourOwner.v_angle) */
 		for (int k = 0; k < 3; k++)
 			r->env->velocity[k] += fwd[k] * -r->fi->knockbackrel;
 	}
