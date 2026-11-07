@@ -77,6 +77,11 @@ cmdvb=2             optional: one movement command every 2 refreshes instead of 
 botwalk=1           optional: walk, strafe, jump and crouch by itself in a fixed 12 s pattern, for testing
 interp=80           optional: ms other entities are drawn behind the server, 0 for as sent ("Other entities", below)
 lerpframes=0        optional: models step from baked frame to frame instead of blending
+volume=0.7          optional: sound volume, 0 to 1 (the PC's default)
+sndcache=192        optional: KB of samples kept in RAM, 64 to 512 ("Sound", below)
+sndreadms=2         optional: ms a frame the sound may spend reading the card, 1 to 16
+sound=0             optional: no sound
+snd_log=1           optional: log each sound and a line of stats a second through the no$gba port (2: the stats only)
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
@@ -901,6 +906,94 @@ no second dropped. The lowest free RAM on c2a4e went from 192 to 160 KB
 In the arena run all 117 records were acknowledged, none dropped, no
 stops; c1a0's chapter title (`C0A1TITLE`) came from titles.txt.
 
+## Sound: what the PC client hears
+
+`sound_nds.c` plays what a PC client in the same game would hear, on the
+DS's 16 hardware channels. The server sends the sounds (docs/spec/link.md,
+"Sound"): `SOUND` packets for the engine's `svc_sound` and for what the PC's
+client game makes by itself, `AMBIENT` for client-side loops, `EVENT`
+records 12 to 15 for loops started or stopped reliably, sentences, music and
+the precache list, and a table in `WEAPONINFO` for the view model's sound
+events. The DS mixes them as the PC's mixer does (`src/sound/snd_main.c`):
+
+| What | The PC's code | On the DS |
+|---|---|---|
+| Voices | `pick_channel` (`snd_main.c:155-182`), 128 channels less 32 ambient | 96 voices: the entity's numbered channel is replaced (`NOREPLACE`: the new one is dropped), else a free voice, else the one furthest into its sample that isn't the listener's |
+| Gains | `spatialise`, `S_SoundLevel`, `S_DistanceGain` | the same in fixed point (`sndmath_nds.h`): distance in 1/128 units with the hardware square root, the pan from the camera's right vector, `volume` 0.7, the cull at 0.002 |
+| Left and right | the PC's two gains | one volume and a pan: V = (L + R)/2 and P = 128R/(L + R), which gives each ear exactly L/2 and R/2 (6 dB of headroom) |
+| `FOLLOW` | the entity's origin each frame | the drawn thing's origin, or the camera for our own player |
+| Loops | `ambient_generic` and `ncSound` (`ambient_generic.qc`, `Sound.qc`) | the `AMBIENT` set; a switch of sample waits until the new one is in |
+| Sentences | `sentences.qc` | each word after the previous one's length |
+| View model | `HandleAnimEvent` 1004, 1008, 5004 | `WEAPONINFO`'s table (SoundDefs with their pitch range, distance shader and start offset) |
+| Weapon switch | `HLWeaponSelect` | `common/wpn_hudon` when the list opens, `wpn_moveselect` as it moves (3 s) |
+| Chat | `chat.qc` | `misc/talk` |
+| Model events with `AT` | as the client draws the frame | started when the drawn clock (`ENTS` time less `interp`) passes `at` |
+
+Samples are named by key (FNV-1a 32 of the normalised name) and come from
+sound packs, `<base>/sound/*.dsp` (`tools/nds/sndpack.py`; until it is in, any
+pack in the spec's layout), searched last name first like game folders.
+A pack's directory is read a 512-byte page at a time. Samples are kept in one
+cache, `sndcache=` KB (192 by default, less if the heap would keep under
+384 KB for the models still to load), filled after each map loads and freed
+before the next. A sample is read whole into the cache, 4 KB a read, within
+`sndreadms=` a frame (2 ms by default, at least one read), and starts once
+its first 2 KB are in. One-shots come first, in the order they came, then
+loops, loudest first. After a map loads the DS looks up the map's precache
+list and reads the smallest samples first, until 75% of the cache is full.
+Samples that voices play, and loops, can take up to half the cache.
+
+The 16 channels go to the loudest voices. A new one-shot takes a free
+channel, or the quietest one if it is louder. A loop that loses its channel,
+or gets quieter than the cull, gives it up and takes one again when it is a
+quarter louder than the quietest held. Volume and pan are only rewritten on a
+change of 1/16 or 2 steps of pan, at most 20 commands a frame.
+
+Where it differs from the PC:
+
+- One volume and a pan per channel, not two gains. Each ear gets exactly the
+  PC's gain less 6 dB, so 16 loud voices don't clip.
+- 16 voices are heard, not up to 128. A one-shot quieter than every held
+  channel is dropped (`quiet`), and one that loses its channel ends. The PC
+  keeps mixing both, under 14 louder ones.
+- A loop that gets a channel back starts again from its loop point, not
+  where it would be (ADPCM can't seek).
+- A one-shot whose start isn't read within 150 ms is dropped (`late`).
+- When looped samples would take more than half the cache, the quieter
+  loops wait. On c2a4e with all five ambients aliased to base samples,
+  two at -48 dB stayed silent (observed).
+- A sentence word on an entity the DS doesn't draw plays at the listener.
+- Positive start offsets of a SoundDef (skipping into the sample) are not
+  done; negative ones (a delay) are.
+
+Not done yet: music and other streams (EVENT 14 is logged only, and
+samples over half the cache are not played), the fireInfo's release sound
+(`WEAPONINFO`'s `release` entries), `common/wpn_hudoff`.
+
+`tools/nds/sndtest.c` checks the fixed-point gains against the PC's own
+`spatialise` (cut out of `snd_main.c` by `tools/nds/sndtest_ref.py`) over
+yaws, positions, attenuations, volumes and flags: 1,077,126 cases, none
+more than 1 of 2047 in volume or 1 of 127 in pan; the sample-name keys
+match the spec's test values.
+
+### Measured: sound, in melonDS 1.1 (not hardware)
+
+Test packs made from base's WAVs (PCM8, and ADPCM for `ambience/`) and a few
+Half-Life names aliased to them (Half-Life's own sounds aren't here). The
+server is `wip/snd-server` (c4a0539), with `sv_link_log 1`. All values are
+observed. "CPU" is `Snd_Frame` with its reads, from `SNDSTAT`:
+
+| What | Result |
+|---|---|
+| Records started | coop_arena, firing for 15 s: all 196 `SOUND` records the server sent were started on the DS (an earlier run: 309 of 309); 10 view-model samples missing from the packs were reported `missing` |
+| Start delay | 1 to 6 ms from the packet, at most 13 ms (a cold read) |
+| Gains | e0m1's `ambience/comp1` (`AMBIENT`): vol 9, pan 86 on the DS; the PC formula at the player's position and yaw gives 9 and 86. c2a4e's siren and two lab drones: 130/64, 21/94 and 13/97 on the DS and from the formula |
+| Audio (SDL disk capture) | a test tone at 27 volume and pan settings in three formats: the right-to-left ratio as computed, level linear in the volume (7.3 to 7.8 times the per-ear gain over vol 71 to 1433), onsets within 7 ms of the log (2 ms rms); comp1 looped steadily for 70 s, its spectrum within 1 dB of the WAV's up to 4 kHz; 11 clipped samples in 69 s of heavy fire |
+| CPU a frame | nothing playing 13 to 15 us; one loop 88 us; firing (up to 14 voices) 110 to 190 us on average, worst 320 us; a frame that reads takes up to its 2 ms budget |
+| Reads | 0.3 to 1.2 ms each (melonDS, not a card) |
+| RAM, c2a4e standing | used at peak 2.18 MB against 1.94 MB with `sound=0` (the 192 KB cache and about 46 KB of tables); 1.25 MB still free; the lowest free during the map load 124 KB in both, since sound frees everything first |
+| Frame time, c2a4e | 13.6 to 13.8 ms against 13.5 ms with `sound=0`, 30 fps in both |
+| Code | `sound_nds.o` 27.7 KB of code, 1.7 KB of bss |
+
 ## Map viewer controls
 
 | Button | Action |
@@ -1378,4 +1471,4 @@ Not done:
   models) aren't drawn.
 - Collision in the map viewer: you fly through walls. (Linked, the DS
   predicts the server's collision, above.)
-- Animated water, sky scrolling, sound.
+- Animated water, sky scrolling; music ("Sound", above), and sound in the map viewer.
