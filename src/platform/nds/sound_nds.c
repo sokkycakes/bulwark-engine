@@ -108,6 +108,7 @@ typedef struct {
 	bool loop, underrun;
 	bool ownclock;       /* V_DELAY until t_due (ticks), not the drawn clock: a SoundDef's start delay */
 	int8_t amb;          /* its AMBIENT entry, -1 none */
+	int8_t repl;         /* the voice it replaces on its channel once it starts, -1 none */
 	uint8_t thing;       /* where its entity was in the things list last frame (a hint) */
 	int32_t org[3];      /* 1/8 units */
 	uint32_t vol_q16, f_q8;
@@ -879,21 +880,32 @@ static uint32_t voice_pos(const svoice_t *v)
 
 /* pick_channel (snd_main.c:155-182) at the moment a sound comes: the entity's numbered channel
  * is replaced (or with NOREPLACE the new one dropped), else a free voice, else the one furthest
- * into its sample that isn't the listener's. -1: dropped */
-static int voice_pick(int ent, int chan, bool clientside, int sflags)
+ * into its sample that isn't the listener's. A sample known to be missing replaces nothing (the
+ * PC's start_sound returns before pick_channel when it won't load, :189-190); one not yet looked
+ * up leaves a playing sound on the channel until it starts (*repl). -1: dropped */
+static int voice_pick(int ent, int chan, bool clientside, int sflags, uint32_t key, int *repl)
 {
-	int best = -1;
+	int best = -1, reuse = -1;
 	uint32_t bestpos = 0;
-	if (chan != 0)
+	*repl = -1;
+	if (chan != 0) {
+		int ki = key_find(key), st = ki >= 0 ? S.k[ki].state : K_PENDING;
 		for (int i = 0; i < S.vtop; i++) {
 			svoice_t *v = &S.v[i];
 			if (S.vst[v - S.v] != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside) {
-				if (sflags & SF_NOREPLACE)
+				if ((sflags & SF_NOREPLACE) || st == K_MISS)
 					return -1;
-				voice_free(i, "replace");
-				return i;
+				if (st == K_FOUND || S.vst[i] != V_PLAY) {
+					voice_free(i, "replace");
+					if (reuse < 0)
+						reuse = i;
+				} else
+					*repl = i;
 			}
 		}
+		if (reuse >= 0)
+			return reuse;
+	}
 	for (int i = 0; i < S_VOICES; i++) {
 		svoice_t *v = &S.v[i];
 		uint32_t pos;
@@ -933,7 +945,7 @@ typedef struct {
 /* a sound that came (or the DS makes): a voice waiting for its sample */
 static int voice_new(const srec_t *r, int src)
 {
-	int vi;
+	int vi, repl;
 	svoice_t *v;
 	bool cs = (r->lflags & LF_CLIENTSIDE) != 0;
 	if (!S.ready)
@@ -943,10 +955,11 @@ static int voice_new(const srec_t *r, int src)
 		stop_chan(r->ent, r->chan, cs);
 		return -1;
 	}
-	if ((vi = voice_pick(r->ent, r->chan, cs, r->sflags)) < 0)
+	if ((vi = voice_pick(r->ent, r->chan, cs, r->sflags, r->key, &repl)) < 0)
 		return -1;
 	v = &S.v[vi];
 	memset(v, 0, sizeof(*v));
+	v->repl = (int8_t)(repl != vi ? repl : -1);
 	S.vtop = BW_NDS_MAX(S.vtop, vi + 1);
 	S.vst[v - S.v] = (r->lflags & LF_AT) && S.haveclock ? V_DELAY : V_WAIT;
 	v->src = (uint8_t)src, v->lflags = r->lflags, v->sflags = r->sflags, v->chan = r->chan;
@@ -973,6 +986,12 @@ static void voice_start(int vi)
 	skey_t *k = &S.k[v->ki];
 	int h;
 	uint32_t late = ticks_ms(ticks() - v->t_arrive);
+	if (v->repl >= 0) { /* what it replaces on its channel, if that still plays there */
+		const svoice_t *o = &S.v[v->repl];
+		if (S.vst[v->repl] == V_PLAY && o->ent == v->ent && o->chan == v->chan && !(o->lflags & LF_CLIENTSIDE) == !(v->lflags & LF_CLIENTSIDE))
+			voice_free(v->repl, "replace");
+		v->repl = -1;
+	}
 	v->loop = k->loopstart >= 0 || (v->sflags & SF_FORCELOOP);
 	S.vst[v - S.v] = V_PLAY;
 	v->t_start = ticks();
