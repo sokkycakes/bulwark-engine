@@ -103,6 +103,11 @@ class Layer:
         return self._files
 
 
+def readf(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
 def dir_layer(root, label, private):
     L = Layer(label, private)
     for dp, dns, fns in os.walk(root):
@@ -110,7 +115,7 @@ def dir_layer(root, label, private):
         for fn in sorted(fns):
             p = os.path.join(dp, fn)
             rel = os.path.relpath(p, root).replace(os.sep, "/")
-            L._files[rel.lower()] = (rel, (lambda p=p: open(p, "rb").read()))
+            L._files[rel.lower()] = (rel, (lambda p=p: readf(p)))
     return L
 
 
@@ -677,7 +682,10 @@ def convert(name, pcm, opt):
     q8 = quantize(x8)
     d8, dec8 = enc_pcm8(q8)
     s.snr_pcm8 = snr_db(q8, dec8)
-    if forced8 or len(d8) < 1024 or s.snr_adpcm < opt.adpcm_min_snr:
+    # PCM8 when named, when small, or when ADPCM is under the floor and PCM8 is
+    # better (a source below 8 bits' resolution, such as base's near-silent
+    # placeholders, rounds to 0 in PCM8: ADPCM keeps more of it)
+    if forced8 or len(d8) < 1024 or (s.snr_adpcm < opt.adpcm_min_snr and s.snr_pcm8 > s.snr_adpcm):
         s.fmt, s.data, s.frames, s.loopstart, s.loopshift, s.endtrim, s.ref = FMT_PCM8, d8, len(q8), l8, sh8, tr8, q8
         s.why = "forced" if forced8 else ("small" if len(d8) < 1024 else "snr")
     else:
@@ -849,7 +857,7 @@ def write_dsm(path, pcm, rate, stereo):
 
 
 def check_dsm(path):
-    buf = open(path, "rb").read()
+    buf = readf(path)
     errs = []
     if buf[:4] != b"BWMS":
         return ["not a BWMS file"], None
@@ -974,7 +982,9 @@ def used_names(layers, used_lists, keep_globs, available):
     for w in sentences:
         add(w, "sentences")
     for f in used_lists:
-        for line in open(f, encoding="latin1"):
+        with open(f, encoding="latin1") as fh:
+            lines = fh.read().splitlines()
+        for line in lines:
             p = line.split()
             if "LINKSNDUSED" in p:
                 i = p.index("LINKSNDUSED")
@@ -1144,7 +1154,7 @@ def check(files, against, opt):
                 print("%s: music, %d ch, %d Hz, %.1f s, %d bytes, %s" % (path, info["channels"], info["rate"],
                       info["seconds"], info["bytes"], "ok" if not errs else "%d errors" % len(errs)))
             continue
-        buf = open(path, "rb").read()
+        buf = readf(path)
         errs = []
         try:
             hd, ents = read_pack(buf)
