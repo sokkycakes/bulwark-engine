@@ -19,7 +19,7 @@
  * middle to aim, double-tap to jump, and buttons below for weapons, reload,
  * use, jump, duck, flashlight and secondary fire. Above the pad are the
  * player's score and weapon, and the top screen shows health and Barrier
- * (armour) in the HUD font (STATS). The tab at the top right
+ * (armour) in the HUD font (STATS), and the weapon's clip and reserve. The tab at the top right
  * swaps it for the game's own bottom screen (SCREEN packets) and back.
  */
 #include <arpa/inet.h>
@@ -39,6 +39,7 @@
 
 #include "nds.h"
 #include "hull_nds.h"
+#include "weapon_nds.h"
 
 #define LINK_PORT 27901
 #define MAX_SERVERS 8
@@ -47,7 +48,7 @@
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO };
 #define LINK_VER 2 /* JOIN and WELCOME's linkver: 2 sends movement commands (docs/spec/link.md) */
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
@@ -315,6 +316,40 @@ static struct {
 	bool stair;            /* stairz holds one */
 	int botstart;          /* botwalk: the refresh the pattern started */
 } pr;
+
+/* weapon prediction (link v2, docs/spec/link.md "Weapon prediction"): each command
+ * runs, after its movement, through weapon_nds.c (a port of what the PC client
+ * runs: Physics_InputPostMove and ncPlayer::ProcessInput's ncWeapon calls) with
+ * the weapon's values from WEAPONINFO, from PSTATE's weapon block as the
+ * movement runs from PSTATE's state. Its view model sequence and time, muzzle
+ * flash, punch and ammo are what the view and the HUD show. */
+typedef struct {
+	float health, downforce, eye[3];
+	uint32_t seq, vflags, gflags;
+	int8_t waterlevel;
+	bool landed;
+} wenvrec_t; /* what a command's movement left for the weapon code, kept for a replay */
+static struct {
+	winfo_t info;              /* WEAPONINFO; info.version 0 none */
+	bool havesrv;              /* the last PSTATE had a weapon block */
+	wstate_t srv;              /* its state, after the acked command */
+	wenvrec_t base;            /* and the player's as it left it */
+	wstate_t cur;              /* after the newest command: what the view shows */
+	wstate_t rpstate;          /* the replay's, with pr.rp */
+	wstate_t ring[PR_RING];
+	uint32_t ringseq[PR_RING];
+	wenvrec_t env[PR_CMDS];
+	int nboxes;                /* the boxes near the player, for a melee weapon's sweep */
+	float bmins[HULL_MAX_BOXES][3], bmaxs[HULL_MAX_BOXES][3];
+	uint8_t bsolid[HULL_MAX_BOXES];
+	bool showing;              /* the view model is ours (cur), not STATS' */
+	int shownseq;
+	float showntime;
+	int flashframe;            /* the refresh our muzzle flash started; its size */
+	float flashscale;
+	int hudclip, hudres;       /* what the ammo panel shows (-2 nothing yet) */
+	uint32_t replays;          /* weapon-only replays */
+} wp;
 
 /* what prediction did, for the rig's measurement build (it reads and resets it each second) */
 typedef struct {
@@ -691,17 +726,39 @@ static int hud_text(int x, int y, int scale, int col, const char *s)
 
 /* health and Barrier (the game's armour), big, at the bottom left */
 #define HUD_Y (192 - 4 - 6 * 3 - 10)
+#define HUD_AX 128 /* the ammo's half, at the bottom right */
 static void hud_stats(void)
 {
 	char n[12];
 	int x = 6;
-	top_fill(0, HUD_Y - 2, 200, 192 - HUD_Y + 2, HC_CLEAR);
+	top_fill(0, HUD_Y - 2, HUD_AX, 192 - HUD_Y + 2, HC_CLEAR);
 	hud_text(x, HUD_Y, 1, HC_DIM, "HEALTH");
 	snprintf(n, sizeof(n), "%d", link.health);
 	x += BW_NDS_MAX(hud_text(x, HUD_Y + 9, 3, link.health > 25 ? HC_TEXT : HC_RED, n), hud_width("HEALTH", 1)) + 14;
 	hud_text(x, HUD_Y, 1, HC_DIM, "BARRIER");
 	snprintf(n, sizeof(n), "%d", link.armor);
 	hud_text(x, HUD_Y + 9, 3, HC_TEXT, n);
+}
+
+/* the weapon's ammo at the bottom right: what is in the clip, big, and the
+ * reserve after it, as the PC's HUD has them (clip -1: no clip; both -1: none) */
+static void hud_ammo(int clip, int res)
+{
+	char n[12], r[12];
+	int wn, wr, x;
+	top_fill(HUD_AX, HUD_Y - 2, 256 - HUD_AX, 192 - HUD_Y + 2, HC_CLEAR);
+	if (clip < 0 && res < 0)
+		return;
+	if (clip >= 0)
+		snprintf(n, sizeof(n), "%d", clip), snprintf(r, sizeof(r), res >= 0 ? "/%d" : "", res);
+	else
+		snprintf(n, sizeof(n), "%d", res), r[0] = 0;
+	wn = hud_width(n, 3), wr = hud_width(r, 2);
+	x = 250 - wn - wr;
+	hud_text(250 - hud_width("AMMO", 1), HUD_Y, 1, HC_DIM, "AMMO");
+	hud_text(x, HUD_Y + 9, 3, clip == 0 || (clip < 0 && res == 0) ? HC_RED : HC_TEXT, n);
+	if (r[0])
+		hud_text(x + wn, HUD_Y + 9 + hudh, 2, HC_TEXT, r);
 }
 
 /* the frame rate and counters along the top, and why the last map didn't load under them */
@@ -1382,6 +1439,21 @@ static void draw_fx(const ndscam_t *cam)
 			muzzle[k] = cam->org[k] + (int32_t)((f[k] * 10 + r[k] * 3.2f - u[k] * 1.7f) * 8);
 	}
 	glBindTexture(GL_TEXTURE_2D, 0);
+	/* our predicted flash: env_muzzleflash fades by 16 a second (62.5 ms), and its
+	 * size is the event's option (0.1 for a 1x; the sizes below are that) */
+	if (wp.showing && linkframe - wp.flashframe >= 0 && linkframe - wp.flashframe < 4) {
+		int age = linkframe - wp.flashframe, a = BW_NDS_MAX(26 - age * 26 * 16 / HZ, 1);
+		float sc = wp.flashscale;
+		glPolyFmt(POLY_ALPHA(a) | POLY_CULL_NONE | POLY_ID(5));
+		glColor(RGB15(31, 22, 6));
+		fx_sprite(cam, muzzle, -(int)(5 * sc + 0.5f));
+		glPolyFmt(POLY_ALPHA(a) | POLY_CULL_NONE | POLY_ID(6));
+		glColor(RGB15(31, 27, 12));
+		fx_sprite(cam, muzzle, (int)(4 * sc + 0.5f));
+		glPolyFmt(POLY_ALPHA(a) | POLY_CULL_NONE | POLY_ID(7));
+		glColor(RGB15(31, 31, 24));
+		fx_sprite(cam, muzzle, (int)(3 * sc + 0.5f));
+	}
 	for (int i = 0; i < MAX_FX; i++) {
 		int age = linkframe - link.fx[i].born, id = 8 + i;
 		const int32_t *to = link.fx[i].to, *from = link.fx[i].flags & FX_OWN ? muzzle : link.fx[i].from;
@@ -1390,7 +1462,7 @@ static void draw_fx(const ndscam_t *cam)
 		if (age < 0 || age >= FX_LIFE)
 			continue;
 		/* the muzzle flash, two refreshes; a cross of two quads */
-		if ((link.fx[i].flags & (FX_SHOT | 4)) == FX_SHOT && age < 3) {
+		if ((link.fx[i].flags & (FX_SHOT | 4)) == FX_SHOT && age < 3 && !(wp.showing && link.fx[i].flags & FX_OWN)) {
 			glPolyFmt(POLY_ALPHA(26) | POLY_CULL_NONE | POLY_ID(id));
 			glColor(RGB15(31, 22, 6));
 			fx_sprite(cam, from, -(link.fx[i].flags & FX_OWN ? 5 : 3 * 8));
@@ -1773,7 +1845,7 @@ static void set_viewmodel(const ndscam_t *cam, bool *loaded_one)
 	static int light = -1, lightframe;
 	thing_t t = {0};
 	int mdl;
-	t.model = (uint16_t)link.vmodel;
+	t.model = (uint16_t)(wp.showing ? wp.info.viewmodel : link.vmodel);
 	mdl = thing_model(&t, loaded_one);
 	if (mdl >= 0 && (light < 0 || linkframe - lightframe > 30)) {
 		int16_t at[3];
@@ -1781,7 +1853,10 @@ static void set_viewmodel(const ndscam_t *cam, bool *loaded_one)
 			at[k] = (int16_t)BW_NDS_CLAMP(cam->org[k] / 8, -4000, 4000);
 		light = World_LightAt(at), lightframe = linkframe;
 	}
-	Ents_SetViewModel(mdl, link.vseq, vb_ms(linkframe - link.vmstart), light);
+	if (wp.showing) /* the predicted weapon: m_weaponAnimSequence and Time, as the PC's view model reads them */
+		Ents_SetViewModel(mdl, wp.cur.animseq, wp.cur.animtime > 0 ? (uint32_t)(wp.cur.animtime * 1000) : 0, light);
+	else
+		Ents_SetViewModel(mdl, link.vseq, vb_ms(linkframe - link.vmstart), light);
 }
 
 /* the things with a model the DS has, into the model list Ents_Draw draws */
@@ -1979,6 +2054,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 			p_u16(&p, c->buttons);
 			p_u8(&p, c->impulse);
 		}
+		if (wp.info.version) /* the WEAPONINFO we have */
+			p_u8(&p, 'W'), p_u16(&p, wp.info.version), p_u16(&p, wp.info.edict);
 	}
 	send_to(&link.to, &p);
 }
@@ -2127,6 +2204,9 @@ static void pred_newmap(void)
 	pr.pstatelen = 0;
 	memset(pr.predseq, 0, sizeof(pr.predseq));
 	pr.floor = pr.seq;
+	wp.info.version = 0, wp.info.edict = 0;
+	wp.havesrv = false, wp.showing = false;
+	memset(wp.ringseq, 0, sizeof(wp.ringseq));
 	Hull_SetBrushes(NULL, 0);
 	Hull_SetBoxes(NULL, 0);
 }
@@ -2258,6 +2338,126 @@ static void run_cmd(pmstate_t *s, const pmcmd_t *c)
 	Link_PredStats.pm_ticks_max = BW_NDS_MAX(Link_PredStats.pm_ticks_max, t);
 }
 
+/* a melee weapon's test: one trace, with a broadphase of its own (PM_Run's
+ * covers the move); the next PM_Run sets its own again */
+static void weapon_trace(void *ctx, const float start[3], const float mins[3], const float maxs[3], const float end[3],
+                         int type, int32_t mask, pmhit_t *tr)
+{
+	float d = 0;
+	for (int k = 0; k < 3; k++)
+		d += (end[k] - start[k]) * (end[k] - start[k]);
+	Hull_Focus(ctx, start, mins, maxs, sqrtf(d) + 1, 0);
+	Hull_Move(ctx, start, mins, maxs, end, type, mask, tr);
+}
+static const pmtrace_if weapon_trif = {NULL, weapon_trace, NULL};
+
+/* one command's weapon part, after its movement: ps the movement's state after
+ * it (its weapon flags are the weapon code's), or NULL when the movement isn't
+ * predicted or isn't being run again (what it left last time is kept) */
+static void weapon_cmd(wstate_t *ws, const pmcmd_t *c, pmstate_t *ps)
+{
+	wenvrec_t *r = &wp.env[c->seq & (PR_CMDS - 1)];
+	wenv_t e;
+	if (ps) {
+		r->health = ps->health, r->waterlevel = (int8_t)ps->waterlevel;
+		r->landed = ps->landspeed > 0, r->downforce = ps->landspeed;
+		for (int k = 0; k < 3; k++)
+			r->eye[k] = ps->origin[k] + ps->view_ofs[k];
+		r->vflags = ps->vflags, r->gflags = ps->gflags, r->seq = c->seq;
+	} else if (r->seq != c->seq)
+		*r = wp.base, r->seq = c->seq;
+	ws->vflags = (r->vflags & ~W_VFL_BITS) | (ws->vflags & W_VFL_BITS);
+	ws->gflags = (r->gflags & ~W_GF_BITS) | (ws->gflags & W_GF_BITS);
+	memset(&e, 0, sizeof(e));
+	e.seq = c->seq, e.health = r->health, e.waterlevel = r->waterlevel;
+	e.landed = r->landed, e.downforce = r->downforce;
+	memcpy(e.eye, r->eye, sizeof(e.eye));
+	e.velocity = ps ? ps->velocity : NULL;
+	e.trace = ps && Hull_Rule() != HULL_NONE ? &weapon_trif : NULL;
+	e.nboxes = wp.nboxes, e.boxmins = wp.bmins, e.boxmaxs = wp.bmaxs, e.boxsolid = wp.bsolid;
+	Weapon_Run(ws, Weapon_Usable(ws, &wp.info) ? &wp.info : NULL, c, &e);
+	if (ps) {
+		ps->vflags = (ps->vflags & ~W_VFL_BITS) | (ws->vflags & W_VFL_BITS);
+		ps->gflags = (ps->gflags & ~W_GF_BITS) | (ws->gflags & W_GF_BITS);
+	}
+}
+
+/* PSTATE's weapon block (after the boxes) and what the weapon code reads of the player */
+static void weapon_pstate(const uint8_t *d, int len)
+{
+	int off = 180 + d[21] * 26 + d[178] * 27;
+	wenvrec_t *b = &wp.base;
+	wp.havesrv = off < len && Weapon_ParseState(&wp.srv, d + off, len - off) > 0;
+	if (!wp.havesrv)
+		return;
+	b->vflags = rd32(d + 114), b->gflags = rd32(d + 118);
+	wp.srv.vflags = b->vflags, wp.srv.gflags = b->gflags;
+	b->health = (int16_t)rd16(d + 176), b->waterlevel = (int8_t)d[124];
+	b->landed = false, b->downforce = 0;
+	for (int k = 0; k < 3; k++)
+		b->eye[k] = rdf32(d + 26 + k * 4) + rdf32(d + 74 + k * 4);
+	wp.nboxes = BW_NDS_MIN(d[178], HULL_MAX_BOXES);
+	for (int i = 0; i < wp.nboxes; i++) {
+		const uint8_t *x = d + 180 + d[21] * 26 + i * 27;
+		rdvec(x + 2, wp.bmins[i]);
+		rdvec(x + 14, wp.bmaxs[i]);
+		wp.bsolid[i] = x[26];
+	}
+}
+
+/* what we predicted for the acked command holds: every field the weapon code reads
+ * when it can run this weapon, else only the punch (the rest is the server's alone) */
+static bool weapon_matches(uint32_t ack)
+{
+	const wstate_t *p = &wp.ring[ack & (PR_RING - 1)];
+	if (!wp.havesrv)
+		return true;
+	if (!ack || wp.ringseq[ack & (PR_RING - 1)] != ack)
+		return false;
+	if (Weapon_Usable(&wp.srv, &wp.info))
+		return Weapon_Matches(p, &wp.srv);
+	for (int k = 0; k < 3; k++)
+		if (fabsf(p->punch[k] - wp.srv.punch[k]) > 0.01f || fabsf(p->punchvel[k] - wp.srv.punchvel[k]) > 0.05f)
+			return false;
+	return true;
+}
+
+/* without movement prediction: the weapon runs on alone, from the server's state */
+static void weapon_alone(uint32_t ack)
+{
+	if (cfg.nopredict) /* predict=0: the server's, as it comes */
+		wp.cur = wp.srv;
+	if (cfg.nopredict || !wp.havesrv || weapon_matches(ack))
+		return;
+	wp.cur = wp.srv;
+	if (pr.seq - ack >= PR_CMDS) {
+		memset(wp.ringseq, 0, sizeof(wp.ringseq));
+		return;
+	}
+	if (ack)
+		wp.ring[ack & (PR_RING - 1)] = wp.srv, wp.ringseq[ack & (PR_RING - 1)] = ack;
+	wp.replays++;
+	for (uint32_t s = BW_NDS_MAX(ack, pr.floor) + 1; s <= pr.seq; s++) {
+		weapon_cmd(&wp.cur, &pr.cmd[s & (PR_CMDS - 1)], NULL);
+		wp.ring[s & (PR_RING - 1)] = wp.cur, wp.ringseq[s & (PR_RING - 1)] = s;
+	}
+}
+
+/* WEAPONINFO: the weapon in hand's values, until the server names another version */
+static void handle_weaponinfo(const uint8_t *d, int len)
+{
+	static winfo_t w;
+	uint16_t edict, ver;
+	if (len < 10 || (uint16_t)rd16(d + 4) != link.spawncount)
+		return;
+	edict = (uint16_t)rd16(d + 6), ver = (uint16_t)rd16(d + 8);
+	if (!ver || (ver == wp.info.version && edict == wp.info.edict))
+		return;
+	w.edict = edict, w.version = ver;
+	if (Weapon_ParseInfo(&w, d + 10, len - 10))
+		wp.info = w;
+}
+
 /* close enough that replaying would change nothing worth seeing (and bit for bit, for the count).
  * Every field PM_Run reads is compared: what isn't would never be taken from the server while
  * nothing mispredicts (the PC starts each frame from the server's state, Player.qc:1287-1320),
@@ -2329,6 +2529,7 @@ static void handle_pstate(ndscam_t *cam)
 		return;
 	if (ack > pr.ack && ack <= pr.seq)
 		pr.ack = ack;
+	weapon_pstate(d, len);
 
 	memset(&srv, 0, sizeof(srv));
 	rdvec(d + 26, srv.origin), rdvec(d + 38, srv.velocity), rdvec(d + 50, srv.basevel), rdvec(d + 62, srv.hookvel);
@@ -2356,6 +2557,7 @@ static void handle_pstate(ndscam_t *cam)
 	    !pr.bcurver) {
 		pr.on = false;
 		pr.rp = false;
+		weapon_alone(ack);
 		return;
 	}
 	/* made with movement values or a brush list we don't have yet (a door came to rest, a
@@ -2393,7 +2595,7 @@ static void handle_pstate(ndscam_t *cam)
 		Link_PredStats.err_sum_cu += (uint32_t)BW_NDS_MIN(err * 100, 1e9f);
 		Link_PredStats.err_max_cu = BW_NDS_MAX(Link_PredStats.err_max_cu, (uint32_t)BW_NDS_MIN(err * 100, 1e9f));
 		Link_PredStats.verr_max = BW_NDS_MAX(Link_PredStats.verr_max, (uint32_t)BW_NDS_MIN(dv, 1e9f));
-		if (state_matches(p, &srv, &exact)) {
+		if (state_matches(p, &srv, &exact) && weapon_matches(ack)) {
 			Link_PredStats.rp_skip++;
 			Link_PredStats.rp_exact += exact;
 			return;
@@ -2401,11 +2603,15 @@ static void handle_pstate(ndscam_t *cam)
 	}
 	/* the server's state at ack holds from now on: a PSTATE with the same ack again (an
 	 * idle one, while our INPUT is lost) matches it, and doesn't replay the backlog again */
-	if (ack && pr.seq - ack < PR_RING)
+	if (ack && pr.seq - ack < PR_RING) {
 		pr.pred[ack & (PR_RING - 1)] = srv, pr.predseq[ack & (PR_RING - 1)] = ack;
+		wp.ring[ack & (PR_RING - 1)] = wp.srv, wp.ringseq[ack & (PR_RING - 1)] = ack;
+	}
 	if (pr.seq - ack >= PR_CMDS) { /* older than the commands kept: the server's state, and a snap */
 		pr.cur = srv;
+		wp.cur = wp.srv;
 		memset(pr.predseq, 0, sizeof(pr.predseq));
+		memset(wp.ringseq, 0, sizeof(wp.ringseq));
 		Link_PredStats.snaps += pr.on;
 		pr.stair = false;
 		pr.on = true;
@@ -2416,11 +2622,12 @@ static void handle_pstate(ndscam_t *cam)
 	Link_PredStats.replays++;
 	Link_PredStats.replay_max = BW_NDS_MAX(Link_PredStats.replay_max, pr.seq - ack);
 	if (!pr.on)
-		pr.cur = srv; /* nothing to show meanwhile but the server's state */
+		pr.cur = srv, wp.cur = wp.srv; /* nothing to show meanwhile but the server's state */
 	pr.rp = true;
 	pr.rpsnap = had && err > 64;
 	pr.rpnext = BW_NDS_MAX(ack, pr.floor) + 1;
 	pr.rpstate = srv;
+	wp.rpstate = wp.srv;
 	pr.on = true;
 }
 
@@ -2433,6 +2640,10 @@ static void pred_catchup(void)
 		return;
 	for (; pr.rpnext <= pr.seq && n < PR_REPLAY; pr.rpnext++, n++) {
 		run_cmd(&pr.rpstate, &pr.cmd[pr.rpnext & (PR_CMDS - 1)]);
+		if (wp.havesrv) {
+			weapon_cmd(&wp.rpstate, &pr.cmd[pr.rpnext & (PR_CMDS - 1)], &pr.rpstate);
+			wp.ring[pr.rpnext & (PR_RING - 1)] = wp.rpstate, wp.ringseq[pr.rpnext & (PR_RING - 1)] = pr.rpnext;
+		}
 		pr.pred[pr.rpnext & (PR_RING - 1)] = pr.rpstate;
 		pr.predseq[pr.rpnext & (PR_RING - 1)] = pr.rpnext;
 		Link_PredStats.replayed++;
@@ -2442,6 +2653,8 @@ static void pred_catchup(void)
 		return;
 	}
 	pr.cur = pr.rpstate;
+	if (wp.havesrv)
+		wp.cur = wp.rpstate;
 	pr.rp = false;
 	if (pr.rpsnap)
 		Link_PredStats.snaps++, pr.stair = false;
@@ -2527,10 +2740,16 @@ static int make_commands(int frame, const ndscam_t *cam, int fwd, int side, int 
 		Link_PredStats.cmds++;
 		if (pr.on) {
 			run_cmd(&pr.cur, &c);
+			if (wp.havesrv)
+				weapon_cmd(&wp.cur, &c, &pr.cur);
 			if (!pr.rp) { /* else the replay puts its own there */
 				pr.pred[c.seq & (PR_RING - 1)] = pr.cur;
 				pr.predseq[c.seq & (PR_RING - 1)] = c.seq;
+				wp.ring[c.seq & (PR_RING - 1)] = wp.cur, wp.ringseq[c.seq & (PR_RING - 1)] = c.seq;
 			}
+		} else if (wp.havesrv && !cfg.nopredict) {
+			weapon_cmd(&wp.cur, &c, NULL);
+			wp.ring[c.seq & (PR_RING - 1)] = wp.cur, wp.ringseq[c.seq & (PR_RING - 1)] = c.seq;
 		}
 	}
 	return made;
@@ -2577,6 +2796,50 @@ static void pred_view(ndscam_t *cam, int dt)
 	link.crouch = (s->vflags & PM_VFL_CROUCHING) != 0;
 }
 
+/* what the weapon shows this frame: the view model is ours when the info runs the
+ * state; a muzzle flash for each event its sequence passed since the last frame
+ * (processmodelevents, as the PC's view model calls it each frame); the ammo */
+static void weapon_frame(int frame)
+{
+	const wev_t *ev[4];
+	int seq = wp.cur.animseq, n, clip = -1, res = -1;
+	float t = wp.cur.animtime;
+	bool was = wp.showing;
+	wp.showing = wp.havesrv && !cfg.nopredict && Weapon_Usable(&wp.cur, &wp.info);
+	if (wp.showing) {
+		/* started (again): from 0, frame 0's events with it; else on from the last frame */
+		float base = !was ? t : seq != wp.shownseq || t < wp.showntime ? 0 : BW_NDS_MAX(wp.showntime, 1e-6f);
+		n = Weapon_Events(&wp.info, seq, base, t, ev, 4);
+		for (int i = 0; i < n; i++)
+			if (ev[i]->code == 5001 || ev[i]->code == 5011 || ev[i]->code == 5021 || ev[i]->code == 5031) {
+				wp.flashframe = frame;
+				wp.flashscale = ev[i]->opt >= 10 ? BW_NDS_CLAMP((float)(ev[i]->opt / 10), 0.5f, 3.0f) : 1.0f;
+			}
+		wp.shownseq = seq, wp.showntime = t;
+		clip = wp.cur.clipsize > 0 ? wp.cur.clip : -1;
+		res = Weapon_Ammo(&wp.cur, wp.info.primammo);
+	} else if (wp.havesrv && wp.cur.edict) { /* no info: the server's numbers */
+		clip = wp.cur.clipsize > 0 ? wp.cur.clip : -1;
+		res = wp.cur.nammo ? wp.cur.ammo[0] : -1;
+	}
+	if (clip != wp.hudclip || res != wp.hudres) {
+		hud_ammo(clip, res);
+		wp.hudclip = clip, wp.hudres = res;
+	}
+}
+
+/* the punch (m_punchAngle) on the camera, as ncView::AddPunchAngle (src/client/View.qc)
+ * adds it: QC pitch is down positive, ours up */
+static void weapon_punch(ndscam_t *view)
+{
+	const float todeg = 32768.0f / 360.0f;
+	if (!wp.havesrv)
+		return;
+	view->pitch -= (int)(wp.cur.punch[0] * todeg);
+	view->yaw += (int)(wp.cur.punch[1] * todeg);
+	view->roll += (int)(wp.cur.punch[2] * todeg);
+}
+
 /* the linked loop; returns why it ended */
 static const char *play(ndscam_t *cam)
 {
@@ -2589,6 +2852,7 @@ static const char *play(ndscam_t *cam)
 	ndscam_t view;
 	screen_init();
 	pad_reset();
+	wp.hudclip = wp.hudres = -3; /* the ammo panel is drawn once there is a weapon */
 	pad_draw();
 	link.lastrecv = Nds_Vblanks();
 	pr.cmdvb = pr.botstart = Nds_Vblanks();
@@ -2650,6 +2914,8 @@ static const char *play(ndscam_t *cam)
 				handle_pmovevars(d, len);
 			else if (type == L_BRUSHINFO)
 				handle_brushinfo(d, len);
+			else if (type == L_WEAPONINFO)
+				handle_weaponinfo(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -2680,6 +2946,7 @@ static const char *play(ndscam_t *cam)
 			lastsend = frame;
 		}
 
+		weapon_frame(frame);
 		if (pr.on)
 			pred_view(cam, dt);
 		else {
@@ -2702,6 +2969,7 @@ static const char *play(ndscam_t *cam)
 		else
 			move_models(dt);
 		view_motion(cam, &view, dt);
+		weapon_punch(&view);
 		if (World_Loaded()) {
 			if (debugview == 0)
 				add_studio_things(&view);
