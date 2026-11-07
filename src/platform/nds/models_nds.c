@@ -30,8 +30,8 @@
 #define HEADER 84
 
 typedef struct {
+	uint32_t st[3]; /* each corner's TEXCOORD as the GPU takes it: s | t << 16 (t16) */
 	uint16_t v[3];
-	int16_t s[3], t[3]; /* t16 */
 } mtri_t;
 
 typedef struct {
@@ -372,8 +372,8 @@ static int load_mdl(const char *name)
 				if (!front && rd32(st + v * 12))
 					s += sw / 2; /* the back half of a seam */
 				m->tris[t].v[k] = (uint16_t)v;
-				m->tris[t].s[k] = (int16_t)((s * tw * 16 + tw * 8) / sw);
-				m->tris[t].t[k] = (int16_t)((tt * th * 16 + th * 8) / sh);
+				m->tris[t].st[k] = (uint16_t)(int16_t)((s * tw * 16 + tw * 8) / sw) |
+				                   (uint32_t)(uint16_t)(int16_t)((tt * th * 16 + th * 8) / sh) << 16;
 			}
 		}
 		at += (long)nv * 12 + (long)nt * 16;
@@ -659,7 +659,8 @@ void Ents_Free(void)
 #define BLEND_DIST 768
 #define BLEND_MODELS 12
 static int32_t blend_lim;
-ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int frame2, int blend, int light)
+/* the per-corner loop runs from ITCM as ARM code (the file is Thumb) */
+ITCM_CODE __attribute__((target("arm"))) static void draw_mdl(const mdl_t *m, int frame, int frame2, int blend, int light)
 {
 	const uint8_t *fr = m->frames + (size_t)(frame % m->numframes) * m->numverts * 4;
 	uint16_t lut[32];
@@ -686,17 +687,20 @@ ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int frame2, int blend,
 	}
 	glBindTexture(GL_TEXTURE_2D, m->tex);
 	glScalef32(m->scale[0], m->scale[1], m->scale[2]);
-	glBegin(GL_TRIANGLES);
-	for (int t = 0; t < m->numtris; t++) {
-		const mtri_t *tr = &m->tris[t];
-		for (int k = 0; k < 3; k++) {
-			const uint8_t *v = fr + tr->v[k] * 4;
-			glColor(lut[v[3]]);
-			glTexCoord2t16(tr->s[k], tr->t[k]);
-			glVertex3v16(v[0], v[1], v[2]);
-		}
+	GFX_BEGIN = GL_TRIANGLES;
+	{
+		/* a corner is three loads: its vertex (x, y, z, shade in one word), its TEXCOORD, its index */
+		const uint32_t *fv = (const uint32_t *)(const void *)fr;
+		const mtri_t *tr = m->tris, *end = tr + m->numtris;
+		for (; tr < end; tr++)
+			for (int k = 0; k < 3; k++) {
+				uint32_t v = fv[tr->v[k]];
+				GFX_COLOR = lut[v >> 24];
+				GFX_TEX_COORD = tr->st[k];
+				GFX_VERTEX16 = (v & 0xff) | (v & 0xff00) << 8;
+				GFX_VERTEX16 = (v >> 16) & 0xff;
+			}
 	}
-	glEnd();
 }
 
 /* GPU polygons a model stores, about: half its triangles survive back-face culling */
