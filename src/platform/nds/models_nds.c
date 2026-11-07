@@ -161,7 +161,7 @@ static bool same_corner(const mtri_t *a, int i, const mtri_t *b, int j) { return
 
 typedef struct {
 	const mtri_t *tris;
-	const int *first, *list; /* the triangles at each vertex: list[first[v]..first[v + 1]) */
+	const uint16_t *first, *list; /* the triangles at each vertex: list[first[v]..first[v + 1]) */
 	uint8_t *used;
 } stripper_t;
 
@@ -187,15 +187,24 @@ static int strip_next(const stripper_t *sp, int lt, int li, int lj, int len, int
 	return -1;
 }
 
+/* the working lists are 16-bit and the corners are made last, so this costs
+ * about 20 bytes a triangle on top of the model while it runs (a model can
+ * load right after a map, the tightest moment for RAM) */
+#define STRIP_BEGIN 0x8000 /* in a ref: a strip starts at this corner */
 static void make_strips(mdl_t *m)
 {
 	int nt = m->numtris, nv = m->numverts, n = 0;
-	int *first = calloc((size_t)nv + 1, sizeof(int)), *list = malloc(sizeof(int) * (size_t)nt * 3);
-	uint8_t *used = calloc((size_t)nt ? (size_t)nt : 1, 1);
-	mcorner_t *c = malloc(sizeof(mcorner_t) * (size_t)nt * 3);
-	stripper_t sp = {m->tris, first, list, used};
-	if (nt <= 0 || !first || !list || !used || !c) {
-		free(first), free(list), free(used), free(c);
+	uint16_t *refs, *first, *list, *cur; /* refs: each corner as its triangle * 3 + its corner */
+	uint8_t *used;
+	if (nt <= 0 || nt * 3 >= STRIP_BEGIN || nv >= 65536)
+		return;
+	refs = malloc(sizeof(uint16_t) * (size_t)nt * 3);
+	first = calloc((size_t)nv + 1, sizeof(uint16_t));
+	list = malloc(sizeof(uint16_t) * (size_t)nt * 3);
+	used = calloc((size_t)nt, 1);
+	cur = malloc(sizeof(uint16_t) * (size_t)nv);
+	if (!refs || !first || !list || !used || !cur) {
+		free(cur), free(used), free(list), free(first), free(refs);
 		return;
 	}
 	for (int t = 0; t < nt; t++)
@@ -203,69 +212,61 @@ static void make_strips(mdl_t *m)
 			first[m->tris[t].v[k] + 1]++;
 	for (int v = 0; v < nv; v++)
 		first[v + 1] += first[v];
+	memcpy(cur, first, sizeof(uint16_t) * (size_t)nv);
+	for (int t = 0; t < nt; t++)
+		for (int k = 0; k < 3; k++)
+			list[cur[m->tris[t].v[k]]++] = (uint16_t)t;
+	free(cur);
 	{
-		int *fill = malloc(sizeof(int) * (size_t)nv);
-		if (!fill) {
-			free(first), free(list), free(used), free(c);
-			return;
-		}
-		memcpy(fill, first, sizeof(int) * (size_t)nv);
-		for (int t = 0; t < nt; t++)
-			for (int k = 0; k < 3; k++)
-				list[fill[m->tris[t].v[k]]++] = t;
-		free(fill);
-	}
-	for (int t = 0; t < nt; t++) {
-		int best = 0, bestlen = 0;
-		if (used[t])
-			continue;
-		/* from each of its three turns, as far as it goes (marking with 2 to
-		 * measure, then clearing); keep the longest */
-		for (int r = 0; r < 3; r++) {
-			int len = 1, lt = t, li = (r + 1) % 3, lj = (r + 2) % 3, k, u;
-			used[t] = 2;
-			while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
-				/* the old last corner is the new triangle's corner k + 1 (len was
-				 * even) or k (odd); its third corner is the new last */
-				li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
-				used[u] = 2, len++;
+		stripper_t sp = {m->tris, first, list, used};
+		for (int t = 0; t < nt; t++) {
+			int best = 0, bestlen = 0;
+			if (used[t])
+				continue;
+			/* from each of its three turns, as far as it goes (marking with 2 to
+			 * measure, then clearing); keep the longest */
+			for (int r = 0; r < 3; r++) {
+				int len = 1, lt = t, li = (r + 1) % 3, lj = (r + 2) % 3, k, u;
+				used[t] = 2;
+				while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
+					/* the old last corner is the new triangle's corner k + 1 (len was
+					 * even) or k (odd); its third corner is the new last */
+					li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
+					used[u] = 2, len++;
+				}
+				for (int i = 0; i < nt; i++)
+					if (used[i] == 2)
+						used[i] = 0;
+				if (len > bestlen)
+					bestlen = len, best = r;
 			}
-			for (int i = 0; i < nt; i++)
-				if (used[i] == 2)
-					used[i] = 0;
-			if (len > bestlen)
-				bestlen = len, best = r;
-		}
-		{
-			const mtri_t *a = &m->tris[t];
-			int len = 1, lt = t, li = (best + 1) % 3, lj = (best + 2) % 3, k, u;
-			used[t] = 1;
-			for (int j = 0; j < 3; j++) {
-				int i = (best + j) % 3;
-				c[n].st = a->st[i], c[n].v = a->v[i], c[n].begin = j == 0;
-				n++;
-			}
-			while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
-				const mtri_t *q = &m->tris[u];
-				c[n].st = q->st[(k + 2) % 3], c[n].v = q->v[(k + 2) % 3], c[n].begin = 0;
-				n++;
-				li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
-				used[u] = 1, len++;
+			{
+				int len = 1, lt = t, li = (best + 1) % 3, lj = (best + 2) % 3, k, u;
+				used[t] = 1;
+				for (int j = 0; j < 3; j++)
+					refs[n++] = (uint16_t)(t * 3 + (best + j) % 3 | (j == 0 ? STRIP_BEGIN : 0));
+				while ((u = strip_next(&sp, lt, li, lj, len, &k)) >= 0) {
+					refs[n++] = (uint16_t)(u * 3 + (k + 2) % 3);
+					li = len % 2 == 0 ? (k + 1) % 3 : k, lj = (k + 2) % 3, lt = u;
+					used[u] = 1, len++;
+				}
 			}
 		}
 	}
-	free(first), free(list), free(used);
-	/* the corners into the triangles' place (they take less), so the heap
-	 * keeps no hole where they were: a model can load before the map */
-	free(m->tris);
-	m->tris = NULL;
+	free(used), free(list), free(first);
 	m->corners = malloc(sizeof(mcorner_t) * (size_t)n);
 	if (m->corners) {
-		memcpy(m->corners, c, sizeof(mcorner_t) * (size_t)n);
-		free(c);
-	} else
-		m->corners = c;
-	m->numcorners = n;
+		for (int i = 0; i < n; i++) {
+			int r = refs[i] & ~STRIP_BEGIN;
+			const mtri_t *tr = &m->tris[r / 3];
+			m->corners[i].st = tr->st[r % 3], m->corners[i].v = tr->v[r % 3];
+			m->corners[i].begin = (refs[i] & STRIP_BEGIN) != 0;
+		}
+		m->numcorners = n;
+		free(m->tris);
+		m->tris = NULL;
+	}
+	free(refs);
 }
 
 /* shade bytes for one frame: light from above and a little in front, by vertex normal */

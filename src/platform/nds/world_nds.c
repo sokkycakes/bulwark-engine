@@ -1384,6 +1384,7 @@ ITCM_CODE ARM_CODE static void chain_range(int from, int to, int *verts, int *po
 
 ITCM_CODE ARM_CODE static void draw_chains(void)
 {
+	uint32_t colour = ~0u; /* the GPU keeps the last COLOR: send it only when it changes */
 	for (int t = 0; t < w.numtexs; t++) {
 		tex_t *tex = &w.texs[t];
 		int i = tex->chain;
@@ -1397,7 +1398,8 @@ ITCM_CODE ARM_CODE static void draw_chains(void)
 			GFX_BEGIN = GL_QUAD_STRIP;
 			for (int k = 0; k < n; k++, v += 3) {
 				uint32_t st = v[0], xy = v[1], zc = v[2];
-				GFX_COLOR = zc >> 16;
+				if (zc >> 16 != colour)
+					GFX_COLOR = colour = zc >> 16;
 				GFX_TEX_COORD = st;
 				GFX_VERTEX16 = xy;
 				GFX_VERTEX16 = zc;
