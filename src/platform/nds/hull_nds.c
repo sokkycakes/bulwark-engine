@@ -108,26 +108,42 @@ static float rdf(const uint8_t *p)
 /* The DS has no FPU, so float work is kept to what changes the result: comparisons are made
  * on the bits (fexact_nds.h), and a - b >= 0 is a >= b (a difference of floats is never
  * rounded to zero) */
+/* the walk runs from the DS's ITCM (fetched without waits, no cache to miss) */
+#if defined(__NDS__) && defined(ARM9)
+#define HOT __attribute__((section(".itcm"), noinline))
+#else
+#define HOT
+#endif
+
 #define fbits fx_bits
 #define fkey fx_key
 #define plus0 fx_plus0
 
+/* newlib's memset and memcmp go a byte at a time (2.4 us for 24 bytes in melonDS): small
+ * fixed sizes are done by words here */
+static inline bool same3(const float *a, const float *b)
+{
+	return fbits(a[0]) == fbits(b[0]) && fbits(a[1]) == fbits(b[1]) && fbits(a[2]) == fbits(b[2]);
+}
+
+static inline void copy3(float *d, const float *s)
+{
+	d[0] = s[0], d[1] = s[1], d[2] = s[2];
+}
+
 /* --- the walk (bspfile.c hull_contents, hull_trace) ---------------------------------------- */
 
-static inline uint32_t h_plane(const htree_t *t, int num)
-{
-	return t->wide ? ((const hwnode_t *)t->nodes)[num].plane : ((const hnode_t *)t->nodes)[num].plane;
-}
-
-static inline int h_child(const htree_t *t, int num, int side)
-{
-	return t->wide ? ((const hwnode_t *)t->nodes)[num].children[side] : ((const hnode_t *)t->nodes)[num].children[side];
-}
+/* the node's plane: the type (0-2 axial, 3 general) and the index into that type's array */
+#define H_TYPE(wide, pl) ((wide) ? (pl) >> 30 : (pl) >> 14)
+#define H_INDEX(wide, pl) ((wide) ? (pl) & 0x3fffffffu : (pl) & 0x3fffu)
+#define H_PLANE(wide, t, num) ((wide) ? ((const hwnode_t *)(t)->nodes)[num].plane : ((const hnode_t *)(t)->nodes)[num].plane)
+#define H_CHILD(wide, t, num, side) \
+	((wide) ? ((const hwnode_t *)(t)->nodes)[num].children[side] : ((const hnode_t *)(t)->nodes)[num].children[side])
 
 /* DotProduct(p, normal) - dist; for an axial plane p[type] - dist, the same bits */
 static inline float h_dist(const htree_t *t, uint32_t pl, const float *p)
 {
-	uint32_t type = t->wide ? pl >> 30 : pl >> 14, i = t->wide ? pl & 0x3fffffffu : pl & 0x3fffu;
+	uint32_t type = H_TYPE(t->wide, pl), i = H_INDEX(t->wide, pl);
 	const float *g;
 	if (type < 3)
 		return p[type] - t->axial[i];
@@ -137,7 +153,7 @@ static inline float h_dist(const htree_t *t, uint32_t pl, const float *p)
 
 static void h_normal(const htree_t *t, uint32_t pl, bool back, float *n)
 {
-	uint32_t type = t->wide ? pl >> 30 : pl >> 14, i = t->wide ? pl & 0x3fffffffu : pl & 0x3fffu;
+	uint32_t type = H_TYPE(t->wide, pl), i = H_INDEX(t->wide, pl);
 	for (int k = 0; k < 3; k++) {
 		float v = type < 3 ? (k == (int)type ? 1.0f : 0.0f) : t->general[i][k];
 		n[k] = back ? -v : v;
@@ -162,48 +178,66 @@ static inline bool h_fix(float v, int sh, int32_t lim, int32_t *out)
 	return true;
 }
 
+/* a point of the walk, with what the side tests read worked out once: each coordinate's
+ * float key (fkey), and the point in 1/65536 units for h_side_general (q_ok false when a
+ * coordinate is 16384 or more away) */
+typedef struct {
+	float p[3];
+	int32_t k[3], q[3];
+	uint32_t qsum; /* |q0| + |q1| + |q2| */
+	bool q_ok;
+} hpt_t;
+
+static inline void hpt_set(hpt_t *a)
+{
+	a->q_ok = true;
+	a->qsum = 0;
+	for (int i = 0; i < 3; i++) {
+		a->k[i] = fkey(a->p[i]);
+		if (!h_fix(a->p[i], 16, 16383 << 16, &a->q[i]))
+			a->q_ok = false;
+		a->qsum += (uint32_t)(a->q[i] < 0 ? -a->q[i] : a->q[i]);
+	}
+}
+
 /* the sign of DotProduct(p, n) - d without the float work, when it can be told: the float
  * result F is within 2^-21 (|p0| + |p1| + |p2| + |d|) of the exact value (5 roundings of at
  * most 2^-24 of that each, |n| <= 1), and the value worked out here in 1/2^46 units is
  * within 2^-13 of it (p and d to 1/65536, n to 2^-30, |p|, |d| < 16384); further from 0
  * than both, F has its sign and is not 0. Returns 1 back, 0 front, -1 can't tell. */
-static int h_side_general(const float *g, const float *p)
+static int h_side_general(const float *g, const hpt_t *a)
 {
-	int32_t q[3], n[3], d;
+	int32_t n[3], d;
 	int64_t e, lim;
-	uint32_t sq;
-	for (int k = 0; k < 3; k++)
-		if (!h_fix(p[k], 16, 16383 << 16, &q[k]) || !h_fix(g[k], 30, 1 << 30, &n[k]))
-			return -1;
-	if (!h_fix(g[3], 16, 16383 << 16, &d))
+	if (!a->q_ok || !h_fix(g[0], 30, 1 << 30, &n[0]) || !h_fix(g[1], 30, 1 << 30, &n[1]) ||
+	    !h_fix(g[2], 30, 1 << 30, &n[2]) || !h_fix(g[3], 16, 16383 << 16, &d))
 		return -1;
-	e = (int64_t)q[0] * n[0] + (int64_t)q[1] * n[1] + (int64_t)q[2] * n[2] - ((int64_t)d << 30);
-	sq = (uint32_t)(q[0] < 0 ? -q[0] : q[0]) + (uint32_t)(q[1] < 0 ? -q[1] : q[1]) +
-	     (uint32_t)(q[2] < 0 ? -q[2] : q[2]) + (uint32_t)(d < 0 ? -d : d); /* < 2^32 */
-	lim = ((int64_t)sq << 10) + ((int64_t)1 << 34);
+	e = (int64_t)a->q[0] * n[0] + (int64_t)a->q[1] * n[1] + (int64_t)a->q[2] * n[2] - ((int64_t)d << 30);
+	lim = ((int64_t)(a->qsum + (uint32_t)(d < 0 ? -d : d)) << 10) + ((int64_t)1 << 34); /* the sum < 2^32 */
 	return e > lim ? 0 : e < -lim ? 1 : -1;
 }
 
-/* h_dist(...) < 0 */
-static inline int h_back(const htree_t *t, uint32_t pl, const float *p)
+/* h_dist(...) < 0: an axial plane by the keys (p - dist < 0 is p < dist, a difference of
+ * floats is never rounded to 0) */
+static inline __attribute__((always_inline)) int h_back(const htree_t *t, bool wide, uint32_t pl, const hpt_t *a)
 {
-	uint32_t type = t->wide ? pl >> 30 : pl >> 14, i = t->wide ? pl & 0x3fffffffu : pl & 0x3fffu;
+	uint32_t type = H_TYPE(wide, pl), i = H_INDEX(wide, pl);
 	int side;
 	if (type < 3)
-		return fkey(p[type]) < fkey(t->axial[i]);
-	side = h_side_general(t->general[i], p);
+		return a->k[type] < fkey(t->axial[i]);
+	side = h_side_general(t->general[i], a);
 #ifdef HULL_SELFCHECK /* pmtest built with it: the shortcut must agree with the float test */
-	if (side >= 0 && side != fx_lt(h_dist(t, pl, p), 0))
+	if (side >= 0 && side != fx_lt(h_dist(t, pl, a->p), 0))
 		abort();
 #endif
-	return side >= 0 ? side : fx_lt(h_dist(t, pl, p), 0);
+	return side >= 0 ? side : fx_lt(h_dist(t, pl, a->p), 0);
 }
 
-static int h_contents(const htree_t *t, int num, const float *p)
+static inline __attribute__((always_inline)) int h_contents_g(const htree_t *t, bool wide, int num, const hpt_t *a)
 {
 	int guard = 0;
 	while (num >= 0 && guard++ < 65536)
-		num = h_child(t, num, h_back(t, h_plane(t, num), p));
+		num = H_CHILD(wide, t, num, h_back(t, wide, H_PLANE(wide, t, num), a));
 	return num;
 }
 
@@ -217,16 +251,24 @@ typedef struct {
 
 /* p1 + (p2 - p1) * frac for each axis; an axis where both ends are the same bits gives
  * p1 + (+0), with no float work */
-static void h_lerp(const float *p1, const float *p2, float frac, float *mid)
+static void h_lerp(const hpt_t *a, const hpt_t *b, float frac, hpt_t *mid)
 {
 	for (int k = 0; k < 3; k++)
-		mid[k] = fbits(p1[k]) == fbits(p2[k]) ? plus0(p1[k]) : p1[k] + (p2[k] - p1[k]) * frac;
+		mid->p[k] = fbits(a->p[k]) == fbits(b->p[k]) ? plus0(a->p[k]) : a->p[k] + (b->p[k] - a->p[k]) * frac;
+	hpt_set(mid);
 }
 
-static bool h_trace(hwork_t *w, int num, float f1, float f2, const float *p1, const float *p2)
+static bool h_trace_n(hwork_t *w, int num, float f1, float f2, const hpt_t *a, const hpt_t *b);
+static bool h_trace_w(hwork_t *w, int num, float f1, float f2, const hpt_t *a, const hpt_t *b);
+
+/* hull_trace, for narrow or wide nodes (two copies, each with its own node layout) */
+static inline __attribute__((always_inline)) bool h_trace_g(hwork_t *w, bool wide, int num, float f1, float f2,
+                                                             const hpt_t *a, const hpt_t *b)
 {
+	const htree_t *t = w->t;
 	uint32_t pl;
-	float t1, t2, frac, midf, mid[3];
+	float t1, t2, frac, midf;
+	hpt_t mid;
 	int side;
 	for (;;) {
 		if (num < 0) {
@@ -238,75 +280,91 @@ static bool h_trace(hwork_t *w, int num, float f1, float f2, const float *p1, co
 		}
 		if (++w->depth > 4096)
 			return true;
-		pl = h_plane(w->t, num);
+		pl = H_PLANE(wide, t, num);
 		{
 			/* which side each end is on, before working out how far: both on one side
 			 * goes down that side (bspfile.c's tail call, as a loop) */
-			int b1 = h_back(w->t, pl, p1), b2 = p2 == p1 ? b1 : h_back(w->t, pl, p2);
+			int b1 = h_back(t, wide, pl, a), b2 = b == a ? b1 : h_back(t, wide, pl, b);
 			if (b1 != b2)
 				break;
-			num = h_child(w->t, num, b1);
+			num = H_CHILD(wide, t, num, b1);
 		}
 	}
-	t1 = h_dist(w->t, pl, p1);
-	t2 = h_dist(w->t, pl, p2);
+	t1 = h_dist(t, pl, a->p);
+	t2 = h_dist(t, pl, b->p);
 	side = fx_lt(t1, 0);
 	frac = side ? (t1 + DIST_EPSILON) / (t1 - t2) : (t1 - DIST_EPSILON) / (t1 - t2);
 	frac = fx_lt(frac, 1) ? frac : 1;
 	frac = fx_gt(0, frac) ? 0 : frac;
 	midf = f1 + (f2 - f1) * frac;
-	h_lerp(p1, p2, frac, mid);
-	if (!h_trace(w, h_child(w->t, num, side), f1, midf, p1, mid))
+	h_lerp(a, b, frac, &mid);
+	if (!(wide ? h_trace_w : h_trace_n)(w, H_CHILD(wide, t, num, side), f1, midf, a, &mid))
 		return false;
-	if (h_contents(w->t, h_child(w->t, num, side ^ 1), mid) != Q1C_SOLID)
-		return h_trace(w, h_child(w->t, num, side ^ 1), midf, f2, mid, p2);
+	if (h_contents_g(t, wide, H_CHILD(wide, t, num, side ^ 1), &mid) != Q1C_SOLID)
+		return (wide ? h_trace_w : h_trace_n)(w, H_CHILD(wide, t, num, side ^ 1), midf, f2, &mid, b);
 	if (w->allsolid)
 		return false;
-	h_normal(w->t, pl, side != 0, w->tr->normal);
-	while (h_contents(w->t, w->head, mid) == Q1C_SOLID) {
+	h_normal(t, pl, side != 0, w->tr->normal);
+	while (h_contents_g(t, wide, w->head, &mid) == Q1C_SOLID) {
 		frac -= 0.1f;
 		if (fx_lt(frac, 0)) {
 			w->tr->fraction = f1;
-			memcpy(w->tr->endpos, p1, sizeof(float) * 3);
+			copy3(w->tr->endpos, a->p);
 			return false;
 		}
 		midf = f1 + (f2 - f1) * frac;
-		h_lerp(p1, p2, frac, mid);
+		h_lerp(a, b, frac, &mid);
 	}
 	w->tr->fraction = midf;
-	memcpy(w->tr->endpos, mid, sizeof(float) * 3);
+	copy3(w->tr->endpos, mid.p);
 	return false;
+}
+
+HOT static bool h_trace_n(hwork_t *w, int num, float f1, float f2, const hpt_t *a, const hpt_t *b)
+{
+	return h_trace_g(w, false, num, f1, f2, a, b);
+}
+
+HOT static bool h_trace_w(hwork_t *w, int num, float f1, float f2, const hpt_t *a, const hpt_t *b)
+{
+	return h_trace_g(w, true, num, f1, f2, a, b);
 }
 
 static void trace_clear(const float *end, hulltrace_t *tr)
 {
-	memset(tr, 0, sizeof(*tr));
 	tr->fraction = 1;
-	memcpy(tr->endpos, end, sizeof(float) * 3);
+	copy3(tr->endpos, end);
+	tr->normal[0] = tr->normal[1] = tr->normal[2] = 0;
+	tr->startsolid = tr->allsolid = tr->hit = false;
 }
 
 /* the end of q1_trace (bspfile.c:1058-1070) once the hull and its offset are known */
-static void tree_trace(const htree_t *t, int head, const float *off, const float *start, const float *end,
-                       hulltrace_t *tr)
+HOT static void tree_trace(const htree_t *t, int head, const float *off, const float *start, const float *end,
+                           hulltrace_t *tr)
 {
 	hwork_t w;
-	float p1[3], p2[3];
-	bool point = !memcmp(start, end, sizeof(p1));
-	memset(&w, 0, sizeof(w));
-	w.t = t, w.head = head, w.tr = tr, w.allsolid = true;
+	hpt_t p1, p2;
+	bool point = same3(start, end);
+	w.t = t, w.head = head, w.tr = tr, w.allsolid = true, w.startsolid = false, w.depth = 0;
 	for (int k = 0; k < 3; k++) {
 		/* x - (+0) is x */
-		p1[k] = fbits(off[k]) ? start[k] - off[k] : start[k];
-		p2[k] = fbits(off[k]) ? end[k] - off[k] : end[k];
+		p1.p[k] = fbits(off[k]) ? start[k] - off[k] : start[k];
+		p2.p[k] = fbits(off[k]) ? end[k] - off[k] : end[k];
 	}
+	hpt_set(&p1);
+	if (!point)
+		hpt_set(&p2);
 	tr->fraction = 1;
-	memcpy(tr->endpos, p2, sizeof(p2));
-	h_trace(&w, head, 0, 1, p1, point ? p1 : p2);
+	copy3(tr->endpos, p2.p);
+	if (t->wide)
+		h_trace_w(&w, head, 0, 1, &p1, point ? &p1 : &p2);
+	else
+		h_trace_n(&w, head, 0, 1, &p1, point ? &p1 : &p2);
 	tr->startsolid = w.startsolid;
 	tr->allsolid = w.allsolid;
 	if (w.allsolid) {
 		tr->fraction = 0;
-		memcpy(tr->endpos, p1, sizeof(p1));
+		copy3(tr->endpos, p1.p);
 	}
 	tr->hit = fx_lt(tr->fraction, 1) || w.startsolid;
 	for (int k = 0; k < 3; k++)
@@ -360,7 +418,7 @@ static inline int fx_leaf(const fxwork_t *w, int c)
 	return q < 0 ? q : Q1C_SOLID;
 }
 
-static int fx_contents(const fxwork_t *w, int num, const int32_t *p)
+HOT static int fx_contents(const fxwork_t *w, int num, const int32_t *p)
 {
 	int guard = 0;
 	while (num >= 0 && guard++ < 65536) {
@@ -370,7 +428,7 @@ static int fx_contents(const fxwork_t *w, int num, const int32_t *p)
 	return num < 0 ? fx_leaf(w, num) : num; /* as hull_contents: a node number is not solid */
 }
 
-static bool fx_trace(fxwork_t *w, int num, float f1, float f2, const float *p1, const float *p2, const int32_t *q1,
+HOT static bool fx_trace(fxwork_t *w, int num, float f1, float f2, const float *p1, const float *p2, const int32_t *q1,
                      const int32_t *q2)
 {
 	const int *nd;
@@ -445,10 +503,9 @@ void Hull_Trace0Fixed(const hull_fxnode_t *nodes, int nodestride, const hull_fxp
 	trace_clear(end, tr);
 	if (!nodes || !planes || !leafcontents)
 		return;
-	memset(&w, 0, sizeof(w));
 	w.nodes = (const uint8_t *)nodes, w.planes = (const uint8_t *)planes, w.leafs = (const uint8_t *)leafcontents;
 	w.ns = nodestride, w.ps = planestride, w.ls = leafstride, w.head = headnode;
-	w.tr = tr, w.allsolid = true;
+	w.tr = tr, w.allsolid = true, w.startsolid = false, w.depth = 0;
 	for (int k = 0; k < 3; k++) {
 		off[k] = plus0(origin[k]); /* (hm - mins) + origin, both 0 for hull 0 */
 		p1[k] = fbits(off[k]) ? start[k] - off[k] : start[k];
@@ -457,7 +514,7 @@ void Hull_Trace0Fixed(const hull_fxnode_t *nodes, int nodestride, const hull_fxp
 		q2[k] = fx_pos(p2[k]);
 	}
 	memcpy(tr->endpos, p2, sizeof(p2));
-	if (!memcmp(q1, q2, sizeof(q1)) && !memcmp(p1, p2, sizeof(p1)))
+	if (q1[0] == q2[0] && q1[1] == q2[1] && q1[2] == q2[2] && same3(p1, p2))
 		fx_trace(&w, headnode, 0, 1, p1, p1, q1, q1); /* a point: one test a node */
 	else
 		fx_trace(&w, headnode, 0, 1, p1, p2, q1, q2);
@@ -492,9 +549,11 @@ static void select_hull(const float *mins, const float *maxs)
 	float size;
 	for (int k = 0; k < 3; k++)
 		key[k] = fbits(mins[k]), key[3 + k] = fbits(maxs[k]);
-	if (hsel.rule == H.rule && !memcmp(key, hsel.key, sizeof(key)))
+	if (hsel.rule == H.rule && key[0] == hsel.key[0] && key[1] == hsel.key[1] && key[2] == hsel.key[2] &&
+	    key[3] == hsel.key[3] && key[4] == hsel.key[4] && key[5] == hsel.key[5])
 		return;
-	memcpy(hsel.key, key, sizeof(key));
+	for (int k = 0; k < 6; k++)
+		hsel.key[k] = key[k];
 	hsel.rule = H.rule;
 	size = maxs[0] - mins[0];
 	if (H.rule == HULL_HL)
@@ -633,12 +692,12 @@ static bool alloc_hulls(size_t reserve, char *err, int errsize)
 static bool check_hulls(void)
 {
 	for (int i = 0; i < H.numnodes; i++) {
-		uint32_t pl = h_plane(&H.t, i), type = H.t.wide ? pl >> 30 : pl >> 14;
+		uint32_t pl = H_PLANE(H.t.wide, &H.t, i), type = H.t.wide ? pl >> 30 : pl >> 14;
 		uint32_t idx = H.t.wide ? pl & 0x3fffffffu : pl & 0x3fffu;
 		if (idx >= (uint32_t)(type < 3 ? H.numaxial : H.numgeneral))
 			return false;
 		for (int s = 0; s < 2; s++)
-			if (h_child(&H.t, i, s) >= H.numnodes)
+			if (H_CHILD(H.t.wide, &H.t, i, s) >= H.numnodes)
 				return false;
 	}
 	for (int i = 0; i < H.numhulls * H.nummodels; i++)
@@ -1221,7 +1280,7 @@ static void move_box(const sbox_t *s, const float *start, const float *mins, con
 	trace_aabb(start, mins, maxs, end, s->b.mins, s->b.maxs, tr, who, s, c, solid == 1);
 }
 
-void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],
+HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],
                const float end[3], int type, int32_t mask, pmhit_t *tr)
 {
 	static const float zero[3] = {0, 0, 0};
@@ -1230,8 +1289,10 @@ void Hull_Move(void *ctx, const float start[3], const float mins[3], const float
 	who_t who = {PM_SOLID_BSP, zero, zero};
 	uint32_t m = mask ? (uint32_t)mask : PM_CB_SOLID | PM_CB_BODY | PM_CB_PLAYERCLIP;
 	int nb = focused ? numcandb : numbrushes, nx = focused ? numcandx : numboxes, ib = 0, ix = 0;
-	memset(tr, 0, sizeof(*tr));
 	tr->fraction = 1;
+	tr->normal[0] = tr->normal[1] = tr->normal[2] = 0;
+	tr->startsolid = tr->allsolid = false;
+	tr->contents = 0;
 	tr->ent = -1;
 	if (type & PM_MOVE_EVERYTHING)
 		m = 0xffffffffu;
