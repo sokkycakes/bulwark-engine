@@ -74,6 +74,7 @@ static int viewframe, viewlight = 24; /* its frame now, and its light */
 static int viewframe2, viewblend;
 static uint32_t clockms; /* Ents_SetTime: what plays a walk or run the server doesn't */
 static uint32_t *mix;    /* draw_mdl's blended frame: on the heap once a model blends, to Ents_Free */
+static bool mixtried;    /* and asked for: without room, models step from frame to frame until then */
 bool Ents_LerpFrames = true;
 int32_t Ents_ViewOfs[3];
 int Ents_ViewAng[3];
@@ -623,7 +624,7 @@ void Ents_Free(void)
 	viewmodel = -1;
 	pal_owner = 0;
 	free(mix);
-	mix = NULL;
+	mix = NULL, mixtried = false;
 }
 
 #define MAX_BLEND_VERTS 512 /* a bigger model is drawn without blending */
@@ -637,7 +638,7 @@ ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int frame2, int blend,
 {
 	const uint8_t *fr = m->frames + (size_t)(frame % m->numframes) * m->numverts * 4;
 	uint16_t lut[32];
-	if (blend > 0 && frame2 != frame && m->numverts <= MAX_BLEND_VERTS && (mix || (mix = malloc(MAX_BLEND_VERTS * 4)))) {
+	if (blend > 0 && frame2 != frame && m->numverts <= MAX_BLEND_VERTS && (mix || (!mixtried && (mixtried = true, mix = malloc(MAX_BLEND_VERTS * 4))))) {
 		/* between two baked frames: each vertex blend/256 of the way to the
 		 * next one, once (a vertex serves about five triangle corners) */
 		const uint32_t *a = (const uint32_t *)fr;

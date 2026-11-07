@@ -97,13 +97,20 @@ static bool focused;
 /* what a trace's result depends on besides its arguments: bumped whenever the hulls, the
  * scene or the boxes Hull_Focus leaves out change (Hull_Move's cache) */
 static uint32_t scene_gen = 1;
+/* Hull_Move's last results (see there) */
+#define TC_N 32
+typedef struct {
+	uint32_t gen, key[14];
+	uint64_t drop; /* the drop_mask it was worked out with */
+	pmhit_t tr;
+} tcentry_t;
+static tcentry_t *tcache; /* TC_N, on the heap with the hulls (Hull_Load): none while a map loads */
 static uint64_t drop_mask; /* the boxes left out (PM_FOCUS_DROPSTUCK) while focused */
 
 static void unfocus(void)
 {
 	focused = false;
-	if (drop_mask)
-		drop_mask = 0, scene_gen++;
+	drop_mask = 0;
 }
 
 const pmtrace_if Hull_Pmove = {NULL, Hull_Move, Hull_Focus};
@@ -650,6 +657,8 @@ void Hull_Free(void)
 	free(H.nodes), free(H.axial), free(H.general), free(H.heads), free(H.bounds);
 	free(H.nodes0), free(H.general0), free(H.heads0), free(H.gfix), free(H.gfix0);
 	free(H.fxnodes), free(H.fxplanes), free(H.fxleafs);
+	free(tcache);
+	tcache = NULL;
 	memset(&H, 0, sizeof(H));
 	memset(&hsel, 0, sizeof(hsel));
 	free(brushes);
@@ -1056,6 +1065,8 @@ bool Hull_Load(const char *bsppath, int flags, hull_read_fn read, void *ctx, siz
 	H.gfix = make_gfix(&H.t, H.numgeneral, reserve);
 	if (H.t0.nodes)
 		H.gfix0 = make_gfix(&H.t0, H.numgeneral0, reserve);
+	if (!tcache) /* gen 0: nothing kept (scene_gen starts at 1); without it every trace is worked out */
+		tcache = calloc(TC_N, sizeof(*tcache));
 	return true;
 }
 
@@ -1191,8 +1202,10 @@ uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const fl
 		}
 		candx[numcandx++] = (uint16_t)i;
 	}
-	if (drop != drop_mask)
-		drop_mask = drop, scene_gen++;
+	/* a focus without PM_FOCUS_DROPSTUCK (the weapon's traces) between two with it
+	 * changes this back and forth: it is part of Hull_Move's key, not of scene_gen,
+	 * so that doesn't empty the trace cache */
+	drop_mask = drop;
 	focused = true;
 	return near;
 }
@@ -1421,11 +1434,6 @@ static HOT void hull_move(const float start[3], const float mins[3], const float
  * coop_arena / e0m1 / dev replays of pmtest). The last results are kept, keyed on every
  * argument's bits and on scene_gen, which changes with anything else the result reads: a
  * result found here is the one hull_move gave for the same question about the same world. */
-#define TC_N 32
-static struct {
-	uint32_t gen, key[14];
-	pmhit_t tr;
-} tcache[TC_N];
 #ifdef HULL_SELFCHECK
 long tc_checked;
 #endif
@@ -1444,7 +1452,7 @@ HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const f
 	for (i = 0; i < 14; i++)
 		h = (h ^ key[i]) * 0x9e3779b1u;
 	h >>= 27; /* TC_N 32 */
-	if (tcache[h].gen == scene_gen) {
+	if (tcache && tcache[h].gen == scene_gen && tcache[h].drop == drop_mask) {
 		for (i = 0; i < 14 && tcache[h].key[i] == key[i]; i++)
 			;
 		if (i == 14) {
@@ -1465,7 +1473,9 @@ HOT void Hull_Move(void *ctx, const float start[3], const float mins[3], const f
 		}
 	}
 	hull_move(start, mins, maxs, end, type, mask, tr);
-	tcache[h].gen = scene_gen;
+	if (!tcache)
+		return;
+	tcache[h].gen = scene_gen, tcache[h].drop = drop_mask;
 	for (i = 0; i < 14; i++)
 		tcache[h].key[i] = key[i];
 	tcache[h].tr = *tr;

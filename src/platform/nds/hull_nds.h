@@ -10,7 +10,11 @@ enum { HULL_NONE, HULL_Q1, HULL_HL };       /* which hull a box uses: bspfile.c:
  * fixed-point copy of the drawing tree (world_nds.c's planes) walked by Hull_Trace0Fixed */
 enum { HULL_WITH_HULL0 = 1, HULL_HULL0_FIXED = 2 };
 #define HULL_MAX_BRUSHES 512
-#define HULL_MAX_BOXES 64
+#ifdef __NDS__
+#define HULL_MAX_BOXES 16 /* PSTATE's boxes: the server sends at most MAX_BOXES (sv_link.c) */
+#else
+#define HULL_MAX_BOXES 64 /* pmtest: the server's own boxes from its log (sv_link_log), up to 64 */
+#endif
 
 /* reads len bytes at ofs of path into dst; returns the bytes read (< len: short or error) */
 typedef long (*hull_read_fn)(void *ctx, const char *path, long ofs, long len, void *dst);
