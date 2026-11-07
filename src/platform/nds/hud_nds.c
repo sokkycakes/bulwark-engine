@@ -508,6 +508,8 @@ static const uint16_t wcap[W_COUNT] = {200, 300, 160, 560, 160, 900, 300, 400, 2
 typedef struct {
 	uint8_t *buf;
 	int len, cap;
+	uint8_t *prev; /* the list as last drawn */
+	int prevlen;
 	uint32_t cover[24], ncover[24]; /* the tiles it covers as last drawn, and now: a bit for each */
 	uint32_t sig;
 	uint32_t in; /* what it was built from, for the ones that only change with their input */
@@ -515,7 +517,7 @@ typedef struct {
 } widget_t;
 
 static widget_t wid[W_COUNT];
-static uint8_t warena[3400];
+static uint8_t warena[2][3400]; /* the lists, and the ones last drawn */
 static widget_t *cw; /* the one being written */
 
 static void w_bytes(const void *p, int n)
@@ -1397,12 +1399,67 @@ static void part_cross(void)
 	w_xhair(128 - hud.xw / 2, 96 - hud.xh / 2);
 }
 
+/* the most tiles drawn in a frame (~25 us each, measured in melonDS): a change over
+ * more of the screen (going down, getting up) takes the next frames too */
+#define TILES_A_FRAME 112
+
+/* an op's size, and the screen it covers (x0 y0 x1 y1) */
+static int op_box(const uint8_t *p, int b[4])
+{
+	int16_t v[4];
+	switch (p[0]) {
+	case OP_FILL:
+	case OP_LINE:
+		memcpy(v, p + 2, 8);
+		if (p[0] == OP_FILL)
+			b[0] = v[0], b[1] = v[1], b[2] = v[0] + v[2], b[3] = v[1] + v[3];
+		else
+			b[0] = BW_NDS_MIN(v[0], v[2]), b[1] = BW_NDS_MIN(v[1], v[3]), b[2] = BW_NDS_MAX(v[0], v[2]) + 1,
+			b[3] = BW_NDS_MAX(v[1], v[3]) + 1;
+		return 10;
+	case OP_TEXT:
+		memcpy(v, p + 5, 4);
+		b[0] = v[0] - 1, b[1] = v[1] - 1, b[2] = v[0] + text_width((const char *)p + 9, p[4], p[2]) + 1;
+		b[3] = v[1] + hudh * p[2] + 1;
+		return 9 + p[4];
+	case OP_XHAIR:
+		memcpy(v, p + 3, 4);
+		b[0] = v[0], b[1] = v[1], b[2] = v[0] + p[1], b[3] = v[1] + p[2];
+		return 7 + XH_MAX * 2;
+	}
+	return 0;
+}
+
+/* marks what differs between a widget's last list and its new one, the ops paired in
+ * order: the tiles under both of a pair that differ, and under the ops one list has
+ * past the other's end (any pairing is right, as every pixel of a tile is drawn again) */
+static void mark_changes(uint32_t *dirty, const widget_t *w)
+{
+	const uint8_t *p = w->prev, *pe = w->prev + w->prevlen, *q = w->buf, *qe = w->buf + w->len;
+	int b[4], bq[4], np = 1, nq = 1;
+	while (p < pe && q < qe && (np = op_box(p, b)) && (nq = op_box(q, bq))) {
+		if (np == nq && !memcmp(p, q, (size_t)np))
+			;
+		else if (p[0] == OP_FILL && q[0] == OP_FILL && p[1] == q[1] && b[0] == bq[0] && b[1] == bq[1] && b[3] == bq[3])
+			mark_tiles(dirty, BW_NDS_MIN(b[2], bq[2]), b[1], BW_NDS_MAX(b[2], bq[2]), b[3]); /* a bar's end moved */
+		else
+			mark_tiles(dirty, b[0], b[1], b[2], b[3]), mark_tiles(dirty, bq[0], bq[1], bq[2], bq[3]);
+		p += np, q += nq;
+	}
+	for (; p < pe && (np = op_box(p, b)); p += np)
+		mark_tiles(dirty, b[0], b[1], b[2], b[3]);
+	for (; q < qe && (nq = op_box(q, b)); q += nq)
+		mark_tiles(dirty, b[0], b[1], b[2], b[3]);
+}
+
 /* --- each frame -------------------------------------------------------------------------- */
 
 void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudin_t *in)
 {
 	uint32_t t = now_ms();
-	uint32_t dirty[24] = {0}; /* a bit for each tile */
+	static uint32_t dirty[24]; /* a bit for each tile: what to draw, left over from the last frame too */
+	static int firstrow;
+	int budget = TILES_A_FRAME;
 	int pick[3] = {-1, -1, -1}, npick;
 	if (!topgfx)
 		return;
@@ -1443,17 +1500,22 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 		case W_CROSS: part_cross(); break;
 		}
 		sig = fnv(w->buf, w->len);
-		if (sig != w->sig || memcmp(w->cover, w->ncover, sizeof(w->cover))) {
-			/* the tiles it covered and covers now are drawn again */
-			for (int ty = 0; ty < 24; ty++)
-				dirty[ty] |= w->cover[ty] | w->ncover[ty];
+		if (sig != w->sig) {
+			/* the tiles under what changed are drawn again */
+			mark_changes(dirty, w);
 			w->sig = sig;
 			memcpy(w->cover, w->ncover, sizeof(w->cover));
+			memcpy(w->prev, w->buf, (size_t)w->len), w->prevlen = w->len;
 		}
 	}
-	/* each run of tiles to draw in a row: every widget over them, in order, then the tiles out */
-	for (int ty = 0; ty < 24; ty++) {
+	/* each run of tiles to draw in a row: every widget over them, in order, then the tiles
+	 * out; past the budget, the rest waits for the next frame */
+	for (int k = 0; k < 24 && budget > 0; k++) {
+		int ty = (k + firstrow) % 24;
 		uint32_t m = dirty[ty];
+		if (budget - __builtin_popcount(m) <= 0)
+			firstrow = ty; /* the row the next frame starts from, so none waits for ever */
+		dirty[ty] = 0;
 		while (m) {
 			int tx0 = __builtin_ctz(m), tx1 = tx0;
 			uint32_t run;
@@ -1461,6 +1523,7 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 				tx1++;
 			run = (tx1 == 32 ? ~0u : (1u << tx1) - 1) & ~((1u << tx0) - 1);
 			m &= ~run;
+			budget -= tx1 - tx0;
 			clipx0 = tx0 * 8, clipx1 = tx1 * 8, clipy0 = ty * 8, clipy1 = ty * 8 + 8;
 			memset(strip + tx0 * 32, 0, (size_t)(tx1 - tx0) * 32);
 			for (int i = 0; i < W_COUNT; i++)
@@ -1512,7 +1575,7 @@ void Hud_Init(void)
 	hud.self = -1;
 	for (int i = 0; i < W_COUNT; i++) {
 		memset(&wid[i], 0, sizeof(wid[i]));
-		wid[i].buf = warena + off, wid[i].cap = wcap[i];
+		wid[i].buf = warena[0] + off, wid[i].prev = warena[1] + off, wid[i].cap = wcap[i];
 		off += wcap[i];
 	}
 }
