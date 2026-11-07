@@ -70,6 +70,9 @@ typedef struct {
 	uint8_t solid;
 	int8_t skin;
 	float origin[3];
+	float angles[3]; /* "brushang": turned, traced in its own frame (sv_world.c brush_frame) */
+	bool hasabs;     /* "brushabs": a turned one's absmin/absmax as the server last linked it */
+	float amin[3], amax[3];
 } brush_t;
 
 typedef struct {
@@ -83,6 +86,7 @@ typedef struct {
 	int vars;                 /* index into the vars sets */
 	int brushes, nbrushes;    /* into the brush pool: the list for this command */
 	int boxes, nboxes;        /* into the box pool */
+	int touches, ntouches;    /* into the touch pool ("touch") */
 	pmstate_t pre, post;
 	pmcmd_t cmd;
 	float ran_msec;
@@ -95,6 +99,8 @@ static brush_t *brushpool;
 static int numbrushpool, capbrushpool;
 static box_t *boxpool;
 static int numboxpool, capboxpool;
+static pmtouch_t *touchpool;
+static int numtouchpool, captouchpool;
 static step_t *steps;
 static int numsteps;
 static bool verbose, nofocus, dshull0;
@@ -483,6 +489,34 @@ static const brush_t *sc_brushes;
 static int sc_nbrushes;
 static const box_t *sc_boxes;
 static int sc_nboxes;
+static const pmtouch_t *sc_touches;
+static int sc_ntouches;
+
+#ifndef PMTEST_HULL_NDS
+/* the touches of the step, as hull_nds.c's Hull_TouchOf and Hull_Triggers have them */
+static const pmtouch_t *own_touchof(void *ctx, int ent)
+{
+	(void)ctx;
+	for (int i = 0; i < sc_ntouches; i++)
+		if (sc_touches[i].edict == ent)
+			return sc_touches[i].kind == PM_TOUCH_CONVEYOR ? &sc_touches[i] : NULL;
+	return NULL;
+}
+
+static int own_triggers(void *ctx, const float *amin, const float *amax, const pmtouch_t **out, int max)
+{
+	int n = 0;
+	(void)ctx;
+	for (int i = 0; i < sc_ntouches && n < max; i++) {
+		const pmtouch_t *t = &sc_touches[i];
+		if (t->kind != PM_TOUCH_PUSH || t->absmin[0] > amax[0] || t->absmin[1] > amax[1] || t->absmin[2] > amax[2] ||
+		    t->absmax[0] < amin[0] || t->absmax[1] < amin[1] || t->absmax[2] < amin[2])
+			continue;
+		out[n++] = t;
+	}
+	return n;
+}
+#endif
 /* focus: which of them the next traces may test */
 static bool fc_on;
 static uint8_t fc_brush[MAX_BRUSHES], fc_box[MAX_BOXES];
@@ -500,13 +534,60 @@ static double now_us(void)
 	return ts.tv_sec * 1e6 + ts.tv_nsec / 1e3;
 }
 
+static bool turned(const brush_t *b) { return b->angles[0] != 0 || b->angles[1] != 0 || b->angles[2] != 0; }
+
+/* SV_LinkEdict (sv_world.c:50-75): a turned SOLID_BSP model reaches its farthest corner every way */
 static void brush_box(const brush_t *b, float *amin, float *amax)
 {
 	const hmodel_t *m = &map.models[b->model < map.nummodels ? b->model : 0];
-	for (int k = 0; k < 3; k++) {
-		amin[k] = b->origin[k] + m->mins[k] - 1;
-		amax[k] = b->origin[k] + m->maxs[k] + 1;
+	float radius = 0;
+	if (turned(b) && b->hasabs) {
+		memcpy(amin, b->amin, sizeof(b->amin));
+		memcpy(amax, b->amax, sizeof(b->amax));
+		return;
 	}
+	if (turned(b) && b->solid == PM_SOLID_BSP) {
+		for (int k = 0; k < 3; k++) {
+			float c = fabsf(m->mins[k]) > fabsf(m->maxs[k]) ? fabsf(m->mins[k]) : fabsf(m->maxs[k]);
+			radius += c * c;
+		}
+		radius = sqrtf(radius);
+	}
+	for (int k = 0; k < 3; k++) {
+		amin[k] = b->origin[k] + (radius > 0 ? -radius : m->mins[k]) - 1;
+		amax[k] = b->origin[k] + (radius > 0 ? radius : m->maxs[k]) + 1;
+	}
+}
+
+/* sv_world.c trace_brush_entity (:157-176) with common.c AngleVectors, as the server has them */
+static void trace_brush(const brush_t *b, const float *start, const float *mins, const float *maxs, const float *end,
+                        htrace_t *bt)
+{
+	static const float zero[3] = {0, 0, 0};
+	const float d2r = (float)(3.14159265358979323846 / 180.0);
+	float axis[3][3], ls[3], le[3], n[3], d[3], e[3], sy, cy, sp, cp, sr, cr;
+	if (!turned(b)) {
+		trace_model(b->model, b->origin, start, mins, maxs, end, bt);
+		return;
+	}
+	sy = sinf(b->angles[1] * d2r), cy = cosf(b->angles[1] * d2r);
+	sp = sinf(b->angles[0] * d2r), cp = cosf(b->angles[0] * d2r);
+	sr = sinf(b->angles[2] * d2r), cr = cosf(b->angles[2] * d2r);
+	axis[0][0] = cp * cy, axis[0][1] = cp * sy, axis[0][2] = -sp;
+	axis[1][0] = -(-sr * sp * cy + cr * sy), axis[1][1] = -(-sr * sp * sy - cr * cy), axis[1][2] = -(-sr * cp);
+	axis[2][0] = cr * sp * cy + sr * sy, axis[2][1] = cr * sp * sy - sr * cy, axis[2][2] = cr * cp;
+	for (int k = 0; k < 3; k++)
+		d[k] = start[k] - b->origin[k], e[k] = end[k] - b->origin[k];
+	for (int k = 0; k < 3; k++) {
+		ls[k] = d[0] * axis[k][0] + d[1] * axis[k][1] + d[2] * axis[k][2];
+		le[k] = e[0] * axis[k][0] + e[1] * axis[k][1] + e[2] * axis[k][2];
+	}
+	trace_model(b->model, zero, ls, mins, maxs, le, bt);
+	for (int k = 0; k < 3; k++)
+		n[k] = bt->normal[0] * axis[0][k] + bt->normal[1] * axis[1][k] + bt->normal[2] * axis[2][k];
+	memcpy(bt->normal, n, sizeof(n));
+	for (int k = 0; k < 3; k++)
+		bt->endpos[k] = start[k] + (end[k] - start[k]) * bt->fraction;
 }
 
 static void own_move_core(const float *start, const float *mins, const float *maxs, const float *end, int type,
@@ -557,7 +638,7 @@ static void own_move_core(const float *start, const float *mins, const float *ma
 			skinbits = skin_bits(b->skin);
 			if (skinbits && !(skinbits & (uint32_t)mask) && b->solid != 22)
 				continue;
-			trace_model(b->model, b->origin, start, mins, maxs, end, &bt);
+			trace_brush(b, start, mins, maxs, end, &bt);
 			if (skinbits)
 				bt.contents = skinbits;
 			if (b->solid == 22 && bt.startsolid) {
@@ -710,10 +791,16 @@ static uint32_t own_focus(void *ctx, const float org[3], const float mins[3], co
 	return near;
 }
 
-static pmtrace_if trace_if = {NULL, own_move, own_focus};
+#ifdef PMTEST_HULL_NDS
+static pmtrace_if trace_if = {NULL, own_move, own_focus, Hull_TouchOf, Hull_Triggers, Hull_Fired};
+#else
+static pmtrace_if trace_if = {NULL, own_move, own_focus, own_touchof, own_triggers};
+#endif
 
-static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
+static void set_scene(const brush_t *b, int nb, const box_t *x, int nx, const pmtouch_t *t, int nt)
 {
+	sc_touches = t;
+	sc_ntouches = nt;
 	sc_brushes = b;
 	sc_nbrushes = nb;
 	sc_boxes = x;
@@ -729,6 +816,7 @@ static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
 			hb[i].solid = b[i].solid;
 			hb[i].skin = b[i].skin;
 			memcpy(hb[i].origin, b[i].origin, sizeof(hb[i].origin));
+			memcpy(hb[i].angles, b[i].angles, sizeof(hb[i].angles));
 		}
 		for (int i = 0; i < nx && i < MAX_BOXES; i++) {
 			hx[i].edict = x[i].edict;
@@ -737,7 +825,11 @@ static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
 			hx[i].solid = x[i].solid;
 		}
 		Hull_SetBrushes(hb, nb < MAX_BRUSHES ? nb : MAX_BRUSHES);
+		for (int i = 0; i < nb && i < MAX_BRUSHES; i++)
+			if (b[i].hasabs && turned(&b[i]))
+				Hull_BrushBox(i, b[i].amin, b[i].amax);
 		Hull_SetBoxes(hx, nx < MAX_BOXES ? nx : MAX_BOXES);
+		Hull_SetTouches(t, nt);
 	}
 #endif
 }
@@ -746,6 +838,9 @@ static void run_cmd(pmstate_t *s, const pmcmd_t *c, const pmvars_t *v)
 {
 	trace_if.focus = nofocus ? NULL : own_focus;
 	fc_on = false;
+#ifdef PMTEST_HULL_NDS
+	Hull_TouchSeq(c->seq);
+#endif
 	PM_Run(s, c, v, &trace_if);
 }
 
@@ -833,7 +928,7 @@ static int read_log(const char *path, int slot)
 	FILE *f = fopen(path, "r");
 	static char line[65536];
 	int brushlist = -1, nbrushlist = 0; /* the current "brush" version */
-	int curbrushes = -1, ncurbrushes = 0, curboxes = 0, ncurboxes = 0, curvars = -1;
+	int curbrushes = -1, ncurbrushes = 0, curboxes = 0, ncurboxes = 0, curvars = -1, curtouches = 0, ncurtouches = 0;
 	step_t *st = NULL;
 	if (!f) {
 		fprintf(stderr, "pmtest: can't read %s\n", path);
@@ -850,7 +945,7 @@ static int read_log(const char *path, int slot)
 			continue;
 		if (!strcmp(kind, "map")) {
 			brushlist = curbrushes = -1;
-			nbrushlist = ncurbrushes = ncurboxes = 0;
+			nbrushlist = ncurbrushes = ncurboxes = ncurtouches = 0;
 			printf("PMTEST log map %s", p);
 		} else if (!strcmp(kind, "vars")) {
 			pmvars_t v;
@@ -877,6 +972,8 @@ static int read_log(const char *path, int slot)
 				b->model = (uint16_t)m;
 				b->solid = (uint8_t)so;
 				b->skin = (int8_t)sk;
+				memset(b->angles, 0, sizeof(b->angles));
+				b->hasabs = false;
 			}
 			numbrushpool += nbrushlist;
 			curbrushes = brushlist;
@@ -905,6 +1002,38 @@ static int read_log(const char *path, int slot)
 			curbrushes = numbrushpool;
 			ncurbrushes = nbrushlist;
 			numbrushpool += nbrushlist;
+		} else if (!strcmp(kind, "brushang") || !strcmp(kind, "brushabs")) {
+			/* this command's turned brushes (after brushpos): a copy of the current list with
+			 * their angles (brushang: the rest 0), then their absmin/absmax (brushabs) */
+			bool ang = kind[5] == 'a' && kind[6] == 'n';
+			long n, e;
+			float a[3], c[3];
+			if (curbrushes < 0 || !ti(&p, &n))
+				continue;
+			brushpool = grow(brushpool, &capbrushpool, numbrushpool + ncurbrushes, sizeof(brush_t));
+			memcpy(&brushpool[numbrushpool], &brushpool[curbrushes], sizeof(brush_t) * (size_t)ncurbrushes);
+			if (ang)
+				for (int i = 0; i < ncurbrushes; i++) {
+					memset(brushpool[numbrushpool + i].angles, 0, sizeof(a));
+					brushpool[numbrushpool + i].hasabs = false;
+				}
+			for (int i = 0; i < n; i++) {
+				int at;
+				if (!ti(&p, &e) || !tv(&p, a) || (!ang && !tv(&p, c)))
+					break;
+				at = find_brush(numbrushpool, ncurbrushes, (int)e);
+				if (at < 0)
+					continue;
+				if (ang)
+					memcpy(brushpool[at].angles, a, sizeof(a));
+				else {
+					memcpy(brushpool[at].amin, a, sizeof(a));
+					memcpy(brushpool[at].amax, c, sizeof(c));
+					brushpool[at].hasabs = true;
+				}
+			}
+			curbrushes = numbrushpool;
+			numbrushpool += ncurbrushes;
 		} else if (!strcmp(kind, "boxes")) {
 			long n, e, so;
 			if (!ti(&p, &n))
@@ -921,6 +1050,20 @@ static int read_log(const char *path, int slot)
 				x->solid = (uint8_t)so;
 			}
 			numboxpool += ncurboxes;
+		} else if (!strcmp(kind, "touch")) {
+			long n, e, kd, fl;
+			if (!ti(&p, &n))
+				continue;
+			touchpool = grow(touchpool, &captouchpool, numtouchpool + (int)n, sizeof(pmtouch_t));
+			curtouches = numtouchpool;
+			for (ncurtouches = 0; ncurtouches < n; ncurtouches++) {
+				pmtouch_t *t = &touchpool[numtouchpool + ncurtouches];
+				if (!ti(&p, &e) || !ti(&p, &kd) || !ti(&p, &fl) || !tf(&p, &t->speed) || !tv(&p, t->dir) ||
+				    !tv(&p, t->absmin) || !tv(&p, t->absmax))
+					break;
+				t->edict = (uint16_t)e, t->kind = (uint8_t)kd, t->flags = (uint8_t)fl;
+			}
+			numtouchpool += ncurtouches;
 		} else if (!strcmp(kind, "pre")) {
 			if (numsteps >= MAX_STEPS || curvars < 0)
 				continue;
@@ -935,6 +1078,8 @@ static int read_log(const char *path, int slot)
 			st->nbrushes = curbrushes < 0 ? 0 : ncurbrushes;
 			st->boxes = curboxes;
 			st->nboxes = ncurboxes;
+			st->touches = curtouches;
+			st->ntouches = ncurtouches;
 		} else if (!strcmp(kind, "cmd") && st) {
 			long v[9], ranimp;
 			for (int i = 0; i < 9; i++)
@@ -1091,7 +1236,7 @@ static int run_script(const char *path, const char *emit)
 			for (int k = 0; k < 3; k++)
 				c.move[k] = (int16_t)mv[k];
 			c.buttons = (uint16_t)but;
-			set_scene(brushes, nb, boxes, nx);
+			set_scene(brushes, nb, boxes, nx, NULL, 0);
 			for (long i = 0; i < count; i++) {
 				pmstate_t pre = s;
 				c.seq = ++seq;
@@ -1174,7 +1319,7 @@ static const char *flag_diff(const pmstate_t *a, const pmstate_t *b)
 static void scene_of(const step_t *st)
 {
 	set_scene(brushpool ? &brushpool[st->brushes] : NULL, st->nbrushes, boxpool ? &boxpool[st->boxes] : NULL,
-	          st->nboxes);
+	          st->nboxes, touchpool ? &touchpool[st->touches] : NULL, st->ntouches);
 }
 
 /* -dump: every value PM_Run writes, as bits */
@@ -1254,6 +1399,9 @@ static int compare(float tol, bool chain)
 				restarts++;
 			}
 			cur = st->pre;
+#ifdef PMTEST_HULL_NDS
+			Hull_ForgetFired(st->cmd.seq - 1); /* as link_nds.c's replay from the server's state */
+#endif
 		}
 		s = cur;
 		scene_of(st);

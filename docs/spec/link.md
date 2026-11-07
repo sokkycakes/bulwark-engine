@@ -345,10 +345,12 @@ server frame; movers and boxes are read at the same moment.
 | 172 | f32 | `ncPlayer::viewzoom` |
 | 176 | s16 | health |
 | 178 | u8 | `nboxes`, 0..16 |
-| 179 | u8 | 0 |
+| 179 | u8 | 1 (`MOVERANGLES`: the movers' angles and boxes close the packet), 0 from an older server |
 | 180 | nmovers × 26 | u16 edict, f32 origin[3], f32 velocity[3] |
 | | nboxes × 27 | u16 edict, f32 mins[3], f32 maxs[3], u8 solid (2, 3 or 4) |
 | | 84 + 3 × nammo | the weapon block (below), from a server that has WEAPONINFO |
+| | nmovers × 36 | with `MOVERANGLES`: f32 angles[3], f32 absmin[3], f32 absmax[3] of each mover |
+| | 2 | with `MOVERANGLES`: u8 nmovers, `'R'` (the device finds the block from the end) |
 
 Floats are IEEE binary32, little endian, as the server has them. Fields the
 game lacks read 0 (the server says once per join which ones are missing).
@@ -375,8 +377,11 @@ game lacks read 0 (the server says once per join which ones are missing).
   they were made with); the fields persist,
   so a lost PSTATE loses nothing. `VIEW` flag 1 stays for old devices.
 - **movers**: brush entities of the current BRUSHINFO list within 256 units
-  of the player (`absmin`..`absmax`) that move or are somewhere else than
-  that list says: the ground entity first, then the nearest, at most 8.
+  of the player (`absmin`..`absmax`) that move or turn, or are somewhere
+  else or turned otherwise than that list says: the ground entity first,
+  then the nearest, at most 8. A turned one's `absmin`/`absmax` are the ones
+  the server culls it with (`sv_world.c` keeps the box it was last linked
+  with: a `func_tracktrain` turned along its path keeps its spawn box).
 - **boxes**: what the server's `MOVE_NORMAL` trace for the player tests as
   a box: entities with `solid` 2 or 3, or 4 without a brush model, that the
   owner and `dimension_solid`/`dimension_hit` rules let through and whose
@@ -430,8 +435,14 @@ the game doesn't network, and shows a `func_illusionary`).
 | 6 | u16 | version (+1 when the list changes, and with each map; never 0) |
 | 8 | u16 | entries in this version |
 | 10 | u16 | the index of this packet's first entry |
-| 12 | u8 | count, up to 70 |
+| 12 | u8 | count: as many as fit in 1380 bytes |
 | 13 | count × 18 | u16 edict, u16 model (the `n` of `*n`), u8 solid (4 or 22), s8 skin, f32 origin[3] |
+| | count × 12 | f32 angles[3] of each entry: a turned brush is traced in its own frame (`sv_world.c` `brush_frame`) |
+| | 1 | `nturned`: the entries with angles not all 0 |
+| | nturned × 25 | u8 entry (in this packet), f32 absmin[3], f32 absmax[3] |
+| | 2 | `ntouch`: the touches in this version |
+| | 1 | the touches in this packet |
+| | each × 44 | u16 edict, u8 kind (1 `trigger_push`, 2 `func_conveyor`), u8 flags, f32 speed, f32 dir[3], f32 absmin[3], f32 absmax[3] |
 
 Every brush entity (model `*1` and up) with `solid` 4 (`SOLID_BSP`) or 22
 (`SOLID_BSPTRIGGER`) that the server's traces test for this player (owner
@@ -441,9 +452,23 @@ slime, -5 lava, -6 sky, -8 clip, -16 ladder), else 0. A `func_ladder` is two
 entries with the same model: the ladder and a solid twin. All the packets of
 a version go out together. Sent once the device has the map, every 2 s, at
 once when the list changes (compared every 0.25 s: an entry added, gone or
-changed, or a brush entity at rest whose origin is not the one in the list;
-a moving one doesn't count, PSTATE's movers carry it), and again 0.2 s after
-the last one while `brushack` is behind. Angles don't count for collision.
+changed, or a brush entity at rest whose origin or angles are not the ones in
+the list, or a turned one whose box is not; a moving one doesn't count,
+PSTATE's movers carry it), and again 0.2 s after the last one while
+`brushack` is behind. A device that reads 18 bytes an entry stops before the
+angles.
+
+The touches are what touching an entity does to the player's movement,
+which Nuclide runs inside the movement: each `trigger_push` that
+`touchtriggers` would run (`solid` 1 or 22 with a `touch`; Nuclide makes
+them 22) and each `func_conveyor` of the list (`PMoveCustom_DoTouch`), up to
+64, by edict. `speed` and `dir` are the entity's `m_flSpeed` and
+`m_vecMoveDir`; flags: 1 `TP_ONCE`, 2 the push has a target (its velocity
+is the server's), 4 a straight up or down push (`m_pushAngle` ±90 0 0), 8 a
+conveyor's `SF_CONVEYOR_VISUAL`. They come after the brushes, in the packets
+that have room, and in packets with no entries after them when needed; the
+version is complete when all entries and all `ntouch` touches have come. A
+change in them is a new version.
 
 The device drops a PSTATE, PMOVEVARS or BRUSHINFO whose spawncount is not
 its map's.
@@ -600,6 +625,9 @@ LINKPM <slot> map <mapname> <spawncount>                          (a new map, an
 LINKPM <slot> vars <74 floats: g_pmoveVars, then m_pmoveVars>       (when they change, and when the log starts)
 LINKPM <slot> brush <n> {<edict> <model> <solid> <skin> <ox> <oy> <oz>}...   (when the list changes)
 LINKPM <slot> brushpos <n> {<edict> <ox> <oy> <oz>}...             (entries of the last brush line somewhere else now)
+LINKPM <slot> brushang <n> {<edict> <pitch> <yaw> <roll>}...        (the turned entries, the rest 0; while any are turned, and once after)
+LINKPM <slot> brushabs <n> {<edict> <absmin xyz> <absmax xyz>}...   (the turned entries' boxes, after brushang)
+LINKPM <slot> touch <n> {<edict> <kind> <flags> <speed> <dir xyz> <absmin xyz> <absmax xyz>}...   (BRUSHINFO's touches, when they change)
 LINKPM <slot> boxes <n> {<edict> <x0> <y0> <z0> <x1> <y1> <z1> <solid>}...   (as PSTATE's, up to 64)
 LINKPM <slot> pre <state>
 LINKPM <slot> cmd <seq> <msec> <pitch> <yaw> <fwd> <side> <up> <buttons> <impulse> <ran_msec> <ran_impulse>

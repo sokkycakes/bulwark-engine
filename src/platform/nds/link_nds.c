@@ -274,6 +274,7 @@ static linkmodel_t models[MAX_LINKMODELS];
                         * and its weapon part take 0.5 to 1.2 ms, so 16 fit on a light map, and a
                         * heavy one keeps its frame rate) */
 #define PR_REPLAY_MIN 4 /* the most commands a frame makes: a replay always gains on them */
+#define PR_TBOX 64 /* turned brush entities with their own box, in one BRUSHINFO version */
 #define PR_MOVERS 8
 static struct {
 	int srvver;            /* WELCOME's linkver: 0 an old server */
@@ -302,10 +303,16 @@ static struct {
 	uint8_t *bhave;
 	int bnewtotal, bnewgot, bcurn, bnewcap, bcurcap, bhavecap;
 	uint16_t bnewver, bcurver;
+	/* the turned entries' absmin/absmax (BRUSHINFO's turned block), by entry, for bnew and bcur */
+	struct tbox { uint16_t i; float mn[3], mx[3]; } tnew[PR_TBOX], tcur[PR_TBOX];
+	int ntnew, ntcur;
+	/* its touch block (the same for bnew; ntouchwant the number the version has) */
+	pmtouch_t touchnew[HULL_MAX_TOUCH];
+	int ntouchnew, ntouchwant;
 	int placed[PR_MOVERS]; /* bcur entries hull_nds.c has where the last PSTATE's movers were */
 	int nplaced;
 	/* the newest PSTATE, kept while packets drain, handled after */
-	uint8_t pstate[1024];
+	uint8_t pstate[1400]; /* 180, 8 movers of 26+36, 16 boxes of 27, the weapon block */
 	int pstatelen;
 	bool havepseq;
 	uint16_t pseq;
@@ -2226,7 +2233,8 @@ static void handle_brushinfo(const uint8_t *d, int len)
 		}
 		if (total)
 			memset(pr.bhave, 0, (size_t)total);
-		pr.bnewver = ver, pr.bnewtotal = total, pr.bnewgot = 0;
+		pr.bnewver = ver, pr.bnewtotal = total, pr.bnewgot = 0, pr.ntnew = 0;
+		pr.ntouchnew = 0, pr.ntouchwant = 0;
 	}
 	for (int i = 0; i < count; i++) {
 		const uint8_t *e = d + 13 + i * 18;
@@ -2236,10 +2244,60 @@ static void handle_brushinfo(const uint8_t *d, int len)
 		b->solid = e[4];
 		b->skin = (int8_t)e[5];
 		rdvec(e + 6, b->origin);
+		/* the page's angles come after its entries (none from an older server) */
+		if (len >= 13 + count * 30)
+			rdvec(d + 13 + count * 18 + i * 12, b->angles);
+		else
+			memset(b->angles, 0, sizeof(b->angles));
 		if (!pr.bhave[first + i])
 			pr.bhave[first + i] = 1, pr.bnewgot++;
 	}
-	if (pr.bnewgot < total)
+	/* then the turned ones' boxes: u8 count, then u8 entry, absmin, absmax each; then the
+	 * touches: u16 the version's, u8 this packet's, then 44 bytes each */
+	if (len >= 13 + count * 30 + 1) {
+		const uint8_t *t = d + 13 + count * 30;
+		int nt = t[0], j;
+		t++;
+		for (j = 0; j < nt && t + 25 <= d + len; j++, t += 25) {
+			int idx = first + t[0], k;
+			if (t[0] >= count)
+				continue;
+			for (k = 0; k < pr.ntnew && pr.tnew[k].i != idx; k++)
+				;
+			if (k == pr.ntnew) {
+				if (pr.ntnew >= PR_TBOX)
+					continue;
+				pr.ntnew++;
+			}
+			pr.tnew[k].i = (uint16_t)idx;
+			rdvec(t + 1, pr.tnew[k].mn);
+			rdvec(t + 13, pr.tnew[k].mx);
+		}
+		if (j == nt && t + 3 <= d + len) {
+			int want = rd16(t), ntc = t[2];
+			pr.ntouchwant = want < HULL_MAX_TOUCH ? want : HULL_MAX_TOUCH;
+			t += 3;
+			for (j = 0; j < ntc && t + 44 <= d + len; j++, t += 44) {
+				pmtouch_t tc;
+				int k;
+				tc.edict = (uint16_t)rd16(t);
+				tc.kind = t[2], tc.flags = t[3];
+				tc.speed = rdf32(t + 4);
+				rdvec(t + 8, tc.dir);
+				rdvec(t + 20, tc.absmin);
+				rdvec(t + 32, tc.absmax);
+				for (k = 0; k < pr.ntouchnew && pr.touchnew[k].edict != tc.edict; k++)
+					;
+				if (k == pr.ntouchnew) {
+					if (pr.ntouchnew >= HULL_MAX_TOUCH)
+						continue;
+					pr.ntouchnew++;
+				}
+				pr.touchnew[k] = tc;
+			}
+		}
+	}
+	if (pr.bnewgot < total || pr.ntouchnew < pr.ntouchwant)
 		return;
 	/* complete: it becomes the list (the buffers swap), and the scene, once; PSTATE
 	 * only places its movers */
@@ -2251,7 +2309,12 @@ static void handle_brushinfo(const uint8_t *d, int len)
 	}
 	pr.bcurn = total, pr.bcurver = ver;
 	pr.bnewver = 0, pr.bnewtotal = 0;
+	memcpy(pr.tcur, pr.tnew, sizeof(pr.tnew[0]) * (size_t)pr.ntnew);
+	pr.ntcur = pr.ntnew, pr.ntnew = 0;
 	Hull_SetBrushes(pr.bcur, pr.bcurn);
+	Hull_SetTouches(pr.touchnew, pr.ntouchnew);
+	for (int k = 0; k < pr.ntcur; k++)
+		Hull_BrushBox(pr.tcur[k].i, pr.tcur[k].mn, pr.tcur[k].mx);
 	pr.nplaced = 0;
 }
 
@@ -2293,12 +2356,13 @@ static uint32_t focus_dropstuck(void *ctx, const float org[3], const float mins[
 	return Hull_Focus(ctx, org, mins, maxs, radius, flags | PM_FOCUS_DROPSTUCK);
 }
 
-static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck};
+static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck, Hull_TouchOf, Hull_Triggers, Hull_Fired};
 
 static void run_cmd(pmstate_t *s, const pmcmd_t *c)
 {
 	uint64_t t0 = LINK_PM_TICKS();
 	uint32_t t;
+	Hull_TouchSeq(c->seq);
 	PM_Run(s, c, &pr.vars, &pred_trace);
 	t = (uint32_t)(LINK_PM_TICKS() - t0);
 	Link_PredStats.pm_runs++;
@@ -2461,10 +2525,20 @@ static bool state_matches(const pmstate_t *a, const pmstate_t *b, bool *exact)
 
 /* the movers where the server had them: last PSTATE's back at rest, this one's placed
  * (the list went to hull_nds.c once, when its version came complete) */
-static void place_movers(const uint8_t *d, int nmovers)
+static void place_movers(const uint8_t *d, int len, int nmovers)
 {
-	for (int i = 0; i < pr.nplaced; i++)
-		Hull_PlaceBrush(pr.placed[i], pr.bcur[pr.placed[i]].origin);
+	/* PS_MOVERANGLES: each mover's angles, absmin and absmax, then their count and 'R', at the
+	 * end of the packet */
+	const uint8_t *ang = (d[179] & 1) && len >= 2 + d[21] * 36 + 180 && d[len - 1] == 'R' && d[len - 2] == d[21]
+	                         ? d + len - 2 - d[21] * 36
+	                         : NULL;
+	for (int i = 0; i < pr.nplaced; i++) {
+		int b = pr.placed[i];
+		Hull_PlaceBrush(b, pr.bcur[b].origin, pr.bcur[b].angles);
+		for (int k = 0; k < pr.ntcur; k++)
+			if (pr.tcur[k].i == b)
+				Hull_BrushBox(b, pr.tcur[k].mn, pr.tcur[k].mx);
+	}
 	pr.nplaced = 0;
 	pr.nmovers = nmovers;
 	for (int i = 0; i < nmovers; i++) {
@@ -2479,7 +2553,19 @@ static void place_movers(const uint8_t *d, int nmovers)
 		rdvec(m + 2, org);
 		memcpy(pr.movers[i].org, org, sizeof(org));
 		pr.movers[i].model = pr.bcur[b].model;
-		Hull_PlaceBrush(b, org);
+		{
+			float a[3] = {0, 0, 0}, mn[3], mx[3];
+			if (ang)
+				rdvec(ang + i * 36, a);
+			else
+				memcpy(a, pr.bcur[b].angles, sizeof(a));
+			Hull_PlaceBrush(b, org, a);
+			if (ang && (a[0] != 0 || a[1] != 0 || a[2] != 0)) {
+				rdvec(ang + i * 36 + 12, mn);
+				rdvec(ang + i * 36 + 24, mx);
+				Hull_BrushBox(b, mn, mx);
+			}
+		}
 		pr.placed[pr.nplaced++] = b;
 	}
 }
@@ -2544,7 +2630,7 @@ static void handle_pstate(ndscam_t *cam)
 		return;
 
 	/* the scene as the server had it: the movers where they are, and the boxes */
-	place_movers(d, nmovers);
+	place_movers(d, len, nmovers);
 	{
 		static hullbox_t boxes[LINK_BOXES];
 		for (int i = 0; i < nboxes; i++) {
@@ -2555,6 +2641,8 @@ static void handle_pstate(ndscam_t *cam)
 			boxes[i].solid = b[26];
 		}
 		Hull_SetBoxes(boxes, nboxes);
+		/* one the server's player is in already holds it there, as on the server */
+		Hull_PinBoxes(srv.origin, srv.mins, srv.maxs);
 	}
 
 	/* turned, it goes on as any other state: the server still runs the commands it hasn't
@@ -2606,6 +2694,7 @@ static void handle_pstate(ndscam_t *cam)
 	pr.rpsnap = had && err > 64;
 	pr.rpnext = BW_NDS_MAX(ack, pr.floor) + 1;
 	pr.rpstate = srv;
+	Hull_ForgetFired(pr.rpnext - 1); /* the one-shot pushes of the commands run again */
 	wp.rpstate = wp.srv;
 	pr.on = true;
 }
@@ -2923,8 +3012,15 @@ static const char *play(ndscam_t *cam)
 			    (type != L_REFUSE && rd32(d) != link.session))
 				continue;
 			link.lastrecv = frame;
-			if (type == L_WELCOME && len >= 7 && rd16(d + 5) != link.spawncount)
+			if (type == L_WELCOME && len >= 7 && rd16(d + 5) != link.spawncount) {
 				handle_welcome(d, len, cam);
+				/* a map load takes seconds (17 s for the biggest Half-Life maps) inside
+				 * this loop: that time is not silence from the server, and frame was
+				 * read before it, so both move on to now (else a load over the 5 s
+				 * below ends the link at the next loop without a packet) */
+				frame = Nds_Vblanks();
+				link.lastrecv = frame;
+			}
 			else if (type == L_SCREEN && len >= 6) {
 				uint16_t version = (uint16_t)rd16(d + 4);
 				if (version != link.screen_ack) {

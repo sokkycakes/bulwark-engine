@@ -67,7 +67,7 @@ typedef struct {
 #define LINK_VER 2
 #define PMV_COUNT 37       /* ncPMoveVars' values (Nuclide pmove.h), one set */
 #define MAX_LBRUSH 512     /* brush entities in one BRUSHINFO version */
-#define BRUSH_PAGE 70      /* entries in one BRUSHINFO packet */
+#define BRUSH_BYTES 1380   /* a BRUSHINFO packet's entries: 18 bytes, 12 of angles, and 25 more for a turned one */
 #define MAX_MOVERS 8
 #define MAX_BOXES 16
 #define MAX_LOGBOXES 64
@@ -144,7 +144,23 @@ typedef struct {
 	uint8_t solid;     /* 4 or 22 */
 	int8_t skin;       /* a Quake contents value the whole model takes, 0 for none */
 	float org[3];
+	float ang[3];      /* turned, the server traces it in its own frame (sv_world.c brush_frame), */
+	float amin[3], amax[3]; /* and culls it with the absmin/absmax it was last linked with (sv_world.c:416-420),
+	                         * which for a turned one need not be its own bounds turned (a train turned by its
+	                         * path keeps the box of its spawn: c2a2f) */
 } lbrush_t;
+
+/* what a touch does to the player's movement: a trigger_push (trigger_push.qc:353-404, from
+ * touchtriggers) or a func_conveyor (func_conveyor.qc:376-388, from PMoveCustom_DoTouch) */
+#define MAX_LTOUCH 64
+enum { LT_PUSH = 1, LT_CONVEYOR = 2 };
+enum { LTF_ONCE = 1, LTF_TARGET = 2, LTF_UPDOWN = 4, LTF_VISUAL = 8 };
+typedef struct {
+	uint16_t e;
+	uint8_t kind, flags;
+	float speed, dir[3];    /* m_flSpeed, m_vecMoveDir */
+	float amin[3], amax[3]; /* a trigger's box (SV_TouchTriggers) */
+} ltouch_t;
 
 typedef struct {
 	bool used;
@@ -208,11 +224,17 @@ typedef struct {
 	bool brushread;
 	lbrush_t brush[MAX_LBRUSH];
 	int numbrush;
+	ltouch_t touches[MAX_LTOUCH]; /* BRUSHINFO's touch block */
+	int numtouch;
 	double nextbrush, lastbrush, brushcheck;
 	/* sv_link_log: what the log last printed */
 	bool logon, logmap, logvarsok, logbrushok;
 	float logvars[2 * PMV_COUNT];
 	lbrush_t logbrush[MAX_LBRUSH];
+	bool logang; /* the last brushang line listed some */
+	ltouch_t logtouch[MAX_LTOUCH];
+	int numlogtouch;
+	bool logtouchok;
 	int numlogbrush;
 	/* weapons: WEAPONINFO for the weapon in hand */
 	uint16_t wiedict, wiver, wivers, wiack; /* its edict and version (0 none); the last version given; acked */
@@ -1128,6 +1150,7 @@ static void send_ents(link_t *l)
  * (BRUSHINFO); PSTATE also carries the movers and boxes near the player. */
 
 enum { PS_PREDICT = 1, PS_AUTOJUMP = 4, PS_LONGJUMP = 8, PS_HLRULES = 16 };
+enum { PS_MOVERANGLES = 1 }; /* PSTATE byte 179 */
 #define VFL_INVEHICLE (1 << 3)
 #define VFL_FAKESPEC (1 << 6)
 
@@ -1431,6 +1454,9 @@ static void send_pmovevars(link_t *l, double now)
 /* --- BRUSHINFO --- */
 
 /* every brush entity SV_Move would test for the player, by edict */
+static const float zero_ang[3] = {0, 0, 0};
+static const float *ent_angles(int e) { return F.angles >= 0 ? fvec(e, F.angles) : zero_ang; }
+
 static int build_brushes(int self, lbrush_t *out)
 {
 	int n = 0;
@@ -1448,15 +1474,115 @@ static int build_brushes(int self, lbrush_t *out)
 		out[n].solid = (uint8_t)solid;
 		out[n].skin = (int8_t)(skin < 0 && BSP_QuakeContentsToBits(skin) ? skin : 0);
 		memcpy(out[n].org, fvec(e, F.origin), sizeof(float) * 3);
+		memcpy(out[n].ang, ent_angles(e), sizeof(float) * 3);
+		memcpy(out[n].amin, fvec(e, F.absmin), sizeof(float) * 3);
+		memcpy(out[n].amax, fvec(e, F.absmax), sizeof(float) * 3);
 		n++;
 	}
 	return n;
 }
 
+/* the touches that move the player: each trigger_push that SV_TouchTriggers would run
+ * (SOLID_TRIGGER or SOLID_BSPTRIGGER with a touch: Nuclide makes them the latter), each func_conveyor of the brush list; by edict */
+static struct { const qcvm_t *vm; int spawncount, pspeed, pdir, pangle, ptarget, cspeed, cdir, spawnflags; } tf;
+
+static bool ent_class(int e, const char *cls)
+{
+	const char *c;
+	if (F.classname < 0)
+		return false;
+	c = QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname));
+	return c && !strcmp(c, cls);
+}
+
+static int build_touches(const lbrush_t *br, int nbr, ltouch_t *out)
+{
+	int n = 0, b = 0;
+	if (tf.vm != sv.vm || tf.spawncount != svs.spawncount) {
+		tf.vm = sv.vm, tf.spawncount = svs.spawncount;
+		tf.pspeed = cfield("trigger_push", "m_flSpeed"), tf.pdir = cfield("trigger_push", "m_vecMoveDir");
+		tf.pangle = cfield("trigger_push", "m_pushAngle"), tf.ptarget = cfield("trigger_push", "m_bHasTarget");
+		tf.cspeed = cfield("func_conveyor", "m_flSpeed"), tf.cdir = cfield("func_conveyor", "m_vecMoveDir");
+		tf.spawnflags = QC_FieldOfs(sv.vm, "spawnflags");
+	}
+	for (int e = 1; e < sv.vm->num_edicts && n < MAX_LTOUCH; e++) {
+		int solid, sf;
+		ltouch_t *t = &out[n];
+		if (sv.vm->edicts[e].free)
+			continue;
+		solid = (int)QC_EFloat(sv.vm, e, F.solid);
+		sf = tf.spawnflags >= 0 ? (int)QC_EFloat(sv.vm, e, tf.spawnflags) : 0;
+		memset(t, 0, sizeof(*t));
+		if ((solid == SOLID_TRIGGER || solid == SOLID_BSPTRIGGER) && F.touch >= 0 && QC_EInt(sv.vm, e, F.touch) && tf.pspeed >= 0 && tf.pdir >= 0 &&
+		    ent_class(e, "trigger_push")) {
+			const float *a = tf.pangle >= 0 ? fvec(e, tf.pangle) : NULL;
+			t->kind = LT_PUSH;
+			t->flags = (uint8_t)((sf & 1 ? LTF_ONCE : 0) |
+			                     (tf.ptarget >= 0 && QC_EFloat(sv.vm, e, tf.ptarget) != 0 ? LTF_TARGET : 0) |
+			                     (a && (a[0] == 90 || a[0] == -90) && a[1] == 0 && a[2] == 0 ? LTF_UPDOWN : 0));
+			t->speed = QC_EFloat(sv.vm, e, tf.pspeed);
+			memcpy(t->dir, fvec(e, tf.pdir), sizeof(t->dir));
+		} else if (solid == SOLID_BSP && tf.cspeed >= 0 && tf.cdir >= 0 && ent_class(e, "func_conveyor")) {
+			/* only one the player's traces find (the brush list) */
+			while (b < nbr && br[b].e < e)
+				b++;
+			if (b >= nbr || br[b].e != e)
+				continue;
+			t->kind = LT_CONVEYOR;
+			t->flags = (uint8_t)(sf & 1 ? LTF_VISUAL : 0);
+			t->speed = QC_EFloat(sv.vm, e, tf.cspeed);
+			memcpy(t->dir, fvec(e, tf.cdir), sizeof(t->dir));
+		} else
+			continue;
+		t->e = (uint16_t)e;
+		memcpy(t->amin, fvec(e, F.absmin), sizeof(t->amin));
+		memcpy(t->amax, fvec(e, F.absmax), sizeof(t->amax));
+		n++;
+	}
+	return n;
+}
+
+/* angles the game sets itself, with no avelocity (c1a1c's e810 rolls each frame from its
+ * think): a brush whose angles changed in the last half second is turning */
+#define TURN_EDICTS 4096
+static struct {
+	int spawncount;
+	float ang[TURN_EDICTS][3];
+	double t[TURN_EDICTS];
+} turn;
+
+static bool turned_lately(int e)
+{
+	const float *a = ent_angles(e);
+	double now = Sys_Seconds();
+	if (turn.spawncount != svs.spawncount) {
+		memset(&turn, 0, sizeof(turn));
+		turn.spawncount = svs.spawncount;
+	}
+	if (e < 0 || e >= TURN_EDICTS)
+		return false;
+	if (memcmp(turn.ang[e], a, sizeof(turn.ang[e]))) {
+		memcpy(turn.ang[e], a, sizeof(turn.ang[e]));
+		turn.t[e] = now;
+	}
+	return now - turn.t[e] < 0.5;
+}
+
 static bool at_rest(int e)
 {
-	const float *v = fvec(e, F.velocity);
-	return !v[0] && !v[1] && !v[2];
+	const float *v = fvec(e, F.velocity), *av = F.avelocity >= 0 ? fvec(e, F.avelocity) : zero_ang;
+	return !v[0] && !v[1] && !v[2] && !av[0] && !av[1] && !av[2] && !turned_lately(e);
+}
+
+static bool lb_turned(const float *a) { return a[0] != 0 || a[1] != 0 || a[2] != 0; }
+
+/* where the list has a brush: its origin and angles, and a turned one's box */
+static bool brush_moved(const lbrush_t *b)
+{
+	const float *a = ent_angles(b->e);
+	return memcmp(fvec(b->e, F.origin), b->org, sizeof(b->org)) || memcmp(a, b->ang, sizeof(b->ang)) ||
+	       (lb_turned(a) && (memcmp(fvec(b->e, F.absmin), b->amin, sizeof(b->amin)) ||
+	                         memcmp(fvec(b->e, F.absmax), b->amax, sizeof(b->amax))));
 }
 
 /* a list differs from what entities say now: an entry added, gone or
@@ -1468,7 +1594,9 @@ static bool brushes_differ(const lbrush_t *a, int na, const lbrush_t *b, int nb)
 	for (int i = 0; i < na; i++) {
 		if (a[i].e != b[i].e || a[i].model != b[i].model || a[i].solid != b[i].solid || a[i].skin != b[i].skin)
 			return true;
-		if (at_rest(b[i].e) && memcmp(a[i].org, b[i].org, sizeof(a[i].org)))
+		if (at_rest(b[i].e) && (memcmp(a[i].org, b[i].org, sizeof(a[i].org)) || memcmp(a[i].ang, b[i].ang, sizeof(a[i].ang)) ||
+		                        (lb_turned(b[i].ang) && (memcmp(a[i].amin, b[i].amin, sizeof(a[i].amin)) ||
+		                                                 memcmp(a[i].amax, b[i].amax, sizeof(a[i].amax))))))
 			return true;
 	}
 	return false;
@@ -1477,11 +1605,15 @@ static bool brushes_differ(const lbrush_t *a, int na, const lbrush_t *b, int nb)
 static void update_brushes(link_t *l, int e)
 {
 	static lbrush_t now[MAX_LBRUSH];
-	int n = build_brushes(e, now);
-	if (l->brushread && !brushes_differ(l->brush, l->numbrush, now, n))
+	static ltouch_t tnow[MAX_LTOUCH];
+	int n = build_brushes(e, now), nt = build_touches(now, n, tnow);
+	if (l->brushread && !brushes_differ(l->brush, l->numbrush, now, n) && nt == l->numtouch &&
+	    !memcmp(tnow, l->touches, sizeof(ltouch_t) * (size_t)nt))
 		return;
 	memcpy(l->brush, now, sizeof(lbrush_t) * (size_t)n);
 	l->numbrush = n;
+	memcpy(l->touches, tnow, sizeof(ltouch_t) * (size_t)nt);
+	l->numtouch = nt;
 	l->brushread = true;
 	if (!++l->brushver)
 		l->brushver = 1;
@@ -1489,10 +1621,20 @@ static void update_brushes(link_t *l, int e)
 
 static void send_brushinfo(link_t *l, double now)
 {
-	int first = 0;
+	int first = 0, tfirst = 0;
 	do {
 		pkt_t p;
-		int count = BW_MIN(l->numbrush - first, BRUSH_PAGE);
+		int count = 0, bytes = 1 + 3, nturned = 0, tcount = 0;
+		/* as many as fit: 18 bytes each, 12 of angles, a turned one's box 25 more; then touches, 44 */
+		while (first + count < l->numbrush && count < 255) {
+			int more = 30 + (lb_turned(l->brush[first + count].ang) ? 25 : 0);
+			if (bytes + more > BRUSH_BYTES)
+				break;
+			bytes += more, count++;
+		}
+		if (first + count == l->numbrush)
+			while (tfirst + tcount < l->numtouch && tcount < 255 && bytes + 44 <= BRUSH_BYTES)
+				bytes += 44, tcount++;
 		p_begin(&p, L_BRUSHINFO);
 		p_u32(&p, l->session);
 		p_u16(&p, (unsigned)svs.spawncount);
@@ -1509,9 +1651,42 @@ static void send_brushinfo(link_t *l, double now)
 			for (int k = 0; k < 3; k++)
 				p_f32(&p, b->org[k]);
 		}
+		/* then each entry's angles, and the turned ones' absmin/absmax (a device that
+		 * reads 18 bytes an entry stops before them) */
+		for (int i = first; i < first + count; i++) {
+			for (int k = 0; k < 3; k++)
+				p_f32(&p, l->brush[i].ang[k]);
+			nturned += lb_turned(l->brush[i].ang);
+		}
+		p_u8(&p, (unsigned)nturned);
+		for (int i = first; i < first + count; i++) {
+			if (!lb_turned(l->brush[i].ang))
+				continue;
+			p_u8(&p, (unsigned)(i - first));
+			for (int k = 0; k < 3; k++)
+				p_f32(&p, l->brush[i].amin[k]);
+			for (int k = 0; k < 3; k++)
+				p_f32(&p, l->brush[i].amax[k]);
+		}
+		/* then the touches: their number in the version, and this packet's */
+		p_u16(&p, (unsigned)l->numtouch);
+		p_u8(&p, (unsigned)tcount);
+		for (int i = tfirst; i < tfirst + tcount; i++) {
+			const ltouch_t *t = &l->touches[i];
+			p_u16(&p, t->e);
+			p_u8(&p, t->kind);
+			p_u8(&p, t->flags);
+			p_f32(&p, t->speed);
+			for (int k = 0; k < 3; k++)
+				p_f32(&p, t->dir[k]);
+			for (int k = 0; k < 3; k++)
+				p_f32(&p, t->amin[k]);
+			for (int k = 0; k < 3; k++)
+				p_f32(&p, t->amax[k]);
+		}
 		send_to(&l->from, &p);
-		first += count;
-	} while (first < l->numbrush);
+		first += count, tfirst += tcount;
+	} while (first < l->numbrush || tfirst < l->numtouch);
 	l->brushsent = l->brushver;
 	l->lastbrush = now;
 	l->nextbrush = now + PM_PERIOD;
@@ -2142,7 +2317,7 @@ static int collect_movers(const link_t *l, int self, int ground, int *out)
 	for (int i = 0; i < l->numbrush; i++) {
 		const lbrush_t *b = &l->brush[i];
 		float d2;
-		if (!ent_live(b->e) || (at_rest(b->e) && !memcmp(fvec(b->e, F.origin), b->org, sizeof(b->org))))
+		if (!ent_live(b->e) || (at_rest(b->e) && !brush_moved(b)))
 			continue;
 		if ((d2 = box_gap2(pmin, pmax, fvec(b->e, F.absmin), fvec(b->e, F.absmax), MOVER_RANGE)) < 0)
 			continue;
@@ -2215,7 +2390,7 @@ static void send_pstate(link_t *l)
 	p_f32(&p, s.viewzoom);
 	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(s.health, -32768, 32767));
 	p_u8(&p, (unsigned)nboxes);
-	p_u8(&p, 0);
+	p_u8(&p, PS_MOVERANGLES);
 	for (int i = 0; i < nmovers; i++) {
 		const float *o = fvec(movers[i], F.origin), *v = fvec(movers[i], F.velocity);
 		p_u16(&p, (unsigned)movers[i]);
@@ -2238,6 +2413,19 @@ static void send_pstate(link_t *l)
 		read_wstate(l, e, &ws);
 		p_wstate(&p, l, &ws);
 	}
+	/* PS_MOVERANGLES: the movers' angles and absmin/absmax, then their count and 'R', at the very
+	 * end (after the weapon block, so a device that doesn't know them reads all it did before) */
+	for (int i = 0; i < nmovers; i++) {
+		const float *a = ent_angles(movers[i]), *mn = fvec(movers[i], F.absmin), *mx = fvec(movers[i], F.absmax);
+		for (int k = 0; k < 3; k++)
+			p_f32(&p, a[k]);
+		for (int k = 0; k < 3; k++)
+			p_f32(&p, mn[k]);
+		for (int k = 0; k < 3; k++)
+			p_f32(&p, mx[k]);
+	}
+	p_u8(&p, (unsigned)nmovers);
+	p_u8(&p, 'R');
 	send_to(&l->from, &p);
 	l->pstate_ack = l->lastrun;
 	l->lastpstate = Sys_Seconds();
@@ -2303,7 +2491,7 @@ static void log_before(link_t *l, int e, strbuf_t *sb)
 	lstate_t s;
 	if (!l->logon) {
 		l->logon = true;
-		l->logmap = l->logvarsok = l->logbrushok = false;
+		l->logmap = l->logvarsok = l->logbrushok = l->logtouchok = false;
 	}
 	if (!l->logmap) {
 		SB_Printf(sb, "LINKPM %d map %s %d", slot, sv.mapname, svs.spawncount & 0xffff);
@@ -2330,6 +2518,22 @@ static void log_before(link_t *l, int e, strbuf_t *sb)
 		l->numlogbrush = n;
 		l->logbrushok = true;
 	}
+	{
+		static ltouch_t tnow[MAX_LTOUCH];
+		int nt = build_touches(now, n, tnow);
+		if (!l->logtouchok || nt != l->numlogtouch || memcmp(tnow, l->logtouch, sizeof(ltouch_t) * (size_t)nt)) {
+			SB_Printf(sb, "LINKPM %d touch %d", slot, nt);
+			for (int i = 0; i < nt; i++)
+				SB_Printf(sb, " %d %d %d %a %a %a %a %a %a %a %a %a %a", tnow[i].e, tnow[i].kind, tnow[i].flags,
+				          (double)tnow[i].speed, (double)tnow[i].dir[0], (double)tnow[i].dir[1], (double)tnow[i].dir[2],
+				          (double)tnow[i].amin[0], (double)tnow[i].amin[1], (double)tnow[i].amin[2],
+				          (double)tnow[i].amax[0], (double)tnow[i].amax[1], (double)tnow[i].amax[2]);
+			log_flush(sb);
+			memcpy(l->logtouch, tnow, sizeof(ltouch_t) * (size_t)nt);
+			l->numlogtouch = nt;
+			l->logtouchok = true;
+		}
+	}
 	for (int i = 0; i < l->numlogbrush; i++)
 		moved += memcmp(fvec(l->logbrush[i].e, F.origin), l->logbrush[i].org, sizeof(float) * 3) != 0;
 	SB_Printf(sb, "LINKPM %d brushpos %d", slot, moved);
@@ -2339,6 +2543,33 @@ static void log_before(link_t *l, int e, strbuf_t *sb)
 			SB_Printf(sb, " %d %a %a %a", l->logbrush[i].e, (double)o[0], (double)o[1], (double)o[2]);
 	}
 	log_flush(sb);
+	/* the turned ones, as they are now (tools/nds/pmtest traces them in their own frame) */
+	moved = 0;
+	for (int i = 0; i < l->numlogbrush; i++) {
+		const float *a = ent_angles(l->logbrush[i].e);
+		moved += a[0] != 0 || a[1] != 0 || a[2] != 0;
+	}
+	if (moved || l->logang) {
+		SB_Printf(sb, "LINKPM %d brushang %d", slot, moved);
+		for (int i = 0; i < l->numlogbrush; i++) {
+			const float *a = ent_angles(l->logbrush[i].e);
+			if (a[0] != 0 || a[1] != 0 || a[2] != 0)
+				SB_Printf(sb, " %d %a %a %a", l->logbrush[i].e, (double)a[0], (double)a[1], (double)a[2]);
+		}
+		log_flush(sb);
+		l->logang = moved != 0;
+		if (moved) { /* and their absmin/absmax, which cull them */
+			SB_Printf(sb, "LINKPM %d brushabs %d", slot, moved);
+			for (int i = 0; i < l->numlogbrush; i++) {
+				const float *a = ent_angles(l->logbrush[i].e), *mn = fvec(l->logbrush[i].e, F.absmin),
+				            *mx = fvec(l->logbrush[i].e, F.absmax);
+				if (lb_turned(a))
+					SB_Printf(sb, " %d %a %a %a %a %a %a", l->logbrush[i].e, (double)mn[0], (double)mn[1], (double)mn[2],
+					          (double)mx[0], (double)mx[1], (double)mx[2]);
+			}
+			log_flush(sb);
+		}
+	}
 	n = collect_boxes(e, boxes, MAX_LOGBOXES);
 	SB_Printf(sb, "LINKPM %d boxes %d", slot, n);
 	for (int i = 0; i < n; i++)

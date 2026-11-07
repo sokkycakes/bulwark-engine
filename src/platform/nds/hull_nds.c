@@ -81,6 +81,8 @@ typedef struct {
 	hullbrush_t b;
 	float amin[3], amax[3]; /* absmin/absmax as SV_LinkEdict makes them: origin + bounds -+ 1 */
 	int32_t ib[6];          /* the same in 1/8 units, rounded outward, for Hull_Focus */
+	bool turned;            /* angles not all 0: */
+	float axis[3][3];       /* forward, left, up (sv_world.c brush_frame) */
 } sbrush_t;
 typedef struct {
 	hullbox_t b;
@@ -89,6 +91,11 @@ typedef struct {
 } sbox_t;
 static sbrush_t *brushes;
 static int numbrushes, brushcap;
+static pmtouch_t touches[HULL_MAX_TOUCH]; /* Hull_SetTouches */
+static int numtouches;
+static uint32_t touchseq;                   /* the command being run (Hull_TouchSeq) */
+static uint32_t firedseq[HULL_MAX_TOUCH];   /* a TP_ONCE push's command (Hull_Fired), */
+static bool fired[HULL_MAX_TOUCH];          /* if it ran */
 static sbox_t boxes[HULL_MAX_BOXES];
 static int numboxes;
 static uint16_t candb[HULL_MAX_BRUSHES], candx[HULL_MAX_BOXES];
@@ -106,6 +113,7 @@ typedef struct {
 } tcentry_t;
 static tcentry_t *tcache; /* TC_N, on the heap with the hulls (Hull_Load): none while a map loads */
 static uint64_t drop_mask; /* the boxes left out (PM_FOCUS_DROPSTUCK) while focused */
+static uint64_t pin_mask;  /* boxes PM_FOCUS_DROPSTUCK keeps (Hull_PinBoxes) */
 
 static void unfocus(void)
 {
@@ -663,7 +671,7 @@ void Hull_Free(void)
 	memset(&hsel, 0, sizeof(hsel));
 	free(brushes);
 	brushes = NULL;
-	numbrushes = brushcap = numboxes = numcandb = numcandx = 0;
+	numbrushes = brushcap = numboxes = numcandb = numcandx = numtouches = 0;
 	focused = false;
 	drop_mask = 0, scene_gen++;
 }
@@ -725,7 +733,10 @@ static bool alloc_hulls(size_t reserve, char *err, int errsize)
 	return true;
 }
 
-/* every node a kept head reaches, every plane they use, and the heads, in range */
+/* every node a kept head reaches, every plane they use, and the heads, in range; and each
+ * child after its node (BSP compilers write clipnodes depth first and hlmap.py keeps their
+ * order: all 103 Half-Life maps' do), so no walk can go round a loop and a .hul written
+ * wrong can't hang the trace */
 static bool check_hulls(void)
 {
 	for (int i = 0; i < H.numnodes; i++) {
@@ -733,9 +744,11 @@ static bool check_hulls(void)
 		uint32_t idx = H.t.wide ? pl & 0x3fffffffu : pl & 0x3fffu;
 		if (idx >= (uint32_t)(type < 3 ? H.numaxial : H.numgeneral))
 			return false;
-		for (int s = 0; s < 2; s++)
-			if (H_CHILD(H.t.wide, &H.t, i, s) >= H.numnodes)
+		for (int s = 0; s < 2; s++) {
+			int c = H_CHILD(H.t.wide, &H.t, i, s);
+			if (c >= H.numnodes || (c >= 0 && c <= i))
 				return false;
+		}
 	}
 	for (int i = 0; i < H.numhulls * H.nummodels; i++)
 		if (H.heads[i] >= H.numnodes)
@@ -1084,15 +1097,48 @@ static int32_t fx8_up(float v)
 	return v < -1e9f ? -1000000000 : v > 1e9f ? 1000000000 : (int32_t)v;
 }
 
-/* a brush at origin: its absmin/absmax, and the same in 1/8 units */
-static void place_brush(sbrush_t *s, const float origin[3])
+/* sv_world.c brush_frame (:120-131) with common.c AngleVectors (:320-341), in the same float
+ * operations: sinf and cosf are glibc's (pmove_nds.c's port), as on the server */
+static void brush_axes(const float *ang, float axis[3][3])
 {
-	float mins[3], maxs[3];
+	const float d2r = (float)(3.14159265358979323846 / 180.0);
+	float sy, cy, sp, cp, sr, cr;
+	PM_SinCos(ang[1] * d2r, &sy, &cy);
+	PM_SinCos(ang[0] * d2r, &sp, &cp);
+	PM_SinCos(ang[2] * d2r, &sr, &cr);
+	axis[0][0] = cp * cy;
+	axis[0][1] = cp * sy;
+	axis[0][2] = -sp;
+	axis[1][0] = -(-sr * sp * cy + cr * sy); /* left: the negated right */
+	axis[1][1] = -(-sr * sp * sy - cr * cy);
+	axis[1][2] = -(-sr * cp);
+	axis[2][0] = cr * sp * cy + sr * sy;
+	axis[2][1] = cr * sp * sy - sr * cy;
+	axis[2][2] = cr * cp;
+}
+
+/* a brush at origin and angles: its absmin/absmax (SV_LinkEdict, sv_world.c:50-75: a turned
+ * SOLID_BSP one reaches its farthest corner's distance every way), and the same in 1/8 units */
+static void place_brush(sbrush_t *s, const float origin[3], const float angles[3])
+{
+	float mins[3], maxs[3], radius = 0;
 	memcpy(s->b.origin, origin, sizeof(s->b.origin));
+	memcpy(s->b.angles, angles, sizeof(s->b.angles));
 	Hull_ModelBounds(s->b.model, mins, maxs);
+	s->turned = fx_nonzero(angles[0]) || fx_nonzero(angles[1]) || fx_nonzero(angles[2]);
+	if (s->turned) {
+		brush_axes(angles, s->axis);
+		if (s->b.solid == PM_SOLID_BSP) {
+			for (int k = 0; k < 3; k++) {
+				float c = fabsf(mins[k]) > fabsf(maxs[k]) ? fabsf(mins[k]) : fabsf(maxs[k]);
+				radius += c * c;
+			}
+			radius = sqrtf(radius);
+		}
+	}
 	for (int k = 0; k < 3; k++) {
-		s->amin[k] = origin[k] + mins[k] - 1;
-		s->amax[k] = origin[k] + maxs[k] + 1;
+		s->amin[k] = origin[k] + (fx_gt(radius, 0) ? -radius : mins[k]) - 1;
+		s->amax[k] = origin[k] + (fx_gt(radius, 0) ? radius : maxs[k]) + 1;
 		s->ib[k] = fx8_down(s->amin[k]);
 		s->ib[3 + k] = fx8_up(s->amax[k]);
 	}
@@ -1111,9 +1157,9 @@ void Hull_SetBrushes(const hullbrush_t *b, int n)
 	for (int i = 0; i < n; i++) {
 		const hullbrush_t *o = &brushes[i].b;
 		if (i >= numbrushes || o->edict != b[i].edict || o->model != b[i].model || o->solid != b[i].solid ||
-		    o->skin != b[i].skin || !same3(o->origin, b[i].origin)) {
+		    o->skin != b[i].skin || !same3(o->origin, b[i].origin) || !same3(o->angles, b[i].angles)) {
 			brushes[i].b = b[i];
-			place_brush(&brushes[i], b[i].origin);
+			place_brush(&brushes[i], b[i].origin, b[i].angles);
 			scene_gen++;
 		}
 	}
@@ -1123,14 +1169,94 @@ void Hull_SetBrushes(const hullbrush_t *b, int n)
 	unfocus();
 }
 
-void Hull_PlaceBrush(int i, const float origin[3])
+void Hull_PlaceBrush(int i, const float origin[3], const float angles[3])
 {
 	if (i < 0 || i >= numbrushes)
 		return;
-	if (!same3(brushes[i].b.origin, origin)) {
-		place_brush(&brushes[i], origin);
+	if (!same3(brushes[i].b.origin, origin) || !same3(brushes[i].b.angles, angles)) {
+		place_brush(&brushes[i], origin, angles);
 		scene_gen++;
 	}
+	unfocus();
+}
+
+void Hull_SetTouches(const pmtouch_t *t, int n)
+{
+	uint32_t fs[HULL_MAX_TOUCH];
+	bool f[HULL_MAX_TOUCH];
+	n = n < HULL_MAX_TOUCH ? n : HULL_MAX_TOUCH;
+	/* a push fired here stays fired while the server's list still has it (its SOLID_NOT
+	 * comes in a later version) */
+	for (int i = 0; i < n; i++) {
+		f[i] = false, fs[i] = 0;
+		for (int j = 0; j < numtouches; j++)
+			if (fired[j] && touches[j].edict == t[i].edict)
+				f[i] = true, fs[i] = firedseq[j];
+	}
+	numtouches = n;
+	memcpy(touches, t, sizeof(*t) * (size_t)numtouches);
+	memcpy(fired, f, sizeof(f[0]) * (size_t)n);
+	memcpy(firedseq, fs, sizeof(fs[0]) * (size_t)n);
+}
+
+void Hull_TouchSeq(uint32_t seq) { touchseq = seq; }
+
+void Hull_Fired(void *ctx, int ent)
+{
+	(void)ctx;
+	for (int i = 0; i < numtouches; i++)
+		if (touches[i].edict == ent && (!fired[i] || (int32_t)(touchseq - firedseq[i]) < 0))
+			fired[i] = true, firedseq[i] = touchseq;
+}
+
+void Hull_ForgetFired(uint32_t after)
+{
+	for (int i = 0; i < numtouches; i++)
+		if (fired[i] && (int32_t)(firedseq[i] - after) > 0)
+			fired[i] = false;
+}
+
+const pmtouch_t *Hull_TouchOf(void *ctx, int ent)
+{
+	(void)ctx;
+	for (int i = 0; i < numtouches; i++)
+		if (touches[i].edict == ent)
+			return touches[i].kind == PM_TOUCH_CONVEYOR ? &touches[i] : NULL;
+	return NULL;
+}
+
+/* SV_TouchTriggers (sv_world.c:493-525): a trigger whose absmin..absmax meets the player's */
+int Hull_Triggers(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max)
+{
+	int n = 0;
+	(void)ctx;
+	for (int i = 0; i < numtouches && n < max; i++) {
+		const pmtouch_t *t = &touches[i];
+		if ((fired[i] && (int32_t)(touchseq - firedseq[i]) > 0) ||
+		    t->kind != PM_TOUCH_PUSH || t->absmin[0] > absmax[0] || t->absmin[1] > absmax[1] ||
+		    t->absmin[2] > absmax[2] || t->absmax[0] < absmin[0] || t->absmax[1] < absmin[1] ||
+		    t->absmax[2] < absmin[2])
+			continue;
+		out[n++] = t;
+	}
+	return n;
+}
+
+void Hull_BrushBox(int i, const float absmin[3], const float absmax[3])
+{
+	sbrush_t *s;
+	if (i < 0 || i >= numbrushes)
+		return;
+	s = &brushes[i];
+	if (same3(s->amin, absmin) && same3(s->amax, absmax))
+		return;
+	for (int k = 0; k < 3; k++) {
+		s->amin[k] = absmin[k];
+		s->amax[k] = absmax[k];
+		s->ib[k] = fx8_down(s->amin[k]);
+		s->ib[3 + k] = fx8_up(s->amax[k]);
+	}
+	scene_gen++;
 	unfocus();
 }
 
@@ -1154,6 +1280,7 @@ void Hull_SetBoxes(const hullbox_t *b, int n)
 	if (numboxes != n)
 		scene_gen++;
 	numboxes = n;
+	pin_mask = 0;
 	unfocus();
 }
 
@@ -1177,6 +1304,19 @@ static bool box_overlaps(const float *org, const float *mins, const float *maxs,
 
 static uint32_t skin_bits(int skin);
 
+/* the boxes the server's player overlaps where the server has it: there the server's own
+ * traces start solid in them (trace_aabb, sv_world.c:283-292) and the player stays put, so
+ * PM_FOCUS_DROPSTUCK leaves them in (on the Half-Life campaign: a player spawned inside
+ * another body, c2a3e; the bot walking into a scientist, c1a1b) */
+void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3])
+{
+	pin_mask = 0;
+	for (int i = 0; i < numboxes; i++)
+		if (box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs))
+			pin_mask |= (uint64_t)1 << i;
+	unfocus();
+}
+
 uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const float maxs[3],
                     float radius, int flags)
 {
@@ -1196,7 +1336,8 @@ uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const fl
 	for (int i = 0; i < numboxes; i++) {
 		if (!ib_meets(boxes[i].ib, r))
 			continue;
-		if ((flags & PM_FOCUS_DROPSTUCK) && box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs)) {
+		if ((flags & PM_FOCUS_DROPSTUCK) && !(pin_mask >> i & 1) &&
+		    box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs)) {
 			drop |= (uint64_t)1 << i;
 			continue;
 		}
@@ -1336,7 +1477,25 @@ static void move_brush(const sbrush_t *s, const float *start, const float *mins,
 	if (skinbits && !(skinbits & mask) && solid != 22)
 		return;
 	/* the Q1 trace never reads the mask, so emask (sv_world.c:431-437) changes nothing */
-	Hull_TraceModel(s->b.model, s->b.origin, start, mins, maxs, end, &bt);
+	if (s->turned) {
+		/* sv_world.c trace_brush_entity (:157-176): start and end into the model's frame
+		 * (frame_to_local), the hit's normal back into the world (frame_dir_to_world) */
+		static const float zero[3] = {0, 0, 0};
+		float ls[3], le[3], n[3], d[3], e[3];
+		for (int k = 0; k < 3; k++)
+			d[k] = start[k] - s->b.origin[k], e[k] = end[k] - s->b.origin[k];
+		for (int k = 0; k < 3; k++) {
+			ls[k] = d[0] * s->axis[k][0] + d[1] * s->axis[k][1] + d[2] * s->axis[k][2];
+			le[k] = e[0] * s->axis[k][0] + e[1] * s->axis[k][1] + e[2] * s->axis[k][2];
+		}
+		Hull_TraceModel(s->b.model, zero, ls, mins, maxs, le, &bt);
+		for (int k = 0; k < 3; k++)
+			n[k] = bt.normal[0] * s->axis[0][k] + bt.normal[1] * s->axis[1][k] + bt.normal[2] * s->axis[2][k];
+		memcpy(bt.normal, n, sizeof(n));
+		for (int k = 0; k < 3; k++)
+			bt.endpos[k] = start[k] + (end[k] - start[k]) * bt.fraction;
+	} else
+		Hull_TraceModel(s->b.model, s->b.origin, start, mins, maxs, end, &bt);
 	contents = skinbits ? skinbits : bt.hit ? PM_CB_SOLID : 0;
 	if (solid == 22 && bt.startsolid) {
 		tr->startsolid = true;

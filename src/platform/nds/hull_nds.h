@@ -59,11 +59,35 @@ void Hull_TraceModel(int model, const float origin[3], const float start[3], con
 
 /* the scene the predicted player moves in, set by link_nds.c from BRUSHINFO and PSTATE.
  * Both lists sorted by edict (the caller sorts); copied */
-typedef struct { uint16_t edict, model; uint8_t solid; int8_t skin; float origin[3]; } hullbrush_t;
+typedef struct {
+	uint16_t edict, model;
+	uint8_t solid;
+	int8_t skin;
+	float origin[3];
+	float angles[3]; /* turned, it is traced in its own frame (sv_world.c brush_frame) */
+} hullbrush_t;
 typedef struct { uint16_t edict; float mins[3], maxs[3]; uint8_t solid; } hullbox_t; /* absolute */
 void Hull_SetBrushes(const hullbrush_t *b, int n);
-void Hull_PlaceBrush(int i, const float origin[3]); /* entry i of the last Hull_SetBrushes list, moved */
+void Hull_PlaceBrush(int i, const float origin[3], const float angles[3]); /* entry i of the last Hull_SetBrushes list, moved */
+/* a turned entry's absmin/absmax as the server last linked it (BRUSHINFO, PSTATE): it culls
+ * the brush there, not its turned bounds (a train turned along its path keeps its spawn box) */
+void Hull_BrushBox(int i, const float absmin[3], const float absmax[3]);
 void Hull_SetBoxes(const hullbox_t *b, int n);
+/* the touches that move the player (BRUSHINFO's touch block), by edict; copied (HULL_MAX_TOUCH) */
+#define HULL_MAX_TOUCH 64
+void Hull_SetTouches(const pmtouch_t *t, int n);
+const pmtouch_t *Hull_TouchOf(void *ctx, int ent);
+int Hull_Triggers(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max);
+/* a TP_ONCE push goes SOLID_NOT once it ran (trigger_push.qc:392-397), but the server's list
+ * drops it only a version later: Hull_Fired (pmtrace_if.fired) notes the command it ran in
+ * (Hull_TouchSeq, set before each), Hull_Triggers leaves it out of the commands after that,
+ * and Hull_ForgetFired(a) forgets the ones that ran after command a (a replay from the
+ * server's state at a runs those again) */
+void Hull_TouchSeq(uint32_t seq);
+void Hull_Fired(void *ctx, int ent);
+void Hull_ForgetFired(uint32_t after);
+/* the boxes that overlap a player box at org: PM_FOCUS_DROPSTUCK keeps them (until the next Hull_SetBoxes) */
+void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3]);
 
 /* SV_Move against world + brushes + boxes: the pmtrace_if.move contract */
 void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],
