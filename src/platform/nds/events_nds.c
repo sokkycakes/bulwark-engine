@@ -577,7 +577,7 @@ static uint32_t nib[256];
 /* hud_text's look at scale 1: the glyph in col, with a 1-pixel black (index 1) outline.
  * A glyph row and its outline are masks, shifted to the cells they fall in and merged
  * a cell's row (a word) at a time */
-static int band_text(int x, int y, int col, int bank, const char *s)
+ITCM_CODE __attribute__((target("arm"))) static int band_text(int x, int y, int col, int bank, const char *s)
 {
 	int h = Hud_FontHeight(), x0 = x;
 	const uint32_t colw = (uint32_t)col * 0x11111111u, edgew = 0x11111111u;
@@ -837,6 +837,11 @@ static void layout(int g, const int *chars, const int *chars2)
 
 /* the rows of cells in flushrows, to the layers */
 static uint32_t flushrowsl[2];
+/* a redraw's time in a frame (before glFlush; Hud_Frame has its own after the blank),
+ * checked between batches of rows of cells */
+#define TEXT_FRAME_US 2000
+#define TEXT_BATCH 2
+static uint32_t pend[2]; /* rows of cells still to draw again, each layer */
 
 static void band_flush(void)
 {
@@ -950,11 +955,14 @@ void Events_Draw2D(void)
 	for (int g = 0; g < G_COUNT; g++)
 		if (sig[g] != tx.sig[g])
 			redraw = true;
+	if (pend[0] | pend[1]) /* rows a redraw left for this frame */
+		redraw = true;
 
 	if (redraw) {
 		static uint32_t rows[G_COUNT]; /* the rows each group's lines took when last drawn */
-		uint32_t now_rows[G_COUNT], dirty[2] = {0, 0};
-		uint64_t t0 = tickGetCount();
+		uint32_t now_rows[G_COUNT], dirty[2] = {pend[0], pend[1]};
+		uint64_t t0 = tickGetCount(), deadline = t0 + (uint64_t)TEXT_FRAME_US * TICK_FREQ / 1000000;
+		bool drew = false;
 		Events_Stats.redraws++;
 		measuring = true;
 		for (int g = 0; g < G_COUNT; g++) {
@@ -971,21 +979,34 @@ void Events_Draw2D(void)
 			dirty[glayer(g)] |= rows[g] | now_rows[g];
 		}
 		measuring = false;
+		/* the rows to draw, TEXT_BATCH at a time: every group over them, cleared and drawn
+		 * again; past TEXT_FRAME_US the rest wait for the next frame (at least one batch a
+		 * frame), showing what they showed until then */
+		pend[0] = pend[1] = 0;
 		for (int l = 0; l < 2; l++)
-			for (int r = 0; r < BAND_ROWS; r++)
-				if (dirty[l] & 1u << r) {
-					memset(&bands[l][r * 32 * 8], 0, 32 * 8 * 4);
-					memset(bandbanks[l][r], 0, 32);
+			while (dirty[l]) {
+				uint32_t m = 0;
+				if (drew && tickGetCount() >= deadline) {
+					pend[0] |= dirty[0], pend[1] |= dirty[1];
+					break;
 				}
-		for (int g = 0; g < G_COUNT; g++) {
-			int l = glayer(g);
-			if (!sig[g] || !(now_rows[g] & dirty[l]))
-				continue;
-			band = bands[l], bandbank = bandbanks[l], cliprows = dirty[l];
-			layout(g, chars, chars2);
-		}
+				drew = true;
+				for (int r = __builtin_ctz(dirty[l]), k = 0; r < BAND_ROWS && k < TEXT_BATCH; r++)
+					if (dirty[l] & 1u << r)
+						m |= 1u << r, k++;
+				dirty[l] &= ~m;
+				for (int r = 0; r < BAND_ROWS; r++)
+					if (m & 1u << r) {
+						memset(&bands[l][r * 32 * 8], 0, 32 * 8 * 4);
+						memset(bandbanks[l][r], 0, 32);
+					}
+				band = bands[l], bandbank = bandbanks[l], cliprows = m;
+				for (int g = 0; g < G_COUNT; g++)
+					if (glayer(g) == l && sig[g] && now_rows[g] & m)
+						layout(g, chars, chars2);
+				flushrowsl[l] |= m;
+			}
 		band = bands[0], bandbank = bandbanks[0];
-		flushrowsl[0] |= dirty[0], flushrowsl[1] |= dirty[1];
 		memcpy(rows, now_rows, sizeof(rows));
 		memcpy(tx.sig, sig, sizeof(sig));
 		Events_Stats.lastdraw_ticks = (uint32_t)(tickGetCount() - t0);
