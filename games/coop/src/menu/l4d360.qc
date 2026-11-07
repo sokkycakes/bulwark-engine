@@ -18,7 +18,7 @@
    everywhere").
 
    The title and pause menus are sokky's QuakeC BaseMod renderer
-   (src/menu-vgui/l4d360/title.qc), drawing Valve's Xbox frames
+   (games/coop/src/menu/l4d360/title.qc), drawing Valve's Xbox frames
    mainmenu.res and ingamemainmenu.res as authored. This file only maps
    their commands onto co-op: the pages behind them (Play, Hero, Find
    servers, Options, Vote) and the shop stay the co-op Panorama views,
@@ -62,8 +62,8 @@ fileExists(string path)
 }
 
 /* sokky's renderer, shared with the stock VGUI menu */
-#include "../../../src/menu-vgui/l4d360/resource.qc"
-#include "../../../src/menu-vgui/l4d360/title.qc"
+#include "l4d360/resource.qc"
+#include "l4d360/title.qc"
 
 string g_l4dConfirm;	/* the command a yes/no notice runs: "quit", "disconnect" */
 bool g_l4dPause;	/* the pause frame is up */
@@ -174,7 +174,10 @@ L4D_RunCommand(string command)
 
 	switch (command) {
 	/* title */
+	/* matchmaking (Bulwark Live): the co-op lobby */
 	case "QuickMatchCoOp":
+		L4D_OpenPage("lobby");
+		break;
 	case "PlayCoopWithAnyone":
 	case "SeeAll":
 		L4D_OpenPage("servers");

@@ -256,6 +256,7 @@ impl Live {
                 p.status = party::clip(&status, party::MAX_STATUS);
             }
             Client::List => self.list(id),
+            Client::Playlists => self.playlist_info(id),
             Client::MatchLeft { id: m } => {
                 if let Some(pid) = self.players[&id].party {
                     let pt = self.parties.get_mut(&pid).unwrap();
@@ -655,6 +656,46 @@ impl Live {
             self.introduce(id, to);
         }
         self.send(to, Server::Forward { from: id, payload });
+    }
+
+    /// The playlists of the player's game, for menus. Maps are left out if
+    /// they would make the reply too big for one datagram.
+    fn playlist_info(&mut self, id: u32) {
+        let game = self.players[&id].game.clone();
+        let build = |live: &Live, maps: bool| -> String {
+            let v: Vec<serde_json::Value> = live
+                .cfg
+                .playlists
+                .iter()
+                .filter(|p| p.game.is_empty() || p.game == game)
+                .map(|p| {
+                    let modes: Vec<serde_json::Value> = p
+                        .modes
+                        .iter()
+                        .map(|m| {
+                            if maps {
+                                serde_json::json!({ "id": m.id, "name": m.name, "maps": m.maps })
+                            } else {
+                                serde_json::json!({ "id": m.id, "name": m.name })
+                            }
+                        })
+                        .collect();
+                    serde_json::json!({
+                        "id": p.id, "name": p.name, "description": p.description,
+                        "players": p.players(), "teams": p.teams, "drop_in": p.drop_in, "searching": live.searching(&p.id), "modes": modes,
+                    })
+                })
+                .collect();
+            serde_json::Value::Array(v).to_string()
+        };
+        let mut json = build(self, true);
+        if json.len() > wire::MAX_DATAGRAM - wire::HEADER {
+            json = build(self, false);
+        }
+        if json.len() > wire::MAX_DATAGRAM - wire::HEADER {
+            json = "[]".into();
+        }
+        self.send(id, Server::PlaylistInfo { json });
     }
 
     fn list(&mut self, id: u32) {
@@ -1262,6 +1303,30 @@ mod tests {
         assert_eq!(n.live.stats.drop_ins, 4);
         n.tick(9);
         assert_eq!(n.live.stats.matches_made, 2);
+    }
+
+    #[test]
+    fn playlist_info_lists_the_games_own() {
+        let mut n = Net::new(Config::default());
+        n.hello_game(1, "alice", "coop", &[]);
+        n.got(1);
+        n.send(1, Client::Playlists);
+        let json = n
+            .got(1)
+            .into_iter()
+            .find_map(|m| match m {
+                Server::PlaylistInfo { json } => Some(json),
+                _ => None,
+            })
+            .expect("playlist info");
+        assert!(json.len() <= wire::MAX_DATAGRAM - wire::HEADER, "{} bytes", json.len());
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let ids: Vec<&str> = v.as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["campaign", "firefight", "horde"]);
+        assert_eq!(v[2]["players"], 8);
+        assert_eq!(v[2]["drop_in"], true);
+        assert_eq!(v[2]["modes"][1]["name"], "Horde: Lives");
+        println!("{} bytes", json.len());
     }
 
     #[test]

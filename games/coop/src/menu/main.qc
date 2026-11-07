@@ -631,6 +631,7 @@ L4D_OpenPage(string page)
 	case "settings": g_switchTo = "settings"; break;
 	case "controller": g_switchTo = "controller"; break;
 	case "vote": g_switchTo = "vote"; break;
+	case "lobby": g_switchTo = "lobby"; break;
 	}
 }
 
@@ -856,6 +857,8 @@ Menu_UIAction(float view, string action, string arg)
 			g_switchTo = "hero";
 		else if (arg == "settings")
 			g_switchTo = "settings";
+		else if (arg == "online")
+			g_switchTo = "lobby";
 		break;
 	case "title":
 		g_switchTo = "title";
@@ -1247,6 +1250,8 @@ m_consolecommand(string cmd)
 			Panel_Command();
 		else if (argv(1) == "close")
 			Menu_Close();
+		else if (argv(1) == "page")
+			L4D_OpenPage(argv(2));	/* "menu_coop page lobby": a page from the console */
 		else
 			Menu_Open();
 		return TRUE;

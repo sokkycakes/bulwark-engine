@@ -228,6 +228,11 @@ var CoopMenu = ( function ()
 	function openPage( name, title )
 	{
 		heroPageOff();
+		if ( name !== "lobby" )
+		{
+			mm = null;
+			stage.SetHasClass( "lobby-open", false );
+		}
 		current = name;
 		keyHandler = null;
 		wheelHandler = null;
@@ -254,6 +259,8 @@ var CoopMenu = ( function ()
 	function clearPage()
 	{
 		heroPageOff();
+		mm = null;
+		stage.SetHasClass( "lobby-open", false );
 		current = "";
 		keyHandler = null;
 		wheelHandler = null;
@@ -306,6 +313,7 @@ var CoopMenu = ( function ()
 			applyPending();
 			cmd( "map " + selectedMap );
 		} );
+		button( footer, "btn", "Matchmaking", lobbyPage );
 		// the title menu has no servers button of its own
 		if ( fromTitle )
 			button( footer, "btn", "Find servers", serversPage );
@@ -771,6 +779,448 @@ var CoopMenu = ( function ()
 
 	var mainButtons = [];
 
+	// ---- Matchmaking lobby (Bulwark Live) ---------------------------------
+	// Laid out like Halo: Reach's Xbox Live lobbies: the options and the
+	// playlist's card on the left, the party's roster on the right, a search
+	// ribbon along the bottom. Everything shown comes from the engine's
+	// live_state cvar (JSON, src/net/live.c), read four times a second;
+	// buttons run live_* commands. The matcher, playlists and drop-in are
+	// on the server (docs/spec/live.md).
+
+	var mm = null;	// the open lobby's panels, null when closed
+	var mmPicking = false;	// the playlist chooser is open
+	var mmAsk = "";	// "join" or "server" while that question is open
+	var mmErrorSeen = -1;
+	var mmMadeParty = false;
+
+	function liveState()
+	{
+		try { return JSON.parse( cvar( "live_state" ) || "{}" ) || {}; } catch ( e ) { return {}; }
+	}
+	function mmPlaylistId()
+	{
+		return cvar( "coop_mmPlaylist" ) || "horde";
+	}
+	function mmPlaylist( st )
+	{
+		var id = mmPlaylistId();
+		var all = st.playlists || [];
+		for ( var i = 0; i < all.length; i++ )
+			if ( all[ i ].id === id )
+				return all[ i ];
+		return all[ 0 ] || null;
+	}
+	function mmClock( secs )
+	{
+		secs = Math.max( 0, Math.floor( secs ) );
+		var m = Math.floor( secs / 60 ), s = secs % 60;
+		return m + ":" + ( s < 10 ? "0" : "" ) + s;
+	}
+	// a steady colour per name, for the emblem
+	function mmHue( name )
+	{
+		var h = 0;
+		for ( var i = 0; i < name.length; i++ )
+			h = ( h * 31 + name.charCodeAt( i ) ) & 0xffff;
+		return "c" + ( h % 8 );	// .mm-emblem.c0 .. c7 in lobby.css
+	}
+	function mmOption( parent, name, fn )
+	{
+		var b = make( "Button", parent, "mm-option", { hittest: "true" } );
+		b.nameLabel = label( b, "mm-opt-name", name );
+		b.valueLabel = label( b, "mm-opt-value", "" );
+		b.SetPanelEvent( "onactivate", function ()
+		{
+			$.GetContextPanel().SetFocus();
+			if ( !b.BHasClass( "off" ) )
+				fn();
+		} );
+		return b;
+	}
+
+	function lobbyPage()
+	{
+		openPage( "lobby", "Matchmaking" );
+		stage.SetHasClass( "lobby-open", true );
+		mmPicking = false;
+		mmAsk = "";
+		mm = {};
+
+		var root = make( "Panel", body, "mm", { hittest: "false" } );
+		var head = make( "Panel", root, "mm-head", { hittest: "false" } );
+		var titles = make( "Panel", head, "mm-titles", { hittest: "false" } );
+		label( titles, "mm-title", "Matchmaking" );
+		mm.net = label( titles, "mm-net", "" );
+		var codebox = make( "Panel", head, "mm-codebox", { hittest: "false" } );
+		mm.codeHint = label( codebox, "mm-codehint", "" );
+		mm.code = label( codebox, "mm-code", "" );
+
+		var main = make( "Panel", root, "mm-main", { hittest: "false" } );
+		var left = make( "Panel", main, "mm-left", { hittest: "false" } );
+		mm.start = mmOption( left, "Start matchmaking", mmStart );
+		mm.playlist = mmOption( left, "Playlist", function () { mmPicking = !mmPicking; mmAsk = ""; mmDraw( true ); } );
+		mm.privacy = mmOption( left, "Party privacy", function ()
+		{
+			var st = liveState();
+			if ( st.party )
+				cmd( "live_open " + ( ( st.party.flags & 1 ) ? "0" : "1" ) );
+		} );
+		mm.guest = mmOption( left, "Add a split-screen guest", function () { cmd( "seat_add guest" ); } );
+		mm.join = mmOption( left, "Join a party by code", function () { mmAsk = mmAsk === "join" ? "" : "join"; mmPicking = false; mmDraw( true ); } );
+		mm.leave = mmOption( left, "Leave party", function () { cmd( "live_leave" ); mmMadeParty = false; } );
+		mm.area = make( "Panel", left, "mm-card", { hittest: "false" } );
+		mm.toast = label( left, "mm-toast", "" );
+
+		var right = make( "Panel", main, "mm-right", { hittest: "false" } );
+		var rh = make( "Panel", right, "mm-roster-head", { hittest: "false" } );
+		mm.rosterTitle = label( rh, "", "Party" );
+		mm.count = label( rh, "mm-count", "" );
+		mm.roster = make( "Panel", right, "mm-roster", { hittest: "false" } );
+		mm.invites = make( "Panel", right, "mm-list", { hittest: "false" } );
+
+		var rib = make( "Panel", root, "mm-ribbon", { hittest: "false" } );
+		mm.ribbon = rib;
+		var spin = make( "Panel", rib, "mm-spinner", { hittest: "false" } );
+		mm.dots = [];
+		for ( var i = 0; i < 5; i++ )
+			mm.dots.push( make( "Panel", spin, "mm-dot", { hittest: "false" } ) );
+		var rt = make( "Panel", rib, "mm-ribbon-text", { hittest: "false" } );
+		mm.ribbonMain = label( rt, "mm-ribbon-main", "" );
+		mm.ribbonSub = label( rt, "mm-ribbon-sub", "" );
+		mm.ribbonTime = label( rib, "mm-ribbon-time", "" );
+
+		button( footer, "btn", "Back", closePage );
+		button( footer, "btn", "Refresh playlists", function () { cmd( "live_playlists" ); } );
+
+		mm.tick = 0;
+		mm.areaKey = "";
+		cmd( "live_playlists" );
+		mmDraw( true );
+		mmSchedule();
+	}
+
+	function mmSchedule()
+	{
+		$.Schedule( 0.25, function ()
+		{
+			if ( !mm || current !== "lobby" )
+				return;
+			mm.tick++;
+			mmDraw( false );
+			mmSchedule();
+		} );
+	}
+
+	function mmStart()
+	{
+		var st = liveState();
+		if ( !st.party || st.party.leader !== st.id )
+			return;
+		if ( st.queue )
+			cmd( "live_cancel" );
+		else
+		{
+			var pl = mmPlaylist( st );
+			if ( pl )
+				cmd( "live_queue " + pl.id );
+		}
+	}
+
+	function mmDraw( rebuild )
+	{
+		if ( !mm )
+			return;
+		var st = liveState();
+		var online = !!st.connected;
+		var party = st.party || null;
+		var leader = !!( party && party.leader === st.id );
+		var pl = mmPlaylist( st );
+		var server = cvar( "live_server" );
+
+		// no party yet: everyone is always in one, if only by themselves
+		if ( online && !party && !mmMadeParty )
+		{
+			cmd( "live_party " + ( pl ? pl.players : 8 ) + " 1" );
+			mmMadeParty = true;
+		}
+		if ( party )
+			mmMadeParty = false;
+		// not connected: connect if we know where to
+		if ( !online && server && mm.tick % 20 === 1 )
+			cmd( "live_connect" );
+		// keep the "searching" counts fresh
+		if ( online && mm.tick % 32 === 16 )
+			cmd( "live_playlists" );
+
+		mm.net.text = online ? "Bulwark Live  ·  online  ·  " + ( st.rtt || 0 ) + " ms" :
+			server ? "Bulwark Live  ·  connecting to " + server : "Bulwark Live  ·  no server set";
+		mm.net.SetHasClass( "offline", !online );
+		mm.codeHint.text = party ? ( ( party.flags & 1 ) ? "Party code" : "Party code (invite only)" ) : "";
+		mm.code.text = party ? party.code : "";
+
+		// the options
+		var searching = !!st.queue;
+		mm.start.nameLabel.text = searching ? "Stop searching" : leader || !party ? "Start matchmaking" : "Waiting for the party leader";
+		mm.start.SetHasClass( "off", !online || !party || !leader || !pl );
+		mm.start.SetHasClass( "go", true );
+		mm.playlist.valueLabel.text = pl ? pl.name : online ? "loading..." : "";
+		mm.playlist.SetHasClass( "off", !online || searching );
+		mm.privacy.valueLabel.text = party ? ( ( party.flags & 1 ) ? "Open" : "Invite only" ) : "";
+		mm.privacy.SetHasClass( "off", !leader || searching );
+		mm.guest.valueLabel.text = ( st.guests || [] ).length + " / 3";
+		mm.guest.SetHasClass( "off", ( st.guests || [] ).length >= 3 || searching );
+		mm.join.SetHasClass( "off", !online || searching );
+		mm.leave.SetHasClass( "off", !party || searching || ( party.members || [] ).length < 2 );
+
+		// what fills the card area: the chooser, a question, or the card
+		var key = mmPicking ? "pick" : mmAsk ? "ask:" + mmAsk : !online && !server ? "ask:server" : "card:" + ( pl ? pl.id : "" ) + ( online ? ":on" : "" );
+		if ( rebuild || key !== mm.areaKey || ( key === "pick" && mm.tick % 8 === 0 ) )
+		{
+			mm.areaKey = key;
+			mm.area.RemoveAndDeleteChildren();
+			if ( key === "pick" )
+				mmDrawPicker( st );
+			else if ( key.indexOf( "ask:" ) === 0 )
+				mmDrawAsk( key.substr( 4 ) );
+			else
+				mmDrawCard( pl, st );
+		}
+		if ( key.indexOf( "card:" ) === 0 && mm.searchingLabel && pl )
+			mm.searchingLabel.text = mmFacts( pl );
+
+		// errors from the server, once each
+		if ( st.error_seq !== undefined && st.error_seq !== mmErrorSeen )
+		{
+			if ( mmErrorSeen >= 0 && st.error )
+			{
+				mm.toast.text = st.error;
+				mm.toast.SetHasClass( "on", true );
+				mm.toastUntil = mm.tick + 20;
+			}
+			mmErrorSeen = st.error_seq;
+		}
+		if ( mm.toastUntil && mm.tick > mm.toastUntil )
+		{
+			mm.toast.SetHasClass( "on", false );
+			mm.toastUntil = 0;
+		}
+
+		mmDrawRoster( st, pl );
+		mmDrawInvites( st );
+		mmDrawRibbon( st, pl );
+	}
+
+	function mmFacts( pl )
+	{
+		var facts = pl.players + ( pl.teams > 1 ? " players, " + pl.teams + " teams" : pl.players === 1 ? " player" : " players" );
+		if ( pl.drop_in )
+			facts += "  ·  drop-in";
+		facts += "  ·  " + ( pl.searching || 0 ) + " searching";
+		return facts;
+	}
+
+	function mmDrawCard( pl, st )
+	{
+		mm.searchingLabel = null;
+		if ( !pl )
+		{
+			label( mm.area, "mm-card-kicker", "Playlist" );
+			label( mm.area, "mm-card-desc", st.connected ? "Waiting for the server's playlists." : "Connect to Bulwark Live to see the playlists." );
+			return;
+		}
+		label( mm.area, "mm-card-kicker", "Playlist" );
+		label( mm.area, "mm-card-name", pl.name );
+		if ( pl.description )
+			label( mm.area, "mm-card-desc", pl.description );
+		mm.searchingLabel = label( mm.area, "mm-card-facts", mmFacts( pl ) );
+		var modes = make( "Panel", mm.area, "mm-card-modes", { hittest: "false" } );
+		( pl.modes || [] ).forEach( function ( m )
+		{
+			var r = make( "Panel", modes, "mm-mode", { hittest: "false" } );
+			label( r, "", m.name );
+			if ( m.maps && m.maps.length )
+				label( r, "mm-mode-maps", m.maps.length === 1 ? m.maps[ 0 ] : m.maps.length + " maps" );
+		} );
+	}
+
+	function mmDrawPicker( st )
+	{
+		var cur = mmPlaylistId();
+		( st.playlists || [] ).forEach( function ( p )
+		{
+			var b = make( "Button", mm.area, "mm-pick" + ( p.id === cur ? " current" : "" ), { hittest: "true" } );
+			label( b, "mm-pick-name", p.name );
+			label( b, "mm-pick-info", mmFacts( p ) );
+			b.SetPanelEvent( "onactivate", function ()
+			{
+				$.GetContextPanel().SetFocus();
+				cmd( "seta coop_mmPlaylist " + p.id );
+				mmPicking = false;
+				mmDraw( true );
+			} );
+		} );
+		if ( !( st.playlists || [] ).length )
+			label( mm.area, "mm-card-desc", "No playlists yet." );
+	}
+
+	function mmDrawAsk( what )
+	{
+		var box = make( "Panel", mm.area, "mm-list", { hittest: "false" } );
+		if ( what === "join" )
+		{
+			label( box, "mm-card-kicker", "Join a party" );
+			label( box, "mm-ask-text", "Type the six-letter party code a friend sees in their lobby." );
+			var r = make( "Panel", box, "mm-ask-row", { hittest: "false" } );
+			var e = make( "TextEntry", r, "mm-entry", { maxchars: "8", text: "" } );
+			var go = make( "Button", r, "mm-small", { hittest: "true" } );
+			label( go, "", "Join" );
+			go.SetPanelEvent( "onactivate", function ()
+			{
+				var code = e.text.replace( /[^A-Za-z0-9]/g, "" );
+				if ( code )
+				{
+					cmd( "live_join " + code );
+					mmAsk = "";
+					mmDraw( true );
+				}
+			} );
+			return;
+		}
+		label( box, "mm-card-kicker", "Bulwark Live server" );
+		label( box, "mm-ask-text", "Matchmaking goes through a Bulwark Live server (bwlive-server). Type its address." );
+		var r2 = make( "Panel", box, "mm-ask-row", { hittest: "false" } );
+		var e2 = make( "TextEntry", r2, "mm-entry wide", { maxchars: "64", text: cvar( "live_server" ) } );
+		var go2 = make( "Button", r2, "mm-small", { hittest: "true" } );
+		label( go2, "", "Connect" );
+		go2.SetPanelEvent( "onactivate", function ()
+		{
+			var a = e2.text.trim();
+			if ( a )
+			{
+				cmd( "seta live_server " + quote( a ) );
+				cmd( "live_connect " + a );
+				mmAsk = "";
+				mmDraw( true );
+			}
+		} );
+	}
+
+	// one row per player: a console's own player, then its guests
+	function mmDrawRoster( st, pl )
+	{
+		var rows = [];
+		var match = st.match || null;
+		if ( match && match.seats && match.seats.length )
+		{
+			mm.rosterTitle.text = "Game";
+			match.seats.forEach( function ( s )
+			{
+				rows.push( { name: s.name, guest: s.slot > 0, me: s.id === st.id, host: s.id === match.host && s.slot === 0, direct: true } );
+			} );
+		}
+		else if ( st.party )
+		{
+			mm.rosterTitle.text = "Party";
+			( st.party.members || [] ).forEach( function ( m )
+			{
+				rows.push( { name: m.name, me: m.id === st.id, leader: m.id === st.party.leader, direct: m.id === st.id || m.direct } );
+				( m.guests || [] ).forEach( function ( g ) { rows.push( { name: g, guest: true, me: m.id === st.id, direct: true } ); } );
+			} );
+		}
+		else
+			mm.rosterTitle.text = "Party";
+		var size = pl ? pl.players : 8;
+		mm.count.text = rows.length + " / " + Math.max( size, rows.length );
+		var sig = JSON.stringify( rows ) + size;
+		if ( sig === mm.rosterSig )
+			return;
+		mm.rosterSig = sig;
+		mm.roster.RemoveAndDeleteChildren();
+		var shown = Math.min( Math.max( size, rows.length ), 8 );
+		for ( var i = 0; i < shown; i++ )
+		{
+			var p = rows[ i ];
+			if ( !p )
+			{
+				var e = make( "Panel", mm.roster, "mm-player empty", { hittest: "false" } );
+				label( e, "mm-pname", pl && pl.drop_in && match ? "Open: drop-in" : "Open" );
+				continue;
+			}
+			var r = make( "Panel", mm.roster, "mm-player" + ( p.me ? " me" : "" ), { hittest: "false" } );
+			var em = make( "Panel", r, "mm-emblem " + mmHue( p.name ), { hittest: "false" } );
+			label( em, "", ( p.name || "?" ).charAt( 0 ).toUpperCase() );
+			label( r, "mm-pname", p.name );
+			if ( p.leader )
+				label( r, "mm-tag leader", "Leader" );
+			if ( p.host )
+				label( r, "mm-tag host", "Host" );
+			if ( p.guest )
+				label( r, "mm-tag guest", "Guest" );
+			var bars = make( "Panel", r, "mm-bars", { hittest: "false" } );
+			var lit = p.me ? 4 : p.direct ? 4 : 2;	// relayed players get two
+			for ( var b = 0; b < 4; b++ )
+			{
+				make( "Panel", bars, "mm-bar b" + b + ( b < lit ? " lit" : "" ), { hittest: "false" } );
+			}
+		}
+	}
+
+	function mmDrawInvites( st )
+	{
+		var inv = st.invites || [];
+		var sig = JSON.stringify( inv );
+		if ( sig === mm.invSig )
+			return;
+		mm.invSig = sig;
+		mm.invites.RemoveAndDeleteChildren();
+		inv.forEach( function ( i )
+		{
+			var r = make( "Panel", mm.invites, "mm-invite", { hittest: "false" } );
+			label( r, "", i.name + " invited you to their party" );
+			var go = make( "Button", r, "mm-small", { hittest: "true" } );
+			label( go, "", "Join" );
+			go.SetPanelEvent( "onactivate", function () { cmd( "live_join " + i.code ); } );
+		} );
+	}
+
+	function mmDrawRibbon( st, pl )
+	{
+		var q = st.queue, match = st.match;
+		var on = !!q || !!match;
+		mm.ribbon.SetHasClass( "on", on );
+		mm.ribbon.SetHasClass( "found", !!match && !q );
+		if ( !on )
+			return;
+		var lit = mm.tick % 6;
+		mm.dots.forEach( function ( d, i ) { d.SetHasClass( "lit", !!q && i === lit % 5 ); } );
+		if ( q )
+		{
+			// stages widen the search: say how far it has gone
+			var stages = 4;
+			mm.ribbonMain.text = "Searching" + ( pl ? ": " + pl.name : "" );
+			mm.ribbonSub.text = ( q.stage === 0 ? "Looking for the closest players" :
+				"Widening the search (stage " + ( q.stage + 1 ) + ")" ) + "  ·  " + ( q.searching || 0 ) + " searching";
+			mm.ribbonTime.text = mmClock( ( q.waited || 0 ) + ( mm.tick % 4 ) * 0.25 );
+			return;
+		}
+		mm.dots.forEach( function ( d ) { d.SetHasClass( "lit", true ); } );
+		var what = ( match.mode ? mmModeName( st, match ) : match.playlist ) + ( match.map ? " on " + match.map : "" );
+		mm.ribbonMain.text = match.host === st.id ? "Starting the game" : "Joining the game";
+		mm.ribbonSub.text = what + "  ·  " + ( match.seats || [] ).length + " players";
+		mm.ribbonTime.text = "";
+	}
+
+	function mmModeName( st, match )
+	{
+		var all = st.playlists || [];
+		for ( var i = 0; i < all.length; i++ )
+			if ( all[ i ].id === match.playlist )
+				for ( var j = 0; j < ( all[ i ].modes || [] ).length; j++ )
+					if ( all[ i ].modes[ j ].id === match.mode )
+						return all[ i ].modes[ j ].name;
+		return match.mode;
+	}
+
 	function resume() { Bulwark.Send( "close", "" ); }
 
 	function buildMain()
@@ -781,7 +1231,7 @@ var CoopMenu = ( function ()
 		var items = inGame ?
 			[ [ "", "Resume", resume ], [ "", "Requisition", function () { cmd( "cmd shop" ); } ], [ "vote", "Vote", votePage ], [ "options", "Options", function () { optionsPage(); } ],
 			  [ "-" ], [ "", "Disconnect", function () { cmd( "disconnect" ); } ], [ "", "Quit", function () { cmd( "quit" ); } ] ] :
-			[ [ "play", "Play", playPage ], [ "hero", "Hero", heroPage ], [ "servers", "Find servers", serversPage ], [ "options", "Options", function () { optionsPage(); } ],
+			[ [ "lobby", "Matchmaking", lobbyPage ], [ "play", "Play", playPage ], [ "hero", "Hero", heroPage ], [ "servers", "Find servers", serversPage ], [ "options", "Options", function () { optionsPage(); } ],
 			  [ "-" ], [ "", "Quit", function () { cmd( "quit" ); } ] ];
 		items.forEach( function ( it )
 		{
@@ -830,6 +1280,8 @@ var CoopMenu = ( function ()
 			optionsPage( "pad" );
 		else if ( name === "vote" )
 			votePage();
+		else if ( name === "lobby" )
+			lobbyPage();
 	} );
 	Bulwark.On( "maps", showMaps );
 	Bulwark.On( "servers", showServers );

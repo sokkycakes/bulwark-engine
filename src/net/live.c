@@ -28,9 +28,9 @@
 /* message types */
 enum {
 	T_HELLO = 1, T_BYE, T_PARTY_CREATE, T_PARTY_JOIN, T_PARTY_LEAVE, T_PARTY_SET, T_INVITE,
-	T_QUEUE, T_QUEUE_CANCEL, T_RELAY, T_STATUS, T_LIST, T_MATCH_LEFT, T_PONG,
+	T_QUEUE, T_QUEUE_CANCEL, T_RELAY, T_STATUS, T_LIST, T_MATCH_LEFT, T_PONG, T_PLAYLISTS,
 	T_WELCOME = 64, T_ERROR, T_PARTY, T_PARTY_GONE, T_INVITED, T_INTRODUCE, T_FORWARD,
-	T_QUEUE_STATUS, T_MATCH, T_PLAYERS, T_PING,
+	T_QUEUE_STATUS, T_MATCH, T_PLAYERS, T_PING, T_PLAYLIST_INFO,
 	T_PUNCH = 96, T_PUNCH_ACK, T_DATA
 };
 
@@ -113,6 +113,11 @@ static struct {
 	char match_playlist[64];
 	uint32_t match_host;
 	char match_mode[40], match_map[72];
+	/* the server's last error, for menus; error_seq counts them */
+	char error[128];
+	int error_seq;
+	/* the server's playlists for this game, as JSON, for menus */
+	char playlists[1280];
 	/* whether this game got into the match's game, and when it last was */
 	bool match_joined, match_over;
 	double match_lost;
@@ -412,6 +417,17 @@ static void update_state(void)
 	} else {
 		SB_AppendStr(&sb, "null");
 	}
+	SB_Printf(&sb, ",\"error_seq\":%d,\"error\":", L.error_seq);
+	json_str(&sb, L.error);
+	SB_AppendStr(&sb, ",\"guests\":[");
+	for (int i = 0; i < L.nguests; i++) {
+		if (i)
+			SB_AppendStr(&sb, ",");
+		json_str(&sb, L.guests[i]);
+	}
+	SB_AppendStr(&sb, "]");
+	SB_AppendStr(&sb, ",\"playlists\":");
+	SB_AppendStr(&sb, L.playlists[0] ? L.playlists : "[]");
 	SB_AppendStr(&sb, ",\"match\":");
 	if (L.match_id) {
 		SB_Printf(&sb, "{\"id\":\"%llu\",\"playlist\":", (unsigned long long)L.match_id);
@@ -643,6 +659,8 @@ static void deliver(uint32_t from, const uint8_t *payload, size_t len)
 		push(&L.lobby, from, src, payload + 2, len - 2);
 }
 
+static void simple(int type);
+
 /* --- from the server -------------------------------------------------------- */
 
 /* The same rules bwlive-core applies to playlists, checked again here so a
@@ -739,10 +757,26 @@ static void from_server(int type, rbuf_t *r)
 		L.connected = true;
 		L.last_welcome = now();
 		update_state();
+		if (first)
+			simple(T_PLAYLISTS);
 		if (first && live_onconnect->string[0]) {
 			Cbuf_AddText(live_onconnect->string);
 			Cbuf_AddText("\n");
 		}
+		break;
+	}
+	case T_PLAYLIST_INFO: {
+		/* kept only if it looks like a JSON array, as it goes into
+		 * live_state as it is */
+		size_t n = r->n - r->at;
+		if (n >= sizeof(L.playlists) || n < 2 || r->b[r->at] != '[' || r->b[r->n - 1] != ']')
+			return;
+		for (size_t i = 0; i < n; i++)
+			if (r->b[r->at + i] < 0x20)
+				return;
+		memcpy(L.playlists, r->b + r->at, n);
+		L.playlists[n] = 0;
+		update_state();
 		break;
 	}
 	case T_PING: {
@@ -760,6 +794,9 @@ static void from_server(int type, rbuf_t *r)
 		unsigned code = r_u8(r);
 		r_str(r, text, sizeof(text));
 		Con_Printf("^3live: %s (error %u)\n", text, code);
+		Str_Copy(L.error, text, sizeof(L.error));
+		L.error_seq++;
+		update_state();
 		break;
 	}
 	case T_PARTY: {
@@ -1259,6 +1296,14 @@ static void Cancel_f(int argc, const char **argv)
 		simple(T_QUEUE_CANCEL);
 }
 
+static void Playlists_f(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+	if (need())
+		simple(T_PLAYLISTS);
+}
+
 static void SetStatus_f(int argc, const char **argv)
 {
 	wbuf_t w;
@@ -1345,6 +1390,7 @@ void Live_Init(void)
 	Cvar_Get("live_match_mode", "", CVAR_NOSAVE, "The last Bulwark Live match's game mode, from its playlist");
 	Cvar_Get("live_match_map", "", CVAR_NOSAVE, "The last Bulwark Live match's map; the host loads it when live_hostcmd is empty");
 	Cmd_AddD("live_connect", Connect_f, "Connect to a Bulwark Live server");
+	Cmd_AddD("live_playlists", Playlists_f, "Ask for this game's playlists again (they go into live_state)");
 	Cmd_AddD("live_disconnect", Disconnect_f, "Leave Bulwark Live");
 	Cmd_AddD("live_party", Party_f, "Create a party: live_party [max] [open 0/1] [info]");
 	Cmd_AddD("live_join", Join_f, "Join a party by room code");

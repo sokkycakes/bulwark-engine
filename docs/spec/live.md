@@ -94,6 +94,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 12 | `list` | | `players` |
 | 13 | `match_left` | `u64` match id | none; the party stops being linked to that match (and frees its seats in a drop-in match) |
 | 14 | `pong` | `u32` nonce from `ping` | none; the server measures round-trip time |
+| 15 | `playlists` | | `playlist_info` |
 
 ### Server to client
 
@@ -110,6 +111,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per seat: `u32` id, `u8` slot, `u8` team, `str` name; then `str` mode, `str` map, `u8` count, then per setting: `str` name, `str` value (all empty for a playlist without modes) |
 | 73 | `players` | `u8` count, then per player: `u32` id, `str` name, `str` status, `str` party code if joinable else empty |
 | 74 | `ping` | `u32` nonce; sent after each `welcome`, answered at once with `pong` |
+| 75 | `playlist_info` | the rest of the datagram is JSON: `[{id, name, description, players, teams, drop_in, searching, modes: [{id, name, maps}]}]` for the caller's game; maps are dropped if it wouldn't fit one datagram |
 
 Error codes: 1 not registered (reserved: the server stays silent instead), 2 wrong version, 3 server
 full, 4 no such room code, 5 party full, 6 not the leader, 7 no such
@@ -308,6 +310,7 @@ the server, punches, direct traffic and the relay.
 | `live_queue <playlist> [seniority]`, `live_cancel` | matchmaking |
 | `live_guests <name>... \| -` | the console's split-screen guests (sends `hello` at once) |
 | `live_setstatus <text>` | the friends-list status line |
+| `live_playlists` | asks for the game's playlists again (also asked once after the first `welcome`) |
 | `live_status`, `live_peers` | what the client knows, and which peers are direct or relayed |
 
 Cvars:
@@ -323,7 +326,10 @@ Cvars:
 - `live_punch` (1) tries direct paths. Set it to 0 to relay everything.
 - `live_port` is the local UDP port.
 - These are read-only:
-  - `live_state`: everything as JSON, for menus and QC
+  - `live_state`: everything as JSON, for menus and QC. Besides the party,
+    queue and match it carries `guests`, `playlists` (the last
+    `playlist_info`, or `[]`), and `error` with `error_seq`, which goes up
+    by one with each `error` so a menu shows each one once.
   - `live_party`: the room code
   - `live_match_host`, `live_match_id`, `live_match_playlist`,
     `live_match_mode` and `live_match_map`: the last match

@@ -21,6 +21,9 @@ pub struct Playlist {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// One or two sentences for the menu. At most 160 bytes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     /// Only players of this game see the playlist. Empty = any game.
     #[serde(default)]
     pub game: String,
@@ -172,6 +175,9 @@ impl Playlist {
         if self.name.is_empty() {
             self.name = self.id.clone();
         }
+        if self.description.len() > 160 {
+            return Err(format!("{}: description is over 160 bytes", self.id));
+        }
         if self.drop_in && self.teams != 1 {
             return Err(format!("{}: drop_in needs one team", self.id));
         }
@@ -302,7 +308,8 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
     ],
     "avoid_rematch_minutes": 10 },
 
-  { "id": "campaign", "name": "Campaign Co-op", "game": "coop", "team_size": 4, "teams": 1,
+  { "id": "campaign", "name": "Campaign Co-op", "game": "coop",
+    "description": "Fight through the Half-Life chapters as a squad of four.", "team_size": 4, "teams": 1,
     "stages": [
       { "after": 0,  "max_rtt_sum": 150 },
       { "after": 20, "max_rtt_sum": 300 },
@@ -314,7 +321,8 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
         "maps": ["c1a1", "c1a3", "c2a1", "c2a3", "c2a5", "c3a1"],
         "settings": { "coop_waves": "0", "coop_respawnRule": "timer" } }
     ] },
-  { "id": "firefight", "name": "Firefight", "game": "coop", "team_size": 4, "teams": 1,
+  { "id": "firefight", "name": "Firefight", "game": "coop",
+    "description": "Four players hold out against endless waves on a shared pool of lives.", "team_size": 4, "teams": 1,
     "stages": [
       { "after": 0,  "max_rtt_sum": 150 },
       { "after": 20, "max_rtt_sum": 300 },
@@ -330,7 +338,8 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
                       "coop_livesPerWave": "1", "coop_waveDelay": "10",
                       "coop_waveMonsters": "monster_human_grunt" } }
     ] },
-  { "id": "horde", "name": "Horde", "game": "coop", "team_size": 8, "teams": 1,
+  { "id": "horde", "name": "Horde", "game": "coop",
+    "description": "Up to eight players, drop in any time. The fallen return when the wave is cleared.", "team_size": 8, "teams": 1,
     "stages": [
       { "after": 0, "max_rtt_sum": 150 },
       { "after": 8 }

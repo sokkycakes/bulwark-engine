@@ -228,6 +228,16 @@ and run commands themselves.
   Options, Quit.
 - Pause menu (Escape in a game): Resume, Points shop, Vote, Options,
   Disconnect, Quit.
+- Matchmaking (title menu, and Play's footer): a Reach-style lobby on
+  Bulwark Live (`styles/coop/lobby.css`). Options on the left (Start
+  matchmaking, Playlist, Party privacy, Add a split-screen guest, Join a
+  party by code, Leave party), the playlist card with its modes and maps
+  under them, the party roster on the right with open seats up to the
+  playlist's size, and a search ribbon along the bottom while queued. Only
+  the party leader starts or stops the search. The page makes a party on
+  its own once online; with no `live_server` set it asks for one. The
+  chosen playlist is `coop_mmPlaylist` (horde). `menu_coop page lobby`
+  opens it from the console.
 - Options: Player, Video, Audio, Mouse and Keys tabs. Changes wait for OK
   or Apply, which write them with `seta` and save the config. In Keys,
   click an action and press a key; Escape cancels, Backspace clears.
@@ -240,12 +250,12 @@ With sokky's private L4D 360 resources installed (`resource/l4d360/`:
 `l4d360uischeme.res`, `ui/*.res`, `locale/`, `fonts/TGB.ttf`, `images/`,
 and `sound/l4d360/`), the title and pause menus are Valve's Xbox frames
 `mainmenu.res` and `ingamemainmenu.res`, drawn by sokky's QuakeC BaseMod
-renderer from `src/menu-vgui/l4d360/`. The pages behind them and the shop
+renderer in `src/menu/l4d360/`. The pages behind them and the shop
 are the Panorama views above, restyled by `styles/coop/l4d360.css`, with
 the street backdrop (or the dimmed game) and the A/B footer drawn under
 them. `ui_l4d360 0`, or no resources, brings back the JTF menus.
 
-- Title: Co-op flyout (Quick Match and Play Online open Find servers, Play
+- Title: Co-op flyout (Quick Match opens Matchmaking, Play Online opens Find servers, Play
   with Friends opens Play), Hero (in Versus's place), Play Solo (Play),
   Options flyout (Audio/Video, Controller), Extras, Quit (asks first).
   X opens Find servers.

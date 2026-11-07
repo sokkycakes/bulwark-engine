@@ -25,6 +25,7 @@ pub mod t {
     pub const LIST: u8 = 12;
     pub const MATCH_LEFT: u8 = 13;
     pub const PONG: u8 = 14;
+    pub const PLAYLISTS: u8 = 15;
 
     pub const WELCOME: u8 = 64;
     pub const ERROR: u8 = 65;
@@ -37,6 +38,7 @@ pub mod t {
     pub const MATCH: u8 = 72;
     pub const PLAYERS: u8 = 73;
     pub const PING: u8 = 74;
+    pub const PLAYLIST_INFO: u8 = 75;
 
     pub const PUNCH: u8 = 96;
     pub const PUNCH_ACK: u8 = 97;
@@ -85,6 +87,8 @@ pub enum Client {
     List,
     MatchLeft { id: u64 },
     Pong { nonce: u32 },
+    /// Asks for the playlists of the player's game.
+    Playlists,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,6 +141,10 @@ pub enum Server {
         settings: Vec<(String, String)>,
     },
     Players { list: Vec<Listed> },
+    /// The playlists of the player's game as a JSON array, for menus:
+    /// [{id, name, players, teams, drop_in, searching, modes: [{id, name, maps}]}].
+    /// The rest of the datagram.
+    PlaylistInfo { json: String },
     Ping { nonce: u32 },
 }
 
@@ -337,6 +345,7 @@ impl Client {
                 w
             }
             Client::List => W::new(t::LIST),
+            Client::Playlists => W::new(t::PLAYLISTS),
             Client::MatchLeft { id } => {
                 let mut w = W::new(t::MATCH_LEFT);
                 w.u64(*id);
@@ -372,6 +381,7 @@ impl Client {
             t::RELAY => Client::Relay { to: r.u32()?, payload: r.rest() },
             t::STATUS => Client::Status { status: r.str()? },
             t::LIST => Client::List,
+            t::PLAYLISTS => Client::Playlists,
             t::MATCH_LEFT => Client::MatchLeft { id: r.u64()? },
             t::PONG => Client::Pong { nonce: r.u32()? },
             _ => return None,
@@ -435,6 +445,11 @@ impl Server {
                 for (k, v) in settings {
                     w.str(k).str(v);
                 }
+                w
+            }
+            Server::PlaylistInfo { json } => {
+                let mut w = W::new(t::PLAYLIST_INFO);
+                w.bytes(json.as_bytes());
                 w
             }
             Server::Players { list } => {
@@ -512,6 +527,7 @@ impl Server {
                 Server::Players { list }
             }
             t::PING => Server::Ping { nonce: r.u32()? },
+            t::PLAYLIST_INFO => Server::PlaylistInfo { json: String::from_utf8(r.rest()).ok()? },
             _ => return None,
         })
     }
@@ -591,6 +607,8 @@ mod tests {
         ], mode: "horde".into(), map: "coop_arena".into(),
            settings: vec![("coop_waves".into(), "1".into()), ("coop_survival".into(), "1".into())] });
         rt_server(Server::Players { list: vec![Listed { id: 1, name: "a".into(), status: "idle".into(), code: "".into() }] });
+        rt_server(Server::PlaylistInfo { json: "[{\"id\":\"horde\"}]".into() });
+        rt_client(Client::Playlists);
         let p = Peer::Punch { from: 1, to: 2, nonce: 3 };
         let enc = p.encode();
         let (_, ty, body) = header(&enc).unwrap();
