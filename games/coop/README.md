@@ -35,7 +35,9 @@ Headless test with bots (prints the wave and scores every 10 seconds):
   their own once the delay is over.
 - Survivor bots (`src/rules/survivors.qc`), like Left 4 Dead's: the server
   keeps `coop_survivorBots` (1) bots in while a human plays, using the
-  `coop_survivorProfiles` bot profiles in turn. With no one to revive, a
+  `coop_survivorProfiles` bot profiles in turn. With `coop_survivorFill N`
+  the bots fill the team up to N players instead: a solo player gets N-1,
+  and each human who joins takes a bot's place (a downed bot leaves first). With no one to revive, a
   bot sticks with the nearest human through Nuclide's bot follow mode: it
   keeps within `bot_followDist` (180), just behind and to one side, looks
   where the human looks, shoots the foe nearest the team from where it
@@ -55,8 +57,18 @@ Headless test with bots (prints the wave and scores every 10 seconds):
   removed, map monsters with a targetname only hidden). 0 keeps them.
   Players' bodies stay, for reviving. Bullets go through corpses (Nuclide
   core): the corpse takes the hit and the shot carries on to what's behind.
-- `coop_survival 1`: no respawning on your own. Clearing a wave brings
-  everyone back; if the whole team is down the map restarts.
+- `coop_respawnRule` picks how downed players come back besides a revive:
+  - `timer` (default): after `coop_respawnDelay` seconds.
+  - `wave` (Gears-style Horde): only when the current wave is cleared, which
+    brings everyone back. A team that is all down restarts the map.
+  - `lives` (Reach-style Firefight): after the delay, each respawn spending
+    one of the team's shared `coop_lives` (7). A cleared wave adds
+    `coop_livesPerWave` (1), up to `coop_livesMax` (20). With none left only
+    revives work, and a team all down restarts the map. The HUD's respawn
+    box shows the lives left.
+  - `none`: revives only, and a team that is all down restarts the map.
+  `coop_survival 1`, the older switch, means `wave`. `sv coop_killplayers
+  [n]` downs every player (or the first n), to test the rules.
 - Waves spawn at `info_monster_spawn` points (or deathmatch spawns). A map
   that places hostile monsters or monster makers of its own and has no
   `info_monster_spawn` gets no waves unless `coop_mapWaves 1`; allies

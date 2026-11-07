@@ -19,9 +19,14 @@
      teammates within coop_botReviveRange, and standing by the body revives.
    - Heroes: a bot engages (Z) once it has the Energy and three or more foes
      are within 512 units.
+   - coop_survivorFill N (0 = off) fills the team up to N players with
+     bots instead: a solo player gets N-1, and each human who drops in
+     takes a bot's place (a downed bot goes first). It overrides
+     coop_survivorBots. Bulwark Live's Horde sets it.
    - "sv coop_survivors" lists them with their leader and distance. */
 
 var int autocvar_coop_survivorBots = 1;
+var int autocvar_coop_survivorFill = 0;
 var float autocvar_coop_survivorWarp = 2000;
 var string autocvar_coop_survivorProfiles = "Gina,Gordon,Helmet,Barney";	/* scripts/bots.txt */
 
@@ -143,7 +148,7 @@ Survivor_BotThink(entity pl, int slot)
 	float dist;
 	int foes;
 
-	if (autocvar_coop_survivorBots <= 0i) {
+	if (autocvar_coop_survivorBots <= 0i && autocvar_coop_survivorFill <= 0i) {
 		return;
 	}
 
@@ -171,23 +176,74 @@ Survivor_BotThink(entity pl, int slot)
 	ents.Input(pl, "BotFollow", ftos(num_for_edict(leader)), pl);
 }
 
-/* every frame: keep coop_survivorBots bots in while humans play */
+/* how many bots to keep in: coop_survivorFill's spare seats, else
+   coop_survivorBots */
+int
+Survivor_Wanted(void)
+{
+	int humans = Survivor_HumanCount();
+
+	if (humans <= 0i) {
+		return (0i);
+	}
+
+	if (autocvar_coop_survivorFill > 0i) {
+		return (max(0i, autocvar_coop_survivorFill - humans));
+	}
+
+	return (max(0i, autocvar_coop_survivorBots));
+}
+
+/* a bot to make room for a human: a downed one first */
+entity
+Survivor_Spare(void)
+{
+	entity pick = world;
+
+	for (entity p = world; (p = next.Player(p));) {
+		if (!is.Bot(p)) {
+			continue;
+		}
+
+		if (!is.Alive(p)) {
+			return (p);
+		}
+
+		pick = p;
+	}
+
+	return (pick);
+}
+
+/* every frame: keep the wanted number of bots in while humans play */
 void
 Survivor_Frame(void)
 {
 	int names;
+	int wanted;
+	int bots;
 
 	if (time < g_survivorNext || !g_coopStarted) {
 		return;
 	}
 
 	g_survivorNext = time + 2.0f;
+	wanted = Survivor_Wanted();
+	bots = Survivor_BotCount();
 
-	if (autocvar_coop_survivorBots <= 0i || Survivor_HumanCount() <= 0i) {
+	/* someone dropped in: a bot steps aside (filling only, so bots added
+	   by hand stay otherwise) */
+	if (autocvar_coop_survivorFill > 0i && Survivor_HumanCount() > 0i && bots > wanted) {
+		entity spare = Survivor_Spare();
+
+		if (spare) {
+			Coop_Announce(sprintf("%s makes room", spare.netname));
+			dropclient(spare);
+		}
 		return;
 	}
 
-	if (Survivor_BotCount() >= autocvar_coop_survivorBots) {
+	if (bots >= wanted) {
 		return;
 	}
 

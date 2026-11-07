@@ -325,7 +325,14 @@ void CL_Connect(const char *address)
 		return;
 	}
 	Str_Copy(cl.servername, address, sizeof(cl.servername));
-	cl.qport = (rand() & 0x7fff) + 1;
+	/* rand() is never seeded, so every client process would pick the same
+	 * qport, and a second game from the same address (two on one PC, or
+	 * two behind one NAT) would take over the first one's slot */
+	static uint32_t qseed;
+	if (!qseed)
+		qseed = (uint32_t)time(NULL) ^ (uint32_t)(Sys_Seconds() * 1e6) ^ (uint32_t)(uintptr_t)&qseed;
+	qseed = qseed * 1664525u + 1013904223u;
+	cl.qport = (int)((qseed >> 16) & 0x7fff) + 1;
 	cl.state = cl.server.type == NA_LOOPBACK ? ca_connecting : ca_challenging;
 	cl.connect_time = -999;
 	cl.connect_tries = 0;

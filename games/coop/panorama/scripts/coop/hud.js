@@ -376,8 +376,9 @@
 		$id( "RespawnFill" ).style.width = ( r.survival ? 0 : Math.round( r.frac * 100 ) ) + "%";
 		$id( "RespawnLabel" ).text = r.survival ? "Down" : ready ? "Ready to respawn" : "Respawning";
 		$id( "RespawnValue" ).text = r.survival || ready ? "" : r.left + "s";
-		$id( "RespawnHint" ).text = r.survival ? "Survival: wait for a teammate to revive you" :
-			ready ? "Press " + shortKey( s.fireKey || "MOUSE1" ) + " to respawn" : "A teammate can revive you";
+		var lives = r.lives >= 0 ? " (" + r.lives + ( r.lives == 1 ? " life" : " lives" ) + " left)" : "";
+		$id( "RespawnHint" ).text = r.survival ? ( r.hint || "Survival: wait for a teammate to revive you" ) :
+			( ready ? "Press " + shortKey( s.fireKey || "MOUSE1" ) + " to respawn" : "A teammate can revive you" ) + lives;
 	}
 
 	// ---- prompt --------------------------------------------------------

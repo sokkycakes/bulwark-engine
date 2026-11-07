@@ -7,9 +7,10 @@
      "*mate"                each player's "health|state" for their
                             teammates' cards: a alive, d down, x dead
      "*prompt"              the key prompt under the crosshair (Use)
-     "*respawn"             while down: "<time downed> <delay>" for the
-                            respawn bar, "survival" when only a revive
-                            brings them back, else ""
+     "*respawn"             while down: "survival", "wave" or "nolives"
+                            when only a revive (or a cleared wave) brings
+                            them back, else "<time downed> <delay>" for the
+                            respawn bar; "" while alive
      "*revive"              while down and a teammate holds Use on us:
                             "<start time> <revive time>|<their name>"
      "*usable"              "1" when Use would do something: a teammate to
@@ -170,8 +171,13 @@ Coop_HudFrame(void)
 		Coop_HudSet(p, "*revive", Coop_HudReviver(p, slot));
 
 		if (slot >= 0i && !is.Alive(p) && g_coopDown[slot]) {
-			Coop_HudSet(p, "*respawn", autocvar_coop_survival ? "survival" :
-				sprintf("%.2f %.2f", g_coopDownTime[slot], autocvar_coop_respawnDelay));
+			string block = Coop_RespawnBlock(slot);
+
+			if (block == "survival" || block == "wave" || block == "nolives") {
+				Coop_HudSet(p, "*respawn", block);
+			} else {
+				Coop_HudSet(p, "*respawn", sprintf("%.2f %.2f", g_coopDownTime[slot], autocvar_coop_respawnDelay));
+			}
 		} else {
 			Coop_HudSet(p, "*respawn", "");
 		}

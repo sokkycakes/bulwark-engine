@@ -92,7 +92,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 10 | `relay` | `u32` to player id, payload | the server sends `forward` to them |
 | 11 | `status` | `str` status line for friends lists | none |
 | 12 | `list` | | `players` |
-| 13 | `match_left` | `u64` match id | none; the party stops being linked to that match |
+| 13 | `match_left` | `u64` match id | none; the party stops being linked to that match (and frees its seats in a drop-in match) |
 | 14 | `pong` | `u32` nonce from `ping` | none; the server measures round-trip time |
 
 ### Server to client
@@ -215,6 +215,7 @@ as a console variable and then loads the map. A co-op playlist is one team
 }
 ```
 
+- `drop_in`: see Drop-in below.
 - `modes`: at most 16. `id` is letters, digits, `_` and `-`; `name` is
   for menus. `weight` defaults to 1; 0 takes a mode out of the rotation.
 - `maps`: at most 32 names of letters, digits, `_ - . /` (no `..`). An
@@ -225,11 +226,38 @@ as a console variable and then loads the map. A co-op playlist is one team
   `rcon` or holding `password` are refused. The engine checks all of this
   again before applying anything.
 
+### Drop-in
+
+With `"drop_in": true` (one team only) a playlist's matches stay open after
+they start. Each second, before any new match is made, waiting tickets go
+into running matches that have room: the fullest match first, then the
+lowest ping, within the ticket's current stage's `max_rtt_sum` (seniority
+and rematches don't count). The newcomers get `match` for the running match
+and connect to its host; everyone already in gets the same `match` again
+with the new seats (the engine prints "the match now has N players"). A
+ticket that finds no room waits for a match of its own, which with
+`min_players` 1 starts alone once the last stage is reached.
+
+A party is in a match until it sends `match_left` (the engine does that 10 s
+after its game stops running: a client left the host, or the host's server
+shut down), leaves its party, queues again or times out. Its seats are then
+freed and the others told. Once the host's party leaves, the match takes
+nobody else.
+
 The built-in playlists are Stiletto's `duel` and `2v2` (game `stiletto`)
-and the co-op mod's `campaign` (Half-Life chapters, no waves, 4 players),
-`firefight` (Firefight and Grunt Rush on `coop_arena`, 4 players) and
-`horde` (waves with no respawns, 30 s between waves, 5 players), all game
-`coop`.
+and the co-op mod's, all game `coop`:
+
+- `campaign`: Half-Life chapters, no waves, 4 players.
+- `firefight`: Firefight and Grunt Rush on `coop_arena`, 4 players, the
+  team sharing 7 lives with one more per cleared wave (`coop_respawnRule
+  lives`).
+- `horde`: up to 8 players, drop-in, starting alone after 8 s. Horde brings
+  the downed back at the end of each wave (`coop_respawnRule wave`); Horde:
+  Lives shares 5 lives instead. Bots fill the team to 4 and make room for
+  each player who drops in (`coop_survivorFill 4`).
+
+In-game votes (`callvote map`, `nextmap`, `map_restart`, `skill`) work in
+any of them, as on any co-op server.
 
 The host of a match is the leader of the longest-waiting party. (A later
 version may prefer the member with the best direct connections, once clients
@@ -328,5 +356,8 @@ Tests:
 - `tests/live/coop.sh build bwlive-server`: a one-team playlist with a game
   mode; the host applies the mode's settings, loads its map without a
   `live_hostcmd`, and the client joins.
+- `tests/live/dropin.sh build bwlive-server`: a host starts a drop-in match
+  alone, a client drops in later, and when the host kicks it the client
+  reports leaving and its seat is freed.
 
-All three need `FTEQCC`.
+All four need `FTEQCC`.

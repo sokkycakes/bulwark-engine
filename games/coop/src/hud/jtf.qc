@@ -185,7 +185,8 @@ Jtf_KeyFor(string command)
 	return ("");
 }
 
-/* the respawn bar: {"frac":0..1,"left":seconds,"survival":bool}, or null
+/* the respawn bar: {"frac":0..1,"left":seconds,"survival":bool,"hint"?,
+   "lives"?} (lives -1 when respawns don't cost lives), or null
    when alive. From "*respawn" (coop/src/rules/hud_info.qc); the progress
    is worked out here each frame against the client's clock, in 1% steps
    so the state is posted at most a hundred times a respawn */
@@ -198,18 +199,29 @@ Jtf_Respawn(void)
 		return ("null");
 	}
 
+	/* no respawn of their own for now (coop_respawnRule): say why */
 	if (r == "survival") {
 		return ("{\"frac\":0,\"left\":0,\"survival\":true}");
+	}
+
+	if (r == "wave") {
+		return ("{\"frac\":0,\"left\":0,\"survival\":true,\"hint\":\"Back when this wave is cleared, or a teammate can revive you\"}");
+	}
+
+	if (r == "nolives") {
+		return ("{\"frac\":0,\"left\":0,\"survival\":true,\"hint\":\"No lives left: wait for a teammate to revive you\"}");
 	}
 
 	tokenize(r);
 	float down = stof(argv(0));
 	float delay = max(0.01f, stof(argv(1)));
 	float frac = bound(0, (time - down) / delay, 1);
+	/* the team's lives, under the lives rule */
+	string lives = serverkey("coop_lives");
 
 	frac = floor(frac * 100) / 100;
-	return (sprintf("{\"frac\":%s,\"left\":%d,\"survival\":false}", ftos(frac),
-		ceil(max(0, delay - (time - down)))));
+	return (sprintf("{\"frac\":%s,\"left\":%d,\"survival\":false,\"lives\":%d}", ftos(frac),
+		ceil(max(0, delay - (time - down))), lives == "" ? -1 : stof(lives)));
 }
 
 /* a teammate reviving us: {"frac", "name"} from "*revive", else null */

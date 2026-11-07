@@ -20,8 +20,16 @@
      player damage while sv_friendlyFire is 0).
    - Dead players can respawn after coop_respawnDelay seconds. Until then
      a teammate can revive them where they fell by holding USE next to the
-     body. With coop_survival 1 nobody respawns on their own: revive them,
-     or the map restarts once everyone is down.
+     body. coop_respawnRule picks what else brings them back:
+       timer  (default) respawn after coop_respawnDelay seconds;
+       wave   only when the current wave is cleared (Horde), so a wave
+              that downs everyone restarts the map;
+       lives  after the delay, while the team's shared pool of
+              coop_lives lasts (Firefight); each cleared wave adds
+              coop_livesPerWave, up to coop_livesMax. With none left,
+              only revives, and a team all down restarts the map;
+       none   revives only; the map restarts once everyone is down.
+     coop_survival 1, from before, is the same as "wave".
    - A wave director spawns monsters at info_monster_spawn points. Each
      wave is bigger than the last and scales with the number of players,
      and so does monster health.
@@ -70,6 +78,10 @@ var bool g_coopHeroes;
 
 var float autocvar_coop_respawnDelay = 5;
 var bool autocvar_coop_survival = false;
+var string autocvar_coop_respawnRule = "timer";	/* timer, wave, lives or none */
+var int autocvar_coop_lives = 7;
+var int autocvar_coop_livesPerWave = 1;
+var int autocvar_coop_livesMax = 20;
 var float autocvar_coop_reviveTime = 2.5;
 var float autocvar_coop_reviveRange = 72;
 var float autocvar_coop_reviveHealth = 50;
@@ -121,6 +133,77 @@ int g_coopWave;
 int g_coopWaveState;
 float g_coopWaveNext;
 int g_coopWaveLeft;		/* still to spawn this wave */
+int g_coopLives;		/* the team's lives left (coop_respawnRule lives) */
+
+#define RESPAWN_TIMER 0i
+#define RESPAWN_WAVE 1i
+#define RESPAWN_LIVES 2i
+#define RESPAWN_NONE 3i
+
+int
+Coop_RespawnRule(void)
+{
+	switch (autocvar_coop_respawnRule) {
+	case "wave":
+		return (RESPAWN_WAVE);
+	case "lives":
+		return (RESPAWN_LIVES);
+	case "none":
+		return (RESPAWN_NONE);
+	}
+
+	return (autocvar_coop_survival ? RESPAWN_WAVE : RESPAWN_TIMER);
+}
+
+/* why a downed player can't respawn by themselves right now: "survival",
+   "wave", "nolives", "delay" (wait coop_respawnDelay), or "" when they
+   can. The HUD (hud_info.qc) shows the first three as they are. */
+string
+Coop_RespawnBlock(int slot)
+{
+	switch (Coop_RespawnRule()) {
+	case RESPAWN_NONE:
+		return ("survival");
+	case RESPAWN_WAVE:
+		return ("wave");
+	case RESPAWN_LIVES:
+		if (g_coopLives <= 0i) {
+			return ("nolives");
+		}
+		break;
+	}
+
+	if (slot >= 0i && time - g_coopDownTime[slot] < autocvar_coop_respawnDelay) {
+		return ("delay");
+	}
+
+	return ("");
+}
+
+void
+Coop_SetLives(int n)
+{
+	g_coopLives = max(0i, n);
+	serverinfo.SetString("coop_lives", Coop_RespawnRule() == RESPAWN_LIVES ? itos(g_coopLives) : "");
+}
+
+void Coop_Announce(string msg);
+/* respawns a downed player, spending a life under the lives rule */
+void CodeCallback_PlayerSpawn(entity playerEntity);
+void
+Coop_Respawn(entity pl)
+{
+	if (Coop_RespawnRule() == RESPAWN_LIVES) {
+		Coop_SetLives(g_coopLives - 1i);
+
+		if (g_coopLives <= 3i) {
+			Coop_Announce(g_coopLives == 0i ? "No lives left!" :
+				sprintf("%i %s left", g_coopLives, g_coopLives == 1i ? "life" : "lives"));
+		}
+	}
+
+	CodeCallback_PlayerSpawn(pl);
+}
 entity g_coopMonsters[COOP_MAXMONSTERS];
 int g_coopMonsterCount;
 bool g_coopRestarting;
@@ -403,10 +486,23 @@ Coop_WaveThink(void)
 			g_coopWaveState = WAVE_WAITING;
 			g_coopWaveNext = time + autocvar_coop_waveDelay;
 
-			/* a cleared wave brings back everyone who is down */
-			for (entity p = world; (p = next.Player(p));) {
-				if (!is.Alive(p) && p.classname != "spectator") {
-					CodeCallback_PlayerSpawn(p);
+			/* a cleared wave brings back everyone who is down, except
+			   where respawns cost lives (it adds lives instead) or
+			   there are no respawns at all */
+			int rule = Coop_RespawnRule();
+
+			if (rule == RESPAWN_LIVES) {
+				int before = g_coopLives;
+				Coop_SetLives(min(autocvar_coop_livesMax, g_coopLives + autocvar_coop_livesPerWave));
+
+				if (g_coopLives > before) {
+					Coop_Announce(sprintf("Bonus %s: %i left", g_coopLives - before == 1i ? "life" : "lives", g_coopLives));
+				}
+			} else if (rule != RESPAWN_NONE) {
+				for (entity p = world; (p = next.Player(p));) {
+					if (!is.Alive(p) && p.classname != "spectator") {
+						CodeCallback_PlayerSpawn(p);
+					}
 				}
 			}
 		}
@@ -519,6 +615,7 @@ void Survivor_BotThink(entity pl, int slot);
 void Survivor_Frame(void);
 void Coop_HudFrame(void);
 void Survivor_List(void);
+int Survivor_BotCount(void);
 
 /* bots: respawn on their own once allowed, and go to downed teammates */
 void
@@ -538,8 +635,8 @@ Coop_BotThink(void)
 		}
 
 		if (!is.Alive(pl)) {
-			if (!autocvar_coop_survival && g_coopDown[slot] && time - g_coopDownTime[slot] >= autocvar_coop_respawnDelay) {
-				CodeCallback_PlayerSpawn(pl);
+			if (g_coopDown[slot] && Coop_RespawnBlock(slot) == "") {
+				Coop_Respawn(pl);
 			}
 			continue;
 		}
@@ -587,7 +684,14 @@ Coop_BotThink(void)
 void
 Coop_CheckWipe(void)
 {
-	if (!autocvar_coop_survival || g_coopRestarting) {
+	int rule = Coop_RespawnRule();
+
+	if (rule == RESPAWN_TIMER || g_coopRestarting) {
+		return;
+	}
+
+	/* lives left: someone can still come back */
+	if (rule == RESPAWN_LIVES && g_coopLives > 0i) {
 		return;
 	}
 
@@ -723,6 +827,8 @@ CodeCallback_StartGameType(void)
 	g_coopWaveNext = time + autocvar_coop_waveDelay;
 	g_coopMonsterCount = 0i;
 	g_coopRestarting = false;
+	Coop_SetLives(autocvar_coop_lives);
+	serverinfo.SetString("coop_respawn", autocvar_coop_respawnRule);
 	serverinfo.SetString("coop_wave", "0");
 	serverinfo.SetString("nameplates", "1");
 	serverinfo.SetString("targetid", "1");
@@ -854,17 +960,22 @@ CodeCallback_PlayerRequestRespawn(entity playerEntity)
 		return (false);
 	}
 
-	if (autocvar_coop_survival) {
+	switch (Coop_RespawnBlock(slot)) {
+	case "survival":
 		centerprint(playerEntity, "Survival mode: wait for a teammate to revive you");
 		return (false);
-	}
-
-	if (slot >= 0i && time - g_coopDownTime[slot] < autocvar_coop_respawnDelay) {
+	case "wave":
+		centerprint(playerEntity, "You'll be back when this wave is cleared, or a teammate can revive you");
+		return (false);
+	case "nolives":
+		centerprint(playerEntity, "No lives left: wait for a teammate to revive you");
+		return (false);
+	case "delay":
 		centerprint(playerEntity, sprintf("Respawn in %d seconds", ceil(autocvar_coop_respawnDelay - (time - g_coopDownTime[slot]))));
 		return (false);
 	}
 
-	CodeCallback_PlayerSpawn(playerEntity);
+	Coop_Respawn(playerEntity);
 	return (true);
 }
 
@@ -903,8 +1014,20 @@ CodeCallback_PlayerKilled(entity playerEntity, entity inflictor, entity attacker
 	Coop_BodyFade(playerEntity, slot);
 
 	/* the Panorama HUD says it in its respawn box */
-	if (!autocvar_coop_survival && infokey(playerEntity, "phud") != "1") {
-		centerprint(playerEntity, sprintf("You are down. A teammate can revive you, or respawn in %d seconds", autocvar_coop_respawnDelay));
+	if (infokey(playerEntity, "phud") != "1") {
+		switch (Coop_RespawnBlock(slot)) {
+		case "wave":
+			centerprint(playerEntity, "You are down. A teammate can revive you, or you're back when this wave is cleared");
+			break;
+		case "delay":
+			if (Coop_RespawnRule() == RESPAWN_LIVES) {
+				centerprint(playerEntity, sprintf("You are down. A teammate can revive you, or respawn in %d seconds (%i %s left)",
+					autocvar_coop_respawnDelay, g_coopLives, g_coopLives == 1i ? "life" : "lives"));
+			} else {
+				centerprint(playerEntity, sprintf("You are down. A teammate can revive you, or respawn in %d seconds", autocvar_coop_respawnDelay));
+			}
+			break;
+		}
 	}
 
 	Coop_CheckWipe();
@@ -1185,7 +1308,8 @@ Coop_PrintStatus(void)
 	print(sprintf("coop: wave %i state %i left %i alive %i players %i/%i",
 		g_coopWave, g_coopWaveState, g_coopWaveLeft, Coop_MonstersAlive(),
 		Coop_AlivePlayerCount(), Coop_PlayerCount()));
-	print(sprintf(" scale %f skill %d\n", Coop_HealthScale(), cvar("skill")));
+	print(sprintf(" scale %f skill %d respawn %s lives %i bots %i\n", Coop_HealthScale(), cvar("skill"),
+		autocvar_coop_respawnRule, g_coopLives, Survivor_BotCount()));
 
 	/* entity load, for performance reports */
 	int ents = 0i, hornets = 0i;
@@ -1287,6 +1411,17 @@ CodeCallback_ConsoleCommand(entity playerEntity, string command)
 	case "coop_nextwave":
 		g_coopWaveNext = time;
 		g_coopWaveState = WAVE_WAITING;
+		break;
+	/* tests: down every player, or the first N */
+	case "coop_killplayers":
+		int left = (argv(1) == "") ? 999i : stoi(argv(1));
+
+		for (entity p = world; (p = next.Player(p)) && left > 0i;) {
+			if (is.Alive(p) && p.classname != "spectator") {
+				ents.Input(p, "Damage", "10000", world);
+				left--;
+			}
+		}
 		break;
 	case "coop_killmonsters":
 		for (int i = 0i; i < g_coopMonsterCount; i++) {

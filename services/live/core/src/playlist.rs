@@ -312,7 +312,7 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
     "modes": [
       { "id": "campaign", "name": "Campaign",
         "maps": ["c1a1", "c1a3", "c2a1", "c2a3", "c2a5", "c3a1"],
-        "settings": { "coop_waves": "0", "coop_survival": "0" } }
+        "settings": { "coop_waves": "0", "coop_respawnRule": "timer" } }
     ] },
   { "id": "firefight", "name": "Firefight", "game": "coop", "team_size": 4, "teams": 1,
     "stages": [
@@ -323,9 +323,11 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
     "min_players": 2,
     "modes": [
       { "id": "firefight", "name": "Firefight", "maps": ["coop_arena"], "weight": 3,
-        "settings": { "coop_waves": "1", "coop_survival": "0", "coop_waveDelay": "10" } },
+        "settings": { "coop_waves": "1", "coop_respawnRule": "lives", "coop_lives": "7",
+                      "coop_livesPerWave": "1", "coop_waveDelay": "10" } },
       { "id": "grunt_rush", "name": "Grunt Rush", "maps": ["coop_arena"],
-        "settings": { "coop_waves": "1", "coop_survival": "0", "coop_waveDelay": "10",
+        "settings": { "coop_waves": "1", "coop_respawnRule": "lives", "coop_lives": "7",
+                      "coop_livesPerWave": "1", "coop_waveDelay": "10",
                       "coop_waveMonsters": "monster_human_grunt" } }
     ] },
   { "id": "horde", "name": "Horde", "game": "coop", "team_size": 8, "teams": 1,
@@ -336,9 +338,13 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
     "min_players": 1,
     "drop_in": true,
     "modes": [
-      { "id": "horde", "name": "Horde", "maps": ["coop_arena"],
-        "settings": { "coop_waves": "1", "coop_survival": "0", "coop_respawnRule": "wave",
-                      "coop_waveDelay": "30", "coop_wavePerWave": "4", "coop_survivorFill": "4" } }
+      { "id": "horde", "name": "Horde", "maps": ["coop_arena"], "weight": 2,
+        "settings": { "coop_waves": "1", "coop_respawnRule": "wave", "coop_waveDelay": "30",
+                      "coop_wavePerWave": "4", "coop_survivorFill": "4" } },
+      { "id": "horde_lives", "name": "Horde: Lives", "maps": ["coop_arena"],
+        "settings": { "coop_waves": "1", "coop_respawnRule": "lives", "coop_lives": "5",
+                      "coop_livesPerWave": "1", "coop_waveDelay": "30",
+                      "coop_wavePerWave": "4", "coop_survivorFill": "4" } }
     ] }
 ]"#;
 
