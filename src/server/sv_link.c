@@ -1624,7 +1624,11 @@ static void w_build(pkt_t *p, int w, int *fiammo)
 	const studio_model_t *m = QC_StudioModel(sv.vm, (int)qnum(w, wf.viewmodel));
 	char v[256];
 	unsigned flags = 0;
-	int nseq = m ? BW_MIN(m->numseqs, WI_MAX_SEQ) : 0, nev = 0;
+	int ng = 0;
+	/* a view model that isn't a studio model (a Quake .mdl with a .framegroups file, a
+	 * skeletal one): frameduration() times its frame groups, count / fps (sv_builtins.c) */
+	const framegroup_t *g = m ? NULL : SV_ModelFramegroups((int)qnum(w, wf.viewmodel), &ng);
+	int nseq = m ? BW_MIN(m->numseqs, WI_MAX_SEQ) : g ? BW_MIN(ng, WI_MAX_SEQ) : 0, nev = 0;
 	/* the weapon decl's own keys (ReloadCachedAttributes): GetSubDefString with no
 	 * fireInfo falls back to GetDefString */
 	for (int i = 0; i < 5; i++) {
@@ -1651,7 +1655,14 @@ static void w_build(pkt_t *p, int w, int *fiammo)
 	/* the view model's sequences: how long each lasts (frameduration, as Weapon.qc times
 	 * them), its frames and rate, and its muzzle flash events (5001, 5011, 5021, 5031) */
 	p_u8(p, (unsigned)nseq);
-	for (int i = 0; i < nseq; i++) {
+	for (int i = 0; i < nseq && g; i++) { /* no studio events: the device shows no flash of its own */
+		p_f32(p, (float)g[i].count / g[i].fps);
+		p_f32(p, g[i].fps);
+		p_u16(p, (unsigned)BW_CLAMP(g[i].count, 0, 65535));
+		p_u8(p, g[i].loop ? 1 : 0);
+		p_u8(p, 0);
+	}
+	for (int i = 0; i < nseq && m; i++) {
 		const studio_seq_t *s = &m->seqs[i];
 		int idx[8], n = 0;
 		for (int k = 0; k < s->numevents && n < 8 && nev < WI_MAX_EV; k++) {

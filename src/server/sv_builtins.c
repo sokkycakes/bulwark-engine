@@ -396,17 +396,18 @@ static void bi_getentitytoken(qcvm_t *vm)
 
 /* frame queries: skeletal and studio models only so far (alias models
  * need their frame names read on the server too) */
-static skelmodel_t *skel_arg(qcvm_t *vm)
+static skelmodel_t *skel_model(int i)
 {
-	int i = (int)QC_PFLOAT(vm, 0);
 	if (i <= 0 || i >= sv.nummodels || Studio_Cached(sv.models[i]))
 		return NULL; /* studio models answer from their sequences (studio_arg) */
 	return Skel_LoadModel(sv.models[i]);
 }
 
+static skelmodel_t *skel_arg(qcvm_t *vm) { return skel_model((int)QC_PFLOAT(vm, 0)); }
+
 /* alias models (.mdl, .md2) have no skeleton; their frame groups come from
  * a "<model>.framegroups" file, as on the client */
-static framegroup_t *alias_groups(qcvm_t *vm, int *count)
+static framegroup_t *alias_groups(int i, int *count)
 {
 	static struct {
 		char name[128];
@@ -414,7 +415,6 @@ static framegroup_t *alias_groups(qcvm_t *vm, int *count)
 		int count;
 	} cache[256];
 	static int numcached;
-	int i = (int)QC_PFLOAT(vm, 0);
 	const char *name;
 	*count = 0;
 	if (i <= 0 || i >= sv.nummodels || !sv.models[i] || Studio_Cached(sv.models[i]))
@@ -440,8 +440,20 @@ static framegroup_t *group_arg(qcvm_t *vm, int n)
 	framegroup_t *g;
 	if (m)
 		return f >= 0 && f < m->numanims ? &m->anims[f] : NULL;
-	g = alias_groups(vm, &count);
+	g = alias_groups((int)QC_PFLOAT(vm, 0), &count);
 	return g && f >= 0 && f < count ? &g[f] : NULL;
+}
+
+/* the frame groups frameduration() times a model that isn't a studio model by
+ * (skeletal, or alias with a .framegroups file); NULL for a studio model or none */
+const framegroup_t *SV_ModelFramegroups(int modelindex, int *count)
+{
+	skelmodel_t *m = skel_model(modelindex);
+	if (m) {
+		*count = m->numanims;
+		return m->anims;
+	}
+	return alias_groups(modelindex, count);
 }
 
 /* the frame queries take IQM framegroups, or GoldSrc studio sequences */

@@ -7,6 +7,7 @@
 #include "../net/netchan.h"
 #include "../net/protocol.h"
 #include "../common/infoblob.h"
+#include "../common/skel.h"
 
 #define SV_MAX_MODELS 4096
 #define SV_MAX_SOUNDS 4096
@@ -322,6 +323,7 @@ extern const qc_builtin_t sv_route_builtins[];
 void SV_RunRoutes(void);
 void SV_FreeRoutes(void);
 const char *SV_ModelName(qcvm_t *vm, int index);
+const framegroup_t *SV_ModelFramegroups(int modelindex, int *count); /* sv_builtins.c */
 
 /* world builtins that work on whichever VM and world context is current;
  * the client calls them with its own context set */
