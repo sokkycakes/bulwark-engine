@@ -28,7 +28,7 @@
 
 const char *const nds_basedirs[NDS_NUMBASEDIRS] = {"nitro:/", "fat:/bulwark/base/", "fat:/bulwark/", "fat:/"};
 #define basedirs nds_basedirs
-static char maps[MAX_MAPS][300];
+static char *maps[MAX_MAPS]; /* malloc'd, as long as the names */
 static int nummaps;
 static uint16_t palette[256];
 static bool havepalette;
@@ -60,16 +60,27 @@ static void load_palette(void)
 	free(buf);
 }
 
+/* a copy of s in exactly the bytes it needs; NULL if the heap is out */
+static char *copy_string(const char *s)
+{
+	size_t n = strlen(s) + 1;
+	char *c = malloc(n);
+	if (c)
+		memcpy(c, s, n);
+	return c;
+}
+
 static void add_map(const char *name, void *user)
 {
 	(void)user;
-	if (nummaps < MAX_MAPS)
-		snprintf(maps[nummaps++], sizeof(maps[0]), "%s", name);
+	if (nummaps < MAX_MAPS && (maps[nummaps] = copy_string(name)))
+		nummaps++;
 }
 
 static void find_maps(void)
 {
-	nummaps = 0;
+	while (nummaps > 0)
+		free(maps[--nummaps]);
 	Fs_List("maps", ".bsp", add_map, NULL);
 }
 
@@ -221,12 +232,12 @@ int Nds_Vblanks(void) { return vblanks; }
 /* bench.txt in a base directory lists maps (one file name a line) to time
  * one turn on the spot in each, for comparing builds on hardware */
 #define MAX_RESULTS 128
-static char results[MAX_RESULTS][64];
-static int numresults;
+static char (*results)[64]; /* malloc'd, a line for each line of bench.txt */
+static int numresults, maxresults;
 
 /* a line is a map file name, then optionally a model and a count for a crowd
  * in front of the start: "e1m1.bsp soldier 12" */
-static int read_bench(char names[][300], int max)
+static int read_bench(char **names, int max)
 {
 	char path[300], line[256];
 	int n = 0;
@@ -238,8 +249,12 @@ static int read_bench(char names[][300], int max)
 			continue;
 		while (n < max && fgets(line, sizeof(line), f)) {
 			line[strcspn(line, "\r\n")] = 0;
-			if (line[0])
-				snprintf(names[n++], 300, "maps/%s", line);
+			if (line[0]) {
+				snprintf(path, sizeof(path), "maps/%s", line);
+				if (!(names[n] = copy_string(path)))
+					break;
+				n++;
+			}
 		}
 		fclose(f);
 	}
@@ -332,7 +347,7 @@ static void bench(const char *line)
 		return;
 	}
 	if (!strncmp(line, "maps/skel ", 10)) {
-		if (numresults < MAX_RESULTS)
+		if (numresults < maxresults)
 			Skel_Bench(line + 10, results[numresults++], sizeof(results[0]));
 		return;
 	}
@@ -344,7 +359,7 @@ static void bench(const char *line)
 		Ents_Flicker = !strcmp(line + 13, "on");
 		return;
 	}
-	if (numresults >= MAX_RESULTS || sscanf(line, "%299s %39s %d", path, model, &count) < 1)
+	if (numresults >= maxresults || sscanf(line, "%299s %39s %d", path, model, &count) < 1)
 		return;
 	before = mallinfo().uordblks;
 	if (!load_map(path, &cam)) {
@@ -455,11 +470,12 @@ static void show_stats(const char *map, const ndscam_t *cam, const ndsstats_t *s
 
 int main(int argc, char **argv)
 {
-	static char benchmaps[MAX_RESULTS][300], crowd[40];
+	static char crowd[40], *benchmaps[MAX_RESULTS]; /* bench.txt's lines, malloc'd; the last one stays for the menu */
+	char *lastbench = NULL;
 	int crowdsize = 0;
 	ndscam_t cam = {{0}};
 	ndsstats_t st;
-	int sel = 0, frames = 0, lastvb = 0, lasttx = -1, lastty = -1, numbench, took = 1;
+	int sel = 0, frames = 0, lastvb = 0, lasttx = -1, lastty = -1, numbench, numlines, took = 1;
 	bool fat, nitro;
 
 	Nds_InitConsole();
@@ -475,12 +491,20 @@ int main(int argc, char **argv)
 		iprintf("no gfx/palette.lmp: grey\n");
 	find_maps();
 	if (argc > 1 && argv[1][0]) {
-		snprintf(maps[0], sizeof(maps[0]), "%s", argv[1]);
-		nummaps = nummaps ? nummaps : 1;
+		char *name = copy_string(argv[1]);
+		if (name) {
+			if (nummaps)
+				free(maps[0]);
+			maps[0] = name;
+			nummaps = nummaps ? nummaps : 1;
+		}
 	}
 	if (Link_AutoJoin())
 		Mp_Stop(), Link_Run(havepalette ? palette : NULL);
-	numbench = read_bench(benchmaps, MAX_RESULTS);
+	numbench = numlines = read_bench(benchmaps, MAX_RESULTS);
+	/* a result for each line at most: one for a map or a skeleton, none for a setting */
+	if (numbench && (results = calloc((size_t)numbench, sizeof(results[0]))))
+		maxresults = numbench;
 	for (int i = 0; i < numbench; i++)
 		bench(benchmaps[i]);
 	if (numresults > 6)
@@ -490,14 +514,20 @@ int main(int argc, char **argv)
 		Skel_View(benchmaps[numbench - 1] + 10);
 		numbench = 0;
 	}
+	/* only the last line is wanted from here on: the map the bench ends in */
+	for (int i = 0; i < numlines; i++)
+		if (numbench && i == numlines - 1)
+			lastbench = benchmaps[i];
+		else
+			free(benchmaps[i]);
 
 	for (bool first = true;; first = false) {
 		const char *path;
-		if (first && numbench) {
+		if (first && lastbench) {
 			char line[300];
-			snprintf(line, sizeof(line), "%s", benchmaps[numbench - 1]);
-			sscanf(line, "%299s %39s %d", benchmaps[numbench - 1], crowd, &crowdsize);
-			path = benchmaps[numbench - 1]; /* stay in the last map, with its crowd */
+			snprintf(line, sizeof(line), "%s", lastbench);
+			sscanf(line, "%299s %39s %d", lastbench, crowd, &crowdsize);
+			path = lastbench; /* stay in the last map, with its crowd */
 		} else {
 			int picked = pick_map(nummaps ? sel + 1 : 0);
 			if (picked < 0) {

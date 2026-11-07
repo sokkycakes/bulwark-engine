@@ -136,13 +136,14 @@ static int upload_skin(const uint8_t *src, int sw, int sh, int *tw, int *th, con
 }
 
 /* shade bytes for one frame: light from above and a little in front, by vertex normal */
-static void shade_frame(mdl_t *m, uint8_t *fr, const int32_t *idx, const float *scale)
+static void shade_frame(mdl_t *m, uint8_t *fr, const float *scale)
 {
 	float *n = calloc((size_t)m->numverts * 3, sizeof(float));
 	if (!n)
 		return;
 	for (int t = 0; t < m->numtris; t++) {
-		const uint8_t *a = fr + idx[t * 3] * 4, *b = fr + idx[t * 3 + 1] * 4, *c = fr + idx[t * 3 + 2] * 4;
+		const uint16_t *idx = m->tris[t].v;
+		const uint8_t *a = fr + idx[0] * 4, *b = fr + idx[1] * 4, *c = fr + idx[2] * 4;
 		float e1[3], e2[3], fn[3];
 		for (int k = 0; k < 3; k++)
 			e1[k] = (b[k] - a[k]) * scale[k], e2[k] = (c[k] - a[k]) * scale[k];
@@ -152,7 +153,7 @@ static void shade_frame(mdl_t *m, uint8_t *fr, const int32_t *idx, const float *
 		fn[2] = e2[0] * e1[1] - e2[1] * e1[0];
 		for (int v = 0; v < 3; v++)
 			for (int k = 0; k < 3; k++)
-				n[idx[t * 3 + v] * 3 + k] += fn[k];
+				n[idx[v] * 3 + k] += fn[k];
 	}
 	for (int v = 0; v < m->numverts; v++) {
 		float *p = n + v * 3, len = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
@@ -162,20 +163,101 @@ static void shade_frame(mdl_t *m, uint8_t *fr, const int32_t *idx, const float *
 	free(n);
 }
 
+/* A model file, read whole when it is small and a part at a time when not,
+ * so a big one never sits in RAM next to the frames made from it */
+#define MDL_WHOLE (64 * 1024) /* files up to this size are read in one go */
+#define MDL_PART (16 * 1024)  /* bigger ones this much at a time */
+
+typedef struct {
+	const char *path;
+	uint8_t *buf; /* the file's bytes [at, at + len) */
+	long at, len;
+	long least; /* the file is at least this long, if it is well formed */
+	bool whole;
+} mfile_t;
+
+/* n bytes from pos, or NULL if the file is shorter. When the bytes have to
+ * be read, up to ahead of them are, so the next calls find theirs; what an
+ * earlier call returned is gone then. */
+static const uint8_t *mfile_get(mfile_t *f, long pos, long n, long ahead)
+{
+	size_t got = 0;
+	long len;
+	if (pos < 0 || n <= 0)
+		return NULL;
+	if (f->buf && pos >= f->at && pos + n <= f->at + f->len)
+		return f->buf + (pos - f->at);
+	if (f->whole)
+		return NULL;
+	free(f->buf);
+	f->len = 0;
+	/* no further than the file surely goes: past the end a loose file reads nothing */
+	len = BW_NDS_MAX(n, BW_NDS_MIN(ahead, f->least - pos));
+	f->buf = Fs_LoadRange(f->path, pos, len, &got);
+	if (len > n && (!f->buf || (long)got < n)) {
+		free(f->buf);
+		f->buf = Fs_LoadRange(f->path, pos, n, &got);
+	}
+	if (!f->buf || (long)got < n) {
+		free(f->buf);
+		f->buf = NULL;
+		return NULL;
+	}
+	f->at = pos, f->len = (long)got;
+	return f->buf;
+}
+
+/* the trailer hlmdl.py adds after the frames: clips, the sequence map and the
+ * skin's own palette; true if the model has its own palette */
+static bool load_trailer(mdl_t *m, mfile_t *f, long at, uint16_t *ownpal)
+{
+	const uint8_t *t = mfile_get(f, at, 6, 6);
+	long len;
+	int nc, ns;
+	if (!t || memcmp(t, "DSHL", 4))
+		return false;
+	nc = t[4] | t[5] << 8;
+	len = 6 + nc * 6 + 2;
+	if (!(t = mfile_get(f, at, len, len)))
+		return false;
+	ns = t[len - 2] | t[len - 1] << 8;
+	len += ns + 768 + 8;
+	/* the file ends with the trailer's offset and "DSHL" again */
+	if (!(t = mfile_get(f, at, len, len)) || rd32(t + len - 8) != at || memcmp(t + len - 4, "DSHL", 4))
+		return false;
+	f->least = BW_NDS_MAX(f->least, at + len);
+	for (int c = 0; c < nc && c < MAX_CLIPS; c++) {
+		const uint8_t *e = t + 6 + c * 6;
+		m->clips[c].first = (uint16_t)(e[0] | e[1] << 8);
+		m->clips[c].frames = e[2] ? e[2] : 1, m->clips[c].fps = e[3] ? e[3] : 10;
+		m->clips[c].loop = e[4], m->clips[c].act = e[5];
+		m->numclips = c + 1;
+	}
+	t += 6 + nc * 6 + 2;
+	if (ns > 0 && (m->seqclip = malloc((size_t)ns))) {
+		memcpy(m->seqclip, t, (size_t)ns);
+		m->numseqs = ns;
+		t += ns;
+		for (int i = 0; i < 256; i++)
+			ownpal[i] = RGB15(t[i * 3] >> 3, t[i * 3 + 1] >> 3, t[i * 3 + 2] >> 3);
+		return true;
+	}
+	return false;
+}
+
 static int load_mdl(const char *name)
 {
 	char path[64];
 	size_t size;
-	uint8_t *d;
-	const uint8_t *p, *end;
+	const uint8_t *p;
+	long at, skinat = -1;
 	mdl_t *m;
+	mfile_t f = {0};
 	int numskins, sw, sh, nv, nt, nf, tw = 0, th = 0;
-	int32_t *idx = NULL;
 	float scale[3];
-	const uint8_t *skin = NULL;
 	static uint16_t ownpal[256];
 	bool haveown = false;
-	int maxframes;
+	int maxframes, room;
 	for (int i = 0; i < nummdls; i++)
 		if (!strcmp(mdls[i].name, name))
 			return mdls[i].bad ? -1 : i;
@@ -189,77 +271,67 @@ static int load_mdl(const char *name)
 		snprintf(path, sizeof(path), "%s", name);
 	else
 		snprintf(path, sizeof(path), "progs/%s.mdl", name);
-	if (!(d = Fs_Load(path, &size)))
+	f.path = path;
+	if (!(p = mfile_get(&f, 0, HEADER, HEADER)))
 		return -1;
-	end = d + size;
-	if (size < HEADER || memcmp(d, "IDPO", 4) || rd32(d + 4) != 6)
+	if (memcmp(p, "IDPO", 4) || rd32(p + 4) != 6)
 		goto fail;
-	numskins = rd32(d + 48), sw = rd32(d + 52), sh = rd32(d + 56);
-	nv = rd32(d + 60), nt = rd32(d + 64), nf = rd32(d + 68);
+	numskins = rd32(p + 48), sw = rd32(p + 52), sh = rd32(p + 56);
+	nv = rd32(p + 60), nt = rd32(p + 64), nf = rd32(p + 68);
 	if (sw <= 0 || sh <= 0 || nv <= 0 || nt <= 0 || nf <= 0 || nv > 4096)
 		goto fail;
 	for (int k = 0; k < 3; k++) {
-		scale[k] = rdf(d + 8 + k * 4);
+		scale[k] = rdf(p + 8 + k * 4);
 		m->scale[k] = (int32_t)lrintf(scale[k] * 8 * 4096);
-		m->trans[k] = (int32_t)lrintf(rdf(d + 20 + k * 4) * 8);
-		m->mins[k] = (int16_t)lrintf(rdf(d + 20 + k * 4));
-		m->maxs[k] = (int16_t)lrintf(rdf(d + 20 + k * 4) + 255 * scale[k]);
+		m->trans[k] = (int32_t)lrintf(rdf(p + 20 + k * 4) * 8);
+		m->mins[k] = (int16_t)lrintf(rdf(p + 20 + k * 4));
+		m->maxs[k] = (int16_t)lrintf(rdf(p + 20 + k * 4) + 255 * scale[k]);
 	}
-	m->radius = (int16_t)lrintf(rdf(d + 32));
-	/* the trailer hlmdl.py adds: clips, the sequence map and the skin's own palette */
-	if (size > 8 + 4 + 768 && !memcmp(end - 4, "DSHL", 4)) {
-		uint32_t at = (uint32_t)rd32(end - 8);
-		const uint8_t *t = d + at;
-		if (at + 6 < size && !memcmp(t, "DSHL", 4)) {
-			int nc = t[4] | t[5] << 8, ns;
-			t += 6;
-			for (int c = 0; c < nc && c < MAX_CLIPS && t + 6 <= end; c++, t += 6) {
-				m->clips[c].first = (uint16_t)(t[0] | t[1] << 8);
-				m->clips[c].frames = t[2] ? t[2] : 1, m->clips[c].fps = t[3] ? t[3] : 10;
-				m->clips[c].loop = t[4], m->clips[c].act = t[5];
-				m->numclips = c + 1;
-			}
-			t = d + at + 6 + nc * 6;
-			ns = t + 2 <= end ? t[0] | t[1] << 8 : 0;
-			t += 2;
-			if (ns > 0 && t + ns + 768 <= end && (m->seqclip = malloc((size_t)ns))) {
-				memcpy(m->seqclip, t, (size_t)ns);
-				m->numseqs = ns;
-				t += ns;
-				for (int i = 0; i < 256; i++)
-					ownpal[i] = RGB15(t[i * 3] >> 3, t[i * 3 + 1] >> 3, t[i * 3 + 2] >> 3);
-				haveown = true;
-			}
-		}
+	m->radius = (int16_t)lrintf(rdf(p + 32));
+	/* the shortest the rest can be (a group of skins or frames is longer than
+	 * one of them); a small file is read whole */
+	f.least = HEADER + BW_NDS_MAX(numskins, 0) * (4 + (long)sw * sh) + (long)nv * 12 + (long)nt * 16 +
+	          (long)nf * (28 + (long)nv * 4);
+	if (f.least <= MDL_WHOLE) {
+		free(f.buf);
+		f.buf = NULL;
+		if (!(f.buf = Fs_Load(path, &size)))
+			return -1;
+		f.at = 0, f.len = (long)size, f.whole = true;
 	}
-	p = d + HEADER;
+
+	/* the first skin; the rest are passed over */
+	at = HEADER;
 	for (int s = 0; s < numskins; s++) {
-		int type = rd32(p);
-		p += 4;
-		if (type == 0) {
-			if (!skin)
-				skin = p;
-			p += sw * sh;
-		} else {
-			int n = rd32(p);
-			if (!skin)
-				skin = p + 4 + n * 4;
-			p += 4 + n * 4 + n * sw * sh;
-		}
-		if (p > end)
+		if (!(p = mfile_get(&f, at, 4, 8)))
 			goto fail;
+		if (rd32(p) == 0) {
+			if (skinat < 0)
+				skinat = at + 4;
+			at += 4 + (long)sw * sh;
+		} else {
+			int n;
+			if (!(p = mfile_get(&f, at + 4, 4, 4)))
+				goto fail;
+			n = rd32(p);
+			if (skinat < 0)
+				skinat = at + 8 + n * 4;
+			at += 8 + n * 4 + (long)n * sw * sh;
+		}
 	}
-	if (skin)
-		m->tex = upload_skin(skin, sw, sh, &tw, &th, haveown ? ownpal : NULL);
+	/* the trailer starts where the frames end, each one frame as hlmdl.py writes them */
+	haveown = load_trailer(m, &f, at + (long)nv * 12 + (long)nt * 16 + (long)nf * (28 + (long)nv * 4), ownpal);
+	if (skinat >= 0 && (p = mfile_get(&f, skinat, (long)sw * sh, (long)sw * sh)))
+		m->tex = upload_skin(p, sw, sh, &tw, &th, haveown ? ownpal : NULL);
 
 	/* triangles, with their texture coordinates at each corner */
 	{
-		const uint8_t *st = p, *tri = p + nv * 12;
-		if (tri + nt * 16 > end)
+		const uint8_t *st, *tri;
+		if (!(st = mfile_get(&f, at, (long)nv * 12 + (long)nt * 16, (long)nv * 12 + (long)nt * 16)))
 			goto fail;
+		tri = st + nv * 12;
 		m->tris = malloc(sizeof(mtri_t) * (size_t)nt);
-		idx = malloc(sizeof(int32_t) * (size_t)nt * 3);
-		if (!m->tris || !idx)
+		if (!m->tris)
 			goto fail;
 		for (int t = 0; t < nt; t++) {
 			bool front = rd32(tri + t * 16) != 0;
@@ -273,50 +345,75 @@ static int load_mdl(const char *name)
 				m->tris[t].v[k] = (uint16_t)v;
 				m->tris[t].s[k] = (int16_t)((s * tw * 16 + tw * 8) / sw);
 				m->tris[t].t[k] = (int16_t)((tt * th * 16 + th * 8) / sh);
-				idx[t * 3 + k] = v;
 			}
 		}
-		p = tri + nt * 16;
+		at += (long)nv * 12 + (long)nt * 16;
+	}
+	if (!f.whole) {
+		/* the triangles' bytes are done with before the frames take their room */
+		free(f.buf);
+		f.buf = NULL, f.len = 0;
 	}
 	m->numverts = nv, m->numtris = nt;
 
-	/* frames, flattening groups, up to MAX_FRAMES */
+	/* frames, flattening groups, up to MAX_FRAMES; room for one a group
+	 * (exact unless there are groups), more when a group needs it */
 	maxframes = m->numclips ? MAX_HL_FRAMES : MAX_FRAMES;
-	m->frames = malloc((size_t)BW_NDS_MIN(nf * 4, maxframes) * nv * 4);
+	room = BW_NDS_MIN(nf, maxframes);
+	m->frames = malloc((size_t)room * nv * 4);
 	if (!m->frames)
 		goto fail;
-	for (int f = 0; f < nf && m->numframes < maxframes; f++) {
-		int type = rd32(p), n = 1;
-		p += 4;
+	for (int fi = 0; fi < nf && m->numframes < maxframes; fi++) {
+		int type, n = 1;
+		if (!(p = mfile_get(&f, at, 4, MDL_PART)))
+			goto fail;
+		type = rd32(p);
+		at += 4;
 		if (type != 0) {
+			if (!(p = mfile_get(&f, at, 4, MDL_PART)))
+				goto fail;
 			n = rd32(p);
-			p += 4 + 8 + n * 4; /* count, bounds, intervals */
+			at += 4 + 8 + n * 4; /* count, bounds, intervals */
 		}
 		for (int g = 0; g < n && m->numframes < maxframes; g++) {
-			uint8_t *fr = m->frames + (size_t)m->numframes * nv * 4;
-			p += 8 + 16; /* bounds and name */
-			if (p + nv * 4 > end)
+			uint8_t *fr;
+			if (m->numframes == room) {
+				/* this group's frames, and one for each entry after it */
+				int want = BW_NDS_MIN(m->numframes + (n - g) + (nf - fi - 1), maxframes);
+				uint8_t *more = realloc(m->frames, (size_t)want * nv * 4);
+				if (!more)
+					goto fail;
+				m->frames = more, room = want;
+			}
+			fr = m->frames + (size_t)m->numframes * nv * 4;
+			at += 8 + 16; /* bounds and name */
+			if (!(p = mfile_get(&f, at, (long)nv * 4, MDL_PART)))
 				goto fail;
 			for (int v = 0; v < nv; v++)
 				fr[v * 4] = p[v * 4], fr[v * 4 + 1] = p[v * 4 + 1], fr[v * 4 + 2] = p[v * 4 + 2];
-			shade_frame(m, fr, idx, scale);
+			shade_frame(m, fr, scale);
 			m->numframes++;
-			p += nv * 4;
+			at += (long)nv * 4;
 		}
 	}
 	if (!m->numframes)
 		goto fail;
-	free(idx);
-	free(d);
+	if (m->numframes < room) {
+		/* a group shorter than it said: give the rest back */
+		uint8_t *less = realloc(m->frames, (size_t)m->numframes * nv * 4);
+		if (less)
+			m->frames = less;
+	}
+	free(f.buf);
 	m->bad = false;
 	return (int)(m - mdls);
 fail:
-	free(idx);
-	free(d);
+	free(f.buf);
 	free(m->tris);
 	free(m->frames);
 	free(m->seqclip);
 	m->tris = NULL, m->frames = NULL, m->seqclip = NULL;
+	m->numframes = 0;
 	if (m->tex)
 		glDeleteTextures(1, &m->tex), m->tex = 0;
 	return -1;
