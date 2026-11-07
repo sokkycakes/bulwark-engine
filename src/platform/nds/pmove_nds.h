@@ -71,9 +71,11 @@ typedef struct pmtrace_if {
 	/* may be NULL. Called once at the start of each PM_Run: the next traces stay within
 	 * radius of org (a broadphase that must not change any result); with
 	 * PM_FOCUS_DROPSTUCK, boxes that already overlap org+mins..org+maxs are left out
-	 * for this PM_Run (stale positions, §6.3) */
-	void (*focus)(void *ctx, const float org[3], const float mins[3], const float maxs[3],
-	              float radius, int flags);
+	 * for this PM_Run (stale positions, §6.3). Returns every contents bit (PM_CB_) a
+	 * brush entity within the radius can give a trace (its skin's): a ladder or water
+	 * probe that can find nothing is then left out */
+	uint32_t (*focus)(void *ctx, const float org[3], const float mins[3], const float maxs[3],
+	                  float radius, int flags);
 } pmtrace_if;
 
 enum { PMV_G_GRAVITY, PMV_ACCELERATE, PMV_AIRACCELERATE, PMV_AIRSTEPSIZE, PMV_BOXCENTER,
