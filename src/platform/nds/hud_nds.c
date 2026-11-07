@@ -1431,9 +1431,10 @@ static void part_cross(void)
 	w_xhair(128 - hud.xw / 2, 96 - hud.xh / 2);
 }
 
-/* the most tiles drawn in a frame (~25 us each, measured in melonDS): a change over
- * more of the screen (going down, getting up) takes the next frames too */
-#define TILES_A_FRAME 112
+/* the most time the HUD takes in a frame, building its panels and drawing tiles (a tile
+ * is ~25 us in melonDS): a change over more of the screen (going down, getting up) takes
+ * the next frames too. Checked before each run of tiles, so one run may go past it */
+#define HUD_FRAME_US 2500
 
 /* an op's size, and the screen it covers (x0 y0 x1 y1) */
 static int op_box(const uint8_t *p, int b[4])
@@ -1491,7 +1492,8 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 	uint32_t t = now_ms();
 	static uint32_t dirty[24]; /* a bit for each tile: what to draw, left over from the last frame too */
 	static int firstrow;
-	int budget = TILES_A_FRAME;
+	const uint64_t deadline = tickGetCount() + (uint64_t)HUD_FRAME_US * TICK_FREQ / 1000000;
+	bool drew = false;
 	int pick[3] = {-1, -1, -1}, npick;
 	if (!topgfx)
 		return;
@@ -1541,21 +1543,23 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 		}
 	}
 	/* each run of tiles to draw in a row: every widget over them, in order, then the tiles
-	 * out; past the budget, the rest waits for the next frame */
-	for (int k = 0; k < 24 && budget > 0; k++) {
+	 * out; past the time, the rest waits for the next frame, which starts at that row (so
+	 * none waits for ever). At least one run a frame */
+	for (int k = 0; k < 24; k++) {
 		int ty = (k + firstrow) % 24;
-		uint32_t m = dirty[ty];
-		if (budget - __builtin_popcount(m) <= 0)
-			firstrow = ty; /* the row the next frame starts from, so none waits for ever */
-		dirty[ty] = 0;
-		while (m) {
+		while (dirty[ty]) {
+			uint32_t m = dirty[ty];
 			int tx0 = __builtin_ctz(m), tx1 = tx0;
 			uint32_t run;
+			if (drew && tickGetCount() >= deadline) {
+				firstrow = ty;
+				return;
+			}
+			drew = true;
 			while (tx1 < 32 && (m >> tx1 & 1))
 				tx1++;
 			run = (tx1 == 32 ? ~0u : (1u << tx1) - 1) & ~((1u << tx0) - 1);
-			m &= ~run;
-			budget -= tx1 - tx0;
+			dirty[ty] &= ~run;
 			clipx0 = tx0 * 8, clipx1 = tx1 * 8, clipy0 = ty * 8, clipy1 = ty * 8 + 8;
 			memset(strip + tx0 * 32, 0, (size_t)(tx1 - tx0) * 32);
 			for (int i = 0; i < W_COUNT; i++)
