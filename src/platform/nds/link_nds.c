@@ -2344,12 +2344,13 @@ static uint32_t focus_dropstuck(void *ctx, const float org[3], const float mins[
 	return Hull_Focus(ctx, org, mins, maxs, radius, flags | PM_FOCUS_DROPSTUCK);
 }
 
-static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck, Hull_TouchOf, Hull_Triggers};
+static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck, Hull_TouchOf, Hull_Triggers, Hull_Fired};
 
 static void run_cmd(pmstate_t *s, const pmcmd_t *c)
 {
 	uint64_t t0 = LINK_PM_TICKS();
 	uint32_t t;
+	Hull_TouchSeq(c->seq);
 	PM_Run(s, c, &pr.vars, &pred_trace);
 	t = (uint32_t)(LINK_PM_TICKS() - t0);
 	Link_PredStats.pm_runs++;
@@ -2679,6 +2680,7 @@ static void handle_pstate(ndscam_t *cam)
 	pr.rpsnap = had && err > 64;
 	pr.rpnext = BW_NDS_MAX(ack, pr.floor) + 1;
 	pr.rpstate = srv;
+	Hull_ForgetFired(pr.rpnext - 1); /* the one-shot pushes of the commands run again */
 	wp.rpstate = wp.srv;
 	pr.on = true;
 }

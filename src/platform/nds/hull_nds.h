@@ -78,6 +78,14 @@ void Hull_SetBoxes(const hullbox_t *b, int n);
 void Hull_SetTouches(const pmtouch_t *t, int n);
 const pmtouch_t *Hull_TouchOf(void *ctx, int ent);
 int Hull_Triggers(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max);
+/* a TP_ONCE push goes SOLID_NOT once it ran (trigger_push.qc:392-397), but the server's list
+ * drops it only a version later: Hull_Fired (pmtrace_if.fired) notes the command it ran in
+ * (Hull_TouchSeq, set before each), Hull_Triggers leaves it out of the commands after that,
+ * and Hull_ForgetFired(a) forgets the ones that ran after command a (a replay from the
+ * server's state at a runs those again) */
+void Hull_TouchSeq(uint32_t seq);
+void Hull_Fired(void *ctx, int ent);
+void Hull_ForgetFired(uint32_t after);
 /* the boxes that overlap a player box at org: PM_FOCUS_DROPSTUCK keeps them (until the next Hull_SetBoxes) */
 void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3]);
 

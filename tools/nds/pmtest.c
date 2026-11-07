@@ -792,7 +792,7 @@ static uint32_t own_focus(void *ctx, const float org[3], const float mins[3], co
 }
 
 #ifdef PMTEST_HULL_NDS
-static pmtrace_if trace_if = {NULL, own_move, own_focus, Hull_TouchOf, Hull_Triggers};
+static pmtrace_if trace_if = {NULL, own_move, own_focus, Hull_TouchOf, Hull_Triggers, Hull_Fired};
 #else
 static pmtrace_if trace_if = {NULL, own_move, own_focus, own_touchof, own_triggers};
 #endif
@@ -838,6 +838,9 @@ static void run_cmd(pmstate_t *s, const pmcmd_t *c, const pmvars_t *v)
 {
 	trace_if.focus = nofocus ? NULL : own_focus;
 	fc_on = false;
+#ifdef PMTEST_HULL_NDS
+	Hull_TouchSeq(c->seq);
+#endif
 	PM_Run(s, c, v, &trace_if);
 }
 
@@ -1396,6 +1399,9 @@ static int compare(float tol, bool chain)
 				restarts++;
 			}
 			cur = st->pre;
+#ifdef PMTEST_HULL_NDS
+			Hull_ForgetFired(st->cmd.seq - 1); /* as link_nds.c's replay from the server's state */
+#endif
 		}
 		s = cur;
 		scene_of(st);

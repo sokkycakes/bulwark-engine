@@ -92,6 +92,9 @@ typedef struct pmtrace_if {
 	/* may be NULL: the triggers SV_TouchTriggers (sv_world.c) runs for a player linked
 	 * at absmin..absmax, in edict order: up to max in out, their number returned */
 	int (*triggers)(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max);
+	/* may be NULL: a TP_ONCE push of triggers ran on the player, and its trigger is now
+	 * SOLID_NOT (trigger_push.qc:397): it is not to be run again */
+	void (*fired)(void *ctx, int ent);
 } pmtrace_if;
 
 enum { PMV_G_GRAVITY, PMV_ACCELERATE, PMV_AIRACCELERATE, PMV_AIRSTEPSIZE, PMV_BOXCENTER,

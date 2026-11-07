@@ -93,6 +93,9 @@ static sbrush_t *brushes;
 static int numbrushes, brushcap;
 static pmtouch_t touches[HULL_MAX_TOUCH]; /* Hull_SetTouches */
 static int numtouches;
+static uint32_t touchseq;                   /* the command being run (Hull_TouchSeq) */
+static uint32_t firedseq[HULL_MAX_TOUCH];   /* a TP_ONCE push's command (Hull_Fired), */
+static bool fired[HULL_MAX_TOUCH];          /* if it ran */
 static sbox_t boxes[HULL_MAX_BOXES];
 static int numboxes;
 static uint16_t candb[HULL_MAX_BRUSHES], candx[HULL_MAX_BOXES];
@@ -1179,8 +1182,38 @@ void Hull_PlaceBrush(int i, const float origin[3], const float angles[3])
 
 void Hull_SetTouches(const pmtouch_t *t, int n)
 {
-	numtouches = n < HULL_MAX_TOUCH ? n : HULL_MAX_TOUCH;
+	uint32_t fs[HULL_MAX_TOUCH];
+	bool f[HULL_MAX_TOUCH];
+	n = n < HULL_MAX_TOUCH ? n : HULL_MAX_TOUCH;
+	/* a push fired here stays fired while the server's list still has it (its SOLID_NOT
+	 * comes in a later version) */
+	for (int i = 0; i < n; i++) {
+		f[i] = false, fs[i] = 0;
+		for (int j = 0; j < numtouches; j++)
+			if (fired[j] && touches[j].edict == t[i].edict)
+				f[i] = true, fs[i] = firedseq[j];
+	}
+	numtouches = n;
 	memcpy(touches, t, sizeof(*t) * (size_t)numtouches);
+	memcpy(fired, f, sizeof(f[0]) * (size_t)n);
+	memcpy(firedseq, fs, sizeof(fs[0]) * (size_t)n);
+}
+
+void Hull_TouchSeq(uint32_t seq) { touchseq = seq; }
+
+void Hull_Fired(void *ctx, int ent)
+{
+	(void)ctx;
+	for (int i = 0; i < numtouches; i++)
+		if (touches[i].edict == ent && (!fired[i] || (int32_t)(touchseq - firedseq[i]) < 0))
+			fired[i] = true, firedseq[i] = touchseq;
+}
+
+void Hull_ForgetFired(uint32_t after)
+{
+	for (int i = 0; i < numtouches; i++)
+		if (fired[i] && (int32_t)(firedseq[i] - after) > 0)
+			fired[i] = false;
 }
 
 const pmtouch_t *Hull_TouchOf(void *ctx, int ent)
@@ -1199,7 +1232,8 @@ int Hull_Triggers(void *ctx, const float absmin[3], const float absmax[3], const
 	(void)ctx;
 	for (int i = 0; i < numtouches && n < max; i++) {
 		const pmtouch_t *t = &touches[i];
-		if (t->kind != PM_TOUCH_PUSH || t->absmin[0] > absmax[0] || t->absmin[1] > absmax[1] ||
+		if ((fired[i] && (int32_t)(touchseq - firedseq[i]) > 0) ||
+		    t->kind != PM_TOUCH_PUSH || t->absmin[0] > absmax[0] || t->absmin[1] > absmax[1] ||
 		    t->absmin[2] > absmax[2] || t->absmax[0] < absmin[0] || t->absmax[1] < absmin[1] ||
 		    t->absmax[2] < absmin[2])
 			continue;

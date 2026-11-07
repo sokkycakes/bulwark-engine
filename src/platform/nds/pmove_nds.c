@@ -874,6 +874,8 @@ static void pm_push(const pmtouch_t *t)
 			S->velocity[k] += (t->speed * t->dir[k]) * 10.0f;
 		if (fx_gt(S->velocity[2], 0))
 			S->flags &= ~PM_FL_ONGROUND;
+		if (T->fired) /* SetSolid(SOLID_NOT) (:397) */
+			T->fired(T->ctx, t->edict);
 	} else
 		for (int k = 0; k < 3; k++)
 			S->basevel[k] = (t->speed * t->dir[k]) * 0.5f;
