@@ -1650,8 +1650,13 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	t = ticks();
 	/* gains; loops without a channel take one if they are louder than one held */
 	for (int i = 0; i < S.vtop; i++)
-		if (S.vst[i] == V_PLAY)
+		if (S.vst[i] == V_PLAY) {
+			if (S.k[S.v[i].ki].state == K_MISS) { /* its pack failed a read while it loaded: it can't go on */
+				voice_free(i, "readerr");
+				continue;
+			}
 			voice_gain(&S.v[i]);
+		}
 	for (;;) {
 		int best = -1;
 		for (int i = 0; i < S.vtop; i++) {
