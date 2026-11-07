@@ -3977,6 +3977,19 @@ void SV_LinkSound(client_t *c, int e, int chan, int idx, float vol, float atten,
 	snd_record(l, SP_SND, sv.sounds[idx], e, chan, vol, atten, pitch, flags, 0, org, sample_loops(idx), false, 0);
 }
 
+/* sv_link_log: each svc_sound the engine writes (what a PC client gets), while a device
+ * takes sound, as SVSND lines to check the device's records against */
+void SV_LinkSoundLog(int e, int chan, int idx)
+{
+	bool any = false;
+	if (!sv_link_log || !sv_link_log->ivalue || idx <= 0 || idx >= sv.numsounds)
+		return;
+	for (int i = 0; i < MAX_LINKS && !any; i++)
+		any = links[i].used && snd_ready(&links[i]);
+	if (any)
+		Con_Printf("SVSND %d %s %d %d\n", idx, sv.sounds[idx], e, chan);
+}
+
 static int cmp_snd_d2(const void *a, const void *b)
 {
 	float x = ((const lsnd_t *)a)->d2, y = ((const lsnd_t *)b)->d2;

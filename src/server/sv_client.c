@@ -2019,6 +2019,7 @@ static void bi_trailparticles(qcvm_t *vm)
 static void write_sound(int e, int chan, int idx, float vol, float atten, float pitch, int flags, const float *org)
 {
 	LOCALMSG(m, 64);
+	SV_LinkSoundLog(e, chan, idx); /* sv_link_log: what a PC client gets, to check a device against */
 	MSG_WriteByte(&m, svc_sound);
 	MSG_WriteEntity(&m, e);
 	MSG_WriteByte(&m, chan & 0xff);
