@@ -490,16 +490,17 @@ void Events_Draw3D(const ndscam_t *view)
 	glPushMatrix();
 	glLoadIdentity();
 	/* the fade, over the 3D and under the HUD, as View.qc draws it before the HUD.
-	 * drawfill blends the colour over the scene; the modulate style multiplies the scene
-	 * by (colour + 1 - alpha), which the DS can't: it is a dimming by alpha times what
-	 * the colour takes away */
+	 * drawfill blends the colour over the scene; the modulate style (fade_modulate:
+	 * blendFunc GL_DST_COLOR GL_ONE_MINUS_SRC_ALPHA) makes each channel dst * (col + 1 - a):
+	 * a channel at 0 dims by a, one at 1 brightens (to the clamp). The DS blends toward one
+	 * colour at one alpha: toward (col ? 31 : 0) at a, so the dimmed channels dim as on the
+	 * PC and the others keep their light (the brightening can't be done; a white modulate
+	 * shows nothing) */
 	if (fd.active) {
 		float a = fd.alpha * fd.maxa;
 		uint16_t rgb = RGB15((int)(fd.col[0] * 31), (int)(fd.col[1] * 31), (int)(fd.col[2] * 31));
-		if (fd.style & EVF_MODULATE) {
-			a *= 1.0f - (fd.col[0] + fd.col[1] + fd.col[2]) / 3.0f;
-			rgb = RGB15(0, 0, 0);
-		}
+		if (fd.style & EVF_MODULATE && fd.col[0] > 0 && fd.col[1] > 0 && fd.col[2] > 0)
+			a = 0;
 		if (alpha5(a)) {
 			glPolyFmt(POLY_ALPHA(alpha5(a)) | POLY_CULL_NONE | POLY_ID(62));
 			glColor(rgb);
