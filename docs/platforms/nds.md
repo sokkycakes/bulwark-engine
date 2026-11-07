@@ -75,6 +75,8 @@ fps=30              optional: cap at 30 fps (every frame takes two refreshes), f
 predict=0           optional: show where the server says you are, without prediction (below)
 cmdvb=2             optional: one movement command every 2 refreshes instead of every one, for testing
 botwalk=1           optional: walk, strafe, jump and crouch by itself in a fixed 12 s pattern, for testing
+interp=80           optional: ms other entities are drawn behind the server, 0 for as sent ("Other entities", below)
+lerpframes=0        optional: models step from baked frame to frame instead of blending
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
@@ -357,6 +359,82 @@ map here).
 Not measured yet: ladders and water (no map here has them), doors and
 lifts moving under the player, a Half-Life campaign map with hulls, and a
 DS.
+
+## Other entities: drawn as the PC draws them
+
+The PC client draws every networked entity a little in the past, between
+the two snapshots around that moment (`CSQC_LerpEntity`,
+`src/client/cl_csqc.c`): origin, angles and the time into the model's
+sequence (`frame1time`), `cl_interp` (0.03 s) behind the newest snapshot;
+a jump of over 256 units is a teleport, and after a long gap the change is
+spread over the last 0.1 s. It poses Half-Life models at any time into a
+sequence. Other players it doesn't draw in the past: Nuclide's
+`ncPlayer::predraw` (`src/shared/game/Player.qc:740-756`) runs their
+movement on from their networked velocity every frame,
+`cg_extrapolateClients` 1 (the default; no shipped cfg changes it). The DS
+does the same with what `ENTS` carries (`docs/spec/link.md`): the server's
+time, each thing's `frame1time`, and the other players' velocity.
+
+- The DS reckons the server's clock as the PC does (`update_clock`): it
+  runs at real-time speed, nudged toward the newest `ENTS` time plus how
+  long ago it came. Things and moved brush models (doors, lifts, trains)
+  are drawn 80 ms behind it (`interp=` in `link.txt`, 0 for as sent), with
+  the PC's rules for teleports and long gaps. The PC's 30 ms put it
+  between two of its 72 snapshots a second; `ENTS` come 20 times a second,
+  so the DS waits one more interval (50 ms).
+- Models play their sequence at the time the server's `frame1time` says,
+  run on between updates. Their baked frames (at most 10 a second,
+  `hlmdl.py`) are blended, the way the PC's skeletal pose moves on
+  between keyframes (`lerpframes=0` turns this off): the 12 nearest models
+  within 768 units, the rest step from frame to frame.
+- Other players are drawn at the newest update moved on by their velocity
+  to the reckoned server time, for at most 0.1 s. Nuclide runs the full
+  movement code for this (`Physics_Run` with collision); the DS moves them
+  in a straight line, which differs only when one hits a wall or lands
+  within that 0.1 s. Their markers (the coloured quads for players the DS
+  has no model for) go with them.
+- From an older server (no time in `ENTS`), updates are timed by when
+  they come, and brush models ease toward the newest as before.
+
+RAM: 64 entities and 32 brush models keep their last 3 updates, and a
+blended frame is built in a 2 KB buffer: 9.2 KB of heap, taken at the
+first `ENTS` after a map has loaded and given back before the next map
+loads, so it doesn't come out of the lowest free memory, which is while a
+map loads. The code is 4.4 KB more; static data 1.6 KB less.
+
+### Measured, in melonDS 1.1 (not hardware)
+
+`coop_arena`, 30 fps, 40 monsters (`coop_waveBase 40`, `coop_wavePerWave
+0`, `coop_spawnInterval 0.2`), the DS standing; one traced monster as it
+walks, and another DS walking (`botwalk=1`) as the other player. Steps are
+how far the drawn position moved from one frame to the next:
+
+| Traced | Build | Steps: average (spread) | Frames it stood still |
+|---|---|---|---|
+| a walking monster | `a5b9769` | 1.8 units (2.0) | 57 % |
+| a walking monster | this one | 2.3 units (0.9) | 9 % |
+| the other DS, running | `a5b9769` | 7.3 units (8.1) | 43 % |
+| the other DS, running | this one | 7.4 units (5.5) | 13 % |
+
+Before, a monster moved every other frame (ENTS at 20 a second, frames
+at 30); now it moves every frame. The other player's steps still vary:
+the server moves a link player when its commands come (30 packets a
+second), not at a steady rate, and the PC sees the same updates.
+
+- **Cost.** Placing the entities (`lerp_things`, `move_models`, the clock)
+  takes 0.35 ms a frame with 48 things (worst 0.9 ms). Blending the baked
+  frames adds 0.76 to 0.80 ms of drawing with 40 monsters about (blending
+  on and off in turn every second of one run, so the view is the same),
+  0.26 ms on c2a4e. On c2a4e at the spot of the earlier measurements a
+  frame took 31.5 ms against 31.1 ms with `a5b9769` (29 fps both; 1803
+  and 1822 polygons).
+- **RAM.** The lowest free memory on c2a4e (while the map loads) went
+  from 68 KB to 64 KB: the code. On `coop_arena` it went from 2.863 MB
+  to 2.859 MB.
+- **Traffic.** `ENTS` grew from 849 to 862 bytes (18 a second).
+
+Not measured: brush models moving (none of the maps here opened a door
+for the rig), a DS.
 
 ## Map viewer controls
 

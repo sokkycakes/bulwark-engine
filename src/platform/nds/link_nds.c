@@ -52,6 +52,11 @@ enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_M
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
 #define MAX_THINGS 48
+/* the PC draws other entities cl_interp (0.03 s) behind its newest snapshot,
+ * which comes 72 times a second: always between two. ENTS come 20 times a
+ * second, so the DS stays one ENTS interval (50 ms) further behind */
+#define LINK_INTERP_MS 80
+#define MAX_IMOVERS 32 /* moved brush models drawn between updates; more snap */
 #define MAX_STUDIO 1032     /* model indexes the server can name; 1000 on are players' own */
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 #define MAX_FX 24
@@ -73,6 +78,7 @@ typedef struct {
 	int cmdvb;      /* refreshes a movement command covers: 1, or 2 with cmdvb=2 */
 	bool botwalk;   /* botwalk=1 */
 	int sens;     /* aim speed, percent: 100 turns 120 degrees across the screen */
+	int interp;   /* interp=: ms other entities are drawn behind the server's newest, 0 as sent */
 } linkcfg_t;
 
 /* what the game reads in input_buttons (Nuclide's INPUT_BUTTON*) */
@@ -98,12 +104,31 @@ typedef struct {
 	uint16_t ent, model; /* entity number; studio model index, 0 for none */
 	uint8_t seq, lift;   /* the sequence it plays; its origin above the bottom */
 	int8_t anim;         /* its slot in anim[], -1 for none */
+	uint16_t f1t;        /* the time into seq (frame1time), 1/100 s; F1T_NONE: not sent */
+	/* as drawn this frame (lerp_things): where, which way (32768 a turn), the
+	 * sequence, how long it has played, and how fast it goes (units a second) */
+	int16_t dorg[3];
+	int16_t dyaw;
+	uint8_t dseq;
+	uint32_t dms;
+	int16_t speed;
 } thing_t;
+#define F1T_NONE 0xffff
 
-/* the animation of the entities we were last sent, as we saw it: what each
- * played and since when; a small table, the oldest slot reused */
-#define MAX_ANIM 96
-static struct {
+/* the entities we were last sent, by entity number: the last few updates of
+ * each (when, where, and what it played), so the DS draws them between two
+ * of them as the PC does (lerp_things); a small table, the oldest slot
+ * reused. It is on the heap from the first ENTS after a map loads to the
+ * next map (ents_alloc), so it doesn't take from what loading a map has */
+#define MAX_ANIM 64
+#define ISAMPLES 3 /* enough for LINK_INTERP_MS behind 20 updates a second */
+typedef struct {
+	uint32_t time;  /* the server's, ms */
+	int16_t org[3]; /* units */
+	uint8_t yaw, seq;
+	uint16_t f1t;
+} isample_t;
+typedef struct {
 	uint16_t ent;
 	uint8_t seq;
 	int start, seen; /* frame the sequence started; frame last sent */
@@ -112,7 +137,12 @@ static struct {
 	int16_t lightat[3]; /* where the light was looked up */
 	/* light -1: not yet */
 	int8_t light;
-} anim[MAX_ANIM];
+	uint8_t ns;      /* samples held, oldest first */
+	bool hasvel;     /* a player whose velocity the last ENTS gave */
+	int16_t vel[3];  /* units a second */
+	isample_t s[ISAMPLES];
+} ianim_t;
+static ianim_t *anim; /* MAX_ANIM, NULL until ents_alloc */
 
 static int anim_slot(int ent, int frame)
 {
@@ -134,13 +164,57 @@ static int anim_slot(int ent, int frame)
 static char *studioname[MAX_STUDIO];
 static int16_t studiomdl[MAX_STUDIO]; /* -2 not tried, -1 can't, else Ents_Model's */
 static int linkframe;
+static uint32_t vb_ms(int vb);
+
+/* the server's clock as the DS reckons it (ENTS carries the server's time,
+ * docs/spec/link.md), run as the PC client's cl.time is (update_clock,
+ * src/client/cl_main.c): at real-time speed, nudged toward the newest
+ * update's time plus how long ago it came */
+static struct {
+	bool have;
+	uint32_t srv;  /* the newest ENTS's time, ms */
+	uint32_t recv; /* our ms clock when it came */
+	uint32_t now;  /* the reckoned server time, ms */
+	uint32_t last; /* our ms clock at the last step */
+	bool servertime; /* the server sends its time (else ENTS are stamped when they come) */
+} eclock;
 
 /* each brush model as the server last had it, and as drawn (easing toward it) */
 typedef struct {
 	bool moved;
+	int8_t slot;               /* its updates in imover[], -1 for none */
 	int32_t target[3], cur[3]; /* 1/8 units */
 	int16_t tang[3], cang[3];  /* 65536 to a turn */
 } linkmodel_t;
+
+/* the moved brush models' last few updates, drawn between two as the things
+ * are; with anim, on the heap */
+typedef struct {
+	uint16_t model;
+	uint8_t ns;
+	int seen;
+	struct {
+		uint32_t time;
+		int16_t org[3]; /* 1/4 units, as sent */
+		int16_t ang[3];
+	} s[ISAMPLES];
+} imover_t;
+static imover_t *imover; /* MAX_IMOVERS */
+
+/* the tables above, after a map has loaded: false if there's no room (the
+ * entities are then drawn as sent) */
+static bool ents_alloc(void)
+{
+	if (!anim && (anim = calloc(MAX_ANIM, sizeof(*anim))) != NULL && !(imover = calloc(MAX_IMOVERS, sizeof(*imover))))
+		free(anim), anim = NULL;
+	return anim != NULL;
+}
+
+static void ents_free(void)
+{
+	free(anim), free(imover);
+	anim = NULL, imover = NULL;
+}
 
 static linkcfg_t cfg;
 static int sock = -1;
@@ -273,6 +347,7 @@ static void read_config(void)
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.port = LINK_PORT;
 	cfg.sens = 100;
+	cfg.interp = LINK_INTERP_MS;
 	cfg.diag = true;
 	cfg.cmdvb = 1;
 	snprintf(cfg.name, sizeof(cfg.name), "DS");
@@ -313,6 +388,10 @@ static void read_config(void)
 				cfg.cmdvb = BW_NDS_CLAMP(atoi(v), 1, 2);
 			else if (!strcmp(line, "botwalk"))
 				cfg.botwalk = atoi(v) != 0;
+			else if (!strcmp(line, "interp"))
+				cfg.interp = BW_NDS_CLAMP(atoi(v), 0, 500);
+			else if (!strcmp(line, "lerpframes"))
+				Ents_LerpFrames = atoi(v) != 0;
 			else if (!strcmp(line, "server")) {
 				char *colon = strchr(v, ':');
 				if (colon)
@@ -1098,7 +1177,7 @@ static void reset_studio(void)
 		studioname[i] = NULL;
 		studiomdl[i] = -2;
 	}
-	memset(anim, 0, sizeof(anim));
+	ents_free();
 }
 
 /* names for model indexes (docs/spec/link.md, MODELS) */
@@ -1159,6 +1238,7 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	link.spawncount = spawncount;
 	pr.srvver = len >= 72 ? d[71] : 0;
 	pred_newmap();
+	eclock.have = false; /* the next ENTS starts the clock and the entities' updates again */
 	if (World_Loaded() && !strcmp(map, link.map))
 		return;
 	snprintf(link.map, sizeof(link.map), "%s", map);
@@ -1361,12 +1441,46 @@ static void draw_fx(const ndscam_t *cam)
 	glColor(RGB15(31, 31, 31));
 }
 
+/* the updates of an entity: ISAMPLES records of size bytes, oldest first,
+ * each starting with its time (ms) */
+#define TIME_AT(i) (*(const uint32_t *)((const uint8_t *)base + (i) * size))
+
+/* which record a new update at time t goes in, the oldest dropped when they
+ * are all used: -1 when it is older than the newest (it came late) */
+static int sample_at(void *base, size_t size, uint8_t *ns, uint32_t t)
+{
+	int n = *ns;
+	if (n && (int32_t)(t - TIME_AT(n - 1)) <= 0)
+		return t == TIME_AT(n - 1) ? n - 1 : -1; /* the same again: replaced */
+	if (n == ISAMPLES)
+		memmove(base, (uint8_t *)base + size, size * (ISAMPLES - 1)), n--;
+	*ns = (uint8_t)(n + 1);
+	return n;
+}
+
+static int mover_slot(int m)
+{
+	int old = 0;
+	for (int i = 0; i < MAX_IMOVERS; i++) {
+		if (imover[i].model == m && imover[i].ns)
+			return i;
+		if (imover[i].seen < imover[old].seen)
+			old = i;
+	}
+	if (imover[old].ns && imover[old].model < MAX_LINKMODELS && models[imover[old].model].slot == old)
+		models[imover[old].model].slot = -1;
+	memset(&imover[old], 0, sizeof(imover[old]));
+	imover[old].model = (uint16_t)m;
+	return old;
+}
+
 /* which brush models are there and where the moved ones are, then the things
  * near us (docs/spec/link.md, ENTS) */
 static void handle_ents(const uint8_t *d, int len)
 {
 	uint16_t seq = (uint16_t)rd16(d + 4);
-	int n, pos, count;
+	int n, pos, count, movers;
+	uint32_t now = vb_ms(Nds_Vblanks()), stamp = now;
 	if (len < 9 || (link.haveents && (int16_t)(seq - link.entsseq) <= 0))
 		return;
 	n = BW_NDS_MIN((int)rd16(d + 6), MAX_LINKMODELS);
@@ -1377,9 +1491,36 @@ static void handle_ents(const uint8_t *d, int len)
 	link.haveents = true;
 	for (int m = 1; m < n; m++)
 		models[m].moved = false;
-	count = d[pos++];
-	for (int i = 0; i < count && pos + 14 <= len; i++, pos += 14) {
-		int m = rd16(d + pos);
+	if (!ents_alloc())
+		eclock.have = false;
+	movers = d[pos++];
+	/* the server's time comes after the things: find it first */
+	{
+		int tp = pos + movers * 14, things, size;
+		if (tp + 2 <= len && (size = d[tp + 1]) >= 10 && (things = d[tp], tp + 2 + things * size + 4 <= len)) {
+			stamp = rd32(d + tp + 2 + things * size);
+			eclock.servertime = true;
+		} else
+			eclock.servertime = false; /* an older server: when it came */
+	}
+	{
+		int32_t ahead = (int32_t)(stamp - eclock.srv);
+		if (!anim)
+			;
+		else if (!eclock.have || ahead > 1000 || ahead < -1000) {
+			/* the first, or another clock (a new map, a restarted server):
+			 * the updates kept go by the old one */
+			for (int i = 0; i < MAX_ANIM; i++)
+				anim[i].ns = 0;
+			for (int i = 0; i < MAX_IMOVERS; i++)
+				imover[i].ns = 0;
+			eclock.now = stamp, eclock.last = now;
+			eclock.srv = stamp, eclock.recv = now, eclock.have = true;
+		} else if (ahead > 0)
+			eclock.srv = stamp, eclock.recv = now;
+	}
+	for (int i = 0; i < movers && pos + 14 <= len; i++, pos += 14) {
+		int m = rd16(d + pos), k;
 		linkmodel_t *lm;
 		if (m <= 0 || m >= MAX_LINKMODELS)
 			continue;
@@ -1391,6 +1532,18 @@ static void handle_ents(const uint8_t *d, int len)
 		if (!lm->moved && !(lm->cur[0] | lm->cur[1] | lm->cur[2]))
 			memcpy(lm->cur, lm->target, sizeof(lm->cur)), memcpy(lm->cang, lm->tang, sizeof(lm->cang));
 		lm->moved = true;
+		if (!imover)
+			continue;
+		if (lm->slot < 0 || imover[lm->slot].model != m)
+			lm->slot = (int8_t)mover_slot(m);
+		imover[lm->slot].seen = linkframe;
+		k = sample_at(imover[lm->slot].s, sizeof(imover[0].s[0]), &imover[lm->slot].ns, stamp);
+		if (k >= 0) {
+			imover[lm->slot].s[k].time = stamp;
+			for (int c = 0; c < 3; c++)
+				imover[lm->slot].s[k].org[c] = (int16_t)rd16(d + pos + 2 + c * 2);
+			memcpy(imover[lm->slot].s[k].ang, lm->tang, sizeof(lm->tang));
+		}
 	}
 	for (int m = 1; m < n; m++) {
 		bool shown = (d[8 + (m >> 3)] >> (m & 7)) & 1;
@@ -1412,14 +1565,18 @@ static void handle_ents(const uint8_t *d, int len)
 				t->org[c] = (int16_t)rd16(d + pos + c * 2);
 			t->yaw = d[pos + 6], t->half = d[pos + 7], t->height = d[pos + 8], t->kind = d[pos + 9];
 			t->ent = t->model = 0, t->seq = t->lift = 0;
+			t->f1t = F1T_NONE;
 			if (size >= 16) {
 				t->ent = (uint16_t)rd16(d + pos + 10), t->model = (uint16_t)rd16(d + pos + 12);
 				t->seq = d[pos + 14], t->lift = d[pos + 15];
 			}
+			if (size >= 18)
+				t->f1t = (uint16_t)rd16(d + pos + 16);
 			t->anim = -1;
-			if (t->ent && t->model) {
+			if (t->ent && anim) {
 				/* a new sequence starts its clip again; speed from how far it went since the last packet (20 a second) */
 				typeof(anim[0]) *a = &anim[t->anim = (int8_t)anim_slot(t->ent, linkframe)];
+				int k;
 				a->seen = linkframe;
 				int dx = t->org[0] - a->prev[0], dy = t->org[1] - a->prev[1];
 				int sp = (int)sqrtf((float)(dx * dx + dy * dy)) * 20;
@@ -1427,27 +1584,167 @@ static void handle_ents(const uint8_t *d, int len)
 					a->seq = t->seq, a->start = linkframe;
 				a->speed = (int16_t)(sp > 2000 ? a->speed : (a->speed + sp) / 2);
 				memcpy(a->prev, t->org, sizeof(a->prev));
+				a->hasvel = false;
+				k = sample_at(a->s, sizeof(a->s[0]), &a->ns, stamp);
+				if (k >= 0) {
+					isample_t *sm = &a->s[k];
+					sm->time = stamp;
+					memcpy(sm->org, t->org, sizeof(sm->org));
+					sm->yaw = t->yaw, sm->seq = t->seq, sm->f1t = t->f1t;
+				}
+			}
+		}
+		/* after the things: the time (read above), then the players' velocities */
+		if (pos + 5 <= len && eclock.servertime) {
+			int nv = d[pos + 4];
+			pos += 5;
+			for (int i = 0; i < nv && pos + 7 <= len; i++, pos += 7) {
+				int k = d[pos];
+				if (k < link.numthings && link.things[k].anim >= 0) {
+					typeof(anim[0]) *a = &anim[link.things[k].anim];
+					a->hasvel = true;
+					for (int c = 0; c < 3; c++)
+						a->vel[c] = (int16_t)rd16(d + pos + 1 + c * 2);
+				}
 			}
 		}
 	}
 }
 
-/* ease the moved brush models toward where the server has them; it updates at 20 Hz */
+/* the reckoned server time, stepped once a frame */
+static void step_clock(void)
+{
+	uint32_t now = vb_ms(Nds_Vblanks());
+	int32_t dt = (int32_t)(now - eclock.last), diff;
+	if (!eclock.have)
+		return;
+	eclock.last = now;
+	eclock.now += (uint32_t)BW_NDS_CLAMP(dt, 0, 250);
+	diff = (int32_t)(eclock.srv + (now - eclock.recv) - eclock.now);
+	if (diff > 250 || diff < -250)
+		eclock.now += (uint32_t)diff;
+	else
+		eclock.now += (uint32_t)(diff * BW_NDS_CLAMP(dt, 0, 250) * 4 / 1000);
+}
+
+/* between which two updates the drawn moment t falls, and how far: as
+ * CSQC_LerpEntity (src/client/cl_csqc.c:467-520). Returns false when t is
+ * past the newest (drawn as sent). A long gap between two updates means the
+ * entity stood still, so the change is spread over the last tenth of a
+ * second only */
+static bool lerp_pick(const void *base, size_t size, int ns, uint32_t t, int *ia, int *f256)
+{
+	int i;
+	uint32_t ta, tb, start;
+	if (ns < 2 || (int32_t)(t - TIME_AT(ns - 1)) >= 0)
+		return false;
+	for (i = ns - 2; i > 0 && (int32_t)(TIME_AT(i) - t) > 0; i--)
+		;
+	ta = TIME_AT(i), tb = TIME_AT(i + 1);
+	*ia = i;
+	if ((int32_t)(t - ta) <= 0) {
+		*f256 = 0;
+		return true;
+	}
+	start = (int32_t)(tb - ta) > 100 ? tb - 100 : ta;
+	*f256 = (int32_t)(t - start) <= 0 ? 0 : (int)((t - start) * 256 / (tb - start));
+	return true;
+}
+#undef TIME_AT
+
+static int lerp_angle16(int a, int b, int f256)
+{
+	int d = (int16_t)(b - a);
+	return a + d * f256 / 256;
+}
+
+/* where and how each thing is drawn this frame: cfg.interp ms behind the
+ * reckoned server time, between the two updates around then, as the PC
+ * draws every networked entity; other players moved on from the newest
+ * update at their velocity instead, as Nuclide's ncPlayer::predraw does
+ * with cg_extrapolateClients 1 (src/shared/game/Player.qc:740-756) */
+static void lerp_things(void)
+{
+	uint32_t t = eclock.now - (uint32_t)cfg.interp;
+	for (int i = 0; i < link.numthings; i++) {
+		thing_t *th = &link.things[i];
+		typeof(anim[0]) *a = th->anim >= 0 ? &anim[th->anim] : NULL;
+		const isample_t *sa, *sb, *last;
+		int ia, f;
+		memcpy(th->dorg, th->org, sizeof(th->dorg));
+		th->dyaw = (int16_t)(th->yaw * 128);
+		th->dseq = th->seq;
+		th->speed = a ? a->speed : 0;
+		th->dms = th->f1t != F1T_NONE ? th->f1t * 10u : a ? vb_ms(linkframe - a->start) : 0;
+		if (!a || !cfg.interp || !a->ns)
+			continue;
+		last = &a->s[a->ns - 1];
+		if (a->hasvel) {
+			/* a player: the newest update moved on by its velocity to the
+			 * reckoned server time (for at most a tenth of a second: then it
+			 * waits for the next). That time can be a little before the
+			 * newest update, which came at the start of a frame rather than
+			 * when it arrived: moving it back keeps the steps even */
+			int32_t ahead = BW_NDS_CLAMP((int32_t)(eclock.now - last->time), -100, 100);
+			for (int c = 0; c < 3; c++)
+				th->dorg[c] = (int16_t)(last->org[c] + a->vel[c] * ahead / 1000);
+			th->speed = (int16_t)sqrtf((float)a->vel[0] * a->vel[0] + (float)a->vel[1] * a->vel[1]);
+		}
+		if (!lerp_pick(a->s, sizeof(a->s[0]), a->ns, t, &ia, &f))
+			continue;
+		sa = &a->s[ia], sb = &a->s[ia + 1];
+		if (!a->hasvel) {
+			int64_t d2 = 0;
+			for (int c = 0; c < 3; c++)
+				d2 += (int64_t)(sb->org[c] - sa->org[c]) * (sb->org[c] - sa->org[c]);
+			for (int c = 0; c < 3; c++) /* a jump of over 256 units is a teleport */
+				th->dorg[c] = d2 > 256 * 256 ? (f < 256 ? sa->org[c] : sb->org[c])
+				                             : (int16_t)(sa->org[c] + (sb->org[c] - sa->org[c]) * f / 256);
+		}
+		th->dyaw = (int16_t)lerp_angle16(sa->yaw * 256, sb->yaw * 256, f) / 2;
+		/* the animation: the time into a sequence runs on between updates of
+		 * the same sequence; across a change the older one holds until then */
+		if (sa->f1t != F1T_NONE && sb->f1t != F1T_NONE) {
+			if (sa->seq == sb->seq && sb->f1t >= sa->f1t)
+				th->dseq = sa->seq, th->dms = (sa->f1t * 256u + (sb->f1t - sa->f1t) * (uint32_t)f) * 10 / 256;
+			else
+				th->dseq = f < 256 ? sa->seq : sb->seq, th->dms = (f < 256 ? sa->f1t : sb->f1t) * 10u;
+		}
+	}
+}
+
+/* the moved brush models: between two updates as the things are, or, from a
+ * server that doesn't send its time, eased toward the newest */
 static void move_models(int dt)
 {
 	int n = BW_NDS_MIN(World_NumModels(), MAX_LINKMODELS);
+	uint32_t t = eclock.now - (uint32_t)cfg.interp;
 	for (int m = 1; m < n; m++) {
 		linkmodel_t *lm = &models[m];
-		int ang[3];
+		int ang[3], ia, f;
 		if (!lm->moved)
 			continue;
-		for (int i = 0; i < dt; i++) /* a step for each refresh the last frame took */
-			for (int c = 0; c < 3; c++) {
-				int32_t delta = lm->target[c] - lm->cur[c];
-				int16_t da = (int16_t)(lm->tang[c] - lm->cang[c]);
-				lm->cur[c] = delta > 1024 || delta < -1024 ? lm->target[c] : lm->cur[c] + delta / 3;
-				lm->cang[c] = (int16_t)(lm->cang[c] + (da > 8192 || da < -8192 ? da : da / 3));
-			}
+		if (imover && lm->slot >= 0 && cfg.interp && eclock.servertime) {
+			imover_t *im = &imover[lm->slot];
+			if (lerp_pick(im->s, sizeof(im->s[0]), im->ns, t, &ia, &f)) {
+				const int16_t *a = im->s[ia].org, *b = im->s[ia + 1].org;
+				int64_t d2 = 0;
+				for (int c = 0; c < 3; c++)
+					d2 += (int64_t)(b[c] - a[c]) * (b[c] - a[c]);
+				for (int c = 0; c < 3; c++) { /* 1/4 units to 1/8; a jump of over 256 units is a teleport */
+					lm->cur[c] = 2 * (d2 > (int64_t)1024 * 1024 ? (f < 256 ? a[c] : b[c]) : a[c] + (b[c] - a[c]) * f / 256);
+					lm->cang[c] = (int16_t)lerp_angle16(im->s[ia].ang[c], im->s[ia + 1].ang[c], f);
+				}
+			} else
+				memcpy(lm->cur, lm->target, sizeof(lm->cur)), memcpy(lm->cang, lm->tang, sizeof(lm->cang));
+		} else
+			for (int i = 0; i < dt; i++) /* a step for each refresh the last frame took */
+				for (int c = 0; c < 3; c++) {
+					int32_t delta = lm->target[c] - lm->cur[c];
+					int16_t da = (int16_t)(lm->tang[c] - lm->cang[c]);
+					lm->cur[c] = delta > 1024 || delta < -1024 ? lm->target[c] : lm->cur[c] + delta / 3;
+					lm->cang[c] = (int16_t)(lm->cang[c] + (da > 8192 || da < -8192 ? da : da / 3));
+				}
 		for (int c = 0; c < 3; c++)
 			ang[c] = lm->cang[c] / 2;
 		World_ModelState(m, true, lm->cur, ang);
@@ -1484,7 +1781,7 @@ static void set_viewmodel(const ndscam_t *cam, bool *loaded_one)
 			at[k] = (int16_t)BW_NDS_CLAMP(cam->org[k] / 8, -4000, 4000);
 		light = World_LightAt(at), lightframe = linkframe;
 	}
-	Ents_SetViewModel(mdl, link.vseq, linkframe - link.vmstart, light);
+	Ents_SetViewModel(mdl, link.vseq, vb_ms(linkframe - link.vmstart), light);
 }
 
 /* the things with a model the DS has, into the model list Ents_Draw draws */
@@ -1497,21 +1794,20 @@ static void add_studio_things(const ndscam_t *cam)
 		const thing_t *t = &link.things[i];
 		int mdl = thing_model(t, &loaded_one);
 		if (mdl >= 0) {
-			int16_t org[3] = {t->org[0], t->org[1], (int16_t)(t->org[2] + t->lift)};
-			int seq = t->seq, start = 0, speed = 0, light = -1;
+			int16_t org[3] = {t->dorg[0], t->dorg[1], (int16_t)(t->dorg[2] + t->lift)};
+			int light = -1;
 			if (t->anim >= 0) {
 				typeof(anim[0]) *a = &anim[t->anim];
-				start = a->start, speed = a->speed;
 				/* look the light up again only after it moves a little */
 				if (a->light >= 0 && abs(a->lightat[0] - org[0]) + abs(a->lightat[1] - org[1]) + abs(a->lightat[2] - org[2]) < 32)
 					light = a->light;
 			}
 			if (light < 0) {
-				light = Ents_AddLinked(mdl, org, t->yaw * 128, seq, linkframe - start, speed, -1);
+				light = Ents_AddLinked(mdl, org, t->dyaw, t->dseq, t->dms, t->speed, -1);
 				if (t->anim >= 0)
 					anim[t->anim].light = (int8_t)light, memcpy(anim[t->anim].lightat, org, sizeof(org));
 			} else
-				Ents_AddLinked(mdl, org, t->yaw * 128, seq, linkframe - start, speed, light);
+				Ents_AddLinked(mdl, org, t->dyaw, t->dseq, t->dms, t->speed, light);
 		}
 	}
 }
@@ -1537,19 +1833,19 @@ static void draw_things(void)
 		int32_t c4[4][2];
 		int s, c;
 		for (int k = 0; k < 2; k++) {
-			mins[k] = (int16_t)(t->org[k] - t->half), maxs[k] = (int16_t)(t->org[k] + t->half);
+			mins[k] = (int16_t)(t->dorg[k] - t->half), maxs[k] = (int16_t)(t->dorg[k] + t->half);
 		}
-		mins[2] = t->org[2], maxs[2] = (int16_t)(t->org[2] + (z >> 3));
+		mins[2] = t->dorg[2], maxs[2] = (int16_t)(t->dorg[2] + (z >> 3));
 		if (!World_BoxVisible(mins, maxs))
 			continue;
-		s = sinLerp((int16_t)(t->yaw * 128)), c = cosLerp((int16_t)(t->yaw * 128));
+		s = sinLerp(t->dyaw), c = cosLerp(t->dyaw);
 		for (int k = 0; k < 4; k++) {
 			int32_t x = (k == 0 || k == 3) ? -h : h, y = k < 2 ? -h : h;
-			c4[k][0] = t->org[0] * 8 + ((c * x - s * y) >> 12);
-			c4[k][1] = t->org[1] * 8 + ((s * x + c * y) >> 12);
+			c4[k][0] = t->dorg[0] * 8 + ((c * x - s * y) >> 12);
+			c4[k][1] = t->dorg[1] * 8 + ((s * x + c * y) >> 12);
 		}
 		{
-			int32_t z0 = t->org[2] * 8, z1 = z0 + z;
+			int32_t z0 = t->dorg[2] * 8, z1 = z0 + z;
 			uint16_t col = colours[t->kind < 5 ? t->kind : 0];
 			glBegin(GL_QUADS);
 			for (int k = 0; k < 4; k++) {
@@ -1578,17 +1874,26 @@ static void draw_markers(const ndscam_t *cam)
 	glBindTexture(GL_TEXTURE_2D, 0);
 	for (int i = 0; i < link.nummarkers; i++) {
 		const marker_t *m = &link.markers[i];
+		const thing_t *on = NULL;
 		bool covered = false;
-		/* a player the DS draws with a model needs no marker */
+		/* a player the DS draws with a model needs no marker; one it draws
+		 * as a box has its marker go where the box is drawn */
 		for (int k = 0; k < link.numthings && !covered; k++) {
 			const thing_t *t = &link.things[k];
-			covered = has_model(t) && abs(t->org[0] - m->org[0]) < 24 && abs(t->org[1] - m->org[1]) < 24;
+			if (abs(t->org[0] - m->org[0]) < 24 && abs(t->org[1] - m->org[1]) < 24) {
+				covered = has_model(t);
+				if (!m->kind && t->model >= 1000)
+					on = t;
+			}
 		}
 		if (covered)
 			continue;
 		int hw = m->kind ? 8 : 16, lo = m->kind ? -8 : -24, hi = m->kind ? 8 : 32;
-		int x = BW_NDS_CLAMP(m->org[0], -4000, 4000) * 8, y = BW_NDS_CLAMP(m->org[1], -4000, 4000) * 8;
-		int z = BW_NDS_CLAMP(m->org[2], -4000, 4000) * 8;
+		int16_t o[3];
+		for (int c = 0; c < 3; c++)
+			o[c] = (int16_t)(m->org[c] + (on ? on->dorg[c] - on->org[c] : 0));
+		int x = BW_NDS_CLAMP(o[0], -4000, 4000) * 8, y = BW_NDS_CLAMP(o[1], -4000, 4000) * 8;
+		int z = BW_NDS_CLAMP(o[2], -4000, 4000) * 8;
 		int dx = rx * hw * 8 >> 12, dy = ry * hw * 8 >> 12;
 		glColor(m->rgb);
 		glBegin(GL_QUADS);
@@ -2388,11 +2693,14 @@ static const char *play(ndscam_t *cam)
 					cam->org[k] = delta > 2048 || delta < -2048 ? goal : cam->org[k] + delta / 2;
 				}
 		}
+		linkframe = frame;
+		step_clock();
+		Ents_SetTime(vb_ms(frame));
+		lerp_things();
 		if (debugview == 2)
 			World_ResetModels();
 		else
 			move_models(dt);
-		linkframe = frame;
 		view_motion(cam, &view, dt);
 		if (World_Loaded()) {
 			if (debugview == 0)

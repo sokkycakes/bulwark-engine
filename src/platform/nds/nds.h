@@ -89,12 +89,16 @@ void Ents_Free(void);
 /* models the server names, for linked play (link_nds.c): Ents_Model loads
  * a path such as models/scientist.mdl once (-1 if it can't), Ents_Clear
  * empties the list each frame and Ents_AddLinked puts one in it, playing
- * sequence seq (mapped to its baked clip) from ticks since it started */
+ * sequence seq (mapped to its baked clip) ms into it; Ents_SetTime gives
+ * the clock a walk or run the server doesn't play goes by. Ents_LerpFrames
+ * blends between the baked frames (default on) */
 int Ents_Model(const char *path);
 void Ents_Clear(void);
 void Ents_Counts(int *loaded, int *failed);
-int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int ticks, int speed, int light); /* light -1: look it up; returns it */
-void Ents_SetViewModel(int mdl, int seq, int ticks, int light); /* the weapon in hand, -1 for none; light -1: a default */
+int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, int speed, int light); /* light -1: look it up; returns it */
+void Ents_SetViewModel(int mdl, int seq, uint32_t ms, int light); /* the weapon in hand, -1 for none; light -1: a default */
+void Ents_SetTime(uint32_t ms);
+extern bool Ents_LerpFrames;
 extern int32_t Ents_ViewOfs[3]; /* the view model moved by this (1/8 units: forward, left, up), for bob */
 extern int Ents_ViewAng[3];     /* and turned by this (libnds angles): pitch (nose down), yaw (left), roll (right) */
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
