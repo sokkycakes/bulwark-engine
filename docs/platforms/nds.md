@@ -277,9 +277,10 @@ resampled; melonDS's decoder, not hardware):
 | `40coop.dsp` (`zz_coopguns`, `zz_coopweapons`) | 139 | 2.11 MB | 69 ADPCM, 70 PCM8 (exact) | ADPCM median 21.7 dB, worst 18.1 |
 | `--only-used`, base | 80 | 0.91 MB | | |
 | `--only-used`, co-op | 101 | 1.46 MB | | |
+| music, `games/base/music` (11 `.ogg`, 38 min) | 11 | 23.6 MB | mono IMA streams at 22050 Hz, 11 KB/s | median 30.6 dB, worst 18.5 (`track07`) |
 
 The SNR leaves out base's 37 placeholder files (silent but for noise at 7 of
-32767, about −73 dB). Building `10base.dsp` takes about 11 s on 4 cores.
+32767, about −73 dB). Building `10base.dsp` takes about 11 s on 4 cores, the music about 6 minutes.
 
 Packs and music made from Half-Life's `valve/sound`, `hldata` or co-op's
 `zz_*.pk3` are Valve's or the mod's data: keep them on your own cards, out
