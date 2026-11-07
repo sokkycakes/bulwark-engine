@@ -13,6 +13,7 @@
 #include "sv_local.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/studio.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -51,7 +52,7 @@ enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -151,6 +152,13 @@ typedef struct {
 	float logvars[2 * PMV_COUNT];
 	lbrush_t logbrush[MAX_LBRUSH];
 	int numlogbrush;
+	/* weapons: WEAPONINFO for the weapon in hand */
+	uint16_t wiedict, wiver, wivers, wiack; /* its edict and version (0 none); the last version given; acked */
+	uint8_t wibody[1200];                   /* the packet after the version */
+	int wilen;
+	int8_t wiammo[2];                       /* its fireInfos' ammo types */
+	double wicheck, wisent;
+	uint16_t wilogver;                      /* the version sv_link_log printed */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -468,8 +476,13 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 	u->movevalues[2] = (int8_t)d[13] * (400.0f / 127.0f);
 	/* a device that maps its own buttons sends them; otherwise the DS keys
 	 * (libnds: A 1, B 2, R 0x100, X 0x400, Y 0x800) become attack, jump, use
-	 * (0x10), reload (8) and attack2 (0x20), as Nuclide numbers them */
-	if (l->buttons >= 0)
+	 * (0x10), reload (8) and attack2 (0x20), as Nuclide numbers them
+	 * (src/shared/input/input.h). DS builds before link v2 (JOIN without a
+	 * linkver) sent use as 0x20 and attack2 as 0x10: those two are swapped back */
+	if (l->buttons >= 0 && l->joinver < 2)
+		u->buttons = ((unsigned)l->buttons & ~0x30u) | ((unsigned)l->buttons & 0x10 ? 0x20 : 0) |
+		             ((unsigned)l->buttons & 0x20 ? 0x10 : 0);
+	else if (l->buttons >= 0)
 		u->buttons = (unsigned)l->buttons;
 	else
 		u->buttons = (l->keys & 0x001 ? 1 : 0) | (l->keys & 0x002 ? 2 : 0) | (l->keys & 0x400 ? 0x10 : 0) |
@@ -1004,6 +1017,8 @@ static void v2_sync(link_t *l)
 	l->numbrush = 0;
 	l->nextvars = l->nextbrush = l->brushcheck = 0;
 	l->logmap = l->logvarsok = l->logbrushok = false;
+	l->wiedict = l->wiver = l->wiack = l->wilogver = 0;
+	l->wicheck = 0;
 }
 
 /* the game turned the player: the device takes these angles (QC's, pitch down-positive) */
@@ -1311,6 +1326,480 @@ static void send_brushinfo(link_t *l, double now)
 	l->nextbrush = now + PM_PERIOD;
 }
 
+/* --- weapons (link v2): WEAPONINFO, and PSTATE's weapon block ---------------------------
+ * What the device needs to run the game's weapon code itself, as the PC client
+ * does (Nuclide's ncWeapon, src/shared/game/Weapon.qc, predicted from
+ * ncPlayer::Physics_InputPostMove): the weapon's decl values as Weapon.qc
+ * reads them (ncIO::GetSubDefString and friends, called here), the view
+ * model's sequences, and the player's and weapon's state after each command. */
+
+#define WI_MAX_SEQ 64   /* view model sequences sent */
+#define WI_MAX_EV 32    /* muzzle flash events sent, all sequences */
+#define WI_RESEND 0.25  /* WEAPONINFO again this soon while the device has not acknowledged it */
+#define WI_CHECK 1.0    /* and the decl read again this often */
+#define WI_AMMO 4
+
+/* Weapon.qc's activities, in WEAPONINFO's numbering (docs/spec/link.md) */
+static const char *const wa_names[] = {"fire", "fireLast", "fireFailed", "fireStart", "fireStop", "reload",
+                                       "reloadEmpty", "reloadStart", "reloadEnd", "draw", "drawEmpty", "idle",
+                                       "idleEmpty", "cock", "loop", "delay", "release", "cooking", "detonate",
+                                       "modeOn", "modeOff"};
+#define WA_COUNT ((int)BW_ARRAY_COUNT(wa_names))
+
+/* a field of the game's with its type: Nuclide declares some int (NETWORKED_INT) */
+typedef struct {
+	int ofs;
+	bool isint;
+} qfld_t;
+
+static qfld_t qfld(const char *name)
+{
+	qcdef_t *d = QC_FindField(sv.vm, name);
+	qfld_t f = {-1, false};
+	if (d) {
+		unsigned t = d->type & 0x7fff;
+		f.ofs = (int)d->ofs, f.isint = t == ev_integer || t == ev_uint;
+	}
+	return f;
+}
+
+static float qnum(int e, qfld_t f)
+{
+	const qcval_t *v;
+	if (f.ofs < 0 || e <= 0)
+		return 0;
+	v = &QC_EdictFields(sv.vm, e)[f.ofs];
+	return f.isint ? (float)v->i : v->f;
+}
+
+static const char *qstr(int e, qfld_t f)
+{
+	string_t s = f.ofs >= 0 && e > 0 ? QC_EdictFields(sv.vm, e)[f.ofs].i : 0;
+	const char *r = s ? QC_GetString(sv.vm, s) : NULL;
+	return r ? r : "";
+}
+
+/* the fields and functions this reads, looked up once a map */
+static struct {
+	const qcvm_t *vm;
+	int spawncount;
+	qfld_t seq, animtime, atk, idle, rel, punch, punchvel, ammo[16];
+	qfld_t clip, clipsize, state, fiv, burst, firing, willrelease, overheat, overheatlen, reloadstep, spin;
+	qfld_t lastfi, primfi, secfi, viewmodel, primammo, secammo;
+	int subdefstring, subdefact, unpack, ammonum, dictfloat; /* functions */
+	int falldecl, infinite;                                  /* globals */
+} wf;
+
+static void w_fields(void)
+{
+	char name[64];
+	if (wf.vm == sv.vm && wf.spawncount == svs.spawncount)
+		return;
+	wf.vm = sv.vm, wf.spawncount = svs.spawncount;
+	wf.seq = qfld("ncPlayer::__mm_weaponAnimSequence");
+	wf.animtime = qfld("ncPlayer::__mm_weaponAnimTime");
+	wf.atk = qfld("ncPlayer::__mm_timeUntilNextAttack");
+	wf.idle = qfld("ncPlayer::__mm_timeUntilNextIdle");
+	wf.rel = qfld("ncPlayer::__mm_timeUntilReloaded");
+	wf.punch = qfld("ncPlayer::__mm_punchAngle");
+	wf.punchvel = qfld("ncPlayer::__mm_punchVelocity");
+	for (int i = 0; i < 16; i++) {
+		snprintf(name, sizeof(name), "ncActor::__mm_ammoTypes[%d]", i);
+		wf.ammo[i] = qfld(name);
+	}
+	wf.clip = qfld("ncWeapon::__mm_weaponClip");
+	wf.clipsize = qfld("ncWeapon::__mm_weaponClipSize");
+	wf.state = qfld("ncWeapon::__mm_weaponState");
+	wf.fiv = qfld("ncWeapon::__mm_weaponFireInfoValue");
+	wf.burst = qfld("ncWeapon::__mm_burstCount");
+	wf.firing = qfld("ncWeapon::__mm_weaponIsFiring");
+	wf.willrelease = qfld("ncWeapon::__mm_fiWillRelease");
+	wf.overheat = qfld("ncWeapon::__mm_weaponOverheating");
+	wf.overheatlen = qfld("ncWeapon::__mm_fiOverheatLength");
+	wf.reloadstep = qfld("ncWeapon::__mm_reloadStepLength");
+	wf.spin = qfld("ncWeapon::__mm_weaponSpin");
+	wf.lastfi = qfld("ncWeapon::__mm_weaponLastFireInfo");
+	wf.primfi = qfld("ncWeapon::__mm_primaryFireInfo");
+	wf.secfi = qfld("ncWeapon::__mm_secondaryFireInfo");
+	wf.viewmodel = qfld("ncWeapon::__mm_viewModel");
+	wf.primammo = qfld("ncWeapon::__mm_primaryAmmoType");
+	wf.secammo = qfld("ncWeapon::__mm_secondaryAmmoType");
+	wf.subdefstring = QC_FindFunction(sv.vm, "ncIO::GetSubDefString");
+	wf.subdefact = QC_FindFunction(sv.vm, "ncIO::GetSubDefAct");
+	wf.unpack = QC_FindFunction(sv.vm, "unpackStringCommand");
+	wf.ammonum = QC_FindFunction(sv.vm, "ammoNumForName");
+	wf.dictfloat = QC_FindFunction(sv.vm, "ncDict::GetFloat");
+	wf.falldecl = QC_GlobalOfs(sv.vm, "g_fallDamageDecl");
+	wf.infinite = QC_GlobalOfs(sv.vm, "autocvar_g_infiniteAmmo");
+}
+
+/* the game can predict a weapon on the device: it has what Weapon.qc keeps */
+static bool w_usable(void)
+{
+	return wf.seq.ofs >= 0 && wf.animtime.ofs >= 0 && wf.atk.ofs >= 0 && wf.idle.ofs >= 0 && wf.rel.ofs >= 0 &&
+	       wf.clip.ofs >= 0 && wf.state.ofs >= 0 && wf.lastfi.ofs >= 0 && wf.primfi.ofs >= 0 &&
+	       wf.viewmodel.ofs >= 0 && wf.subdefstring > 0 && wf.subdefact > 0 && wf.unpack > 0 && wf.ammonum > 0;
+}
+
+/* a QC function run with self and up to two strings; its return value */
+static qcval_t qc_call(int fn, int self, int argc, const char *a0, const char *a1)
+{
+	qcvm_t *vm = sv.vm;
+	int32_t oself = QC_GInt(vm, vm->gofs.self);
+	qcval_t r;
+	QC_SetGInt(vm, vm->gofs.self, self);
+	QC_SetGFloat(vm, vm->gofs.time, (float)sv.time);
+	if (argc > 0)
+		vm->globals[OFS_PARM(0)].i = QC_NewString(vm, a0);
+	if (argc > 1)
+		vm->globals[OFS_PARM(1)].i = QC_NewString(vm, a1);
+	vm->argc = argc;
+	r.i = 0;
+	if (fn > 0 && QC_Execute(vm, fn))
+		r = vm->globals[OFS_RETURN];
+	QC_SetGInt(vm, vm->gofs.self, oself);
+	return r;
+}
+
+/* ncIO::GetSubDefString(subDef, key) on the weapon: the fireInfo's value, else the weapon decl's */
+static void w_subdef(int w, const char *fi, const char *key, char *out, size_t size)
+{
+	qcval_t r = qc_call(wf.subdefstring, w, 2, fi, key);
+	const char *s = r.i ? QC_GetString(sv.vm, r.i) : NULL;
+	snprintf(out, size, "%s", s ? s : "");
+}
+
+/* QC's stof, stoi and stov */
+static float w_stof(const char *s) { return (float)strtod(s, NULL); }
+static int w_stoi(const char *s) { return (int)strtol(s, NULL, 0); }
+static void w_stov(const char *s, float *v)
+{
+	char *end;
+	for (int k = 0; k < 3; k++, s = end) {
+		while (*s == '\'' || *s == ' ')
+			s++;
+		v[k] = (float)strtod(s, &end);
+	}
+}
+
+static float w_subf(int w, const char *fi, const char *key)
+{
+	char v[256];
+	w_subdef(w, fi, key, v, sizeof(v));
+	return w_stof(v);
+}
+
+/* an activity's sequences as GetSubDefAct picks among them (activities.qc): the
+ * decl's comma list, each through unpackStringCommand, or the one value
+ * GetSubDefAct finds elsewhere */
+static int w_acts(int w, const char *fi, const char *act, int16_t *out, int max)
+{
+	char key[40], raw[256];
+	int n = 0;
+	snprintf(key, sizeof(key), "act_%s", act);
+	w_subdef(w, fi, key, raw, sizeof(raw));
+	if (!raw[0]) {
+		float v = qc_call(wf.subdefact, w, 2, fi, act).f;
+		if (v != -1)
+			out[n++] = (int16_t)v;
+		return n;
+	}
+	for (char *tok = raw, *next; tok && n < max; tok = next) {
+		qcval_t r;
+		const char *s;
+		if ((next = strchr(tok, ',')))
+			*next++ = 0;
+		r = qc_call(wf.unpack, 0, 1, tok, NULL);
+		s = r.i ? QC_GetString(sv.vm, r.i) : NULL;
+		out[n++] = (int16_t)w_stof(s ? s : "");
+	}
+	return n;
+}
+
+/* one fireInfo, as ncWeapon::UpdateFireInfoCache (Weapon.qc:126-256) reads it */
+static int w_fireinfo(pkt_t *p, int w, const char *fi)
+{
+	char v[256], onfire[256];
+	float f[25], vec[3];
+	unsigned flags = 0;
+	int16_t acts[4];
+	int nacts = 0, at;
+	if (w_subf(w, fi, "ammoRequired") != 0)
+		flags |= 1;
+	if (w_subf(w, fi, "semiAuto") != 0)
+		flags |= 2;
+	if (w_subf(w, fi, "fireUnderwater") != 0)
+		flags |= 4;
+	if (w_subf(w, fi, "act_loop") != 0)
+		flags |= 8;
+	if (w_subf(w, fi, "cocks") != 0)
+		flags |= 16;
+	if (w_subf(w, fi, "drawAfterRelease") != 0)
+		flags |= 32;
+	if (w_subf(w, fi, "reloadTimed") != 0)
+		flags |= 64;
+	w_subdef(w, fi, "def_onFire", onfire, sizeof(onfire));
+	if (onfire[0])
+		flags |= 128;
+	w_subdef(w, fi, "def_onRelease", v, sizeof(v));
+	if (v[0])
+		flags |= 256;
+	w_subdef(w, fi, "detonateOnFire", v, sizeof(v));
+	if (v[0])
+		flags |= 512;
+	if (w_subf(w, fi, "serverFire") != 0)
+		flags |= 1024;
+	p_u16(p, flags);
+	w_subdef(w, fi, "ammoType", v, sizeof(v));
+	at = wf.ammonum > 0 ? qc_call(wf.ammonum, 0, 1, v, NULL).i : -1;
+	p_u8(p, (uint8_t)(int8_t)BW_CLAMP(at, -1, 15));
+	w_subdef(w, fi, "ammoPerShot", v, sizeof(v));
+	p_u16(p, (uint16_t)(int16_t)(v[0] ? w_stoi(v) : 1));
+	w_subdef(w, fi, "depleteAmmo", v, sizeof(v));
+	p_u16(p, (uint16_t)(int16_t)w_stoi(v));
+	w_subdef(w, fi, "punchAngle", v, sizeof(v));
+	w_stov(v, vec);
+	f[0] = vec[0], f[1] = vec[1], f[2] = vec[2];
+	w_subdef(w, fi, "punchSpring", v, sizeof(v));
+	w_stov(v, vec);
+	f[3] = vec[0], f[4] = vec[1], f[5] = vec[2];
+	f[6] = w_subf(w, fi, "punchKick");
+	f[7] = w_subf(w, fi, "fireRate");
+	f[8] = w_subf(w, fi, "chargeTime");
+	f[9] = w_subf(w, fi, "overheatPerShot");
+	f[10] = w_subf(w, fi, "overheatLength");
+	f[11] = w_subf(w, fi, "burstCount");
+	f[12] = w_subf(w, fi, "burstTime");
+	f[13] = w_subf(w, fi, "knockback");
+	f[14] = w_subf(w, fi, "knockbackRelease");
+	f[15] = w_subf(w, fi, "testDistance");
+	f[16] = w_subf(w, fi, "spinUpTime");
+	w_subdef(w, fi, "reloadTime", v, sizeof(v));
+	f[17] = v[0] ? w_stof(v) : -1.0f; /* -1: from the animation */
+	f[18] = w_subf(w, fi, "reloadStartTime");
+	f[19] = w_subf(w, fi, "zoomFov") / 90.0f;
+	f[20] = w_subf(w, fi, "failRate");
+	/* a melee sweep's cone and reach: its def_onFire's sweepAngle and range (TestFireAbility) */
+	f[21] = f[22] = 0;
+	if (onfire[0]) {
+		static const char *const keys[2] = {"sweepAngle", "range"};
+		int fn = QC_FindFunction(sv.vm, "EntityDef_GetKeyValue");
+		for (int k = 0; k < 2 && fn > 0; k++) {
+			qcval_t r = qc_call(fn, 0, 2, onfire, keys[k]);
+			const char *s = r.i ? QC_GetString(sv.vm, r.i) : NULL;
+			f[21 + k] = w_stof(s ? s : "");
+		}
+	}
+	f[23] = w_subf(w, fi, "regenRate");
+	f[24] = w_subf(w, fi, "depleteRate");
+	for (int i = 0; i < 25; i++)
+		p_f32(p, f[i]);
+	for (int a = 0; a < WA_COUNT; a++)
+		nacts += w_acts(w, fi, wa_names[a], acts, 4) > 0;
+	p_u8(p, (unsigned)nacts);
+	for (int a = 0; a < WA_COUNT; a++) {
+		int n = w_acts(w, fi, wa_names[a], acts, 4);
+		if (!n)
+			continue;
+		p_u8(p, (unsigned)a);
+		p_u8(p, (unsigned)n);
+		for (int i = 0; i < n; i++)
+			p_u16(p, (uint16_t)acts[i]);
+	}
+	return at;
+}
+
+/* ncDict::GetFloat on the game's falldamage decl (Physics_Fall's punch) */
+static float w_fall(const char *key)
+{
+	int d = QC_GInt(sv.vm, wf.falldecl);
+	return wf.falldecl >= 0 && d > 0 && wf.dictfloat > 0 ? qc_call(wf.dictfloat, d, 1, key, NULL).f : 0;
+}
+
+/* WEAPONINFO's body (after the version): what the device needs to run weapon w */
+static void w_build(pkt_t *p, int w, int *fiammo)
+{
+	static const char *const wkeys[] = {"altAlternates", "removeOnEmpty", "powerAmmo", "altMode", "buggyIdleAnim"};
+	const char *prim = qstr(w, wf.primfi), *sec = qstr(w, wf.secfi);
+	const studio_model_t *m = QC_StudioModel(sv.vm, (int)qnum(w, wf.viewmodel));
+	char v[256];
+	unsigned flags = 0;
+	int nseq = m ? BW_MIN(m->numseqs, WI_MAX_SEQ) : 0, nev = 0;
+	/* the weapon decl's own keys (ReloadCachedAttributes): GetSubDefString with no
+	 * fireInfo falls back to GetDefString */
+	for (int i = 0; i < 5; i++) {
+		w_subdef(w, "", wkeys[i], v, sizeof(v));
+		if (w_stof(v) != 0)
+			flags |= 1u << i;
+	}
+	if (sec[0])
+		flags |= 32;
+	p_u16(p, (unsigned)qnum(w, wf.viewmodel));
+	p_u8(p, flags);
+	p_u8(p, (uint8_t)(int8_t)BW_CLAMP((int)QC_GFloat(sv.vm, wf.infinite), -1, 9));
+	p_u8(p, (uint8_t)(int8_t)BW_CLAMP((int)qnum(w, wf.primammo), -1, 15));
+	p_u8(p, (uint8_t)(int8_t)BW_CLAMP((int)qnum(w, wf.secammo), -1, 15));
+	w_subdef(w, "", "primed_fuse", v, sizeof(v));
+	p_f32(p, w_stof(v));
+	p_f32(p, w_fall("minFallDistance"));
+	p_f32(p, w_fall("minLandDistance"));
+	p_f32(p, w_fall("punchAngleScale"));
+	p_f32(p, w_fall("punchSpringScale"));
+	p_u8(p, sec[0] ? 2 : 1);
+	fiammo[0] = w_fireinfo(p, w, prim);
+	fiammo[1] = sec[0] ? w_fireinfo(p, w, sec) : -1;
+	/* the view model's sequences: how long each lasts (frameduration, as Weapon.qc times
+	 * them), its frames and rate, and its muzzle flash events (5001, 5011, 5021, 5031) */
+	p_u8(p, (unsigned)nseq);
+	for (int i = 0; i < nseq; i++) {
+		const studio_seq_t *s = &m->seqs[i];
+		int idx[8], n = 0;
+		for (int k = 0; k < s->numevents && n < 8 && nev < WI_MAX_EV; k++) {
+			int ev = s->events[k].event;
+			if (ev == 5001 || ev == 5011 || ev == 5021 || ev == 5031)
+				idx[n++] = k, nev++;
+		}
+		p_f32(p, Studio_SeqDuration(m, i));
+		p_f32(p, s->fps);
+		p_u16(p, (unsigned)BW_CLAMP(s->numframes, 0, 65535));
+		p_u8(p, (s->flags & STUDIO_LOOPING) ? 1 : 0);
+		p_u8(p, (unsigned)n);
+		for (int k = 0; k < n; k++) {
+			const studio_event_t *e = &s->events[idx[k]];
+			p_u16(p, (unsigned)BW_CLAMP(e->frame, 0, 65535));
+			p_u16(p, (unsigned)e->event);
+			p_u8(p, (unsigned)BW_CLAMP(w_stoi(e->options), 0, 255));
+		}
+	}
+}
+
+/* the weapon's info again when the weapon changed or WI_CHECK went by; a new version
+ * when anything in it differs */
+static void update_winfo(link_t *l, int e, double now)
+{
+	int w = active_weapon(e);
+	pkt_t p;
+	int fiammo[2];
+	if (w == l->wiedict && now < l->wicheck)
+		return;
+	l->wicheck = now + WI_CHECK;
+	if (!w || !w_usable()) {
+		l->wiedict = (uint16_t)w;
+		l->wiver = 0;
+		return;
+	}
+	p.len = 0;
+	w_build(&p, w, fiammo);
+	l->wiammo[0] = (int8_t)fiammo[0], l->wiammo[1] = (int8_t)fiammo[1];
+	if (w == l->wiedict && l->wiver && p.len == l->wilen && !memcmp(p.data, l->wibody, (size_t)p.len))
+		return;
+	memcpy(l->wibody, p.data, (size_t)p.len);
+	l->wilen = p.len;
+	l->wiedict = (uint16_t)w;
+	if (!++l->wivers)
+		l->wivers = 1;
+	l->wiver = l->wivers;
+	l->wisent = 0;
+}
+
+static void send_winfo(link_t *l, double now)
+{
+	pkt_t p;
+	p_begin(&p, L_WEAPONINFO);
+	p_u32(&p, l->session);
+	p_u16(&p, (unsigned)svs.spawncount);
+	p_u16(&p, l->wiedict);
+	p_u16(&p, l->wiver);
+	p_bytes(&p, l->wibody, l->wilen);
+	send_to(&l->from, &p);
+	l->wisent = now;
+}
+
+/* the weapon state Weapon.qc and Physics_InputPostMove keep: the player's and its weapon's */
+typedef struct {
+	int w, fi, state, flags, clip, clipsize, animseq, nammo;
+	float burst, fiv, overheat, overheatlen, reloadstep, spin, atk, idle, rel, animtime, firescale;
+	float punch[3], punchvel[3];
+	int ammotype[WI_AMMO], ammo[WI_AMMO];
+} lwstate_t;
+
+static void read_wstate(const link_t *l, int e, lwstate_t *s)
+{
+	int w = active_weapon(e), types[4], nt = 0;
+	char fs[32] = "";
+	memset(s, 0, sizeof(*s));
+	s->w = w;
+	s->animseq = (int)qnum(e, wf.seq);
+	s->animtime = qnum(e, wf.animtime);
+	s->atk = qnum(e, wf.atk), s->idle = qnum(e, wf.idle), s->rel = qnum(e, wf.rel);
+	if (wf.punch.ofs >= 0)
+		memcpy(s->punch, fvec(e, wf.punch.ofs), sizeof(s->punch));
+	if (wf.punchvel.ofs >= 0)
+		memcpy(s->punchvel, fvec(e, wf.punchvel.ofs), sizeof(s->punchvel));
+	SV_InfoGet(l->client->userinfo, "*fireScale", fs, sizeof(fs)); /* ncWeapon::_FireScale */
+	s->firescale = fs[0] && w_stof(fs) > 0 ? w_stof(fs) : 1.0f;
+	s->fi = 255;
+	if (!w)
+		return;
+	{
+		const char *last = qstr(w, wf.lastfi);
+		s->fi = !strcmp(last, qstr(w, wf.primfi)) ? 0 : last[0] && !strcmp(last, qstr(w, wf.secfi)) ? 1 : 255;
+	}
+	s->state = (int)qnum(w, wf.state);
+	s->flags = (qnum(w, wf.firing) != 0 ? 1 : 0) | (qnum(w, wf.willrelease) != 0 ? 2 : 0);
+	s->clip = (int)qnum(w, wf.clip), s->clipsize = (int)qnum(w, wf.clipsize);
+	s->burst = qnum(w, wf.burst), s->fiv = qnum(w, wf.fiv);
+	s->overheat = qnum(w, wf.overheat), s->overheatlen = qnum(w, wf.overheatlen);
+	s->reloadstep = qnum(w, wf.reloadstep), s->spin = qnum(w, wf.spin);
+	/* the ammo the weapon uses: its two types, and its fireInfos' (WEAPONINFO) */
+	types[nt++] = (int)qnum(w, wf.primammo);
+	types[nt++] = (int)qnum(w, wf.secammo);
+	if (w == l->wiedict && l->wiver)
+		types[nt++] = l->wiammo[0], types[nt++] = l->wiammo[1];
+	for (int i = 0; i < nt && s->nammo < WI_AMMO; i++) {
+		bool dup = types[i] < 0 || types[i] > 15;
+		for (int j = 0; j < s->nammo && !dup; j++)
+			dup = s->ammotype[j] == types[i];
+		if (!dup)
+			s->ammotype[s->nammo] = types[i], s->ammo[s->nammo++] = (int)qnum(e, wf.ammo[types[i]]);
+	}
+}
+
+/* PSTATE's weapon block (docs/spec/link.md) */
+static void p_wstate(pkt_t *p, const link_t *l, const lwstate_t *s)
+{
+	p_u8(p, 'W');
+	p_u8(p, 1);
+	p_u16(p, (unsigned)s->w);
+	p_u16(p, s->w && s->w == l->wiedict ? l->wiver : 0);
+	p_u8(p, (unsigned)s->state);
+	p_u8(p, (unsigned)s->fi);
+	p_u8(p, (unsigned)s->flags);
+	p_u8(p, (unsigned)s->nammo);
+	p_u16(p, (uint16_t)(int16_t)BW_CLAMP(s->clip, -32768, 32767));
+	p_u16(p, (uint16_t)(int16_t)BW_CLAMP(s->clipsize, -32768, 32767));
+	p_f32(p, s->burst);
+	p_f32(p, s->fiv);
+	p_f32(p, s->overheat);
+	p_f32(p, s->overheatlen);
+	p_f32(p, s->reloadstep);
+	p_f32(p, s->spin);
+	p_f32(p, s->atk);
+	p_f32(p, s->idle);
+	p_f32(p, s->rel);
+	p_u16(p, (uint16_t)(int16_t)BW_CLAMP(s->animseq, -32768, 32767));
+	p_f32(p, s->animtime);
+	for (int k = 0; k < 3; k++)
+		p_f32(p, s->punch[k]);
+	for (int k = 0; k < 3; k++)
+		p_f32(p, s->punchvel[k]);
+	p_f32(p, s->firescale);
+	for (int i = 0; i < s->nammo; i++) {
+		p_u8(p, (unsigned)s->ammotype[i]);
+		p_u16(p, (uint16_t)(int16_t)BW_CLAMP(s->ammo[i], -32768, 32767));
+	}
+}
+
 /* --- PSTATE --- */
 
 typedef struct {
@@ -1482,6 +1971,12 @@ static void send_pstate(link_t *l)
 			p_f32(&p, boxes[i].maxs[k]);
 		p_u8(&p, (unsigned)boxes[i].solid);
 	}
+	{
+		lwstate_t ws;
+		w_fields();
+		read_wstate(l, e, &ws);
+		p_wstate(&p, l, &ws);
+	}
 	send_to(&l->from, &p);
 	l->pstate_ack = l->lastrun;
 	l->lastpstate = Sys_Seconds();
@@ -1502,6 +1997,10 @@ static void send_v2(link_t *l, double now, bool view)
 		send_pmovevars(l, now);
 	if (l->brushsent != l->brushver || now >= l->nextbrush || (l->brushack != l->brushver && now >= l->lastbrush + PM_RESEND))
 		send_brushinfo(l, now);
+	w_fields();
+	update_winfo(l, e, now);
+	if (l->wiver && l->wiack != l->wiver && now >= l->wisent + WI_RESEND)
+		send_winfo(l, now);
 	/* after each batch of commands (the device's packet rate, at most 30 a
 	 * second); with a VIEW only when none ran for a while, so the two rates
 	 * don't add up */
@@ -1591,6 +2090,38 @@ static void log_before(link_t *l, int e, strbuf_t *sb)
 	log_flush(sb);
 }
 
+/* sv_link_log's weapon lines: WEAPONINFO's body when its version changes, and the
+ * weapon state before and after each command (tools/nds/weptest) */
+static void log_wstate(link_t *l, int e, const char *what, float land, strbuf_t *sb)
+{
+	lwstate_t s;
+	int slot = (int)(l - links);
+	w_fields();
+	if (l->wiver && l->wiver != l->wilogver) {
+		SB_Printf(sb, "LINKPM %d winfo %u %u ", slot, l->wiedict, l->wiver);
+		for (int i = 0; i < l->wilen; i++)
+			SB_Printf(sb, "%02x", l->wibody[i]);
+		log_flush(sb);
+		l->wilogver = l->wiver;
+	}
+	read_wstate(l, e, &s);
+	SB_Printf(sb, "LINKPM %d %s %d %u %d %d %d %d %d", slot, what, s.w, s.w && s.w == l->wiedict ? l->wiver : 0, s.state,
+	          s.fi, s.flags, s.clip, s.clipsize);
+	{
+		float f[17] = {s.burst, s.fiv, s.overheat, s.overheatlen, s.reloadstep, s.spin, s.atk, s.idle, s.rel, s.animtime,
+		               s.punch[0], s.punch[1], s.punch[2], s.punchvel[0], s.punchvel[1], s.punchvel[2], s.firescale};
+		SB_Printf(sb, " %d", s.animseq);
+		for (int i = 0; i < 17; i++)
+			SB_Printf(sb, " %a", (double)f[i]);
+	}
+	SB_Printf(sb, " %u %u %d", (unsigned)(int)QC_EFloat(sv.vm, e, pf.vflags), (unsigned)(int)QC_EFloat(sv.vm, e, pf.gflags),
+	          s.nammo);
+	for (int i = 0; i < s.nammo; i++)
+		SB_Printf(sb, " %d %d", s.ammotype[i], s.ammo[i]);
+	SB_Printf(sb, " %a %a %d", (double)land, (double)QC_EFloat(sv.vm, e, F.health), (int)QC_EFloat(sv.vm, e, F.waterlevel));
+	log_flush(sb);
+}
+
 /* --- v2 INPUT: the device's commands, each run once --- */
 
 static void input_v2(link_t *l, const uint8_t *d, int len)
@@ -1599,7 +2130,6 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 	uint32_t newest = rd32(d + 34);
 	int count = d[38];
 	bool here = c->state == CS_SPAWNED && l->devspawn == (svs.spawncount & 0xffff);
-	(void)len;
 	l->v2 = true;
 	c->linkcmds = true;
 	if (!sv_link_log->ivalue)
@@ -1609,8 +2139,13 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 	 * which would otherwise leave every later command looking like a resend */
 	if (l->lastrun && newest > l->lastrun && newest - l->lastrun > CMD_WINDOW)
 		return;
-	if (l->devspawn == (svs.spawncount & 0xffff)) /* acks for another map mean nothing here */
+	if (l->devspawn == (svs.spawncount & 0xffff)) { /* acks for another map mean nothing here */
+		const uint8_t *t = d + 44 + 14 * count;
 		l->varsack = rd16(d + 40), l->brushack = rd16(d + 42);
+		/* after the commands: 'W', the WEAPONINFO version the device has, for which edict */
+		if (len >= 44 + 14 * count + 5 && t[0] == 'W' && rd16(t + 3) == l->wiedict)
+			l->wiack = (uint16_t)rd16(t + 1);
+	}
 	if (!here) {
 		/* not in the game, or the device is on another map: nothing runs,
 		 * and the commands are never run later either */
@@ -1624,7 +2159,8 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		int16_t pitch = (int16_t)rd16(k + 1), yaw = (int16_t)rd16(k + 3);
 		usercmd_t u;
 		strbuf_t sb = {0};
-		bool log = sv_link_log->ivalue != 0;
+		bool log = sv_link_log->ivalue != 0, wasground = false;
+		float fallvel = 0, basevel = 0;
 		if (s <= l->lastrun)
 			continue; /* run already: a resend */
 		if (s - l->lastrun > 1)
@@ -1640,8 +2176,16 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		u.buttons = rd16(k + 11);
 		u.impulse = k[13];
 		u.servertime_ms = 0; /* no lag to rewind: the device sees the others where the server has them */
-		if (log)
+		if (log) {
+			lstate_t pre;
 			log_before(l, c->edict, &sb);
+			read_state(l, c->edict, &pre);
+			/* Physics_Fall's downforce should this command land (player_pmove.qc:750-790) */
+			fallvel = pre.flags & FL_ONGROUND ? 0 : -pre.velocity[2];
+			basevel = pre.basevel[2];
+			wasground = (pre.flags & FL_ONGROUND) != 0;
+			log_wstate(l, c->edict, "wpre", 0, &sb);
+		}
 		if (F.v_angle >= 0) { /* as an old device's INPUT does; the game sets it from the command as well */
 			float *va = &QC_EdictFields(sv.vm, c->edict)[F.v_angle].f;
 			va[0] = u.angles[0], va[1] = u.angles[1], va[2] = 0;
@@ -1653,6 +2197,7 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		}
 		if (c->lastucmd.msec < u.msec)
 			l->clipped++;
+		watch_viewmodel(l); /* each command can start a sequence: a frame can run several */
 		l->lastrun = s;
 		if (log) {
 			const usercmd_t *r = &c->lastucmd;
@@ -1666,6 +2211,8 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 			SB_Printf(&sb, "LINKPM %d post", slot);
 			log_state(&sb, &st);
 			log_flush(&sb);
+			log_wstate(l, c->edict, "wpost",
+			           !wasground && (st.flags & FL_ONGROUND) ? (st.waterlevel ? 0 : fallvel) - basevel : -1, &sb);
 			SB_Free(&sb);
 		}
 		if (c->state != CS_SPAWNED) { /* the command took the player out of the game */
@@ -1755,16 +2302,23 @@ static int active_weapon(int e)
 	return w;
 }
 
-/* a class member field: Nuclide's compiler names them Class::__mm_name */
+/* a class member field: Nuclide's compiler names them Class::__mm_name. Read by
+ * its type: m_weaponAnimSequence is an int (NETWORKED_INT), and read as a float
+ * it was always 0 */
 static float member(int e, const char *cls, const char *name)
 {
 	char full[96];
+	qfld_t f;
 	snprintf(full, sizeof(full), "%s::__mm_%s", cls, name);
-	return QC_FieldOfs(sv.vm, full) >= 0 ? efloat(e, full) : efloat(e, name);
+	f = qfld(full);
+	if (f.ofs < 0)
+		f = qfld(name);
+	return qnum(e, f);
 }
 
-/* the view model's sequence, once a server frame: a sequence started again
- * (another shot) shows as its time going back */
+/* the view model's sequence, once a server frame and after each command a v2
+ * device sends: a sequence started again (another shot, or an idle that is
+ * over) shows as its time going back */
 static void watch_viewmodel(link_t *l)
 {
 	int e = l->client->edict, seq = (int)member(e, "ncPlayer", "weaponAnimSequence");
