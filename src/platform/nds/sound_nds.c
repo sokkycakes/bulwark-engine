@@ -162,6 +162,8 @@ static struct sheap_s {
 		uint8_t d[S_PAGE];
 	} pagecache[2];
 	uint32_t f_q8[256]; /* snd_factor_q8 by attenuation byte */
+	samb_t ambnew[S_AMB]; /* handle_ambient's new set (off the stack: DTCM is small) */
+	bool ambstart[S_AMB];
 	int16_t khead[S_KHASH], knext[S_KEYS];
 } *H;
 
@@ -1114,9 +1116,10 @@ static void amb_start(int ai)
 
 static void handle_ambient(const uint8_t *d, int len)
 {
-	samb_t nw[S_AMB];
+	samb_t *nw = H->ambnew;
+	bool *start = H->ambstart;
 	int n = d[8];
-	memset(nw, 0, sizeof(nw));
+	memset(nw, 0, sizeof(H->ambnew));
 	uint16_t ver = (uint16_t)rd16(d + 6);
 	if (ver == S.ambver || len < 9 + n * 16 || n > S_AMB)
 		return;
@@ -1136,7 +1139,6 @@ static void handle_ambient(const uint8_t *d, int len)
 		if (!kept && H->amb[j].voice >= 0)
 			voice_free(H->amb[j].voice, "ambstop");
 	}
-	bool start[S_AMB];
 	for (int i = 0; i < n; i++) {
 		samb_t *a = &nw[i], *o = NULL;
 		for (int j = 0; j < S.namb; j++)
