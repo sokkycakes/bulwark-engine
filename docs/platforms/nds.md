@@ -72,6 +72,9 @@ hand=right          left: move with A B X Y and fire with R
 sens=100            aim speed in percent (100 turns 120 degrees across the screen)
 diag=0              hide the frame rate, polygons and models along the top screen's top edge
 fps=30              optional: cap at 30 fps (every frame takes two refreshes), for testing
+predict=0           optional: show where the server says you are, without prediction (below)
+cmdvb=2             optional: one movement command every 2 refreshes instead of every one, for testing
+botwalk=1           optional: walk, strafe, jump and crouch by itself in a fixed 12 s pattern, for testing
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
@@ -144,7 +147,8 @@ names, halves the ones that cover the least of the world until they fit in
 180 KB of texture memory, and gives the map one shared 255-colour palette
 (`c1a0.pal`; index 255 stays clear for `{` textures). The light becomes
 Quake's one byte a sample, with the colours beside it in `c1a0.lit`
-(QLIT 1). Clip hulls are dropped: the DS doesn't collide. Each texture
+(QLIT 1). The clip hulls go to `c1a0.hul` beside it, for the linked
+player's movement prediction (below). Each texture
 keeps its original size in the header, and a `DSz` tag after it gives the
 size actually stored.
 
@@ -205,13 +209,14 @@ packages.
 Turning and the viewer's flying go by the refreshes a frame took, not by
 frames, so they keep their speed when a busy view drops to 30 fps. The
 linked client's jump key is held 8 refreshes, so a 30 fps frame can't drop
-it. The server sends the view 20 times a second; the DS eases toward where
-the last two said it is heading, up to 3 refreshes ahead, which removes
-most of the lag that made jumps feel floaty.
+it. On a map with clip hulls the DS predicts its own movement (next
+section). Without them it shows the view the server sends 20 times a
+second, eased toward where the last two said it is heading, up to 3
+refreshes ahead.
 
 The view's motion is a port of the Nuclide client code the PC runs for the
 co-op game (valve/csprogs.dat), from the velocity, on-ground and crouch
-flags in `VIEW`: the camera bob of `valve/src/client/viewmodel.qc`
+flags of the predicted movement (or of `VIEW` without prediction): the camera bob of `valve/src/client/viewmodel.qc`
 (`Viewmodel_CalcBob`) along the camera's up, the strafe roll of
 `valve/src/client/camera.qc` (`Camera_StrafeRoll`, 0.015 degrees per unit a
 second sideways), and the view model swing, drift and landing kick of
@@ -222,6 +227,117 @@ says (`STATS`). Bullet impacts (`FX`) draw as a spark and fading dust, our
 own shots add a muzzle flash at the view model's barrel and a tracer, and
 other players' and monsters' shots a flash and a tracer from their gun.
 These are untextured shapes; HL's sprites are not used.
+
+## Prediction: moving as the PC client does
+
+Linked to a link v2 server (`docs/spec/link.md`, "Prediction"), the DS
+moves its own player the way the PC client does in the co-op game. The PC
+runs Nuclide's prediction (`ncPlayer::PreFrame`, `src/shared/game/Player.qc`):
+each command goes through the game's player movement (`Physics_Run`, then
+`PMoveCustom_RunPlayerPhysics`) at once, and when the server's state for a
+command comes back, the commands it hasn't run yet run again from that
+state. The DS does the same in C:
+
+- `pmove_nds.c` is that movement code (`src/shared/physics/pmove_custom.qc`,
+  `player_pmove.qc` and the valve player's jump and sprint), one C function
+  for each QuakeC one, in the same float operations and order, so it gives
+  the server's results bit for bit. The movement values (`ncPMoveVars`:
+  the global set and the player's own, which co-op's heroes change) come
+  from the server (`PMOVEVARS`).
+- `hull_nds.c` traces through the map's clip hulls the way the server's
+  `SV_Move` does: the world, then the brush entities (`BRUSHINFO`, with the
+  doors and lifts near the player where `PSTATE` says they are) and the
+  boxes of the monsters and players near it, in the server's order. The
+  hulls come from a `.hul` sidecar: `hlmap.py` writes one with every
+  Half-Life map, and `hlmap.py --hul-only e0m1.bsp e0m1.hul` makes one for
+  a Quake or Nuclide map (the DS can also take those from the map's own
+  clip hulls). Point traces use the drawing tree the DS already holds.
+- A command is made every refresh (16 or 17 ms, so two a frame at 30 fps).
+  The PC's are 14 ms; 33 ms ones jump 2.5 units lower (39.6 against 42.0
+  on `coop_arena`, `tools/nds/pmtest -resample`), 17 ms ones 0.4 lower. The
+  keys make the PC's move values (400 forward, back and sideways,
+  normalised as `ncPlayer::ClientInputFrame` does). At most 30 packets a
+  second carry every command the server hasn't run, up to 8, so a lost
+  packet loses nothing.
+- The camera is the predicted eye, with the stair smoothing of
+  `ncView::StairSmooth` (before the bob, where the PC does it after); the
+  bob, roll and view-model swing read the predicted velocity, on-ground
+  and crouch flags.
+- When the server's state for a command matches what the DS predicted for
+  it (within 1/32 unit and 0.5 units a second), nothing runs again. When the
+  game turns the player (a teleport, a respawn) the DS takes the server's
+  state and facing as they are.
+- Without hulls (no `.hul` and no clip hulls in the map, or `hull: no RAM`
+  on the second line of the top screen), on an old server, or while dead
+  or spectating, the view is the server's, as before (`P` at the end of
+  the first line shows prediction is on). The commands still go out, and
+  the server runs each once.
+
+What the DS can't predict, the PC can't either: touches (pushes, teleports,
+conveyors), a lift carrying the player, monsters knocking it back or
+moving into it. The next state corrects it, 30 times a second.
+
+### Measured, in melonDS 1.1 (not hardware)
+
+`bulwark-ded` with real collision and gravity: `coop_arena` (Half-Life
+BSP 30, co-op rules) and the Nuclide base maps `e0m1` and `dev` (BSP 29,
+`-game base`). The DS had the converted `coop_arena` with its `.hul`, and
+the base maps with theirs. `botwalk=1` walked, strafed and ran into walls,
+jumped and crouched; each run is 30 s with `link_god 1`, waves of monsters
+on `coop_arena`. "150 ms" is `sv_link_lag 75` (75 ms each way).
+
+- **The server's result.** `tools/nds/pmtest` replayed every command the
+  server logged (`sv_link_log 1`) in these runs through the same C code
+  built for the PC, with the DS's fixed-point drawing tree for point
+  traces: 2272 of 2272 commands on `coop_arena` at 30 fps, 2279 at 60, 2301
+  at 150 ms, 2376 on `e0m1` and 2482 on `dev` came out bit for bit. Built
+  for the DS and run in melonDS on 866 logged commands (`coop_arena`,
+  `e0m1`, `dev`), all bit for bit too.
+- **On the DS, against each `PSTATE`** (the table): on `e0m1` and `dev`
+  every state matched, most bit for bit and the rest by less than a
+  hundredth of a unit: probably newlib's `sinf` and `cosf`, which differ
+  from glibc's in the last bit for 13022 of the 65536 angles a command can
+  carry (checked in melonDS against the PC). On
+  `coop_arena` a few states a second differ by up to about a unit. They
+  are the commands the server cut short (`clipped`): melonDS runs the DS
+  0.25 % faster than real time (89.26 DS seconds in 89.04), and the
+  server's movement budget follows its own clock. A DS's clock is within a
+  few parts per million, so that should not happen on hardware. Monsters
+  pushing against the player gave a few seconds of 0.4 to 10 unit errors
+  in another run.
+- **Cost.** One command takes 1.0 to 1.3 ms on `coop_arena` and 1.4 to
+  1.9 ms on `e0m1` and `dev` (worst 4.4 ms); the hull traces are about
+  half. At 30 fps that is 2.5 to 5 ms a frame. With 150 ms between the DS
+  and the server a mismatch runs up to 8 commands again: 15 ms in that
+  frame. Standing in the same spot of `coop_arena` at 60 fps, a frame
+  took 13.1 ms on average against 12.0 ms with `2c5c447`, both at 59 fps.
+- **Traffic.** `PSTATE` comes 30 times a second (180 to 400 bytes): the
+  DS received 20 to 24 KB/s on `coop_arena` (11 KB/s before) and sent
+  2.3 KB/s (0.7 before), 4.8 KB/s at 150 ms.
+
+| Map, frame rate, delay | fps | Prediction per frame, average (worst) | States compared | Within 0.5 units | Error, units: average (worst) | Replays (commands run again) |
+|---|---|---|---|---|---|---|
+| `coop_arena`, 30 fps | 30 | 2.7 ms (3.7) | 900 | 888 | 0.016 (1.3) | 45 (0 commands) |
+| `coop_arena`, 60 fps | 60 | 1.4 ms (4.1) | 900 | 894 | 0.011 (1.0) | 43 (0) |
+| `coop_arena`, 30 fps, 150 ms | 30 | 3.3 ms (15.2) | 771 | 763 | 0.021 (3.5) | 36 (288, up to 8 at once) |
+| `coop_arena`, 30 fps, standing | 30 | 2.6 ms (3.5) | 900 | 900 | 0 (0) | 0 |
+| `coop_arena`, 30 fps, `cmdvb=2` | 30 | 1.5 ms (2.2) | 900 | 893 | 0.019 (1.3) | 101 (0) |
+| `e0m1`, 30 fps | 30 | 4.4 ms (8.1) | 796 | 796 | 0 (0) | 0 |
+| `e0m1`, 30 fps, 150 ms | 30 | 4.4 ms (8.5) | 699 | 699 | 0 (0) | 0 |
+| `dev`, 30 fps | 30 | 5.1 ms (6.3) | 900 | 900 | 0 (0) | 0 |
+
+RAM: the prediction code is 43 KB, its static data 18 KB, the hulls 10 KB
+(`coop_arena`) and 21 KB (`e0m1`). On `coop_arena` the heap in use went
+from 529 KB to 406 KB against `2c5c447`, from keeping a model's frames
+exactly and reading big models in parts. The lowest free memory on c2a4e
+is still 68 KB: that is the peak while the map itself loads, before any
+model or hull. After the load, c2a4e had 1.50 MB free with `2c5c447` and
+1.67 MB with this build; its hulls' size is not known yet (no original
+map here).
+
+Not measured yet: ladders and water (no map here has them), doors and
+lifts moving under the player, a Half-Life campaign map with hulls, and a
+DS.
 
 ## Map viewer controls
 
@@ -243,7 +359,9 @@ RAM and texture VRAM in use.
 ## How it fits
 
 All floating-point work happens once, at load time. A frame only uses
-integer and fixed-point maths. The full list is at the top of
+integer and fixed-point maths, except the linked player's movement
+prediction (soft float, so that it gives the server's results bit for
+bit; see "Prediction" above). The full list is at the top of
 `src/platform/nds/world_nds.c`.
 
 - **Vertices:** 16-bit, in 1/8 map units. One GPU unit is 512 map units, so
@@ -642,5 +760,6 @@ on a DS.
   trains move and other entities show as boxes (`ENTS` in
   `docs/spec/link.md`). Health and ammo boxes (which are small `.bsp`
   models) aren't drawn.
-- Collision: you fly through walls.
+- Collision in the map viewer: you fly through walls. (Linked, the DS
+  predicts the server's collision, above.)
 - Animated water, sky scrolling, sound.
