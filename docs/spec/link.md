@@ -52,7 +52,9 @@ takes those as they are. Otherwise the server maps the keys:
 
 These are Nuclide's `INPUT_*` bits (`src/shared/input/input.h`): attack
 0x01, jump 0x02, prone 0x04, reload 0x08, use 0x10, secondary 0x20, sprint
-0x40, crouch 0x80. The impulse goes into the move
+0x40, crouch 0x80. DS builds before link v2 sent use as 0x20 and secondary
+as 0x10 in their `buttons`; the server swaps those two back for a device
+whose `JOIN` carries no `linkver`. The impulse goes into the move
 once, when its count changes (the device repeats it in every packet, so a
 lost packet loses nothing).
 
@@ -112,6 +114,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x8B | PSTATE | the player's state after the last command run (link v2, below) |
 | 0x8C | PMOVEVARS | the game's movement values (link v2, below) |
 | 0x8D | BRUSHINFO | the brush entities that collide (link v2, below) |
+| 0x8E | WEAPONINFO | the weapon in hand, as its game code reads it (link v2, below) |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`), and every 2 s in case one was lost. The device then loads
@@ -163,7 +166,9 @@ fifth `ENTS`, until the device has had them all for this map.
 `weapon_` (from Nuclide's `m_activeWeapon`; empty when there is none, at
 most 24 bytes). A field the game doesn't have is sent as 0. Then the weapon's view
 model as a model index (named by `MODELS`; Nuclide's `ncWeapon::viewModel`,
-0 for none), the sequence it plays (`ncPlayer::weaponAnimSequence`), and a
+0 for none), the sequence it plays (`ncPlayer::weaponAnimSequence`, an
+integer field: servers before WEAPONINFO read it as a float and always sent
+0), and a
 count that goes up each time a sequence starts, the same one again
 included (seen as `weaponAnimTime` going back). `STATS` also goes out with
 the next `ENTS` whenever that count changes. The DS shows
@@ -250,6 +255,7 @@ After the 32 bytes of the v1 fields (all present):
 | 40 | u16 | `varsack`: the PMOVEVARS version the device applied for its map, 0 for none |
 | 42 | u16 | `brushack`: the BRUSHINFO version it has complete for its map, 0 for none |
 | 44 | count × 14 | commands, oldest first: command `i` has sequence `newest - (count - 1) + i` |
+| 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has, and its edict |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -315,6 +321,7 @@ server frame; movers and boxes are read at the same moment.
 | 179 | u8 | 0 |
 | 180 | nmovers × 26 | u16 edict, f32 origin[3], f32 velocity[3] |
 | | nboxes × 27 | u16 edict, f32 mins[3], f32 maxs[3], u8 solid (2, 3 or 4) |
+| | 84 + 3 × nammo | the weapon block (below), from a server that has WEAPONINFO |
 
 Floats are IEEE binary32, little endian, as the server has them. Fields the
 game lacks read 0 (the server says once per join which ones are missing).
@@ -414,6 +421,92 @@ the last one while `brushack` is behind. Angles don't count for collision.
 The device drops a PSTATE, PMOVEVARS or BRUSHINFO whose spawncount is not
 its map's.
 
+### Weapon prediction
+
+The device also predicts the weapon in hand, as the PC client does: after
+each command's movement, Nuclide runs `ncPlayer::Physics_InputPostMove`
+(the attack, reload and idle timers, the view model's time and the punch
+angle, `src/shared/physics/player_pmove.qc`) and then
+`ncPlayer::ProcessInput` (`src/shared/game/Player.qc`), whose weapon part
+calls `ncWeapon`'s `PrimaryAttack`, `SecondaryAttack`, `Reload` and
+`Release` (`src/shared/game/Weapon.qc`); `Physics_Fall` adds a punch on a
+hard landing. These run on the client for its own player and pick the view
+model's sequence, the muzzle flash (the view model's studio events), the
+punch and the ammo the HUD shows. A device runs a C port of them
+(`src/platform/nds/weapon_nds.c`) on each command; the values they read
+come from the server, so nothing is coded per weapon.
+
+**WEAPONINFO** is the weapon decl as `ncWeapon::UpdateFireInfoCache` reads
+it, and its view model:
+
+| Field | |
+|---|---|
+| u32 session, u16 spawncount, u16 edict, u16 version | the weapon entity and its version (> 0) |
+| u16 viewmodel | model index (`ncWeapon::viewModel`) |
+| u8 flags | 1 `altAlternates`, 2 `removeOnEmpty`, 4 `powerAmmo`, 8 `altMode`, 16 `buggyIdleAnim`, 32 has a `def_altFireInfo` |
+| s8 infinite | `g_infiniteAmmo` |
+| s8 primammo, secammo | `m_primaryAmmoType`, `m_secondaryAmmoType` (-1 none) |
+| f32 primed_fuse | |
+| f32 × 4 | the `falldamage` decl's `minFallDistance`, `minLandDistance`, `punchAngleScale`, `punchSpringScale` |
+| u8 nfi | 1, or 2 with a secondary fireInfo |
+| nfi × fireInfo | primary, then secondary |
+| u8 nseq | the view model's sequences, up to 64 |
+| nseq × {f32 duration, f32 fps, u16 frames, u8 loop, u8 nev, nev × {u16 frame, u16 event, u8 option}} | `frameduration` as the game gets it; the muzzle flash events (5001, 5011, 5021, 5031), the option as a number |
+
+A fireInfo: u16 flags (1 `ammoRequired`, 2 `semiAuto`, 4 `fireUnderwater`,
+8 `act_loop`, 16 `cocks`, 32 `drawAfterRelease`, 64 `reloadTimed`, 128 has
+`def_onFire`, 256 has `def_onRelease`, 512 `detonateOnFire`, 1024
+`serverFire`), s8 `ammoType` (`ammoNumForName`), s16 `ammoPerShot` (1 when
+unset), s16 `depleteAmmo`, then 25 f32: `punchAngle` (3), `punchSpring` (3),
+`punchKick`, `fireRate`, `chargeTime`, `overheatPerShot`, `overheatLength`,
+`burstCount`, `burstTime`, `knockback`, `knockbackRelease`, `testDistance`,
+`spinUpTime`, `reloadTime` (-1 when unset: the animation's length),
+`reloadStartTime`, `zoomFov` / 90, `failRate`, the `def_onFire`'s
+`sweepAngle` and `range`, `regenRate`, `depleteRate`; then u8 count and
+that many activities {u8 activity, u8 n, n × s16 sequence}. Activities are
+numbered `fire fireLast fireFailed fireStart fireStop reload reloadEmpty
+reloadStart reloadEnd draw drawEmpty idle idleEmpty cock loop delay release
+cooking detonate modeOn modeOff` (0..20); one with a list (`act_fire
+"9,10"`) has its entries, which `GetSubDefAct` picks among by
+`input_sequence`.
+
+The server reads it with the game's own functions (`ncIO::GetSubDefString`,
+`GetSubDefAct`, `ammoNumForName`, `EntityDef_GetKeyValue`) whenever the
+weapon in hand changes and once a second, and gives it a new version when it
+differs. It sends it every 0.25 s until the device's INPUT acknowledges that
+version for that edict. A game without these functions or fields, or a body
+over 1200 bytes, gets no WEAPONINFO, and the device shows the server's.
+
+**The weapon block** follows PSTATE's boxes:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8, u8 | `'W'`, 1 |
+| 2 | u16 | the weapon in hand (`m_activeWeapon`), 0 none |
+| 4 | u16 | the WEAPONINFO version that describes it now, 0 none yet |
+| 6 | u8 | `m_weaponState` |
+| 7 | u8 | `m_weaponLastFireInfo`: 0 primary, 1 secondary, 255 another |
+| 8 | u8 | 1 `m_weaponIsFiring`, 2 `m_fiWillRelease` |
+| 9 | u8 | `nammo`, 0..4 |
+| 10 | s16 × 2 | `m_weaponClip`, `m_weaponClipSize` |
+| 14 | f32 × 9 | `m_weaponBurstCount`, `m_weaponFireInfoValue`, `m_weaponOverheating`, `m_fiOverheatLength`, `m_reloadStepLength`, `m_weaponSpin`, the player's `m_timeUntilNextAttack`, `m_timeUntilNextIdle`, `m_timeUntilReloaded` |
+| 50 | s16 | `m_weaponAnimSequence` |
+| 52 | f32 | `m_weaponAnimTime` |
+| 56 | f32 × 6 | `m_punchAngle`, `m_punchVelocity` |
+| 80 | f32 | the `*fireScale` userinfo, 1 without |
+| 84 | nammo × {u8 type, s16 count} | `ncActor::m_ammoTypes` of the primary, secondary and fireInfo types |
+
+The device keeps a weapon state for each command, as for the movement:
+its prediction for `ack` must match this block (the timers, the anim time
+and the clocks within 1/1000, the punch within 0.01 degree, the rest
+exactly) and the movement both, or it runs again the commands after `ack`
+from PSTATE's state and this block together. `VFL_FIRING`,
+`VFL_PRIMEDFUSE`, `VFL_HOLDING` (`m_nuclideFlags`) and `GF_SEMI_TOGGLED`
+(`gflags`) are the weapon code's; the movement reads them from the weapon
+state. What only the server does is not predicted: projectiles, damage,
+sounds, the clip a reload fills (`_ReloadFinished` is a think), a weapon
+switch, timed ammo regen; the next PSTATE brings it.
+
 ### The movement log
 
 With `sv_link_log 1` the server prints, for every command a v2 player runs,
@@ -431,8 +524,20 @@ LINKPM <slot> cmd <seq> <msec> <pitch> <yaw> <fwd> <side> <up> <buttons> <impuls
 LINKPM <slot> post <state>
 ```
 
+```
+LINKPM <slot> winfo <edict> <version> <WEAPONINFO body in hex>     (each new version)
+LINKPM <slot> wpre <weapon>
+LINKPM <slot> wpost <weapon>
+```
+
 `brush` to `pre` come just before the command runs, `cmd` and `post` just
-after. In `cmd`, `msec`, `pitch`, `yaw` and `impulse` are as the device sent
+after; `wpre` after `pre`, `wpost` after `post`. `<weapon>` is the weapon
+block's fields: `edict version state fireinfo flags clip clipsize animseq`,
+17 floats (`burst fiv overheat overheatlen reloadstep spin atk idle rel
+animtime punch[3] punchvel[3] firescale`), `m_nuclideFlags gflags nammo`,
+nammo × `type count`, then the downforce if this command landed (-1 if
+not; 0 in `wpre`), health and waterlevel. `tools/nds/weptest` replays
+them through the DS's weapon code. In `cmd`, `msec`, `pitch`, `yaw` and `impulse` are as the device sent
 them; `fwd side up buttons` are what ran (after the admin filters),
 `ran_msec` the time that ran (after the movement budget) and `ran_impulse`
 the impulse that ran (`forced_impulse` included). `<state>` is PSTATE's
