@@ -154,9 +154,9 @@ static struct {
 	struct {
 		bool valid;
 		int32_t eye[3];
-		int yaw, pitch, visframe, modelgen;
+		int yaw, pitch, roll, visframe, modelgen;
 	} kept;
-	int viewyaw, viewpitch; /* this frame's (World_Begin) */
+	int viewyaw, viewpitch, viewroll; /* this frame's (World_Begin) */
 	int texfailed;          /* textures VRAM had no room for */
 } w;
 
@@ -1353,8 +1353,16 @@ static void setup_frustum(const ndscam_t *cam)
 	memcpy(vfwd, fwd, sizeof(vfwd)), memcpy(vright, right, sizeof(vright)), memcpy(vup, up, sizeof(vup));
 	/* half angles: 35 degrees up and down; 4:3 makes about 43 across.
 	 * Each side plane leans in from the eye: n = fwd * sin(a) +- side * cos(a) */
-	const int sv = sinLerp(35 * 32768 / 360), cv = cosLerp(35 * 32768 / 360);
-	const int sh = sinLerp(44 * 32768 / 360), ch = cosLerp(44 * 32768 / 360);
+	int sv = sinLerp(35 * 32768 / 360), cv = cosLerp(35 * 32768 / 360);
+	int sh = sinLerp(44 * 32768 / 360), ch = cosLerp(44 * 32768 / 360);
+	if (cam->roll & 0xffff) {
+		/* a rolled view (a shake) turns the screen's rectangle about fwd: the planes take
+		 * the box around it, tan h' = tan h cos r + tan v sin r, tan v' = tan h sin r + tan v cos r */
+		float r = fabsf((float)(int16_t)cam->roll) * (2 * (float)M_PI / 32768.0f);
+		float th = (float)sh / ch, tv = (float)sv / cv, cr = cosf(r), sr = sinf(r);
+		float h2 = th * cr + tv * sr, v2 = th * sr + tv * cr, nh = sqrtf(1 + h2 * h2), nv = sqrtf(1 + v2 * v2);
+		sh = (int)(4096 * h2 / nh), ch = (int)(4096 / nh), sv = (int)(4096 * v2 / nv), cv = (int)(4096 / nv);
+	}
 	for (int c = 0; c < 3; c++) {
 		frustum[0].n[c] = (fwd[c] * sh + right[c] * ch) >> 12; /* left edge: normal points right */
 		frustum[1].n[c] = (fwd[c] * sh - right[c] * ch) >> 12;
@@ -1605,7 +1613,7 @@ void World_Begin(const ndscam_t *cam, ndsstats_t *st)
 	memcpy(eye, cam->org, sizeof(eye));
 	leaf = point_leaf(eye);
 	setup_frustum(cam);
-	w.viewyaw = cam->yaw, w.viewpitch = cam->pitch;
+	w.viewyaw = cam->yaw, w.viewpitch = cam->pitch, w.viewroll = cam->roll;
 	if (World_Portals != WORLD_PORTALS_OFF && w.portals.numportals && leaf > 0 && leaf <= w.visleafs &&
 	    w.portals.leaffirst[leaf] != w.portals.leaffirst[leaf + 1]) {
 		if (leaf != w.lastleaf)
@@ -1720,7 +1728,7 @@ void World_Collect(void)
 	}
 	/* standing still, looking the same way, with the same PVS: the tree's
 	 * faces are what they were (the walk takes most of a frame on a big map) */
-	if (w.kept.valid && w.kept.visframe == w.visframe && w.kept.yaw == w.viewyaw && w.kept.pitch == w.viewpitch &&
+	if (w.kept.valid && w.kept.visframe == w.visframe && w.kept.yaw == w.viewyaw && w.kept.pitch == w.viewpitch && w.kept.roll == w.viewroll &&
 	    !memcmp(w.kept.eye, eye, sizeof(eye))) {
 		if (w.kept.modelgen == w.modelgen)
 			return; /* and the brush entities' too */
@@ -1736,7 +1744,7 @@ void World_Collect(void)
 		w.numvis = 0;
 	w.numtreevis = w.numvis;
 	w.kept.valid = true, w.kept.visframe = w.visframe, w.kept.modelgen = w.modelgen;
-	w.kept.yaw = w.viewyaw, w.kept.pitch = w.viewpitch;
+	w.kept.yaw = w.viewyaw, w.kept.pitch = w.viewpitch, w.kept.roll = w.viewroll;
 	memcpy(w.kept.eye, eye, sizeof(eye));
 	/* doors, lifts and other brush entities: all their faces, by box */
 	for (int m = 1; m < w.nummodels; m++) {
