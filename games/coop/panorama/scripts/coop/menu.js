@@ -856,6 +856,7 @@ var CoopMenu = ( function ()
 
 		var main = make( "Panel", root, "mm-main", { hittest: "false" } );
 		var left = make( "Panel", main, "mm-left", { hittest: "false" } );
+		mm.card = make( "Panel", left, "mm-card", { hittest: "false" } );
 		mm.start = mmOption( left, "Start matchmaking", mmStart );
 		mm.playlist = mmOption( left, "Playlist", function () { mmPicking = !mmPicking; mmAsk = ""; mmDraw( true ); } );
 		mm.privacy = mmOption( left, "Party privacy", function ()
@@ -864,7 +865,7 @@ var CoopMenu = ( function ()
 			if ( st.party )
 				cmd( "live_open " + ( ( st.party.flags & 1 ) ? "0" : "1" ) );
 		} );
-		mm.area = make( "Panel", left, "mm-card", { hittest: "false" } );
+		mm.area = make( "Panel", left, "mm-area", { hittest: "false" } );
 		mm.toast = label( left, "mm-toast", "" );
 
 		var right = make( "Panel", main, "mm-right", { hittest: "false" } );
@@ -890,6 +891,7 @@ var CoopMenu = ( function ()
 
 		mm.tick = 0;
 		mm.areaKey = "";
+		mm.cardKey = "";
 		cmd( "live_playlists" );
 		mmDraw( true );
 		mmSchedule();
@@ -961,8 +963,16 @@ var CoopMenu = ( function ()
 		mm.privacy.valueLabel.text = party ? ( ( party.flags & 1 ) ? "Open" : "Invite only" ) : "";
 		mm.privacy.SetHasClass( "off", !leader || searching );
 
-		// what fills the card area: the chooser, a question, or the card
-		var key = mmPicking ? "pick" : mmAsk ? "ask:" + mmAsk : !online && !server ? "ask:server" : "card:" + ( pl ? pl.id : "" ) + ( online ? ":on" : "" );
+		// the playlist's header above the options
+		var cardKey = ( pl ? pl.id : "" ) + ( online ? ":on" : "" ) + ( st.connected ? ":c" : "" );
+		if ( rebuild || cardKey !== mm.cardKey )
+		{
+			mm.cardKey = cardKey;
+			mm.card.RemoveAndDeleteChildren();
+			mmDrawCard( pl, st );
+		}
+		// under the options: the chooser, a question, or nothing
+		var key = mmPicking ? "pick" : mmAsk ? "ask:" + mmAsk : !online && !server ? "ask:server" : "card:";
 		if ( rebuild || key !== mm.areaKey || ( key === "pick" && mm.tick % 8 === 0 ) )
 		{
 			mm.areaKey = key;
@@ -971,10 +981,8 @@ var CoopMenu = ( function ()
 				mmDrawPicker( st );
 			else if ( key.indexOf( "ask:" ) === 0 )
 				mmDrawAsk( key.substr( 4 ) );
-			else
-				mmDrawCard( pl, st );
 		}
-		if ( key.indexOf( "card:" ) === 0 && mm.searchingLabel && pl )
+		if ( mm.searchingLabel && pl )
 			mm.searchingLabel.text = mmFacts( pl );
 
 		// errors from the server, once each
@@ -1011,15 +1019,15 @@ var CoopMenu = ( function ()
 		mm.searchingLabel = null;
 		if ( !pl )
 		{
-			label( mm.area, "mm-card-kicker", "Playlist" );
-			label( mm.area, "mm-card-desc", st.connected ? "Waiting for the server's playlists." : "Connect to Bulwark Live to see the playlists." );
+			label( mm.card, "mm-card-kicker", "Playlist" );
+			label( mm.card, "mm-card-desc", st.connected ? "Waiting for the server's playlists." : "Connect to Bulwark Live to see the playlists." );
 			return;
 		}
-		label( mm.area, "mm-card-kicker", "Playlist" );
-		label( mm.area, "mm-card-name", pl.name );
+		label( mm.card, "mm-card-kicker", "Playlist" );
+		label( mm.card, "mm-card-name", pl.name );
 		if ( pl.description )
-			label( mm.area, "mm-card-desc", pl.description );
-		mm.searchingLabel = label( mm.area, "mm-card-facts", mmFacts( pl ) );
+			label( mm.card, "mm-card-desc", pl.description );
+		mm.searchingLabel = label( mm.card, "mm-card-facts", mmFacts( pl ) );
 	}
 
 	function mmDrawPicker( st )

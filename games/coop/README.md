@@ -230,9 +230,10 @@ and run commands themselves.
   Disconnect, Quit.
 - Matchmaking (title menu, and Play's footer): a lobby laid out like
   Reach's on Bulwark Live (`styles/coop/lobby.css`, layout only, no visual
-  styling yet). Options on the left (Start
-  matchmaking, Playlist, Party privacy), the playlist card (name, description,
-  size, players online) under them, the party roster on the right with open seats up to the
+  styling yet). The playlist's header (name, description,
+  size, players online) above the options on the left (Start matchmaking,
+  Playlist, Party privacy; the playlist chooser opens under them), the party
+  roster on the right with open seats up to the
   playlist's size, and a search ribbon along the bottom while queued. Only
   the party leader starts or stops the search. The page makes a party on
   its own once online; with no `live_server` set it asks for one. The

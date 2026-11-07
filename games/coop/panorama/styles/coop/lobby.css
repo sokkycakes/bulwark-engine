@@ -156,13 +156,21 @@
 }
 
 /* the playlist's card, under the options */
+/* the playlist's header, above the options */
 .mm-card
+{
+	width: 100%;
+	margin-bottom: 26px;
+	flow-children: down;
+}
+
+/* under the options: the playlist chooser or a question */
+.mm-area
 {
 	width: 100%;
 	height: fill-parent-flow( 1.0 );
 	margin-top: 14px;
 	margin-bottom: 22px;
-	padding: 20px 22px 16px 22px;
 	flow-children: down;
 }
 
