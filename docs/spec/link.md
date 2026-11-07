@@ -115,6 +115,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x8C | PMOVEVARS | the game's movement values (link v2, below) |
 | 0x8D | BRUSHINFO | the brush entities that collide (link v2, below) |
 | 0x8E | WEAPONINFO | the weapon in hand, as its game code reads it (link v2, below) |
+| 0x8F | EVENT | prints, chat, centerprints and the game's CSQC events, as records (below) |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`), and every 2 s in case one was lost. The device then loads
@@ -276,6 +277,7 @@ After the 32 bytes of the v1 fields (all present):
 | 42 | u16 | `brushack`: the BRUSHINFO version it has complete for its map, 0 for none |
 | 44 | count × 14 | commands, oldest first: command `i` has sequence `newest - (count - 1) + i` |
 | 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has (0 none yet), and its edict; a device that sends it takes WEAPONINFO |
+| after those, or at 32 without commands | u8, u16 | optional: `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -570,6 +572,46 @@ m_nuclideFlags gflags` as unsigned, `movetype solid waterlevel watertype
 groundentity` as integers, 13 floats (`gravity` to `viewzoom`, then
 health), then the status bits 2-4 shifted down (1 autojump, 2 long jump, 4
 HL rules).
+
+## Events
+
+A PC client shows more than the world: prints and chat, centerprints, and
+what the game sends its CSQC as `SVC_CGAMEPACKET` events (Nuclide's
+`src/client/event.qc`, `Event_Parse`). A link player is a bot to the
+engine, so none of it reaches it as messages. The engine hands it to
+`sv_link.c` instead: `sprint`, `bprint` and the server's `say` (svc_print),
+`centerprint`, the game's multicasts, `MSG_ALL` and `MSG_BROADCAST` writes,
+and its `MSG_ONE` writes, which are read from the client's QC reliable buffer
+(nothing else empties it for a bot). Once a frame, outside the game's code,
+those become records, numbered from 1 for each device. `EVENT` carries the
+ones the device has not acknowledged (INPUT's `'E'`), oldest first, as many
+as fit, whenever there are new ones and again every 0.2 s until it does.
+The server keeps 64; when a device falls further behind, the oldest go, and
+the next `EVENT` starts past the device's last: the device takes on from
+there. `sv_link_log 1` prints each record made as a `LINKEV` line, and
+`link_stats` counts them.
+
+`EVENT`: u32 session, u16 `first` (the first record's number), u8 `count`,
+then `count` records of u8 type, u8 length, payload. Strings run to the end
+of the record, without the game's colour codes (`^1`, `^xRGB`) or titles.txt
+escapes (`\y`, `\n`: a new line).
+
+| Type | Record | From | Payload |
+|---|---|---|---|
+| 1 | PRINT | svc_print; `EV_CHAT`, `EV_CHAT_TEAM` (as `Util_ChatFormat` words them), `EV_HUDHINT` ("Hint: ", as a chat line) | u8 level (3 chat), text without its last new line |
+| 2 | CENTER | `centerprint` | text |
+| 3 | SHAKE | `EV_SHAKE` (none for a player whose class is `spectator`) | f32 duration, amplitude, frequency |
+| 4 | FADE | `EV_FADE` | u8 r, g, b, alpha (0-255), f32 duration, hold, u8 flags (1 fade from, 2 modulate) |
+| 5 | DAMAGE | `EV_DAMAGE` | s16 origin[3] (units: the attacker's, or ours when the attacker is at the world's origin), s16 damage, u32 damage flags |
+| 6 | TEXT | `EV_TEXT`, `EV_TEXT_STRING` (game_text); `EV_MESSAGE` (env_message: its name as the text, with GameMessage_Setup's defaults, channel 255, the queue) | u8 channel, f32 x, y, u8 effect, u8 colour1[3], colour2[3], f32 fade in, fade out, hold, fx time, text |
+| 7 | FEED | `EV_OBITUARY` for a player's death (as `coop/src/hud/jtf.qc HUD_Obituary` passes it to the Panorama feed: no attacker when the means of death says `self`, the weapon decl's `inv_name`); serverinfo `coop_feed` changes (team events) | u8 about us, u8 length, attacker (or the victim, with weapon "died"), u8 length, weapon, victim |
+| 8 | PICKUP | `EV_PICKUP` | the item's class (`EntityDef_NameFromNetID`) |
+| 9 | TEXTAGAIN | a TEXT on channel 0-4 the same as that channel's last | u8 channel: show it again from its start |
+
+`EV_ANGLE` from a `MSG_ONE` write turns the player as the multicast does.
+`EV_HITNOTIFY` (the PC does nothing with it) and events of other kinds
+(sounds, music, intermission, models) make no records; an event whose
+length the server doesn't know ends that message.
 
 ### Screen commands
 

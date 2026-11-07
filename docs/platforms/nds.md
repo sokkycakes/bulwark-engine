@@ -655,6 +655,80 @@ Screenshots of the firing run (kept outside git, as they show the game's
 data) show the flash and the clip going down while fire is held, and the
 monsters moving from frame to frame.
 
+## Events: what the server shows, as the PC client shows it
+
+Prints, chat, centerprints and the game's CSQC events reach the DS as
+`EVENT` records (docs/spec/link.md, "Events"), in order and resent until
+acknowledged. `events_nds.c` shows them with the client code the PC runs
+for co-op, ported to C:
+
+| What | The PC's code | On the DS |
+|---|---|---|
+| View shake (`env_shake`, sound shakes) | `src/client/shake.qc` `Shake_Start`, `Shake_Update` | the same offset and roll on the camera, the same decay |
+| Fade (`env_fade`) | `src/client/fade.qc` `Fade_Parse`, `Fade_Update` | a translucent polygon over the 3D view, under the HUD (View.qc draws it before the HUD) |
+| Damage | `src/client/damage.qc`, `coop/src/hud/jtf.qc` `Jtf_DrawFeedback`, `valve/src/hud/hud.h` `cg_damageFill 0.25` | an arrow on each side the hit lines up with (more than 0.25), as strong as it lines up, fading over a second; the tint over the view; both gone when the player dies (View.qc) |
+| Centerprint | `src/client/entry.qc` `CSQC_Parse_CenterPrint`, `prints.qc` `Print_DrawCenterprint` | orange (`^xF80`), 3 s, then a second's fade, centred from the middle - 69 |
+| Prints | `entry.qc` `CSQC_Parse_Print`, `prints.qc` `Print_Draw` | five lines at the top left; every 5 s the newest goes, as `Print_Draw` does |
+| Chat, hints | `chat.qc` `Chat_Parse`, `Chat_Draw`; `event.qc` `EV_CHAT`, `EV_HUDHint` | five lines, wrapped at half the screen, bottom-aligned in the field from the middle - 80; lines go 5 s apart and the block as it was made stays until the last |
+| game_text, the co-op hero and XPM lines, env_message | `text.qc` `GameText_ParseString`, `GameText_DrawMessage`, `GameMessage_Setup` | channels 0-4 and channel 0's queue, placed by x and y as `GameText_DrawString` places them, faded in, held and out, the typing effect letter by letter |
+| Kill feed | `jtf.qc` `HUD_Obituary`, serverinfo `coop_feed`, `coop/panorama/scripts/coop/hud.js` | five lines at the top right, 6 s each, newest on top: attacker blue (#3396d4), weapon grey, victim |
+| Pickups | `valve/src/hud/hud.qc` `HUD_PickedUpItem`, `HLHUD_ItemNotify_Draw` | battery, health kit and long jump only, with a count, 2.5 s and fading 0.5 a second |
+| Punch (landing, recoil) | `player_pmove.qc` `Physics_Fall`, `Physics_InputPostMove`; `View.qc` `AddPunchAngle` | already predicted with the weapon ("Weapons" above): the server's punch fields reconcile it |
+
+Text goes on the top screen's HUD layer in a band from row 24 to 151,
+between the frame-rate lines and health and ammo. The PC's 2D numbers are
+taken as pixels of a 480-row HUD (an assumption: at 1080p Nuclide's integer
+`vid_conautoscale` gives 480 to 540 rows), so a PC pixel is 0.4 of a DS
+pixel. Each text group has its own palette bank, so its fading is a palette
+write a frame. The band is drawn in main RAM in the layer's tile format and
+only the rows of cells a changed group touches are copied (drawing straight
+into VRAM pixel by pixel took 5 to 11 ms and dropped frames).
+
+Where it differs from the PC:
+
+- The PC's text fades to nothing; on the DS the letters darken into their
+  black outline and then go (the layer is opaque).
+- The fade's modulate style and the damage tint multiply the scene on the
+  PC; the DS can only blend toward a colour: the modulate fade dims, the
+  tint blends toward a dark red at the same strength (0.25 at the hit).
+- The fade's colour comes as 0-255 and the PC's `drawfill` gets it as it
+  is; FTE clamps it, so any channel above 0 is full. The DS does the same
+  (from the source; not compared on a PC).
+- The damage arrows are trapezoids in an orange-red, not Valve's
+  `640_pain` sprite; pickups are words, not the HUD sprite's icons.
+- game_text's highlight pass (effects 1 and 2's second colour) is not
+  drawn; env_message shows the title's name with `GameMessage_Setup`'s
+  defaults (the DS has no titles.txt).
+- Shakes and fades, unreliable on the PC, come reliably: a lost one comes
+  0.2 s late instead of not at all.
+- Prints start under the frame-rate lines (row 24) rather than at the PC's
+  16 pixels from the top.
+- The DS player has no `phud 1` (the co-op Panorama HUD's userinfo), so the
+  co-op rules send it what they send a PC on the Half-Life HUD: wave
+  centerprints, the hero line and the XPM line as game_text. A PC with the
+  Panorama HUD shows these in its own panels instead.
+
+### Measured: events, in melonDS 1.1 (not hardware)
+
+`fps=30`, coop_arena, standing at 160 160 40 facing 45 degrees with
+`link_god 1`, 40 s each, the rig's measurement build (MEAS lines). "Triggered":
+every 5 s a chat line, a two-line game_text, a fade and a shake.
+
+| Run | fps (avg / lowest second) | CPU a frame, avg / worst | text: frame / redraw, worst | EVENT |
+|---|---|---|---|---|
+| before (5730913) | 30.0 / 30 | 14.3 / 16.1 ms | - | - |
+| events, idle | 30.0 / 30 | 14.7 / 16.9 ms | 0.8 ms / none | 30 B/s |
+| events, triggered, text into VRAM | 29.6 / 20 | 15.3 / 45.2 ms | - | 51 B/s |
+| events, triggered, text in RAM | 30.0 / 30 | 12.8 / 18.7 ms | 0.3 / 4.2 ms | 50 B/s |
+
+The polygon count differs between runs (833 to 1114: monsters move), so
+the CPU numbers are within that spread. The ROM's code grew by 13.6 KB and
+its static data by 24 KB (the band, 16 KB); the lowest free memory seen
+went from 2.96 to 2.92 MB. All 163 records of the triggered run were
+acknowledged, none dropped. Screenshots (fade, game_text and its fade,
+shake, damage arrow and tint, chat, centerprint, the feed) were taken with
+the rig's `evtest.sh`; they show Valve's data and stay out of the repo.
+
 ## Map viewer controls
 
 | Button | Action |
