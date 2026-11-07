@@ -112,6 +112,8 @@ typedef struct {
 	int16_t org[3];
 	int16_t at;   /* with SL_AT */
 	float d2;     /* from the player, squared: the farthest go when there are too many */
+	uint32_t frame; /* sv.frames when it was made */
+	double t;       /* sv.time when it was made */
 } lsnd_t;
 
 typedef struct {
@@ -3959,14 +3961,16 @@ static int snd_unqueue(link_t *l, int ent, int chan, bool cs)
 	if (chan == 0)
 		return 0;
 	for (int i = 0; i < l->sndn; i++)
-		if (l->sndq[i].ent == ent && l->sndq[i].chan == chan && !(l->sndq[i].lflags & SL_CLIENTSIDE) == !cs)
+		if (l->sndq[i].ent == ent && l->sndq[i].chan == chan && !(l->sndq[i].lflags & SL_CLIENTSIDE) == !cs) {
 			n++;
-		else
+			if (sv_link_log->ivalue)
+				Con_Printf("LINKSNDGONE %d %u overtaken\n", (int)(l - links), (unsigned)l->sndq[i].seq);
+		} else
 			l->sndq[k++] = l->sndq[i];
 	l->sndn = k, k = 0;
 	for (int i = 0; i < l->sndrepn; i++)
 		if (l->sndrep[i].ent == ent && l->sndrep[i].chan == chan && !(l->sndrep[i].lflags & SL_CLIENTSIDE) == !cs)
-			n++;
+			n++; /* (sent once already: not a GONE) */
 		else
 			l->sndrep[k++] = l->sndrep[i];
 	l->sndrepn = k;
@@ -4032,6 +4036,27 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 	}
 	if (rel && path == SP_SND)
 		path = SP_LOOP;
+	r.frame = (uint32_t)sv.frames, r.t = sv.time;
+	if (!rel && r.chan != 0)
+		/* two on one entity channel the same server frame: the PC gets both in one datagram and
+		 * starts the second over the first before it mixes any of it (pick_channel,
+		 * snd_main.c:155-182), or with NOREPLACE drops the second. Only that one goes */
+		for (int i = 0; i < l->sndn; i++) {
+			lsnd_t *q = &l->sndq[i];
+			if (q->frame != r.frame || q->ent != r.ent || q->chan != r.chan || !(q->lflags & SL_CLIENTSIDE) != !cs)
+				continue;
+			l->sndsameframe++;
+			if (r.sflags & SF_NOREPLACE) {
+				if (sv_link_log->ivalue)
+					Con_Printf("LINKSNDSAME %d %s %d %d noreplace\n", (int)(l - links), name, r.ent, r.chan);
+				return;
+			}
+			if (sv_link_log->ivalue)
+				Con_Printf("LINKSNDGONE %d %u sameframe\n", (int)(l - links), (unsigned)q->seq);
+			memmove(q, q + 1, (size_t)(l->sndn - i - 1) * sizeof(*q));
+			l->sndn--;
+			break;
+		}
 	l->sndmade++;
 	l->sndbypath[path]++;
 	if (sv_link_log->ivalue) {
