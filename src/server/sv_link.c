@@ -2687,13 +2687,13 @@ static void update_hud(link_t *l)
 		p_hkey(&p, &count, HK_DYNAMICNAME, l->huddynamicname);
 	}
 	p.data[countat] = (uint8_t)count;
-	/* everyone else with a name (getplayerkeyvalue's players), by slot */
+	/* everyone with a name (getplayerkeyvalue's players), by slot, this player too */
 	nat = p.len;
 	p_u8(&p, 0);
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		char name[64], mate[32], cad[8], team[16];
-		if (c->state < CS_CONNECTED || c->edict == e || !SV_InfoGet(c->userinfo, "name", name, sizeof(name))[0])
+		if (c->state < CS_CONNECTED || !SV_InfoGet(c->userinfo, "name", name, sizeof(name))[0])
 			continue;
 		SV_InfoGet(c->userinfo, "*mate", mate, sizeof(mate));
 		SV_InfoGet(c->userinfo, "*cadence", cad, sizeof(cad));
@@ -2717,7 +2717,7 @@ static void update_hud(link_t *l)
 		const float *o;
 		float d2 = 0, hp, mx;
 		if (!ent_live(i) || !((int)QC_EFloat(sv.vm, i, F.flags) & FL_MONSTER) || (hp = QC_EFloat(sv.vm, i, F.health)) <= 0 ||
-		    (int)qnum(i, alliance) != 1)
+		    (int)qnum(i, alliance) != 0) /* MAL_FRIEND, the enum's first (src/shared/ai/Monster.h) */
 			continue;
 		o = &QC_EdictFields(sv.vm, i)[F.origin].f;
 		for (int k = 0; k < 3; k++)

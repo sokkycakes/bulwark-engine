@@ -187,6 +187,7 @@ static struct {
 	uint16_t version;
 	int self;     /* our player slot */
 	char keys[HK_COUNT][96];
+	char herohud[256];            /* the one longer than 95 */
 	hplayer_t pl[MAX_PLAYERS];
 	struct {
 		uint16_t ent;
@@ -209,7 +210,7 @@ static struct {
 	/* the target ID (nameplates.qc g_targetID*) */
 	int tident;
 	char tidname[NAMELEN];
-	int tidhealth, tidmax;
+	int tidhealth, tidmax, tidcad;
 	uint32_t tidseen;
 	bool tidany;
 } hud;
@@ -301,14 +302,18 @@ void Hud_Packet(const uint8_t *d, int len)
 	hud.self = d[6];
 	for (int k = 0; k < HK_COUNT; k++)
 		hud.keys[k][0] = 0;
+	hud.herohud[0] = 0;
 	n = d[pos++];
 	for (int i = 0; i < n; i++) {
-		int id;
+		int id, at;
 		if (pos >= len)
 			return;
 		id = d[pos++];
+		at = pos;
 		if (!rd_str(d, len, &pos, key, sizeof(key)))
 			return;
+		if (id == HK_HEROHUD)
+			copy_n(hud.herohud, sizeof(hud.herohud), d + at + 1, d[at]);
 		if (id < HK_COUNT)
 			memcpy(hud.keys[id], key, sizeof(key));
 	}
@@ -575,9 +580,9 @@ static bool boxes_meet(int ax0, int ay0, int ax1, int ay1, int bx0, int by0, int
 
 /* --- the parts --------------------------------------------------------------------------- */
 
-static const char *key(int k) { return hud.keys[k]; }
+static const char *key(int k) { return k == HK_HEROHUD ? hud.herohud : hud.keys[k]; }
 static bool down_now(void) { return hud.have && key(HK_RESPAWN)[0]; }
-static int split_bar(const char *s, char out[][96], int max)
+static int split_bar(const char *s, char out[][96], int max) /* fields cut at 95 */
 {
 	int n = 0;
 	while (n < max) {
@@ -805,20 +810,23 @@ static void part_vitals(const hudin_t *in, const hudent_t *ents, int nents, cons
 			snprintf(v, sizeof(v), ar > 0 ? "%d" : "", ar);
 			x += bignum(x, ry, 3, HC_BARRIER, v, 2) + 5;
 		}
-		if (nx >= 7) { /* the XPM plugin: "xp|need|level|max|rank|medals|max medals|level start" */
-			int from = nx > 7 ? atoi(xp[7]) : 0, need = atoi(xp[1]), frac;
-			int lx = x;
+		y = ry - 3;
+		/* the XPM plugin's level, rank and medals over the experience gauge ("xp|need|level|max
+		 * level|rank|medals|max medals|level start"): beside the health on the PC, above it here */
+		if (nx >= 7) {
+			int from = nx > 7 ? atoi(xp[7]) : 0, need = atoi(xp[1]), frac, lx = x0;
+			y -= 11;
 			snprintf(v, sizeof(v), "Lv%.8s", xp[2]);
-			lx += w_text(lx, ry + 2, 1, HC_TEXT, v, 0) + 4;
-			lx += w_text(lx, ry + 2, 1, HC_TEXT, xp[4], 0) + 4;
+			lx += w_text(lx, y, 1, HC_TEXT, v, 0) + 4;
+			lx += w_text(lx, y, 1, HC_TEXT, xp[4], 0) + 4;
 			if (atoi(xp[5]) > 0) {
 				snprintf(v, sizeof(v), "*x%.8s", xp[5]);
-				w_text(lx, ry + 2, 1, HC_GOLD, v, 0);
+				w_text(lx, y, 1, HC_GOLD, v, 0);
 			}
 			frac = !strcmp(xp[1], "0") ? 1000 : need - from > 0 ? (atoi(xp[0]) - from) * 1000 / (need - from) : 0;
-			meter(x, ry + 10, 40, frac, HC_FILL);
+			meter(x0, y + 7, 100, frac, HC_FILL);
+			y -= 3;
 		}
-		y = ry - 3;
 	}
 	/* energy (a hero) with Engage's tick, or armour (no hero, some armour) */
 	if (h.on || ar > 0) {
@@ -873,7 +881,7 @@ static void part_vitals(const hudin_t *in, const hudent_t *ents, int nents, cons
 			if (unavail && state[0] >= '1' && state[0] <= '9' && strchr(state, '/'))
 				unavail = false;
 			glyphw = t_w(sq[i][1], 1);
-			w = BW_NDS_MAX(15, glyphw + 6);
+			w = BW_NDS_MAX(15, BW_NDS_MAX(glyphw, ready ? 0 : t_w(state, 1)) + 5);
 			w_fill(x + 1, y + 1, w - 2, 13, engaged ? HC_FILL : unavail ? HC_FRAME : HC_WINDOW);
 			w_frame(x, y, w, 15, engaged ? HC_ACCENT : HC_FRAME);
 			if (ready) /* the corner triangle */
@@ -933,8 +941,6 @@ static void part_vitals(const hudin_t *in, const hudent_t *ents, int nents, cons
 				w_text(x + 4, y, 1, HC_GOLD, "^", 0);
 			meter(x0, y + 7, 48, out ? 0 : mhp * 10,
 			      dead ? HC_MUTED : st == 'd' ? HC_AMBER : !out && mhp < 25 ? HC_RED : HC_GREEN);
-			if (p->cad > 0 && !dead)
-				w_frame(x0, y + 7, 48, 4, HC_GOLD);
 			y -= 1;
 		}
 	}
@@ -1211,6 +1217,7 @@ static void part_plates(const ndscam_t *view, const hudent_t *ents, int nents, u
 					hud.tident = e->ent;
 					snprintf(hud.tidname, sizeof(hud.tidname), "%s", name);
 					hud.tidhealth = hp, hud.tidmax = max;
+					hud.tidcad = e->slot >= 0 && e->slot < MAX_PLAYERS ? hud.pl[e->slot].cad : 0;
 				}
 			}
 		}
@@ -1264,7 +1271,7 @@ static void part_prompt(const hudin_t *in, const ndscam_t *view)
 /* the target ID as a squad card (hud.css .target-id y 558, hud.js targetID()) */
 static void part_tid(uint32_t t)
 {
-	int since, nw, x, y = PY(558), frac;
+	int since, nw, w, x, y = PY(558), frac;
 	bool low;
 	if (!hud.tidany || down_now())
 		return;
@@ -1275,11 +1282,16 @@ static void part_tid(uint32_t t)
 	if (since > LINGER_MS / 2)
 		return;
 	nw = t_w(hud.tidname, 1);
-	x = 128 - BW_NDS_MAX(nw, 48) / 2;
+	/* a QtCurve window, gold framed in a Cadence; the name with the gold arrow, the gauge */
+	w = BW_NDS_MAX(nw + (hud.tidcad ? 8 : 0), 48) + 6;
+	x = 128 - w / 2;
 	low = hud.tidhealth * 4 < hud.tidmax;
 	frac = BW_NDS_CLAMP(hud.tidhealth * 1000 / BW_NDS_MAX(hud.tidmax, 1), 0, 1000);
-	w_text(x, y, 1, HC_TEXT, hud.tidname, 0);
-	meter(x, y + 7, 48, frac, low ? HC_RED : HC_GREEN);
+	window(x, y, w, 16);
+	if (hud.tidcad)
+		w_frame(x, y, w, 16, HC_GOLD), w_text(x + 3 + nw + 3, y + 2, 1, HC_GOLD, "^", 1);
+	w_text(x + 3, y + 2, 1, HC_TEXT, hud.tidname, 1);
+	meter(x + 3, y + 9, w - 6, frac, low ? HC_RED : HC_GREEN);
 }
 
 /* the weapon's crosshair sprite, at the centre (Cross_GetPos), not while down */
