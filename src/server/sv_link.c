@@ -17,6 +17,7 @@
 #include "../common/studio.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -53,7 +54,7 @@ enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO, L_EVENT };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -74,6 +75,10 @@ typedef struct {
 #define BOX_RANGE 512.0f
 #define PM_PERIOD 2.0      /* PMOVEVARS and BRUSHINFO again this often */
 #define PM_RESEND 0.2      /* and this soon while the device has not acknowledged them */
+#define EV_RING 64         /* EVENT records kept until the device has them */
+#define EV_REC 224         /* the most bytes in one (type, length, payload) */
+#define EV_RAW 4096        /* prints and game messages waiting to be read in SV_LinkSend */
+#define EV_RESEND 0.2      /* EVENT again this soon while the device has not acknowledged it */
 #define CMD_WINDOW 1024    /* the most newer than the last run an INPUT may be (17 s of commands) */
 #define PSTATE_IDLE 0.1    /* PSTATE with a VIEW when no command ran for this long (movers, boxes) */
 #define BRUSH_CHECK 0.25   /* how often the brush list is compared */
@@ -187,6 +192,18 @@ typedef struct {
 	uint16_t xrgb;
 	uint8_t xmask[128];
 	char hudstatic[64], hudstaticname[64], huddynamic[64], huddynamicname[64]; /* *herohud's weapons, named */
+	/* events: what the PC's client shows from prints and the game's CSQC events (EVENT) */
+	uint8_t evraw[EV_RAW];                  /* what came for the client this frame, not read yet */
+	int evrawlen;
+	uint8_t evring[EV_RING][EV_REC];        /* records the device has not acknowledged, by seq % EV_RING */
+	uint8_t evlen[EV_RING];
+	uint16_t evnext, evack;                 /* the next record's seq (the first is 1); the last the device has, in order */
+	uint16_t evsentnext;                    /* evnext at the last send */
+	bool evcap;                             /* its INPUT carried 'E': it takes EVENT */
+	double evsent;
+	uint32_t evdropped, evcount;            /* records lost to a full ring; records made */
+	char evfeed[96];                        /* serverinfo coop_feed as last seen */
+	bool evfeedinit;
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -445,6 +462,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	l->impseq = -1;
 	l->joinver = len >= 4 + 2 + 16 + 1 ? d[22] : 0;
 	l->v2map = -1;
+	l->evnext = 1; /* EVENT records from 1; 0 acknowledged: none */
 	send_welcome(l);
 	Con_Printf("link: %s joined from %s\n", name, inet_ntoa(from->sin_addr));
 }
@@ -475,6 +493,23 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 		l->loadms = rd16(d + 24) * 10;
 	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 8)
 		l->devspawn = (uint16_t)rd16(d + 26);
+	/* after the v1 part, the commands and 'W' (link v2), or neither: 'E', the last
+	 * EVENT record the device has in order; a device that sends it takes EVENT */
+	{
+		int t = 32;
+		if (len >= 44 && d[32] == 'C' && d[38] >= 1 && d[38] <= 8 && d[39] == 14 && len >= 44 + 14 * d[38]) {
+			t = 44 + 14 * d[38];
+			if (len >= t + 5 && d[t] == 'W')
+				t += 5;
+		}
+		if (len >= t + 3 && d[t] == 'E') {
+			uint16_t ack = (uint16_t)rd16(d + t + 1);
+			l->evcap = true;
+			/* only forward, and never past what was made */
+			if ((uint16_t)(ack - l->evack) <= (uint16_t)(l->evnext - 1 - l->evack))
+				l->evack = ack;
+		}
+	}
 	/* the v2 extension: 'C', version, u32 newest, u8 count, u8 cmdsize, u16
 	 * varsack, u16 brushack, then count commands, oldest first */
 	if (len >= 44 && d[32] == 'C' && d[33] == LINK_VER && d[38] >= 1 && d[38] <= 8 && d[39] == 14 &&
@@ -822,6 +857,9 @@ static int cmp_thing(const void *a, const void *b)
 static void send_stats(link_t *l);
 static void watch_viewmodel(link_t *l);
 static void send_fx(link_t *l);
+static void ev_read(link_t *l);
+static void ev_coopfeed(link_t *l);
+static void send_events(link_t *l, double now);
 
 /* the names of the studio models, a run at a time (docs/spec/link.md,
  * MODELS): u32 session, u16 spawncount, u8 count, count x {u16 index, u8
@@ -2330,6 +2368,13 @@ void SV_LinkSend(void)
 			SV_DropClient(l->client, "the link timed out");
 			continue;
 		}
+		/* the game's reliable messages to this client (MSG_ONE, MSG_ALL): a bot's are never sent */
+		if (l->client->qcrel.len) {
+			SV_LinkGameMessages(l->client, (const uint8_t *)l->client->qcrel.data, (int)l->client->qcrel.len);
+			l->client->qcrel.len = 0;
+		}
+		ev_read(l);
+		ev_coopfeed(l);
 		if (l->client->state != CS_SPAWNED) {
 			l->spawned = false;
 			continue;
@@ -2354,6 +2399,7 @@ void SV_LinkSend(void)
 		watch_viewmodel(l);
 		if (l->numfx)
 			send_fx(l);
+		send_events(l, now);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -2824,12 +2870,13 @@ void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
 			raise_fix(l, rdfloat(data + 2), rdfloat(data + 6));
 		return;
 	}
-	if (len >= 6 && data[0] == CGAMEPACKET && data[1] == EV_OBITUARY) {
-		if ((l = link_for_edict(c->edict)) && l->hudcap)
-			hud_obituary(l, data, len);
+	if (len >= 6 && data[0] == CGAMEPACKET && data[1] == EV_OBITUARY && (l = link_for_edict(c->edict)) && l->hudcap)
+		hud_obituary(l, data, len); /* the HUD's feed (HUDINFO); EVENT skips it for such a device */
+	if (len >= 2 && data[0] == CGAMEPACKET && data[1] != EV_SURFIMPACT && data[1] != EV_SURFIMPACTID) {
+		SV_LinkGameMessages(c, data, len); /* read in SV_LinkSend (EVENT) */
 		return;
 	}
-	if (len < 14 || data[0] != CGAMEPACKET || (data[1] != EV_SURFIMPACT && data[1] != EV_SURFIMPACTID))
+	if (len < 14 || data[0] != CGAMEPACKET)
 		return;
 	if (!(l = link_for_edict(c->edict)) || l->numfx >= MAX_FX)
 		return;
@@ -2859,6 +2906,392 @@ static void send_fx(link_t *l)
 			p_u32(&p, (uint32_t)(int32_t)(l->fx[i].from[k] * 8));
 	}
 	l->numfx = 0;
+	send_to(&l->from, &p);
+}
+
+/* --- events (EVENT) -------------------------------------------------------------------------
+ * What the PC's client shows from the server besides the world: prints, chat and
+ * centerprints (svc_print, svc_centerprint), and the game's CSQC events (Nuclide's
+ * SVC_CGAMEPACKET, src/client/event.qc Event_Parse): view shakes, fades, damage,
+ * game_text and env_message titles, the kill feed, pickups. A link player is a bot to
+ * the engine, so none of that reaches it as messages; the engine hands it here
+ * instead (SV_LinkPrint, SV_LinkCenterPrint, SV_LinkMulticast, and the client's
+ * reliable QC buffer, read in SV_LinkSend). It is kept raw until SV_LinkSend, where
+ * the game's code may run again (a pickup's name, a weapon's), and is turned into
+ * records the device draws as the PC's client does. Records go in order, each once,
+ * and again until the device says it has them (docs/spec/link.md, EVENT) */
+enum { RAW_GAME = 1, RAW_PRINT, RAW_CENTER };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP };
+/* Nuclide's src/common/c_events.h */
+enum { EVN_PICKUP = 7, EVN_DAMAGE = 8, EVN_HITNOTIFY = 9, EVN_ANGLE = 10, EVN_SHAKE = 15, EVN_HUDHINT = 16, EVN_FADE = 17,
+       EVN_TEXT = 18, EVN_TEXT_STRING = 19, EVN_MESSAGE = 20, EVN_OBITUARY = 25, EVN_CHAT = 28, EVN_CHAT_TEAM = 29 };
+#define PRINT_CHAT 3
+
+static link_t *link_of(const client_t *c)
+{
+	link_t *l;
+	if (!c || c->link <= 0 || c->link > MAX_LINKS)
+		return NULL;
+	l = &links[c->link - 1];
+	return l->used && l->client == c ? l : NULL;
+}
+
+static void ev_raw(link_t *l, int kind, int level, const void *d, int len)
+{
+	uint8_t *o;
+	len = BW_MIN(len, 0xffff);
+	if (!l || l->evrawlen + 4 + len > EV_RAW) {
+		if (l)
+			l->evdropped++;
+		return;
+	}
+	o = l->evraw + l->evrawlen;
+	o[0] = (uint8_t)kind, o[1] = (uint8_t)level, o[2] = (uint8_t)(len & 0xff), o[3] = (uint8_t)(len >> 8);
+	memcpy(o + 4, d, (size_t)len);
+	l->evrawlen += 4 + len;
+}
+
+void SV_LinkPrint(client_t *c, int level, const char *text) { ev_raw(link_of(c), RAW_PRINT, level, text, (int)strlen(text)); }
+void SV_LinkCenterPrint(client_t *c, const char *text) { ev_raw(link_of(c), RAW_CENTER, 0, text, (int)strlen(text)); }
+void SV_LinkGameMessages(client_t *c, const uint8_t *d, int len) { ev_raw(link_of(c), RAW_GAME, 0, d, len); }
+
+/* the text without the game's colour codes (^0-^9, ^xRGB, ^b and the like), at most size - 1 bytes */
+static void ev_plain(char *out, int size, const char *s, int len)
+{
+	int n = 0;
+	for (int i = 0; i < len && s[i] && n < size - 1; i++) {
+		if (s[i] == '^' && i + 1 < len) {
+			if (s[i + 1] == 'x' && i + 4 < len && isxdigit((unsigned char)s[i + 2]) && isxdigit((unsigned char)s[i + 3]) &&
+			    isxdigit((unsigned char)s[i + 4])) {
+				i += 4;
+				continue;
+			}
+			if (isdigit((unsigned char)s[i + 1]) || s[i + 1] == 'b' || s[i + 1] == 'd' || s[i + 1] == 's' || s[i + 1] == 'r' ||
+			    s[i + 1] == 'm' || s[i + 1] == 'h') {
+				i++;
+				continue;
+			}
+			if (s[i + 1] == '^')
+				i++;
+		}
+		out[n++] = s[i];
+	}
+	out[n] = 0;
+}
+
+/* one record; the oldest goes when the device is EV_RING behind */
+static void ev_put(link_t *l, int type, const uint8_t *d, int len)
+{
+	uint8_t *r;
+	if (len + 2 > EV_REC)
+		len = EV_REC - 2;
+	if ((uint16_t)(l->evnext - l->evack - 1) >= EV_RING) {
+		l->evack++;
+		l->evdropped++;
+	}
+	r = l->evring[l->evnext % EV_RING];
+	r[0] = (uint8_t)type, r[1] = (uint8_t)len;
+	memcpy(r + 2, d, (size_t)len);
+	l->evlen[l->evnext % EV_RING] = (uint8_t)(len + 2);
+	l->evnext++;
+	l->evcount++;
+}
+
+/* a record of fixed fields then text (the rest of it) */
+static void ev_text(link_t *l, int type, const uint8_t *head, int hlen, const char *text, int tlen)
+{
+	uint8_t b[EV_REC];
+	char plain[EV_REC];
+	int n;
+	memcpy(b, head, (size_t)hlen);
+	ev_plain(plain, EV_REC - 2 - hlen, text, tlen);
+	n = (int)strlen(plain);
+	memcpy(b + hlen, plain, (size_t)n);
+	ev_put(l, type, b, hlen + n);
+}
+
+/* a NUL-terminated string at d (n bytes left): its length, -1 if it runs out */
+static int ev_str(const uint8_t *d, int n)
+{
+	const uint8_t *z = memchr(d, 0, (size_t)BW_MAX(n, 0));
+	return z ? (int)(z - d) : -1;
+}
+
+static int qc_fn(const char *name) { return sv.vm ? QC_FindFunction(sv.vm, name) : 0; }
+
+/* EntityDef_NameFromNetID (src/shared/system/entityDef.qc): EV_PICKUP's item */
+static const char *ev_itemclass(int32_t id)
+{
+	int fn = qc_fn("EntityDef_NameFromNetID");
+	const char *s;
+	if (fn <= 0)
+		return "";
+	sv.vm->globals[OFS_PARM(0)].i = id;
+	sv.vm->argc = 1;
+	if (!QC_Execute(sv.vm, fn) || !sv.vm->globals[OFS_RETURN].i)
+		return "";
+	s = QC_GetString(sv.vm, sv.vm->globals[OFS_RETURN].i);
+	return s ? s : "";
+}
+
+/* entityDef.GetString(def, "inv_name"), as coop/src/hud/jtf.qc Jtf_WeaponName, else the def */
+static void ev_weaponname(const char *def, char *out, int size)
+{
+	int fn = qc_fn("EntityDef_GetKeyValue");
+	const char *s = NULL;
+	if (fn > 0 && def[0]) {
+		qcval_t r = qc_call(fn, 0, 2, def, "inv_name");
+		s = r.i ? QC_GetString(sv.vm, r.i) : NULL;
+	}
+	snprintf(out, (size_t)size, "%s", s && s[0] ? s : def);
+}
+
+static bool word_in(const char *list, const char *word)
+{
+	size_t n = strlen(word);
+	for (const char *p = list; (p = strstr(p, word)); p += n)
+		if ((p == list || isspace((unsigned char)p[-1])) && (!p[n] || isspace((unsigned char)p[n])))
+			return true;
+	return false;
+}
+
+/* a line of the kill feed: attacker (or the victim, with "died"), weapon, victim, and whether
+ * it is about us (the PC's feed rings those) */
+static void ev_feed(link_t *l, const char *a, const char *w, const char *v)
+{
+	uint8_t b[EV_REC];
+	char pa[64], pw[64], pv[64], me[64];
+	int n = 1;
+	ev_plain(pa, sizeof(pa), a, (int)strlen(a));
+	ev_plain(pw, sizeof(pw), w, (int)strlen(w));
+	ev_plain(pv, sizeof(pv), v, (int)strlen(v));
+	ev_plain(me, sizeof(me), l->client->name, (int)strlen(l->client->name));
+	b[0] = (!strcmp(pa, me) || (pv[0] && !strcmp(pv, me))) ? 1 : 0;
+	b[n++] = (uint8_t)strlen(pa), memcpy(b + n, pa, strlen(pa)), n += (int)strlen(pa);
+	b[n++] = (uint8_t)strlen(pw), memcpy(b + n, pw, strlen(pw)), n += (int)strlen(pw);
+	memcpy(b + n, pv, strlen(pv)), n += (int)strlen(pv);
+	ev_put(l, LE_FEED, b, n);
+}
+
+/* EV_OBITUARY as coop/src/hud/jtf.qc HUD_Obituary posts it to the Panorama feed: only
+ * players' deaths; "self" in the means of death leaves out the attacker */
+static void ev_obituary(link_t *l, const char *target, const char *attacker, const char *wdef, const char *mod)
+{
+	bool player = false;
+	char wname[64];
+	for (int i = 0; i < svs.maxclients && target[0]; i++)
+		if (svs.clients[i].state == CS_SPAWNED && !strcmp(svs.clients[i].name, target))
+			player = true;
+	if (!player)
+		return;
+	if (word_in(mod, "self"))
+		attacker = "";
+	if (!attacker[0]) {
+		ev_feed(l, target, "died", "");
+		return;
+	}
+	ev_weaponname(wdef, wname, sizeof(wname));
+	ev_feed(l, attacker, wname[0] ? wname : "killed", target);
+}
+
+/* Util_ChatFormat (src/shared/system/util.qc:75), without its colours */
+static void ev_chat(link_t *l, int sender, int team, const char *msg, int mlen)
+{
+	char line[EV_REC], m[EV_REC], key[32], tname[64];
+	uint8_t lv = PRINT_CHAT;
+	const char *name = sender >= 0 && sender < svs.maxclients ? svs.clients[sender].name : "";
+	ev_plain(m, sizeof(m), msg, mlen);
+	if (team == 0)
+		snprintf(line, sizeof(line), "%.48s: %.160s", name, m);
+	else {
+		snprintf(key, sizeof(key), "team_%d", team);
+		SV_InfoGet(sv.serverinfo, key, tname, sizeof(tname));
+		snprintf(line, sizeof(line), "%.48s (%.24s): %.140s", name, tname, m);
+	}
+	ev_text(l, LE_PRINT, &lv, 1, line, (int)strlen(line));
+}
+
+static void put_f32(uint8_t *o, const uint8_t *src) { memcpy(o, src, 4); } /* little-endian on both ends */
+
+/* one CSQC event (after SVC_CGAMEPACKET and its id): bytes read, -1 for an event whose
+ * length isn't known here (the rest of the stream is left) */
+static int ev_game(link_t *l, int ev, const uint8_t *d, int n)
+{
+	uint8_t b[64];
+	int s0, s1, s2, s3;
+	switch (ev) {
+	case EVN_DAMAGE: /* coords, int take, int flags (src/shared/game/Player.qc:2370) */
+		if (n < 20)
+			return -1;
+		for (int k = 0; k < 3; k++) {
+			int v = (int)BW_CLAMP(rdfloat(d + k * 4), -32767.0f, 32767.0f);
+			b[k * 2] = (uint8_t)(v & 0xff), b[k * 2 + 1] = (uint8_t)((v >> 8) & 0xff);
+		}
+		{
+			int take = (int)BW_CLAMP((int32_t)rd32(d + 12), -32767, 32767);
+			b[6] = (uint8_t)(take & 0xff), b[7] = (uint8_t)((take >> 8) & 0xff);
+		}
+		memcpy(b + 8, d + 16, 4);
+		ev_put(l, LE_DAMAGE, b, 12);
+		return 20;
+	case EVN_HITNOTIFY: /* the PC's client does nothing with it */
+		return 0;
+	case EVN_ANGLE:
+		if (n < 12)
+			return -1;
+		raise_fix(l, rdfloat(d), rdfloat(d + 4));
+		return 12;
+	case EVN_SHAKE: /* duration, amplitude, frequency; a spectator feels none (event.qc EV_Shake) */
+		if (n < 12)
+			return -1;
+		if (F.classname >= 0 && strcmp(QC_GetString(sv.vm, QC_EInt(sv.vm, l->client->edict, F.classname)), "spectator"))
+			ev_put(l, LE_SHAKE, d, 12);
+		return 12;
+	case EVN_FADE: /* r g b a, duration, hold, flags (fade.qc Fade_Parse) */
+		if (n < 13)
+			return -1;
+		ev_put(l, LE_FADE, d, 13);
+		return 13;
+	case EVN_HUDHINT: { /* event.qc EV_HUDHint: a chat line */
+		char line[EV_REC];
+		uint8_t lv = PRINT_CHAT;
+		if ((s0 = ev_str(d, n)) < 0)
+			return -1;
+		snprintf(line, sizeof(line), "Hint: %.*s", s0, (const char *)d);
+		ev_text(l, LE_PRINT, &lv, 1, line, (int)strlen(line));
+		return s0 + 1;
+	}
+	case EVN_TEXT:
+	case EVN_TEXT_STRING: /* text.qc GameText_ParseString: chan, string, x, y, effect, colours, times */
+		if (n < 1 || (s0 = ev_str(d + 1, n - 1)) < 0 || n < 1 + s0 + 1 + 31)
+			return -1;
+		{
+			const uint8_t *t = d + 1 + s0 + 1;
+			b[0] = d[0];
+			put_f32(b + 1, t), put_f32(b + 5, t + 4);
+			memcpy(b + 9, t + 8, 7); /* effect, colour 1, colour 2 */
+			for (int k = 0; k < 4; k++)
+				put_f32(b + 16 + k * 4, t + 15 + k * 4);
+			ev_text(l, LE_TEXT, b, 32, (const char *)d + 1, s0);
+		}
+		return 1 + s0 + 1 + 31;
+	case EVN_MESSAGE: /* text.qc GameMessage_Parse: a titles.txt name (or the text), sound, volume, attenuation */
+		if ((s0 = ev_str(d, n)) < 0 || (s1 = ev_str(d + s0 + 1, n - s0 - 1)) < 0 || n < s0 + s1 + 2 + 5)
+			return -1;
+		{
+			/* GameMessage_Setup's defaults for a name titles.txt lacks; channel 0 is the queue */
+			static const float def[] = {-1, 0.75f, 0.5f, 0.5f, 2.0f, 0};
+			float f[6];
+			memcpy(f, def, sizeof(f));
+			b[0] = 0xff;
+			memcpy(b + 1, &f[0], 4), memcpy(b + 5, &f[1], 4);
+			b[9] = 0;
+			memset(b + 10, 255, 6);
+			memcpy(b + 16, &f[2], 4), memcpy(b + 20, &f[3], 4), memcpy(b + 24, &f[4], 4), memcpy(b + 28, &f[5], 4);
+			ev_text(l, LE_TEXT, b, 32, (const char *)d, s0);
+		}
+		return s0 + s1 + 2 + 5;
+	case EVN_OBITUARY: /* target, attacker, weapon decl, means of death (src/server/api.qc:300) */
+		if ((s0 = ev_str(d, n)) < 0 || (s1 = ev_str(d + s0 + 1, n - s0 - 1)) < 0 ||
+		    (s2 = ev_str(d + s0 + s1 + 2, n - s0 - s1 - 2)) < 0 || (s3 = ev_str(d + s0 + s1 + s2 + 3, n - s0 - s1 - s2 - 3)) < 0)
+			return -1;
+		ev_obituary(l, (const char *)d, (const char *)d + s0 + 1, (const char *)d + s0 + s1 + 2,
+		            (const char *)d + s0 + s1 + s2 + 3);
+		return s0 + s1 + s2 + s3 + 4;
+	case EVN_PICKUP: { /* the item's entityDef network id (src/shared/game/Item.qc:823) */
+		const char *cls;
+		if (n < 4)
+			return -1;
+		cls = ev_itemclass((int32_t)rd32(d));
+		if (cls[0])
+			ev_put(l, LE_PICKUP, (const uint8_t *)cls, (int)BW_MIN(strlen(cls), (size_t)EV_REC - 2));
+		return 4;
+	}
+	case EVN_CHAT:
+	case EVN_CHAT_TEAM: /* sender's slot, team, text (src/server/GameRules.qc:354) */
+		if (n < 2 || (s0 = ev_str(d + 2, n - 2)) < 0)
+			return -1;
+		ev_chat(l, d[0], ev == EVN_CHAT ? 0 : d[1], (const char *)d + 2, s0);
+		return 2 + s0 + 1;
+	default:
+		return -1;
+	}
+}
+
+/* what came since the last frame, as records */
+static void ev_read(link_t *l)
+{
+	int i = 0;
+	while (i + 4 <= l->evrawlen) {
+		const uint8_t *h = l->evraw + i, *d = h + 4;
+		int kind = h[0], level = h[1], len = h[2] | h[3] << 8;
+		i += 4 + len;
+		if (kind == RAW_PRINT) {
+			uint8_t lv = (uint8_t)level;
+			/* a print can end in a newline; the PC's lines don't show it */
+			while (len > 0 && (d[len - 1] == '\n' || d[len - 1] == '\r'))
+				len--;
+			if (len > 0)
+				ev_text(l, LE_PRINT, &lv, 1, (const char *)d, len);
+		} else if (kind == RAW_CENTER)
+			ev_text(l, LE_CENTER, NULL, 0, (const char *)d, len);
+		else
+			for (int j = 0, used; j + 2 <= len && d[j] == CGAMEPACKET; j += 2 + used)
+				if ((used = ev_game(l, d[j + 1], d + j + 2, len - j - 2)) < 0)
+					break;
+	}
+	l->evrawlen = 0;
+}
+
+/* serverinfo coop_feed, "seq|who|verb|whom": the co-op rules' team events (revives) for the
+ * Panorama feed (coop/src/hud/jtf.qc Jtf_Post); the one up when we joined isn't news */
+static void ev_coopfeed(link_t *l)
+{
+	char feed[96], *f[4] = {0}, *p;
+	int n = 0;
+	SV_InfoGet(sv.serverinfo, "coop_feed", feed, sizeof(feed));
+	if (!feed[0]) {
+		l->evfeedinit = true;
+		return;
+	}
+	if (!strcmp(feed, l->evfeed))
+		return;
+	snprintf(l->evfeed, sizeof(l->evfeed), "%s", feed);
+	if (!l->evfeedinit) {
+		l->evfeedinit = true;
+		return;
+	}
+	for (p = feed; n < 4; n++) {
+		f[n] = p;
+		if (!(p = strchr(p, '|')))
+			break;
+		*p++ = 0;
+	}
+	if (n >= 3)
+		ev_feed(l, f[1], f[2], f[3]);
+}
+
+static void send_events(link_t *l, double now)
+{
+	pkt_t p;
+	uint16_t first = (uint16_t)(l->evack + 1);
+	int count = 0;
+	if (l->evnext == first || !l->evcap)
+		return;
+	if (l->evnext == l->evsentnext && now - l->evsent < EV_RESEND)
+		return;
+	p_begin(&p, L_EVENT);
+	p_u32(&p, l->session);
+	p_u16(&p, first);
+	p_u8(&p, 0);
+	for (uint16_t s = first; s != l->evnext && count < 255; s++, count++) {
+		int n = l->evlen[s % EV_RING];
+		if (p.len + n > (int)sizeof(p.data))
+			break;
+		p_bytes(&p, l->evring[s % EV_RING], n);
+	}
+	p.data[5 + 6] = (uint8_t)count;
+	l->evsent = now, l->evsentnext = l->evnext;
 	send_to(&l->from, &p);
 }
 
@@ -3018,6 +3451,8 @@ static void SV_LinkStats_f(int argc, const char **argv)
 			           "weapon %u/%u%s\n",
 			           l->joinver, l->lastrun, l->gaps, l->clipped, l->pseq, l->varsack, l->varsver, l->brushack,
 			           l->brushver, l->wiack, l->wiver, l->wicap ? "" : " (device takes none)");
+		Con_Printf("  events: %u made, %u acked of %u, %u dropped%s\n", l->evcount, (uint16_t)(l->evack),
+		           (uint16_t)(l->evnext - 1), l->evdropped, l->evcap ? "" : " (device takes none)");
 	}
 }
 
