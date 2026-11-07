@@ -144,6 +144,34 @@ void Skel_Draw(const skel_t *s, const skmat_t *pose, const int32_t *org, int yaw
 void Skel_Bench(const char *args, char *result, int resultsize); /* "<file> <copies> [clip]" */
 void Skel_View(const char *args);                                /* "<file> <copies>", until START */
 
+/* frame profiling: compiled in only with BULWARK_NDS_PROF (the rig's measurement
+ * builds define it); otherwise every macro is empty. PROF_T(t) starts a lap in a
+ * local, PROF_LAP(i, t) adds the time since to section i and starts the next */
+enum {
+	PROF_BEGIN,   /* World_Begin: PVS or portal flood */
+	PROF_SELECT,  /* Ents_Select */
+	PROF_COLLECT, /* World_Collect: the tree walk */
+	PROF_ENTS,    /* the models sent (Ents_DrawPass) */
+	PROF_WAIT1,   /* waiting on the geometry engine before the world */
+	PROF_CHAIN,   /* the world's faces into texture chains */
+	PROF_SUBMIT,  /* the world's faces sent */
+	PROF_REST,    /* things, markers, effects */
+	PROF_WAIT2,   /* waiting on the geometry engine at the end */
+	PROF_N
+};
+#ifdef BULWARK_NDS_PROF
+extern uint32_t Nds_Prof[PROF_N], Nds_ProfMax[PROF_N], Nds_ProfFrame[PROF_N];
+uint64_t tickGetCount(void);
+#define PROF_T(t) uint32_t t = (uint32_t)tickGetCount()
+#define PROF_LAP(i, t) do { uint32_t n_ = (uint32_t)tickGetCount(); Nds_ProfFrame[i] += n_ - (t); (t) = n_; } while (0)
+extern uint32_t Nds_ProfCount[8];
+#define PROF_COUNT(i, n) (Nds_ProfCount[i] += (n))
+#else
+#define PROF_COUNT(i, n) ((void)0)
+#define PROF_T(t) do { } while (0)
+#define PROF_LAP(i, t) do { } while (0)
+#endif
+
 /* main_nds.c */
 void Nds_PrintResults(void); /* the bench results so far, on the bottom screen */
 extern const char *const nds_basedirs[];

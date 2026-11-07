@@ -30,6 +30,8 @@
 #include "portals_nds.h"
 
 #define BSPVERSION 29
+/* the hot loops run from ITCM as ARM code (the rest of the file is Thumb) */
+#define ARM_CODE __attribute__((target("arm")))
 #define MAX_GPU_VERTS WORLD_MAX_VERTS
 #define MAX_GPU_POLYS WORLD_MAX_POLYS
 #define TEX_BUDGET (192 * 1024) /* VRAM banks A and B, less 64 KB for model skins (C and D hold captures) */
@@ -1140,8 +1142,9 @@ typedef struct {
 	int32_t n[3]; /* 4.12, pointing into the view */
 } fplane_t;
 
-static fplane_t frustum[4];
-static int32_t eye[3];
+/* in DTCM: the tree walk reads them for every node */
+DTCM_BSS static fplane_t frustum[4];
+DTCM_BSS static int32_t eye[3];
 static int32_t vfwd[3], vright[3], vup[3]; /* the view's axes in map space (4.12) */
 
 /* false if the box (map units) is wholly outside the view */
@@ -1155,6 +1158,40 @@ static bool box_visible(const int16_t *mins, const int16_t *maxs)
 		if (n[0] * x + n[1] * y + n[2] * z < 0)
 			return false;
 	}
+	return true;
+}
+
+/* box_visible for the tree walk: only the planes in *clip (a bit each) are
+ * tested, and those the box lies wholly inside are dropped from it, so the
+ * boxes inside it (a node's children) skip them. The same answer as
+ * box_visible, as a child's box lies inside its parent's */
+static inline bool box_clip(const int16_t *mins, const int16_t *maxs, int *clip)
+{
+	int c = *clip;
+	for (int i = 0; i < 4; i++) {
+		const int32_t *n;
+		int32_t px, py, pz, nx, ny, nz;
+		if (!(c & (1 << i)))
+			continue;
+		n = frustum[i].n;
+		if (n[0] >= 0)
+			px = maxs[0], nx = mins[0];
+		else
+			px = mins[0], nx = maxs[0];
+		if (n[1] >= 0)
+			py = maxs[1], ny = mins[1];
+		else
+			py = mins[1], ny = maxs[1];
+		if (n[2] >= 0)
+			pz = maxs[2], nz = mins[2];
+		else
+			pz = mins[2], nz = maxs[2];
+		if (n[0] * (px * 8 - eye[0]) + n[1] * (py * 8 - eye[1]) + n[2] * (pz * 8 - eye[2]) < 0)
+			return false;
+		if (n[0] * (nx * 8 - eye[0]) + n[1] * (ny * 8 - eye[1]) + n[2] * (nz * 8 - eye[2]) >= 0)
+			c &= ~(1 << i);
+	}
+	*clip = c;
 	return true;
 }
 
@@ -1175,24 +1212,26 @@ static inline void add_face(int i)
 	w.vislist[w.numvis++] = i;
 }
 
-static void walk(int n)
+/* clip: the frustum planes the node's parent wasn't wholly inside (box_clip) */
+ITCM_CODE ARM_CODE static void walk(int n, int clip)
 {
 	while (n >= 0) {
 		node_t *nd = &w.nodes[n];
-		const plane_t *pl = &w.planes[nd->plane];
+		const plane_t *pl;
 		int near;
-		if (nd->visframe != w.visframe || !box_visible(nd->mins, nd->maxs))
+		if (nd->visframe != w.visframe || (clip && !box_clip(nd->mins, nd->maxs, &clip)))
 			return;
 		/* the eye's side first, so faces come out nearest first */
+		pl = &w.planes[nd->plane];
 		near = pl->n[0] * eye[0] + pl->n[1] * eye[1] + pl->n[2] * eye[2] - pl->dist < 0;
-		walk(nd->children[near]);
+		walk(nd->children[near], clip);
 		n = nd->children[!near];
 		if (n >= w.numnodes)
 			return;
 	}
 	{
 		leaf_t *lf = &w.leafs[-(n + 1)];
-		if (-(n + 1) == 0 || lf->visframe != w.visframe || !box_visible(lf->mins, lf->maxs))
+		if (-(n + 1) == 0 || lf->visframe != w.visframe || (clip && !box_clip(lf->mins, lf->maxs, &clip)))
 			return;
 		for (int m = 0; m < lf->nummarks; m++) {
 			int idx = lf->firstmark + m;
@@ -1244,7 +1283,7 @@ static inline bool chain_face(int i, int *verts, int *polys, int maxverts, int m
 	return true;
 }
 
-ITCM_CODE static void draw_chains(void)
+ITCM_CODE ARM_CODE static void draw_chains(void)
 {
 	for (int t = 0; t < w.numtexs; t++) {
 		tex_t *tex = &w.texs[t];
@@ -1556,7 +1595,7 @@ void World_Collect(void)
 	if (!w.loaded)
 		return;
 	if (w.numnodes)
-		walk(0);
+		walk(0, 15);
 	w.numtreevis = w.numvis;
 	/* doors, lifts and other brush entities: all their faces, by box */
 	for (int m = 1; m < w.nummodels; m++) {
@@ -1635,6 +1674,7 @@ int World_Cost(int from, int to, int32_t split2, bool nearside, int *verts)
 void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t *st, int maxverts, int maxpolys)
 {
 	int verts = 0, polys = 0;
+	PROF_T(pt);
 	if (!w.loaded)
 		return;
 	for (int k = from; k < to && k < w.numtreevis; k++)
@@ -1642,6 +1682,7 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 	for (int k = w.numtreevis; k < w.numvis; k++)
 		if ((w.visdist[k] < split2) == nearside && !w.models[w.vismodel[k]].moved)
 			chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);
+	PROF_LAP(PROF_CHAIN, pt);
 	draw_chains();
 	/* the moved ones, each in its own place: a model's faces are together in the list */
 	for (int k = w.numtreevis; k < w.numvis;) {
@@ -1665,6 +1706,7 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 		}
 		k = end;
 	}
+	PROF_LAP(PROF_SUBMIT, pt);
 	st->verts += verts, st->polys += polys;
 }
 

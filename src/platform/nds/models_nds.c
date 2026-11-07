@@ -851,11 +851,17 @@ int Ents_FlickerBudget(int worldpolys, int worldverts)
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *st)
 {
 	int polys, verts, wverts, wpolys;
+	PROF_T(pt);
 	World_Begin(cam, st);
+	PROF_LAP(PROF_BEGIN, pt);
 	Ents_Select(cam);
+	PROF_LAP(PROF_SELECT, pt);
 	World_Collect();
+	PROF_LAP(PROF_COLLECT, pt);
 	wpolys = World_Cost(0, World_NumTreeFaces(), INT32_MAX, true, &wverts);
 	Ents_DrawPass(cam, INT32_MAX, true, true, Ents_FlickerBudget(wpolys, wverts), st);
+	PROF_LAP(PROF_ENTS, pt);
 	Gpu_Counts(&polys, &verts);
+	PROF_LAP(PROF_WAIT1, pt);
 	World_DrawPass(0, World_NumTreeFaces(), INT32_MAX, true, st, WORLD_MAX_VERTS - verts, WORLD_MAX_POLYS - polys);
 }
