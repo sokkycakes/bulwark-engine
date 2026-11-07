@@ -20,6 +20,10 @@ void Live_Shutdown(void);
 /* reads the live socket, keeps hello and punching going; once a frame */
 void Live_Frame(void);
 
+/* Tells Live whether the game is in a match's game right now (a server
+ * running, or a client connected), so it can report leaving a match. */
+void Live_SetGameProbe(bool (*probe)(void));
+
 bool Live_Connected(void);
 uint32_t Live_MyId(void);
 /* the party's room code, "" when not in a party */

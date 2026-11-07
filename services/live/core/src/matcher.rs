@@ -248,6 +248,45 @@ pub fn match_tickets(
     out
 }
 
+/// A running match on a drop-in playlist that still has room.
+#[derive(Clone, Debug)]
+pub struct Open {
+    /// The caller's own key for the match.
+    pub key: u64,
+    /// Seats left.
+    pub free: usize,
+    /// The host party's round-trip time to the server, in ms.
+    pub rtt_ms: u32,
+}
+
+/// Drop-in: puts waiting tickets into running matches with room, before any
+/// new match is made. A ticket goes to the fullest match its current stage
+/// allows (ping only: seniority and rematches don't matter when joining a
+/// game already under way), then the one with the lowest ping. Returns
+/// (ticket index, open index) pairs.
+pub fn drop_in(pl: &Playlist, tickets: &[Ticket], open: &[Open]) -> Vec<(usize, usize)> {
+    if !pl.drop_in || open.is_empty() {
+        return Vec::new();
+    }
+    let mut free: Vec<usize> = open.iter().map(|o| o.free).collect();
+    let mut order: Vec<usize> = (0..tickets.len()).filter(|&i| !tickets[i].members.is_empty()).collect();
+    order.sort_by(|&a, &b| tickets[b].waited.cmp(&tickets[a].waited).then(tickets[a].key.cmp(&tickets[b].key)));
+    let mut out = Vec::new();
+    for t in order {
+        let tk = &tickets[t];
+        let max_rtt = pl.stages[pl.stage_index(tk.waited)].max_rtt_sum;
+        let best = (0..open.len())
+            .filter(|&o| free[o] >= tk.members.len())
+            .filter(|&o| max_rtt == 0 || tk.rtt_ms + open[o].rtt_ms <= max_rtt)
+            .min_by_key(|&o| (free[o], tk.rtt_ms + open[o].rtt_ms, open[o].key));
+        if let Some(o) = best {
+            free[o] -= tk.members.len();
+            out.push((t, o));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +302,41 @@ mod tests {
     }
     fn twos() -> Playlist {
         Playlist::defaults().remove(1)
+    }
+
+    fn horde() -> Playlist {
+        Playlist::defaults().into_iter().find(|p| p.id == "horde").unwrap()
+    }
+
+    #[test]
+    fn horde_starts_alone_after_a_moment() {
+        let pl = horde();
+        assert!(pl.drop_in);
+        assert!(match_tickets(&pl, &[t(1, &[1], 0, 20, 0)], &never).is_empty());
+        let m = match_tickets(&pl, &[t(1, &[1], 0, 20, 10)], &never);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].seats, vec![(1, 0)]);
+    }
+
+    #[test]
+    fn drop_in_fills_the_fullest_match_ping_permitting() {
+        let pl = horde();
+        let open = vec![
+            Open { key: 10, free: 7, rtt_ms: 20 },
+            Open { key: 11, free: 2, rtt_ms: 20 },
+            Open { key: 12, free: 1, rtt_ms: 200 },
+        ];
+        let ts = vec![
+            t(1, &[1], 0, 20, 0),      // fits 12 by size, not by ping at stage 0 -> 11
+            t(2, &[2, 3, 4], 0, 20, 0), // only 10 has room for three
+            t(3, &[5], 0, 20, 30),     // past the last stage: ping no longer matters -> 12
+            t(4, &[6], 0, 20, 0),      // 11 has one seat left
+        ];
+        let mut got = drop_in(&pl, &ts, &open);
+        got.sort();
+        assert_eq!(got, vec![(0, 1), (1, 0), (2, 2), (3, 1)]);
+        // not a drop-in playlist: nothing
+        assert!(drop_in(&duel(), &ts, &open).is_empty());
     }
 
     #[test]

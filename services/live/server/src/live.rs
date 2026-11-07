@@ -1,7 +1,7 @@
 //! All server state and message handling.
 
 use bwlive_core::wire::{self, err, gone, t, Client, Listed, Member, Seat, Server, MAX_GUESTS, STAGE_NONE};
-use bwlive_core::{code, match_tickets, party, Playlist, Ticket};
+use bwlive_core::{code, drop_in, match_tickets, party, Open, Pick, Playlist, Ticket};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -106,12 +106,21 @@ struct Party {
     matched: Option<u64>,
 }
 
+/// A running match on a drop-in playlist.
+struct Running {
+    playlist: String,
+    host: u32,
+    seats: Vec<Seat>,
+    pick: Pick,
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct Stats {
     pub players: usize,
     pub parties: usize,
     pub queued_parties: usize,
     pub matches_made: u64,
+    pub drop_ins: u64,
     pub relayed_bytes: u64,
     pub relay_dropped: u64,
     pub datagrams_in: u64,
@@ -128,6 +137,8 @@ pub struct Live {
     recent: HashMap<(u64, u64), Instant>,
     /// Each playlist's last (mode, map), so the next match plays something else.
     last_pick: HashMap<String, (String, String)>,
+    /// Drop-in matches that still take players, by match id.
+    running: HashMap<u64, Running>,
     rng: u64,
     order: u64,
     next_party: u32,
@@ -146,6 +157,7 @@ impl Live {
             codes: HashMap::new(),
             recent: HashMap::new(),
             last_pick: HashMap::new(),
+            running: HashMap::new(),
             rng: seed | 1,
             order: 0,
             next_party: 1,
@@ -682,6 +694,7 @@ impl Live {
             .retain(|_, at| now.saturating_duration_since(*at) < Duration::from_secs(longest as u64 * 60));
 
         if !self.cfg.relay_only {
+            self.tidy_running();
             for pl in self.cfg.playlists.clone() {
                 self.run_matcher(&pl, now);
             }
@@ -725,6 +738,22 @@ impl Live {
         if tickets.len() < 1 {
             return;
         }
+        if pl.drop_in {
+            let joined = self.run_drop_in(pl, &keys, &tickets);
+            let mut i = 0;
+            keys.retain(|_| {
+                i += 1;
+                !joined.contains(&(i - 1))
+            });
+            let mut i = 0;
+            tickets.retain(|_| {
+                i += 1;
+                !joined.contains(&(i - 1))
+            });
+            if tickets.is_empty() {
+                return;
+            }
+        }
         let window = Duration::from_secs(pl.avoid_rematch_minutes as u64 * 60);
         let formed = {
             let players = &self.players;
@@ -753,6 +782,12 @@ impl Live {
                     Seat { id, slot, team: *team, name: self.seat_name(id, slot) }
                 })
                 .collect();
+            if pl.drop_in {
+                self.running.insert(
+                    mid,
+                    Running { playlist: pl.id.clone(), host: (f.host >> 8) as u32, seats: seats.clone(), pick: pick.clone() },
+                );
+            }
             let msg = Server::Match {
                 id: mid,
                 playlist: pl.id.clone(),
@@ -791,6 +826,111 @@ impl Live {
         }
     }
 
+    /// Puts waiting tickets into running drop-in matches; returns the
+    /// indices of the tickets that joined one.
+    fn run_drop_in(&mut self, pl: &Playlist, keys: &[u32], tickets: &[Ticket]) -> Vec<usize> {
+        let ids: Vec<u64> = self.running.iter().filter(|(_, r)| r.playlist == pl.id).map(|(id, _)| *id).collect();
+        let open: Vec<Open> = ids
+            .iter()
+            .map(|id| {
+                let r = &self.running[id];
+                Open {
+                    key: *id,
+                    free: (pl.team_size as usize).saturating_sub(r.seats.len()),
+                    rtt_ms: self.players.get(&r.host).map(|p| p.rtt_ms).unwrap_or(0),
+                }
+            })
+            .collect();
+        let joins = drop_in(pl, tickets, &open);
+        let mut touched = Vec::new();
+        for &(ti, oi) in &joins {
+            let mid = ids[oi];
+            let new_seats: Vec<Seat> = tickets[ti]
+                .members
+                .iter()
+                .map(|m| {
+                    let (id, slot) = ((*m >> 8) as u32, (*m & 0xff) as u8);
+                    Seat { id, slot, team: 0, name: self.seat_name(id, slot) }
+                })
+                .collect();
+            // introduce the newcomers to everyone already playing
+            let old: Vec<u32> = {
+                let mut v: Vec<u32> = self.running[&mid].seats.iter().map(|s| s.id).collect();
+                v.dedup();
+                v
+            };
+            let mut fresh: Vec<u32> = new_seats.iter().map(|s| s.id).collect();
+            fresh.dedup();
+            for &a in &fresh {
+                for &b in &old {
+                    if a != b {
+                        self.introduce(a, b);
+                    }
+                }
+            }
+            self.running.get_mut(&mid).unwrap().seats.extend(new_seats);
+            let pt = self.parties.get_mut(&keys[ti]).unwrap();
+            pt.ticket = None;
+            pt.matched = Some(mid);
+            self.stats.drop_ins += 1;
+            if !touched.contains(&mid) {
+                touched.push(mid);
+            }
+        }
+        for mid in touched {
+            self.announce_running(mid);
+        }
+        joins.into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// Sends a drop-in match's current seats to everyone in it. Players
+    /// already in see the same match id again and only update their seats;
+    /// newcomers join the host.
+    fn announce_running(&mut self, mid: u64) {
+        let r = &self.running[&mid];
+        let msg = Server::Match {
+            id: mid,
+            playlist: r.playlist.clone(),
+            host: r.host,
+            seats: r.seats.clone(),
+            mode: r.pick.mode.clone(),
+            map: r.pick.map.clone(),
+            settings: r.pick.settings.clone(),
+        };
+        let mut consoles: Vec<u32> = r.seats.iter().map(|s| s.id).collect();
+        consoles.sort();
+        consoles.dedup();
+        for c in consoles {
+            self.send(c, msg.clone());
+        }
+    }
+
+    /// Frees the seats of players who left a drop-in match, and stops
+    /// taking players into one whose host has gone.
+    fn tidy_running(&mut self) {
+        let ids: Vec<u64> = self.running.keys().copied().collect();
+        for mid in ids {
+            let in_match = |players: &HashMap<u32, Player>, parties: &HashMap<u32, Party>, id: u32| {
+                players
+                    .get(&id)
+                    .and_then(|p| p.party)
+                    .and_then(|pid| parties.get(&pid))
+                    .is_some_and(|pt| pt.matched == Some(mid))
+            };
+            let host = self.running[&mid].host;
+            if !in_match(&self.players, &self.parties, host) {
+                self.running.remove(&mid);
+                continue;
+            }
+            let before = self.running[&mid].seats.len();
+            let (players, parties) = (&self.players, &self.parties);
+            self.running.get_mut(&mid).unwrap().seats.retain(|s| in_match(players, parties, s.id));
+            if self.running[&mid].seats.len() != before {
+                self.announce_running(mid);
+            }
+        }
+    }
+
     /// A JSON snapshot for the status page.
     pub fn status_json(&self) -> String {
         let playlists: Vec<serde_json::Value> = self
@@ -803,7 +943,7 @@ impl Live {
                 serde_json::json!({
                     "id": p.id, "name": p.name, "game": p.game,
                     "players": p.players(), "teams": p.teams,
-                    "searching": self.searching(&p.id), "modes": modes,
+                    "searching": self.searching(&p.id), "modes": modes, "drop_in": p.drop_in,
                 })
             })
             .collect();
@@ -821,6 +961,8 @@ impl Live {
             "parties": self.parties.len(),
             "queued_parties": self.parties.values().filter(|p| p.ticket.is_some()).count(),
             "matches_made": self.stats.matches_made,
+            "drop_ins": self.stats.drop_ins,
+            "running_drop_in": self.running.len(),
             "relayed_bytes": self.stats.relayed_bytes,
             "relay_dropped": self.stats.relay_dropped,
             "datagrams_in": self.stats.datagrams_in,
@@ -1041,6 +1183,85 @@ mod tests {
         let (_, seats, mode, _, _) = found.expect("short-handed match after the last stage");
         assert_eq!(seats.len(), 2);
         assert_ne!(mode, first);
+    }
+
+    fn match_msgs(msgs: &[Server]) -> Vec<(u64, u32, Vec<Seat>)> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                Server::Match { id, host, seats, .. } => Some((*id, *host, seats.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn horde_starts_alone_and_takes_drop_ins() {
+        let mut n = Net::new(Config::default());
+        let a = n.hello_game(1, "alice", "coop", &[]);
+        let b = n.hello_game(2, "bob", "coop", &["bob (2)"]);
+        let c = n.hello_game(3, "carol", "coop", &[]);
+        n.send(1, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.got(1);
+        n.tick(5);
+        assert!(match_msgs(&n.got(1)).is_empty(), "waits a moment for company");
+        n.tick(5);
+        let m = match_msgs(&n.got(1));
+        assert_eq!(m.len(), 1);
+        let (mid, host, seats) = m[0].clone();
+        assert_eq!((host, seats.len()), (a, 1));
+
+        // bob and his guest drop in
+        n.send(2, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.got(2);
+        n.tick(1);
+        let to_b = n.got(2);
+        let (bid, bhost, bseats) = match_msgs(&to_b).pop().expect("bob dropped in");
+        assert_eq!((bid, bhost, bseats.len()), (mid, a, 3));
+        assert!(to_b.iter().any(|m| matches!(m, Server::Introduce { peer, .. } if *peer == a)));
+        let to_a = n.got(1);
+        assert_eq!(match_msgs(&to_a).pop().unwrap().2.len(), 3, "the host sees the new seats");
+        assert!(to_a.iter().any(|m| matches!(m, Server::Introduce { peer, .. } if *peer == b)));
+        assert_eq!(n.live.stats.drop_ins, 1);
+        assert_eq!(n.live.stats.matches_made, 1);
+
+        // bob leaves: his seats free up and the host is told
+        n.send(2, Client::MatchLeft { id: mid });
+        n.tick(1);
+        assert_eq!(match_msgs(&n.got(1)).pop().unwrap().2.len(), 1);
+
+        // the host leaves: the match takes nobody else, carol gets her own
+        n.send(1, Client::MatchLeft { id: mid });
+        n.tick(1);
+        n.hello_game(3, "carol", "coop", &[]); // still online (20 s timeout)
+        n.send(3, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.tick(1);
+        assert!(match_msgs(&n.got(3)).is_empty());
+        n.tick(9);
+        let (cid, chost, _) = match_msgs(&n.got(3)).pop().expect("carol's own match");
+        assert_ne!(cid, mid);
+        assert_eq!(chost, c);
+    }
+
+    #[test]
+    fn drop_in_match_holds_eight() {
+        let mut n = Net::new(Config::default());
+        // a console of four, then a solo hosts... order: the four queue first
+        n.hello_game(1, "couch", "coop", &["couch (2)", "couch (3)", "couch (4)"]);
+        n.send(1, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.tick(10);
+        let (mid, _, seats) = match_msgs(&n.got(1)).pop().unwrap();
+        assert_eq!(seats.len(), 4);
+        for k in 2..=6u16 {
+            n.hello_game(k, &format!("p{k}"), "coop", &[]);
+            n.send(k, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        }
+        n.tick(1);
+        let full = match_msgs(&n.got(1)).pop().unwrap();
+        assert_eq!((full.0, full.2.len()), (mid, 8));
+        // the fifth solo had no room; it starts a match of its own later
+        assert_eq!(n.live.stats.drop_ins, 4);
+        n.tick(9);
+        assert_eq!(n.live.stats.matches_made, 2);
     }
 
     #[test]

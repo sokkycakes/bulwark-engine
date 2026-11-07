@@ -113,6 +113,9 @@ static struct {
 	char match_playlist[64];
 	uint32_t match_host;
 	char match_mode[40], match_map[72];
+	/* whether this game got into the match's game, and when it last was */
+	bool match_joined, match_over;
+	double match_lost;
 	struct {
 		char key[56], value[72];
 	} settings[MAX_SETTINGS];
@@ -137,6 +140,9 @@ static struct {
 static cvar_t *live_punch, *live_party, *live_server, *live_game, *live_autoconnect, *live_hostcmd, *live_state, *live_onconnect;
 
 static double now(void) { return Sys_Seconds(); }
+
+static bool (*game_probe)(void);
+void Live_SetGameProbe(bool (*probe)(void)) { game_probe = probe; }
 
 /* --- writing ---------------------------------------------------------------- */
 
@@ -907,14 +913,22 @@ static void from_server(int type, rbuf_t *r)
 				kept++;
 			}
 		}
-		if (r->bad || id == L.match_id)
+		if (r->bad)
 			return;
+		if (id == L.match_id) {
+			/* a drop-in match's seats changed: someone dropped in or left */
+			Con_Printf("live: the match now has %d player%s\n", L.nseats, L.nseats == 1 ? "" : "s");
+			update_state();
+			break;
+		}
 		if (map[0] && (!ident_ok(map, "-./") || strstr(map, "..") || map[0] == '/' || map[0] == '.'))
 			map[0] = 0;
 		L.nsettings = kept;
 		Str_Copy(L.match_mode, mode, sizeof(L.match_mode));
 		Str_Copy(L.match_map, map, sizeof(L.match_map));
 		L.match_id = id;
+		L.match_joined = L.match_over = false;
+		L.match_lost = 0;
 		Str_Copy(L.match_playlist, pl, sizeof(L.match_playlist));
 		L.match_host = host;
 		L.queued = false;
@@ -989,6 +1003,36 @@ static void from_peer(int type, rbuf_t *r, const struct sockaddr_in *from)
 
 /* --- frame ------------------------------------------------------------------ */
 
+/* Tells the server when this game has left its match, so a drop-in match
+ * frees the seats (or, for the host, stops taking players). The game is
+ * "in" while the probe says so; a gap of 10 s (a level change is shorter)
+ * means it left. */
+static void match_frame(double t)
+{
+	if (!L.match_id || L.match_over || !game_probe || !L.connected)
+		return;
+	if (game_probe()) {
+		L.match_joined = true;
+		L.match_lost = 0;
+		return;
+	}
+	if (!L.match_joined)
+		return;
+	if (!L.match_lost) {
+		L.match_lost = t;
+		return;
+	}
+	if (t - L.match_lost < 10.0)
+		return;
+	wbuf_t w;
+	w_start(&w, T_MATCH_LEFT);
+	w_u64(&w, L.match_id);
+	send_server(&w);
+	L.match_over = true;
+	Con_Printf("live: left the match\n");
+	update_state();
+}
+
 void Live_Frame(void)
 {
 	if (L.sock < 0)
@@ -1018,6 +1062,7 @@ void Live_Frame(void)
 	}
 	if (L.connected)
 		punch_frame(t);
+	match_frame(t);
 }
 
 /* --- game and lobby streams ------------------------------------------------- */

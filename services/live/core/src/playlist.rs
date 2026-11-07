@@ -38,6 +38,10 @@ pub struct Playlist {
     /// map. Empty = the host decides (Stiletto's duel).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modes: Vec<Mode>,
+    /// Matches stay open after they start: players who queue later drop
+    /// into one with room before a new match is made. One team only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drop_in: bool,
 }
 
 /// A game mode within a playlist, such as Firefight or Horde.
@@ -167,6 +171,9 @@ impl Playlist {
         }
         if self.name.is_empty() {
             self.name = self.id.clone();
+        }
+        if self.drop_in && self.teams != 1 {
+            return Err(format!("{}: drop_in needs one team", self.id));
         }
         if self.modes.len() > MAX_MODES {
             return Err(format!("{}: at most {MAX_MODES} modes", self.id));
@@ -321,17 +328,17 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
         "settings": { "coop_waves": "1", "coop_survival": "0", "coop_waveDelay": "10",
                       "coop_waveMonsters": "monster_human_grunt" } }
     ] },
-  { "id": "horde", "name": "Horde", "game": "coop", "team_size": 5, "teams": 1,
+  { "id": "horde", "name": "Horde", "game": "coop", "team_size": 8, "teams": 1,
     "stages": [
-      { "after": 0,  "max_rtt_sum": 150 },
-      { "after": 20, "max_rtt_sum": 300 },
-      { "after": 45 }
+      { "after": 0, "max_rtt_sum": 150 },
+      { "after": 8 }
     ],
-    "min_players": 2,
+    "min_players": 1,
+    "drop_in": true,
     "modes": [
       { "id": "horde", "name": "Horde", "maps": ["coop_arena"],
-        "settings": { "coop_waves": "1", "coop_survival": "1", "coop_waveDelay": "30",
-                      "coop_wavePerWave": "4" } }
+        "settings": { "coop_waves": "1", "coop_survival": "0", "coop_respawnRule": "wave",
+                      "coop_waveDelay": "30", "coop_wavePerWave": "4", "coop_survivorFill": "4" } }
     ] }
 ]"#;
 

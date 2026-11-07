@@ -12,7 +12,7 @@
 //! tables are private; a client reads what concerns it with the `state` and
 //! `players` procedures, which return JSON. Original code, ISC licence.
 
-use bwlive_core::{code, match_tickets, party as rules, Playlist, Ticket as CoreTicket};
+use bwlive_core::{code, drop_in, match_tickets, party as rules, Open, Playlist, Ticket as CoreTicket};
 use serde_json::{json, Value};
 use spacetimedb::{
     procedure, reducer, table, Identity, ProcedureContext, ReducerContext, ScheduleAt, Table, TimeDuration, Timestamp,
@@ -116,6 +116,8 @@ pub struct GameMatch {
     pub mode: String,
     pub map: String,
     pub settings: String,
+    /// A drop-in match that still takes players (its host is still in it).
+    pub drop_in: bool,
 }
 
 #[table(accessor = match_seat)]
@@ -595,10 +597,37 @@ pub fn tick(ctx: &ReducerContext, _arg: MatcherTick) -> R {
         ctx.db.game_match().id().delete(id);
     }
 
+    tidy_drop_in(ctx);
     for pl in pls {
         run_matcher(ctx, &pl);
     }
     Ok(())
+}
+
+/// Frees the seats of players who left a drop-in match, and stops taking
+/// players into one whose host has left.
+fn tidy_drop_in(ctx: &ReducerContext) {
+    let in_match = |who: Identity, id: u64| {
+        ctx.db
+            .player()
+            .identity()
+            .find(who)
+            .and_then(|p| ctx.db.party().id().find(p.party))
+            .is_some_and(|pt| pt.matched == id)
+    };
+    let running: Vec<GameMatch> = ctx.db.game_match().iter().filter(|m| m.drop_in).collect();
+    for mut m in running {
+        if !in_match(m.host, m.id) {
+            m.drop_in = false;
+            ctx.db.game_match().id().update(m);
+            continue;
+        }
+        let gone: Vec<u64> =
+            ctx.db.match_seat().match_id().filter(&m.id).filter(|s| !in_match(s.identity, m.id)).map(|s| s.id).collect();
+        for s in gone {
+            ctx.db.match_seat().id().delete(s);
+        }
+    }
 }
 
 fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
@@ -636,6 +665,42 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
     if tickets.len() < 1 {
         return;
     }
+    if pl.drop_in {
+        // join running matches with room first
+        let running: Vec<GameMatch> = ctx.db.game_match().iter().filter(|m| m.drop_in && m.playlist == pl.id).collect();
+        let open: Vec<Open> = running
+            .iter()
+            .map(|m| Open {
+                key: m.id,
+                free: (pl.team_size as usize).saturating_sub(ctx.db.match_seat().match_id().filter(&m.id).count()),
+                rtt_ms: ctx.db.player().identity().find(m.host).map(|p| p.rtt_ms).unwrap_or(0),
+            })
+            .collect();
+        let joins = drop_in(pl, &tickets, &open);
+        for &(ti, oi) in &joins {
+            let mid = running[oi].id;
+            for &m in &tickets[ti].members {
+                let (identity, slot) = (who[m as usize], slot_of[m as usize]);
+                ctx.db.match_seat().insert(MatchSeat { id: 0, match_id: mid, identity, slot, team: 0 });
+            }
+            let pid = parties[ti];
+            cancel_ticket(ctx, pid);
+            if let Some(mut pt) = ctx.db.party().id().find(pid) {
+                pt.matched = mid;
+                ctx.db.party().id().update(pt);
+            }
+            log::info!("party {pid} dropped into match {mid}");
+        }
+        let joined: Vec<usize> = joins.into_iter().map(|(t, _)| t).collect();
+        let keep: Vec<bool> = (0..tickets.len()).map(|i| !joined.contains(&i)).collect();
+        let mut k = keep.iter();
+        tickets.retain(|_| *k.next().unwrap());
+        let mut k = keep.iter();
+        parties.retain(|_| *k.next().unwrap());
+        if tickets.is_empty() {
+            return;
+        }
+    }
     let window = Duration::from_secs(pl.avoid_rematch_minutes as u64 * 60);
     let recent: HashMap<String, Timestamp> = ctx.db.recent_pair().iter().map(|r| (r.key, r.at)).collect();
     let was_recent = |a: u64, b: u64| {
@@ -669,6 +734,7 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
             mode: pick.mode,
             map: pick.map,
             settings: Value::Object(settings).to_string(),
+            drop_in: pl.drop_in,
         });
         for (m, team) in &f.seats {
             let (identity, slot) = (who[*m as usize], slot_of[*m as usize]);
@@ -765,7 +831,8 @@ pub fn state(ctx: &mut ProcedureContext) -> Result<String, String> {
                     .collect();
                 let settings: Value = serde_json::from_str(&m.settings).unwrap_or(json!({}));
                 out["match"] = json!({ "id": m.id, "playlist": m.playlist, "host": relay_of(m.host), "seats": seats,
-                                       "mode": m.mode, "map": m.map, "settings": settings });
+                                       "mode": m.mode, "map": m.map, "settings": settings,
+                                       "drop_in": m.drop_in });
             }
         }
         let invites: Vec<Value> = db
@@ -819,7 +886,8 @@ pub fn list_playlists(ctx: &mut ProcedureContext) -> Result<String, String> {
             .iter()
             .map(|p| {
                 let modes: Vec<Value> = p.modes.iter().map(|m| json!({ "id": m.id, "name": m.name, "maps": m.maps })).collect();
-                json!({ "id": p.id, "name": p.name, "game": p.game, "players": p.players(), "teams": p.teams, "modes": modes })
+                json!({ "id": p.id, "name": p.name, "game": p.game, "players": p.players(), "teams": p.teams, "modes": modes,
+                        "drop_in": p.drop_in })
             })
             .collect();
         Ok::<String, String>(Value::Array(v).to_string())

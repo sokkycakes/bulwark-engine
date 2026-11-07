@@ -26,6 +26,12 @@ static void usage(void)
 	Con_Printf("usage: bulwark-ded [-basedir dir] [-game dir]... [-enginedata dir] [-frames n] [+command args]...\n");
 }
 
+/* Bulwark Live: whether this game is in a match's game */
+static bool live_in_game(void)
+{
+	return sv.active;
+}
+
 int main(int argc, char **argv)
 {
 	const char *basedir = ".";
@@ -70,6 +76,7 @@ int main(int argc, char **argv)
 	Mf_Startup(games, numgames);
 	NET_Init();
 	Live_Init();
+	Live_SetGameProbe(live_in_game);
 	PKG_Init();
 	SV_Init();
 	QC_InitDebugCommands();

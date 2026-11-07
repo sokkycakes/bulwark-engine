@@ -8,5 +8,5 @@ pub mod party;
 pub mod playlist;
 pub mod wire;
 
-pub use matcher::{match_tickets, Formed, Ticket};
+pub use matcher::{drop_in, match_tickets, Formed, Open, Ticket};
 pub use playlist::{Mode, Pick, Playlist, Stage};
