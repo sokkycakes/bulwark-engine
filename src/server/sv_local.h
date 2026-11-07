@@ -100,6 +100,7 @@ typedef struct client_s {
 	clientstate_t state;
 	bool bot;
 	int link; /* link player (sv_link.c): its slot + 1, 0 for none; bot is set too */
+	bool linkcmds; /* a link player that sends its own commands (link v2): not driven by the bot loop */
 	netchan_t chan;
 	char name[64];
 	char userinfo[2048];
@@ -167,6 +168,7 @@ void SV_ClientsPreThink(void);
 void SV_ClientsPostThink(void);
 void SV_SendClientMessages(void);
 void SV_ClientsAfterPhysics(void);
+void SV_RunUsercmd(client_t *c, const usercmd_t *u); /* one command, as a client's move runs it */
 void SV_BroadcastPrecache(int kind, int index, const char *name);
 void SV_ClientPrint(client_t *c, int level, const char *text);
 void SV_BroadcastPrint(int level, const char *text); /* to every player and the console */

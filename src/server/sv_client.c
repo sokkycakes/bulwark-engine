@@ -1130,6 +1130,8 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 	SV_MVDUsercmd(c, &cmd);
 }
 
+void SV_RunUsercmd(client_t *c, const usercmd_t *u) { run_usercmd(c, u); }
+
 static void read_usercmd(msg_t *m, const usercmd_t *from, usercmd_t *to)
 {
 	int bits;
@@ -1472,7 +1474,7 @@ void SV_ClientsPreThink(void)
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		usercmd_t cmd;
-		if (c->state != CS_SPAWNED || !c->bot)
+		if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
 			continue;
 		cmd = c->lastucmd;
 		cmd.sequence = c->lastcmd + 1;
