@@ -30,11 +30,18 @@
  * timers, player animation, ProcessInput and the use flagger. Each place
  * says which QC lines it skips.
  *
+ * The DS has no FPU: each float operation is a libgcc call of about a
+ * microsecond. Where it changes nothing, the work is done on the bits
+ * instead (fexact_nds.h: comparisons, sqrtf), or not done again (the vectors
+ * of the last angles); every result stays the server's, bit for bit
+ * (tools/nds/pmtest -dump checks it against the plain code).
+ *
  * Plain C99, no libnds: tools/nds/pmtest.c builds this file on the host. */
 #include <math.h>
 #include <string.h>
 
 #include "pmove_nds.h"
+#include "fexact_nds.h"
 
 /* QC's unary minus on a float: fteqcc emits OP_SUB_F 0, x */
 #define QNEG(x) (0.0f - (x))
@@ -70,10 +77,10 @@ static float dot(const float *a, const float *b)
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-/* vlen (qc_builtins_core.c bi_vlen) */
+/* vlen (qc_builtins_core.c bi_vlen); fx_sqrt is sqrtf to the bit */
 static float vlen(const float *v)
 {
-	return sqrtf(dot(v, v));
+	return fx_sqrt(dot(v, v));
 }
 
 /* normalize (bi_normalize: VectorNormalize, common.c:343-354) */
@@ -81,8 +88,8 @@ static void normalize(const float *v, float *out)
 {
 	float len;
 	vcopy(v, out);
-	len = sqrtf(dot(out, out));
-	if (len) {
+	len = fx_sqrt(dot(out, out));
+	if (fx_nonzero(len)) { /* len != 0 */
 		float inv = 1.0f / len;
 		out[0] *= inv;
 		out[1] *= inv;
@@ -93,12 +100,12 @@ static void normalize(const float *v, float *out)
 /* min() and max() (bi_min, bi_max: BW_MIN/BW_MAX of the first and second) */
 static float qmin(float a, float b)
 {
-	return a < b ? a : b;
+	return fx_lt(a, b) ? a : b;
 }
 
 static float qmax(float a, float b)
 {
-	return a > b ? a : b;
+	return fx_gt(a, b) ? a : b;
 }
 
 /* sinf and cosf of the last few angles, by bit pattern, so the same angle
@@ -133,11 +140,28 @@ static void pm_sincos(float a, float *s, float *c)
 	trig_next = (trig_next + 1) & 3;
 }
 
+/* the vectors of the last few angles, by bit pattern: a command asks for
+ * the same two or three again and again */
+static struct {
+	uint32_t key[3];
+	bool valid;
+	float f[3], r[3], u[3];
+} mvec[4];
+static int mvec_next;
+
 /* makevectors (bi_makevectors: AngleVectors, common.c:320-342) */
 static void makevectors(const float *angles)
 {
 	const float d2r = (float)(3.14159265358979323846 / 180.0); /* common.c: (float)(M_PI / 180.0) */
 	float sy, cy, sp, cp, sr, cr;
+	uint32_t key[3] = {fx_bits(angles[0]), fx_bits(angles[1]), fx_bits(angles[2])};
+	for (int i = 0; i < 4; i++)
+		if (mvec[i].valid && !memcmp(mvec[i].key, key, sizeof(key))) {
+			vcopy(mvec[i].f, v_forward);
+			vcopy(mvec[i].r, v_right);
+			vcopy(mvec[i].u, v_up);
+			return;
+		}
 	pm_sincos(angles[1] * d2r, &sy, &cy);
 	pm_sincos(angles[0] * d2r, &sp, &cp);
 	pm_sincos(angles[2] * d2r, &sr, &cr);
@@ -150,6 +174,12 @@ static void makevectors(const float *angles)
 	v_up[0] = cr * sp * cy + sr * sy;
 	v_up[1] = cr * sp * sy - sr * cy;
 	v_up[2] = cr * cp;
+	memcpy(mvec[mvec_next].key, key, sizeof(key));
+	mvec[mvec_next].valid = true;
+	vcopy(v_forward, mvec[mvec_next].f);
+	vcopy(v_right, mvec[mvec_next].r);
+	vcopy(v_up, mvec[mvec_next].u);
+	mvec_next = (mvec_next + 1) & 3;
 }
 
 /* anglesToForward / anglesToRight (src/common/c_math_vector.h:78-106): the
@@ -186,9 +216,9 @@ static void qc_angle_vectors(const float *angles, float *fwd, float *right)
 static float fix_angle_delta(float a)
 {
 	for (;;) {
-		if (a > 180)
+		if (fx_gt(a, 180))
 			a -= 360;
-		else if (a < -180)
+		else if (fx_lt(a, -180))
 			a += 360;
 		else
 			return a;
@@ -231,7 +261,7 @@ static bool pm_is_stuck(const float *org, const float *mins, const float *maxs)
 /* PMoveCustom_Gravity (pmove_custom.qc:38-46) */
 static float pmc_gravity(void)
 {
-	if (S->gravity != 0.0f)
+	if (fx_nonzero(S->gravity))
 		return G(G_GRAVITY) * S->gravity;
 	return G(G_GRAVITY);
 }
@@ -252,7 +282,7 @@ static void pmc_categorize(void)
 	tracebox(S->origin, S->mins, S->maxs, pos);
 
 	if (!tr.startsolid) {
-		if ((tr.fraction < 1.0f) && (tr.normal[2] > 0.7f)) {
+		if (fx_lt(tr.fraction, 1.0f) && fx_gt(tr.normal[2], 0.7f)) {
 			S->flags |= PM_FL_ONGROUND;
 			S->groundent = tr.ent;
 		} else {
@@ -265,7 +295,7 @@ static void pmc_categorize(void)
 
 	S->flags &= ~PM_FL_WATERJUMP;
 
-	if (S->basevel[2] > 0)
+	if (fx_gt(S->basevel[2], 0))
 		S->flags &= ~PM_FL_ONGROUND;
 
 	/* ladder content testing (:83-116) */
@@ -418,19 +448,19 @@ static void pmc_accel_friction(float move_time, const float *wish_dir, float wis
 	mult = G(FRICTION);
 
 	/* per frame basis friction modifier */
-	if (S->friction != 0.0f) {
+	if (fx_nonzero(S->friction)) {
 		mult /= S->friction;
 		S->friction = 0.0f;
 	}
 
 	/* apply friction */
-	if (retain > 0) {
+	if (fx_gt(retain, 0)) {
 		/* if the leading edge is over a dropoff, increase friction (:271-273).
 		 * With pm_edgefriction 1 both branches below give the same bits
 		 * (x * 1.0f == x) and the next trace (:573) overwrites every trace_*
 		 * before anything reads them, so the probe is skipped. */
 		bool edge = false;
-		if (G(EDGEFRICTION) != 1.0f) {
+		if (!fx_eq(G(EDGEFRICTION), 1.0f)) {
 			float end[3];
 			normalize(temp, n);
 			for (int k = 0; k < 3; k++)
@@ -439,22 +469,22 @@ static void pmc_accel_friction(float move_time, const float *wish_dir, float wis
 			end[1] = temp[1] + 0;
 			end[2] = temp[2] + -34;
 			T->move(T->ctx, temp, vzero, vzero, end, PM_MOVE_NOMONSTERS, 0, &tr);
-			edge = tr.fraction == 1.0f;
+			edge = fx_eq(tr.fraction, 1.0f);
 		}
 
 		if (edge) {
-			if (retain < G(STOPSPEED))
+			if (fx_lt(retain, G(STOPSPEED)))
 				retain = 1 - move_time * (G(STOPSPEED) / retain) * mult * G(EDGEFRICTION);
 			else
 				retain = 1 - move_time * mult * G(EDGEFRICTION);
 		} else {
-			if (retain < G(STOPSPEED))
+			if (fx_lt(retain, G(STOPSPEED)))
 				retain = 1 - move_time * (G(STOPSPEED) / retain) * mult;
 			else
 				retain = 1 - move_time * mult;
 		}
 
-		if (retain < 0) {
+		if (fx_lt(retain, 0)) {
 			vcopy(vzero, S->velocity);
 		} else {
 			S->velocity[0] = S->velocity[0] * retain;
@@ -467,7 +497,7 @@ static void pmc_accel_friction(float move_time, const float *wish_dir, float wis
 
 	/* acceleration */
 	retain = wish_speed - dot(S->velocity, wish_dir);
-	if (retain > 0) {
+	if (fx_gt(retain, 0)) {
 		float add = qmin(retain, (G(ACCELERATE) * wish_speed) * move_time);
 		for (int k = 0; k < 3; k++)
 			S->velocity[k] = S->velocity[k] + wish_dir[k] * add;
@@ -521,12 +551,12 @@ static void pmc_accel_gravity(float move_time, const float *wish_dir, float wish
 
 	S->velocity[2] = S->velocity[2] - (pmc_gravity() * move_time);
 
-	if (wish_speed < 30)
+	if (fx_lt(wish_speed, 30))
 		retain = wish_speed - dot(S->velocity, wish_dir);
 	else
 		retain = 30 - dot(S->velocity, wish_dir);
 
-	if (retain > 0) {
+	if (fx_gt(retain, 0)) {
 		float fric = qmin(retain, (G(AIRACCELERATE) * wish_speed) * move_time);
 		for (int k = 0; k < 3; k++)
 			S->velocity[k] = S->velocity[k] + wish_dir[k] * fric;
@@ -592,7 +622,7 @@ static void pmc_acceleration(float move_time, bool premove)
 	normalize(wish, wish_dir);
 	wish_speed = vlen(wish);
 
-	if (G(NOSPEEDCAP) == 0 && wish_speed > S->maxspeed)
+	if (fx_eq(G(NOSPEEDCAP), 0) && fx_gt(wish_speed, S->maxspeed))
 		wish_speed = S->maxspeed;
 
 	if (S->vflags & PM_VFL_ONLADDER)
@@ -613,7 +643,7 @@ static void pmc_rebound(const float *normal_in)
 	for (int k = 0; k < 3; k++)
 		S->velocity[k] = S->velocity[k] - normal[k] * d;
 
-	if (normal[2] > 0.7f) {
+	if (fx_gt(normal[2], 0.7f)) {
 		if (tr.entsolid == PM_SOLID_BSP) {
 			S->groundent = tr.ent;
 			S->flags |= PM_FL_ONGROUND;
@@ -650,7 +680,8 @@ static bool pmc_fix_origin(void)
 static void pmc_move(void)
 {
 	float dest[3], saved_plane[3], start[3];
-	float stepped, move_time, i;
+	float stepped, move_time;
+	int i;
 
 	/* noclippers don't collide with anything */
 	if (S->movetype == PM_MOVETYPE_NOCLIP) {
@@ -659,7 +690,8 @@ static void pmc_move(void)
 		return;
 	}
 
-	for (i = 3, move_time = in_time; move_time > 0 && i; i--) {
+	/* the QC counts i down in float, 3 2 1, exactly: an int does the same */
+	for (i = 3, move_time = in_time; fx_gt(move_time, 0) && i; i--) {
 		for (int k = 0; k < 3; k++)
 			dest[k] = S->origin[k] + (S->velocity[k] * move_time);
 		for (int k = 0; k < 3; k++)
@@ -677,14 +709,14 @@ static void pmc_move(void)
 		vcopy(tr.endpos, S->origin);
 
 		/* no obstacles? no further tests needed */
-		if (tr.fraction >= 1.0f)
+		if (fx_ge(tr.fraction, 1.0f))
 			break;
 
 		/* something is in the way: bounce off it, or step up */
 		vcopy(tr.normal, saved_plane);
 		move_time -= move_time * tr.fraction;
 
-		if (move_time > 0.0f) {
+		if (fx_gt(move_time, 0.0f)) {
 			float roof_fraction, roof_plane[3];
 
 			/* step up if we can: the QC writes trace_endpos itself (:597-603) */
@@ -715,7 +747,7 @@ static void pmc_move(void)
 			tracebox(start, S->mins, S->maxs, dest);
 
 			/* if we got anywhere, make this raised-step move count */
-			if (tr.fraction >= 1.0f) {
+			if (fx_ge(tr.fraction, 1.0f)) {
 				float fwfrac = tr.fraction, fwplane[3];
 				vcopy(tr.normal, fwplane);
 
@@ -725,16 +757,16 @@ static void pmc_move(void)
 				vcopy(tr.endpos, start);
 				tracebox(start, S->mins, S->maxs, dest);
 
-				if (tr.fraction < 1.0f && tr.normal[2] > 0.7f) {
+				if (fx_lt(tr.fraction, 1.0f) && fx_gt(tr.normal[2], 0.7f)) {
 					move_time -= move_time * fwfrac;
 
 					/* bounce off the ceiling */
-					if (roof_fraction < 1)
+					if (fx_lt(roof_fraction, 1))
 						pmc_rebound(roof_plane);
 
-					if (tr.fraction < 1)
+					if (fx_lt(tr.fraction, 1))
 						pmc_rebound(tr.normal);
-					else if (fwfrac < 1)
+					else if (fx_lt(fwfrac, 1))
 						pmc_rebound(fwplane);
 					vcopy(tr.endpos, S->origin);
 					continue;
@@ -754,7 +786,7 @@ static void pmc_move(void)
 		dest[2] -= G(STEPSIZE);
 		tracebox(S->origin, S->mins, S->maxs, dest);
 
-		if (tr.fraction == 1.0f)
+		if (fx_eq(tr.fraction, 1.0f))
 			return;
 		/* portal (:668-672) and DoTouch (:679): the server's */
 		S->groundent = tr.ent;
@@ -798,9 +830,9 @@ static void pmc_run(void)
  * QC's speedMod 1.0f) and the state's current vflags */
 static float pm_speed_mod(void)
 {
-	if (S->wsmzoom > 0.0f && S->viewzoom < 1.0f)
+	if (fx_gt(S->wsmzoom, 0.0f) && fx_lt(S->viewzoom, 1.0f))
 		return S->wsmzoom;
-	if (S->wsmfire > 0.0f && (S->vflags & PM_VFL_FIRING))
+	if (fx_gt(S->wsmfire, 0.0f) && (S->vflags & PM_VFL_FIRING))
 		return S->wsmfire;
 	return S->wsm;
 }
@@ -816,17 +848,17 @@ static float pm_max_speed(void)
 	float walk = P(WALKSPEED);
 	float prone = P(PRONESPEED);
 	float mod = pm_speed_mod();
-	bool can_sprint = !PRONE() && !CROUCHING() && P(RUNSPEED) > 0;
+	bool can_sprint = !PRONE() && !CROUCHING() && fx_gt(P(RUNSPEED), 0);
 
 	if (can_sprint && (S->vflags & PM_VFL_SPRINTING)) {
-		if (S->stamina < maxstamina) {
+		if (fx_lt(S->stamina, maxstamina)) {
 			float thresh = P(STAMINATHRESHOLD);
-			if ((S->stamina + thresh) > maxstamina) {
+			if (fx_gt(S->stamina + thresh, maxstamina)) {
 				float delta = (S->stamina + thresh) - maxstamina;
 				run = lerp(run, walk, delta / thresh);
 			}
 		}
-		wish = (S->stamina >= maxstamina) ? walk : run;
+		wish = fx_ge(S->stamina, maxstamina) ? walk : run;
 	} else if (CROUCHING()) {
 		wish = crouch;
 	} else if (PRONE()) {
@@ -836,7 +868,7 @@ static float pm_max_speed(void)
 	}
 
 	/* moving at another speed than our own, as the server says */
-	if (S->speed_target > 0.0f && walk > 0.0f)
+	if (fx_gt(S->speed_target, 0.0f) && fx_gt(walk, 0.0f))
 		wish *= S->speed_target / walk;
 
 	return wish * mod;
@@ -846,7 +878,7 @@ static float pm_max_speed(void)
 static float pm_top_speed(void)
 {
 	float top = P(WALKSPEED);
-	if (S->speed_target > 0.0f && top > 0.0f)
+	if (fx_gt(S->speed_target, 0.0f) && fx_gt(top, 0.0f))
 		top = S->speed_target;
 	top *= pm_speed_mod();
 	return qmax(S->maxspeed, top);
@@ -866,7 +898,7 @@ static void pm_clamp_walk_speed(void)
 	flatspeed = vlen(flat);
 
 	/* sliding along walls or turning can't push us past the top speed */
-	if (cap > 0.0f && flatspeed > cap) {
+	if (fx_gt(cap, 0.0f) && fx_gt(flatspeed, cap)) {
 		float f = cap / flatspeed;
 		for (int k = 0; k < 3; k++)
 			flat[k] *= f;
@@ -874,13 +906,13 @@ static void pm_clamp_walk_speed(void)
 	}
 
 	/* slower when backing up (Team Fortress 2) */
-	if (back > 0.0f && back < 1.0f && flatspeed > 100.0f) {
+	if (fx_gt(back, 0.0f) && fx_lt(back, 1.0f) && fx_gt(flatspeed, 100.0f)) {
 		float ang[3] = {0, in_angles[1], 0}, fwd[3], right[3], backdot;
 		qc_angle_vectors(ang, fwd, NULL);
 		qc_angle_vectors(ang, NULL, right);
 		backdot = dot(fwd, flat);
 
-		if (backdot < 0.0f) {
+		if (fx_lt(backdot, 0.0f)) {
 			float backmove[3], sidemove[3], rd, maxback;
 			for (int k = 0; k < 3; k++)
 				backmove[k] = fwd[k] * backdot;
@@ -889,7 +921,7 @@ static void pm_clamp_walk_speed(void)
 				sidemove[k] = right[k] * rd;
 			maxback = top * back;
 
-			if (QNEG(backdot) > maxback) {
+			if (fx_gt(QNEG(backdot), maxback)) {
 				float f = maxback / QNEG(backdot);
 				for (int k = 0; k < 3; k++)
 					backmove[k] *= f;
@@ -899,7 +931,7 @@ static void pm_clamp_walk_speed(void)
 				flat[k] = backmove[k] + sidemove[k];
 			flatspeed = vlen(flat);
 
-			if (flatspeed > top) {
+			if (fx_gt(flatspeed, top)) {
 				float f = top / flatspeed;
 				for (int k = 0; k < 3; k++)
 					flat[k] *= f;
@@ -939,7 +971,7 @@ static void pm_input_premove(void)
 
 	/* clamp movement values to max speed */
 	wish = vlen(in_move);
-	if (wish > S->maxspeed)
+	if (fx_gt(wish, S->maxspeed))
 		wish = S->maxspeed;
 	normalize(in_move, n);
 	for (int k = 0; k < 3; k++)
@@ -986,7 +1018,7 @@ static void pm_water_move(void)
 	if (S->movetype == PM_MOVETYPE_NOCLIP)
 		return;
 
-	if (S->health < 0)
+	if (fx_lt(S->health, 0))
 		return;
 
 	if (!S->waterlevel) {
@@ -1025,7 +1057,7 @@ static void pm_crouch(void)
 	if (S->movetype != PM_MOVETYPE_WALK)
 		return;
 
-	if (P(CROUCHHEIGHT) > 0 && (in_buttons & PM_IN_CROUCH)) {
+	if (fx_gt(P(CROUCHHEIGHT), 0) && (in_buttons & PM_IN_CROUCH)) {
 		if (!CROUCHING()) {
 			vcopy(V->crouchmins, tmins);
 			vcopy(V->crouchmaxs, tmaxs);
@@ -1095,7 +1127,7 @@ static void pm_prone(void)
 	if (S->movetype != PM_MOVETYPE_WALK)
 		return;
 
-	if (P(PRONEHEIGHT) > 0 && (in_buttons & PM_IN_PRONE)) {
+	if (fx_gt(P(PRONEHEIGHT), 0) && (in_buttons & PM_IN_PRONE)) {
 		if (!PRONE()) {
 			vcopy(V->pronemins, tmins);
 			vcopy(V->pronemaxs, tmaxs);
@@ -1272,7 +1304,7 @@ static void pm_check_jump(bool premove)
 			return;
 
 	if ((in_buttons & PM_IN_JUMP) && premove) {
-		if (S->velocity[2] < 0)
+		if (fx_lt(S->velocity[2], 0))
 			S->velocity[2] = 0;
 
 		if (S->rules & PM_R_HL)
@@ -1305,7 +1337,7 @@ static void pm_input_sprint(void)
 		S->stamina = qmax(0, S->stamina - sub);
 	}
 
-	if (S->stamina > P(STAMINA))
+	if (fx_gt(S->stamina, P(STAMINA)))
 		S->stamina = P(STAMINA);
 }
 
@@ -1324,7 +1356,7 @@ static void pm_input_sprint_hl(void)
 	}
 
 	/* turn the flashlight off when empty */
-	if (S->stamina > P(STAMINA)) {
+	if (fx_gt(S->stamina, P(STAMINA))) {
 		S->stamina = P(STAMINA);
 		S->gflags &= ~PM_GF_FLASHLIGHT;
 	}
@@ -1439,7 +1471,7 @@ void PM_Run(pmstate_t *s, const pmcmd_t *c, const pmvars_t *v, const pmtrace_if 
 	pm_water_move();
 
 	/* grappling hook (:787-790) */
-	if (s->hookvel[0] != 0 || s->hookvel[1] != 0 || s->hookvel[2] != 0) {
+	if (fx_nonzero(s->hookvel[0]) || fx_nonzero(s->hookvel[1]) || fx_nonzero(s->hookvel[2])) {
 		float f;
 		for (int k = 0; k < 3; k++)
 			s->velocity[k] = (s->hookvel[k] - s->origin[k]);
