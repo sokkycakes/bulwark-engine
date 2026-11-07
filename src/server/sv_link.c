@@ -3074,7 +3074,7 @@ static void ev_plain(char *out, int size, const char *s, int len)
 			if (s[i + 1] == '^')
 				i++;
 		}
-		out[n++] = s[i];
+		out[n++] = s[i] == '\t' ? ' ' : s[i]; /* the DS's font has no tab (hypothesis: FTE draws one as blank) */
 	}
 	out[n] = 0;
 }
