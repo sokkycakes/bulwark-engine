@@ -16,8 +16,10 @@
 #include <string.h>
 
 #include "events_nds.h"
+#include "sound_nds.h"
 
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN, LE_FLASH };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN, LE_FLASH,
+       LE_SOUND, LE_SENTENCE, LE_MUSIC, LE_PRECACHE };
 #define PRINT_CHAT 3
 
 evstats_t Events_Stats;
@@ -187,7 +189,8 @@ static void copy_text(char *dst, int size, const uint8_t *src, int len)
 /* CSQC_Parse_Print */
 static void take_print(int level, const char *msg)
 {
-	if (level == PRINT_CHAT) { /* Chat_Parse */
+	if (level == PRINT_CHAT) { /* Chat_Parse; its localsound("misc/talk.wav") with cg_chatEnabled 1 (chat.qc:111) */
+		Snd_LocalName("misc/talk.wav");
 		if (tx.chatlines < 4)
 			strcpy(tx.chat[++tx.chatlines], msg);
 		else {
@@ -329,6 +332,12 @@ static void take(int type, const uint8_t *d, int len)
 	case LE_PICKUP:
 		copy_text(s, sizeof(s), d, len);
 		take_pickup(s);
+		break;
+	case LE_SOUND: /* sound's records (sound_nds.c): reliable sounds, sentences, music, the precache list */
+	case LE_SENTENCE:
+	case LE_MUSIC:
+	case LE_PRECACHE:
+		Snd_Event(type, d, len);
 		break;
 	}
 }

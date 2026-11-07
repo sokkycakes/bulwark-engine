@@ -30,7 +30,7 @@ if(NINTENDO_DS)
 	               src/platform/nds/models_nds.c src/platform/nds/multipass_nds.c
 	               src/platform/nds/portals_nds.c src/platform/nds/skel_nds.c src/platform/nds/pmove_nds.c
 	               src/platform/nds/hull_nds.c src/platform/nds/weapon_nds.c src/platform/nds/hud_nds.c
-	               src/platform/nds/events_nds.c)
+	               src/platform/nds/events_nds.c src/platform/nds/sound_nds.c)
 	target_link_libraries(bulwark_nds PRIVATE dswifi9 filesystem fat m)
 	# libgcc's soft-float add, multiply/divide, compare and float-to-int run from ITCM (the
 	# linker script puts *.itcm.* objects there): the movement prediction spends about half

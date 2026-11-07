@@ -77,6 +77,7 @@ typedef struct {
 	uint8_t nseq, nev;
 	wseq_t seq[W_MAX_SEQ];
 	wev_t ev[W_MAX_EV];
+	uint16_t used; /* the body's bytes this took: a sound table may follow (sound_nds.c) */
 } winfo_t;
 
 /* what Weapon.qc and Physics_InputPostMove keep between commands: the player's
