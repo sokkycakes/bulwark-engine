@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bulwark engine - bake a pixel font for the DS's HUD. ISC licence, see LICENSE.
 
-    dsfont.py font.ttf|.bdf|.pcf size out.dsf
+    dsfont.py font.ttf|.bdf|.pcf size out.dsf|out.h
 
 Renders printable ASCII (32-126) one bit deep at `size` pixels per em (a
 pixel TrueType font's own size: 8 for 04b09, see docs/spec/bitmap-fonts.md)
@@ -14,6 +14,10 @@ HUD with (link_nds.c, hud_*):
 Glyphs are cut to 8 pixels wide. The fonts sokky uses are mostly not free to
 redistribute, so a baked .dsf is game data: keep it out of git (the
 .gitignore has *.dsf) and ship it in a private package.
+
+An out.h gets the same bytes as a C array (hudnum_dsf[]), for a font free to
+ship that is built into the ROM: src/platform/nds/hudnum_dsf.h is
+TallPixelFont (SIL OFL 1.1, data/fonts/TallPixelFont-OFL.txt) at 9.
 """
 import sys
 from PIL import Image, ImageDraw, ImageFont
@@ -64,7 +68,15 @@ def main():
                 if img.getpixel((x, y)):
                     bits |= 1 << x
             data.append(bits)
-    open(out, "wb").write(data)
+    if out.endswith(".h"):
+        name = sys.argv[1].replace("\\", "/").split("/")[-1]
+        rows = [", ".join("0x%02x" % b for b in data[i:i + 16]) for i in range(0, len(data), 16)]
+        open(out, "w").write(
+            f"/* {name} at {size} px, baked by tools/nds/dsfont.py (the .dsf format is described there).\n"
+            f" * Generated: do not edit. */\n"
+            f"static const uint8_t hudnum_dsf[{len(data)}] = {{\n\t" + ",\n\t".join(rows) + ",\n};\n")
+    else:
+        open(out, "wb").write(data)
     print(f"{out}: {count} glyphs, {height} rows, {len(data)} bytes")
 
 
