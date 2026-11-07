@@ -696,9 +696,9 @@ linger, the notice without its 0.4 s fade); a nameplate's line of sight is
 traced every third frame instead of each. The crosshair takes the sprite's
 most common colour and the pixels its format draws.
 
-Not drawn yet: the damage arrows and tint, the pickup and ammo notices and
-the weapon selection list (the server doesn't pass `EV_DAMAGE` or the
-pickup events to a device).
+The damage arrows and tint and the pickup notices come as `EVENT` records
+and are drawn by `events_nds.c` ("Events" below). Not drawn yet: the ammo
+pickup notice and the weapon selection list.
 
 ### Measured: the HUD, in melonDS 1.1 (not hardware)
 
@@ -738,8 +738,13 @@ for co-op, ported to C:
 | Pickups | `valve/src/hud/hud.qc` `HUD_PickedUpItem`, `HLHUD_ItemNotify_Draw` | battery, health kit and long jump only, with a count, 2.5 s and fading 0.5 a second |
 | Punch (landing, recoil) | `player_pmove.qc` `Physics_Fall`, `Physics_InputPostMove`; `View.qc` `AddPunchAngle` | already predicted with the weapon ("Weapons" above): the server's punch fields reconcile it |
 
-Text goes on the top screen's HUD layer in a band from row 24 to 151,
-between the frame-rate lines and health and ammo. The PC's 2D numbers are
+Text goes on its own layer, BG2, in a band from row 24 to 151, between
+the frame-rate lines and health and ammo. BG2 is in front of the HUD
+(BG1), as `entry.qc CSQC_Update2D` draws `Chat_Draw`, `Print_Draw` and
+`Print_DrawCenterprint` after `HUD_Draw` (game_text, which it draws before
+`HUD_Draw`, is in front of the HUD here too); its tiles are in VRAM D,
+which the viewer keeps from textures for its two passes and a link session
+doesn't use, and its map is after BG1's. Its font is the HUD's. The PC's 2D numbers are
 taken as pixels of a 480-row HUD (an assumption: at 1080p Nuclide's integer
 `vid_conautoscale` gives 480 to 540 rows), so a PC pixel is 0.4 of a DS
 pixel. Each text group has its own palette bank, so its fading is a palette
@@ -766,10 +771,14 @@ Where it differs from the PC:
   0.2 s late instead of not at all.
 - Prints start under the frame-rate lines (row 24) rather than at the PC's
   16 pixels from the top.
-- The DS player has no `phud 1` (the co-op Panorama HUD's userinfo), so the
-  co-op rules send it what they send a PC on the Half-Life HUD: wave
-  centerprints, the hero line and the XPM line as game_text. A PC with the
-  Panorama HUD shows these in its own panels instead.
+- Since the HUD (above) is in, the device's first `'H'` sets its `phud 1`
+  as `jtf.qc Jtf_SetPhud` does, so the co-op rules send it what they send a
+  PC on the Panorama HUD: the hero and XPM lines no longer come as
+  game_text (observed: 2 records in the 40 s arena run, before the first
+  `'H'`). The feed is the HUD's; `EVENT` makes no feed records for it.
+- Prints at the top left lie over the objective panel, and the chat field
+  over the vitals' top (observed); the PC places them the same way, at its
+  own scale.
 
 ### Measured: events, in melonDS 1.1 (not hardware)
 
@@ -795,6 +804,52 @@ arrive once and in order; with nothing acknowledged during 80 lines the
 next EVENT starts 32 records past it and the last 52 lines arrive. Screenshots (fade, game_text and its fade,
 shake, damage arrow and tint, chat, centerprint, the feed) were taken with
 the rig's `evtest.sh`; they show Valve's data and stay out of the repo.
+
+### Measured: the HUD, events and the draw loop together, in melonDS 1.1 (not hardware)
+
+The three pieces above (HUD, events, the draw loop on c2a4e) merged, with
+their own `bulwark-ded`, against `5730913` with its own. Measurement builds
+(`rig/make_meas_src.py`), `fps=30`, one run of each, observed:
+
+- `coop_arena`, 40 monsters, `botwalk=1 botfire=1`, 40 s: `link_god 1` for
+  the first 8 s, then a small explosion (damage), a red `env_fade`, an
+  `env_shake`, a two-line game_text, a `say`, and an explosion that kills
+  (the down box, "Respawn in N seconds", the respawn).
+- The same with 150 ms of round trip (`sv_link_lag 75`), 30 s, god on.
+- `c2a4e` at `-576 1012 84` facing 270 and `c1a0` at its start, standing,
+  30 s (no hulls, so no prediction). c1a2 has no converted map in the rig,
+  so it is not measured.
+- `e0m1` (`-game base`), `botwalk=1`, 30 s.
+
+| Run | Build | fps, median (worst second) | CPU a frame, median (worst second) | `Hud_Frame`, median of the seconds' means (worst frame) | Prediction a frame, average (worst) | States within 0.5 units | RAM in use / peak / lowest free | Received / sent |
+|---|---|---|---|---|---|---|---|---|
+| `coop_arena`, damage and death | 5730913 | 30 (30) | 7.6 ms (19.4) | – | 1.45 ms (2.9) | 1038 of 1050 | 421 / 438 KB / 2.82 MB | 40.5 / 2.46 KB/s |
+| `coop_arena`, damage and death | merged | 30 (30) | 6.5 ms (14.7) | 0.77 ms (8.3) | 1.43 ms (3.0) | 1040 of 1049 | 415 / 433 KB / 2.77 MB | 39.9 / 2.64 KB/s |
+| the same, 150 ms | 5730913 | 30 (30) | 7.3 ms (10.8) | – | 1.66 ms (8.1) | 698 of 712 | 421 / 439 KB / 2.82 MB | 38.4 / 4.98 KB/s |
+| the same, 150 ms | merged | 30 (30) | 6.3 ms (8.8) | 0.60 ms (2.7) | 1.59 ms (7.9) | 683 of 695 | 415 / 429 KB / 2.75 MB | 38.5 / 5.16 KB/s |
+| `c2a4e`, standing | 5730913 | 28 (27; 1 while the models load) | 31.9 ms | – | 0.18 ms | – | 1885 / 1906 KB / 48 KB | 34.2 / 2.43 KB/s |
+| `c2a4e`, standing | merged | 30 (29; 1 while the models load) | 13.1 ms | 0.56 ms (3.5) | 0.18 ms | – | 1877 / 1900 KB / 192 KB | 34.7 / 2.70 KB/s |
+| `c1a0`, standing | 5730913 | 29 (20) | 15.3 ms (16.4) | – | 0.17 ms | – | 946 / 964 KB / 1.57 MB | 28.6 / 2.46 KB/s |
+| `c1a0`, standing | merged | 30 (30) | 10.4 ms (11.0) | 0.76 ms (4.1) | 0.17 ms | – | 942 / 962 KB / 1.49 MB | 28.1 / 2.64 KB/s |
+| `e0m1`, walking | 5730913 | 30 (30) | 5.2 ms (7.2) | – | 1.37 ms (2.9) | 824 of 824 | 613 / 614 KB / 1.75 MB | 19.7 / 2.52 KB/s |
+| `e0m1`, walking | merged | 30 (30) | 4.4 ms (6.2) | 0.24 ms (2.0) | 1.38 ms (2.9) | 877 of 877 | 612 / 614 KB / 1.67 MB | 20.6 / 2.67 KB/s |
+
+"CPU a frame" includes `Hud_Frame` in the merged build; 5730913's old HUD
+redrew its diagnostics line once a second (`hud_diag`, 7.2 ms on the arena,
+15.5 ms on c2a4e, inside the worst seconds above). The worst `Hud_Frame`
+frame on the arena (8.3 ms) is the down box coming up. Sent traffic is 0.15
+to 0.2 KB/s more (INPUT's `'H'` and `'E'`). On the arena run `EVENT` was
+185 B/s and `HUDINFO` 321 B/s; 196 records were made and all acknowledged,
+most of them "Respawn in N seconds": `coop.qc
+CodeCallback_PlayerRequestRespawn` centerprints it each frame fire is held
+while down (the PC gets the same). The normal ROM is 457060 bytes of code
+and 215604 of bss against 414564 and 175024 (+42.5 KB, +40.6 KB).
+
+Screenshots of these runs (HUD, nameplates and feed, damage arrows and
+tint, fade, shake, game_text, chat, the centerprint over the down box, and
+the crosshair with the HUD worktree's synthetic sprite: no Valve sprite
+sheets are in the rig, so the PC draws no crosshair there either) are kept
+out of the repository: they show Valve's data.
 
 ## Map viewer controls
 

@@ -279,7 +279,7 @@ After the 32 bytes of the v1 fields (all present):
 | 44 | count × 14 | commands, oldest first: command `i` has sequence `newest - (count - 1) + i` |
 | 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has (0 none yet), and its edict; a device that sends it takes WEAPONINFO |
 | then | u8, u16 | optional, after `'W'` when that is there: `'H'`, the HUDINFO version the device has (0 none yet); a device that sends it draws the HUD and takes HUDINFO |
-| then | u8, u16 | optional: `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
+| then | u8, u16 | optional, last (after `'W'` and `'H'` when they are there, or at 32 without commands): `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -660,6 +660,9 @@ escapes (`\y`, `\n`: a new line).
 | 7 | FEED | `EV_OBITUARY` for a player's death (as `coop/src/hud/jtf.qc HUD_Obituary` passes it to the Panorama feed: no attacker when the means of death says `self`, the weapon decl's `inv_name`); serverinfo `coop_feed` changes (team events) | u8 about us, u8 length, attacker (or the victim, with weapon "died"), u8 length, weapon, victim |
 | 8 | PICKUP | `EV_PICKUP` | the item's class (`EntityDef_NameFromNetID`) |
 | 9 | TEXTAGAIN | a TEXT on channel 0-4 the same as that channel's last | u8 channel: show it again from its start |
+
+A device that also sends `'H'` gets no FEED records: the obituaries and
+`coop_feed` reach it in `HUDINFO`, whose feed it draws.
 
 `EV_ANGLE` from a `MSG_ONE` write turns the player as the multicast does.
 `EV_HITNOTIFY` (the PC does nothing with it) and events of other kinds
