@@ -32,6 +32,9 @@ if(NINTENDO_DS)
 	               src/platform/nds/hull_nds.c src/platform/nds/weapon_nds.c src/platform/nds/hud_nds.c
 	               src/platform/nds/events_nds.c src/platform/nds/sound_nds.c)
 	target_link_libraries(bulwark_nds PRIVATE dswifi9 filesystem fat m)
+	# sound runs a few hundred microseconds a frame: Thumb at -Os is about 11 KB smaller than
+	# ARM at -O2, which the map load's lowest free RAM needs more (docs/platforms/nds.md "Sound")
+	set_source_files_properties(src/platform/nds/sound_nds.c PROPERTIES COMPILE_OPTIONS "-Os;-mthumb")
 	# libgcc's soft-float add, multiply/divide, compare and float-to-int run from ITCM (the
 	# linker script puts *.itcm.* objects there): the movement prediction spends about half
 	# its time in them. The same objects, so the same results, only faster fetched.
