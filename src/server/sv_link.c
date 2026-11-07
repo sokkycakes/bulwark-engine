@@ -193,6 +193,9 @@ typedef struct {
 	int devspawn;                 /* the map (spawn count) the device says it has, -1 if it doesn't say */
 	int buttons;                  /* the game's buttons as the device mapped them, -1 if it doesn't */
 	int impseq;                   /* the count of the device's last one-shot impulse */
+	int lastseq_w;                /* the count of the device's weaplast presses ('L'), -1 none yet */
+	int selent;                   /* a weapon to switch to with the next command (0 none): the
+	                               * PC's client sends it as input_cursor_entitynumber */
 	int vmseq;                    /* the view model's sequence when last looked at */
 	float vmtime;                 /* and how long it had played */
 	uint8_t vmplays, vmsent;      /* sequences started (the same one again counts), and as last sent */
@@ -573,6 +576,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	l->devspawn = -1;
 	l->buttons = -1;
 	l->impseq = -1;
+	l->lastseq_w = -1;
 	l->joinver = len >= 4 + 2 + 16 + 1 ? d[22] : 0;
 	l->v2map = -1;
 	l->evnext = 1; /* EVENT records from 1; 0 acknowledged: none */
@@ -581,6 +585,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 }
 
 static void input_v2(link_t *l, const uint8_t *d, int len);
+static void weap_last(link_t *l);
 
 /* INPUT: the device's state, then either its commands (link v2: an extension
  * after the v1 fields, run here once each) or, from an old device, one state
@@ -629,6 +634,13 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 				l->sndcap = (d[t + 3] & 1) != 0;
 				if (l->devspawn == (svs.spawncount & 0xffff))
 					l->amback = (uint16_t)rd16(d + t + 1);
+				t += 4;
+				/* then 'L': the count of the device's weaplast presses (the PC's Q) */
+				if (len >= t + 2 && d[t] == 'L') {
+					if (l->lastseq_w >= 0 && d[t + 1] != l->lastseq_w && c->state == CS_SPAWNED)
+						weap_last(l);
+					l->lastseq_w = d[t + 1];
+				}
 			}
 		}
 	}
@@ -2677,6 +2689,11 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 			u.movevalues[a] = (float)(int16_t)rd16(k + 5 + 2 * a);
 		u.buttons = rd16(k + 11);
 		u.impulse = k[13];
+		if (l->selent > 0) { /* a weapon the game or the device picked: as the PC's client sends it */
+			if (l->selent < sv.vm->num_edicts && !sv.vm->edicts[l->selent].free)
+				u.cursor_entity = l->selent;
+			l->selent = 0;
+		}
 		u.servertime_ms = 0; /* no lag to rewind: the device sees the others where the server has them */
 		if (log) {
 			lstate_t pre;
@@ -5139,6 +5156,41 @@ static void snd_precache(link_t *l)
 	}
 }
 
+/* a weapon the player owns, by its classname (an item of Nuclide's inventory: owner = the
+ * player, _isWeapon set), 0 for none */
+static int owned_weapon(int pe, const char *cls)
+{
+	int isw = QC_FieldOfs(sv.vm, "_isWeapon");
+	if (F.classname < 0 || F.owner < 0 || !cls || !cls[0])
+		return 0;
+	for (int e = svs.maxclients + 1; e < sv.vm->num_edicts; e++) {
+		if (sv.vm->edicts[e].free || QC_EInt(sv.vm, e, F.owner) != pe)
+			continue;
+		if (isw >= 0 && QC_EdictFields(sv.vm, e)[isw].f == 0)
+			continue;
+		if (!strcmp(QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), cls))
+			return e;
+	}
+	return 0;
+}
+
+/* the PC's "weaplast" (Q; client cmd.qc ncWeapon_SelectWeapon(GetLastWeapon())): the weapon
+ * held before this one while the player still has it (Actor.qc GetLastWeapon), sent as the
+ * next command's input_cursor_entitynumber; otherwise the previous weapon (GetLastWeapon's own
+ * fallback), which the game's impulse 12 picks for a link player (Player.qc ProcessInput) */
+static void weap_last(link_t *l)
+{
+	client_t *c = l->client;
+	int pe = c->edict, ofs = QC_FieldOfs(sv.vm, "m_lastWeapon"), w = 0, act = active_weapon(pe);
+	if (ofs >= 0)
+		w = (int)QC_EdictFields(sv.vm, pe)[ofs].u;
+	if (w > 0 && w < sv.vm->num_edicts && !sv.vm->edicts[w].free && w != act && F.owner >= 0 &&
+	    QC_EInt(sv.vm, w, F.owner) == pe)
+		l->selent = w;
+	else
+		c->forced_impulse = 12;
+}
+
 /* a stuffcmd to a link player (sv_client.c bi_stuffcmd): what the PC would run of it that
  * makes a sound. "play"/"play2"/"playvol" start a local sound at the listener (snd_main.c
  * Play_f), "music"/"stopmusic" the music player. One line or several */
@@ -5148,8 +5200,10 @@ void SV_LinkStuffCmd(client_t *c, const char *text)
 	link_t *l = link_of(c);
 	char line[512];
 	const char *p = text;
-	if (!l || !snd_ready(l))
+	bool snd;
+	if (!l)
 		return;
+	snd = snd_ready(l);
 	while (*p) {
 		const char *e = p + strcspn(p, "\n;");
 		float eye[3];
@@ -5157,6 +5211,18 @@ void SV_LinkStuffCmd(client_t *c, const char *text)
 		p = *e ? e + 1 : e;
 		Cmd_TokenizeInto(&tok, line);
 		if (!tok.argc)
+			continue;
+		/* "selectItem <weapon>": the game wants the player on that weapon (the co-op heroes
+		 * after taking a floor gun). The PC's client (cmd.qc) switches through its next
+		 * command's input_cursor_entitynumber; the device has no client game, so the server
+		 * does that for it */
+		if (!Str_ICmp(tok.argv[0], "selectItem") && tok.argc >= 2) {
+			int w = owned_weapon(c->edict, tok.argv[1]);
+			if (w)
+				l->selent = w;
+			continue;
+		}
+		if (!snd)
 			continue;
 		snd_eye(l, eye);
 		if (!Str_ICmp(tok.argv[0], "play") || !Str_ICmp(tok.argv[0], "play2"))
