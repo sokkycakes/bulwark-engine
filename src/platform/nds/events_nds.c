@@ -620,13 +620,13 @@ static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN])
 		o[len] = 0;
 		n++;
 		s += len;
-		while (*s == ' ' || *s == '\n') {
-			if (*s == '\n' && s[1] == '\n' && n < MAX_LINES) /* an empty line */
-				out[n++][0] = 0;
+		if (*s == '\n') { /* the line's end: what follows is the next line, empty or not */
 			s++;
-			if (s[-1] == '\n')
-				break;
-		}
+			if (!*s && n < MAX_LINES) /* text that ends in a new line has an empty last line */
+				out[n++][0] = 0;
+		} else /* a wrapped line: the spaces it broke at go */
+			while (*s == ' ')
+				s++;
 	}
 	return n;
 }
