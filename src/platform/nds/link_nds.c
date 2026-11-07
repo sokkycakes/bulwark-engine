@@ -2541,6 +2541,8 @@ static void handle_pstate(ndscam_t *cam)
 			boxes[i].solid = b[26];
 		}
 		Hull_SetBoxes(boxes, nboxes);
+		/* one the server's player is in already holds it there, as on the server */
+		Hull_PinBoxes(srv.origin, srv.mins, srv.maxs);
 	}
 
 	/* turned, it goes on as any other state: the server still runs the commands it hasn't

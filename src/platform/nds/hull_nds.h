@@ -64,6 +64,8 @@ typedef struct { uint16_t edict; float mins[3], maxs[3]; uint8_t solid; } hullbo
 void Hull_SetBrushes(const hullbrush_t *b, int n);
 void Hull_PlaceBrush(int i, const float origin[3]); /* entry i of the last Hull_SetBrushes list, moved */
 void Hull_SetBoxes(const hullbox_t *b, int n);
+/* the boxes that overlap a player box at org: PM_FOCUS_DROPSTUCK keeps them (until the next Hull_SetBoxes) */
+void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3]);
 
 /* SV_Move against world + brushes + boxes: the pmtrace_if.move contract */
 void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],

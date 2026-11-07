@@ -106,6 +106,7 @@ typedef struct {
 } tcentry_t;
 static tcentry_t *tcache; /* TC_N, on the heap with the hulls (Hull_Load): none while a map loads */
 static uint64_t drop_mask; /* the boxes left out (PM_FOCUS_DROPSTUCK) while focused */
+static uint64_t pin_mask;  /* boxes PM_FOCUS_DROPSTUCK keeps (Hull_PinBoxes) */
 
 static void unfocus(void)
 {
@@ -1154,6 +1155,7 @@ void Hull_SetBoxes(const hullbox_t *b, int n)
 	if (numboxes != n)
 		scene_gen++;
 	numboxes = n;
+	pin_mask = 0;
 	unfocus();
 }
 
@@ -1177,6 +1179,19 @@ static bool box_overlaps(const float *org, const float *mins, const float *maxs,
 
 static uint32_t skin_bits(int skin);
 
+/* the boxes the server's player overlaps where the server has it: there the server's own
+ * traces start solid in them (trace_aabb, sv_world.c:283-292) and the player stays put, so
+ * PM_FOCUS_DROPSTUCK leaves them in (on the Half-Life campaign: a player spawned inside
+ * another body, c2a3e; the bot walking into a scientist, c1a1b) */
+void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3])
+{
+	pin_mask = 0;
+	for (int i = 0; i < numboxes; i++)
+		if (box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs))
+			pin_mask |= (uint64_t)1 << i;
+	unfocus();
+}
+
 uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const float maxs[3],
                     float radius, int flags)
 {
@@ -1196,7 +1211,8 @@ uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const fl
 	for (int i = 0; i < numboxes; i++) {
 		if (!ib_meets(boxes[i].ib, r))
 			continue;
-		if ((flags & PM_FOCUS_DROPSTUCK) && box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs)) {
+		if ((flags & PM_FOCUS_DROPSTUCK) && !(pin_mask >> i & 1) &&
+		    box_overlaps(org, mins, maxs, boxes[i].b.mins, boxes[i].b.maxs)) {
 			drop |= (uint64_t)1 << i;
 			continue;
 		}
