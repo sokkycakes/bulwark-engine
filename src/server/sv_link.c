@@ -1690,6 +1690,11 @@ static void update_winfo(link_t *l, int e, double now)
 	}
 	p.len = 0;
 	w_build(&p, w, fiammo);
+	if (p.len > (int)sizeof(l->wibody)) { /* doesn't fit one packet: the device shows the server's */
+		l->wiedict = (uint16_t)w;
+		l->wiver = 0;
+		return;
+	}
 	l->wiammo[0] = (int8_t)fiammo[0], l->wiammo[1] = (int8_t)fiammo[1];
 	if (w == l->wiedict && l->wiver && p.len == l->wilen && !memcmp(p.data, l->wibody, (size_t)p.len))
 		return;
