@@ -651,8 +651,9 @@ there. `sv_link_log 1` prints each record made as a `LINKEV` line, and
 `EVENT`: u32 session, u16 `first` (the first record's number), u8 `count`
 (bit 7: new records only, as above),
 then `count` records of u8 type, u8 length, payload. Strings run to the end
-of the record, without the game's colour codes (`^1`, `^xRGB`) or titles.txt
-escapes (`\y`, `\n`: a new line).
+of the record, with the game's colour codes (`^1`, `^xRGB`) for the device to
+draw; titles.txt escapes become what `Titles_ParseFunString` makes of them
+(`\y` `^3`, `\n` a new line), and a tab a space.
 
 | Type | Record | From | Payload |
 |---|---|---|---|

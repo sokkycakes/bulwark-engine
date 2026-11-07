@@ -3048,31 +3048,24 @@ void SV_LinkQCWrite(client_t *c, const void *d, int len)
 	h[2] = (uint8_t)(n & 0xff), h[3] = (uint8_t)(n >> 8);
 }
 
-/* the text without the game's colour codes (^0-^9, ^xRGB, ^b and the like), at most size - 1 bytes */
+/* the text as the PC's client draws it, at most size - 1 bytes: titles.qc
+ * Titles_ParseFunString's escapes become what it makes of them (\y ^3, \r ^1, \g ^2,
+ * \b ^4, \w ^7, \d ^8, \R a space, \n and \N new lines); the game's colour codes
+ * (^0-^9, ^xRGB) stay, for the device to draw; a tab is a space */
 static void ev_plain(char *out, int size, const char *s, int len)
 {
 	int n = 0;
 	for (int i = 0; i < len && s[i] && n < size - 1; i++) {
-		/* titles.qc Titles_ParseFunString's escapes: colours, \R a space, \n and \N new lines */
-		if (s[i] == '\\' && i + 1 < len && strchr("yrgbwdRnN", s[i + 1]) && s[i + 1]) {
+		if (s[i] == '\\' && i + 1 < len && s[i + 1] && strchr("yrgbwdRnN", s[i + 1])) {
 			char e = s[++i];
-			if (e == 'R' || e == 'n' || e == 'N')
+			const char *code = strchr("yrgbwd", e) ? &"^3^1^2^4^7^8"[(strchr("yrgbwd", e) - "yrgbwd") * 2] : NULL;
+			if (code) {
+				if (n + 2 > size - 1)
+					break;
+				out[n++] = code[0], out[n++] = code[1];
+			} else
 				out[n++] = e == 'R' ? ' ' : '\n';
 			continue;
-		}
-		if (s[i] == '^' && i + 1 < len) {
-			if (s[i + 1] == 'x' && i + 4 < len && isxdigit((unsigned char)s[i + 2]) && isxdigit((unsigned char)s[i + 3]) &&
-			    isxdigit((unsigned char)s[i + 4])) {
-				i += 4;
-				continue;
-			}
-			if (isdigit((unsigned char)s[i + 1]) || s[i + 1] == 'b' || s[i + 1] == 'd' || s[i + 1] == 's' || s[i + 1] == 'r' ||
-			    s[i + 1] == 'm' || s[i + 1] == 'h') {
-				i++;
-				continue;
-			}
-			if (s[i + 1] == '^')
-				i++;
 		}
 		out[n++] = s[i] == '\t' ? ' ' : s[i]; /* the DS's font has no tab (hypothesis: FTE draws one as blank) */
 	}

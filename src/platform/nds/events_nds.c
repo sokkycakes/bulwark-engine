@@ -574,21 +574,96 @@ static bool measuring;
 /* each bit of a byte as a nibble of 0xF */
 static uint32_t nib[256];
 
+/* the engine's text colours (src/render/r_draw.c qcolors: ^0-^9), at palette entries 6-15
+ * of each group's bank */
+#define PAL_Q0 6
+static const uint8_t qcol[10][3] = {{0, 0, 0},       {255, 51, 51},   {51, 255, 51}, {255, 255, 51},
+                                    {77, 77, 255},   {51, 255, 255},  {255, 51, 255}, {255, 255, 255},
+                                    {128, 128, 128}, {191, 191, 191}};
+
+static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+
+/* r_draw.c markup: a ^ sequence at s, its length (0: not one) and *pal what it does to the
+ * colour: a palette entry, -1 back to the text's own (^d), 0 nothing (styles, a ^[ link's
+ * text, skipped). ^xRGB takes the nearest of the ten (the bank has no room for more) */
+static int markup(const char *s, int *pal)
+{
+	*pal = 0;
+	if (s[0] != '^' || !s[1] || s[1] == '^')
+		return 0;
+	if (s[1] >= '0' && s[1] <= '9') {
+		*pal = PAL_Q0 + s[1] - '0';
+		return 2;
+	}
+	if (s[1] == 'x' && hexv(s[2]) >= 0 && hexv(s[3]) >= 0 && hexv(s[4]) >= 0) {
+		int best = 7, bd = 1 << 30;
+		for (int i = 0; i < 10; i++) {
+			int d = 0;
+			for (int k = 0; k < 3; k++) {
+				int v = hexv(s[2 + k]) * 17 - qcol[i][k];
+				d += v * v;
+			}
+			if (d < bd)
+				bd = d, best = i;
+		}
+		*pal = PAL_Q0 + best;
+		return 5;
+	}
+	if (s[1] == '[') {
+		const char *end = strstr(s + 2, "^]");
+		return end ? (int)(end + 2 - s) : (int)strlen(s);
+	}
+	if (s[1] == 'd') {
+		*pal = -1;
+		return 2;
+	}
+	if ((s[1] >= 'a' && s[1] <= 'z') || (s[1] >= 'A' && s[1] <= 'Z'))
+		return 2;
+	return 0;
+}
+
+/* a line's width in pixels, its markup taking none ("^^" is one '^') */
+static int ev_width(const char *s)
+{
+	int n = 0, w, adv, pal, ml;
+	while (*s) {
+		if ((ml = markup(s, &pal))) {
+			s += ml;
+			continue;
+		}
+		Hud_Glyph((uint8_t)*s, &w, &adv);
+		n += adv;
+		s += s[0] == '^' && s[1] == '^' ? 2 : 1;
+	}
+	return n;
+}
+
 /* hud_text's look at scale 1: the glyph in col, with a 1-pixel black (index 1) outline.
  * A glyph row and its outline are masks, shifted to the cells they fall in and merged
  * a cell's row (a word) at a time */
 ITCM_CODE __attribute__((target("arm"))) static int band_text(int x, int y, int col, int bank, const char *s)
 {
 	int h = Hud_FontHeight(), x0 = x;
-	const uint32_t colw = (uint32_t)col * 0x11111111u, edgew = 0x11111111u;
+	const uint32_t edgew = 0x11111111u;
 	if (!nib[1])
 		for (int b = 0; b < 256; b++)
 			for (int i = 0; i < 8; i++)
 				if (b >> i & 1)
 					nib[b] |= 0xFu << (i * 4);
+	const int col0 = col;
+	uint32_t colw = (uint32_t)col * 0x11111111u;
 	for (; *s; s++) {
-		int w, adv;
-		const uint8_t *g = Hud_Glyph((uint8_t)*s, &w, &adv);
+		int w, adv, pal, ml;
+		const uint8_t *g;
+		if ((ml = markup(s, &pal))) { /* a colour from here on (or the text's own again) */
+			if (pal)
+				col = pal > 0 ? pal : col0, colw = (uint32_t)col * 0x11111111u;
+			s += ml - 1;
+			continue;
+		}
+		if (s[0] == '^' && s[1] == '^') /* "^^": one '^' */
+			s++;
+		g = Hud_Glyph((uint8_t)*s, &w, &adv);
 		int px0 = x - 1, sh = px0 & 7, cell0 = px0 >> 3;
 		if (g && px0 >= 0)
 			for (int j = -1; j <= h; j++) {
@@ -638,37 +713,55 @@ static void emit(int x, int y, int col, int bank, const char *s)
 	band_text(x, y, col, bank, s);
 }
 
-/* text split at new lines, and wrapped at maxw pixels (at a space when there is one) */
-static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN])
+/* text split at new lines, and wrapped at maxw pixels (at a space when there is one). A
+ * wrapped line goes on in the colour its text had (one line on the PC, which needs no
+ * wrapping); after a new line, only when carry is set (a text field, chat) */
+static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN], bool carry)
 {
 	int n = 0;
+	char cur[6] = ""; /* the colour code in force */
 	while (*s && n < MAX_LINES) {
-		int len = 0, lastsp = -1, wpx = 0;
-		char *o = out[n];
-		while (s[len] && s[len] != '\n' && len < TEXT_LEN - 1) {
-			int w, adv;
+		int len = 0, olen, lastsp = -1, olastsp = 0, wpx = 0, ml, pal;
+		char *o = out[n], linecur[6], atsp[6] = "";
+		strcpy(linecur, cur);
+		olen = (int)strlen(cur);
+		memcpy(o, cur, (size_t)olen);
+		while (s[len] && s[len] != '\n' && olen < TEXT_LEN - 6) {
+			int w, adv, step = 1;
+			if ((ml = markup(s + len, &pal))) {
+				if (pal) /* the code itself, as the colour in force (^d: none) */
+					snprintf(linecur, sizeof(linecur), "%.*s", pal > 0 ? BW_NDS_MIN(ml, 5) : 0, s + len);
+				memcpy(o + olen, s + len, (size_t)ml);
+				olen += ml, len += ml;
+				continue;
+			}
+			if (s[len] == '^' && s[len + 1] == '^')
+				step = 2;
 			Hud_Glyph((uint8_t)s[len], &w, &adv);
 			if (wpx + adv > maxw && len > 0) {
 				if (lastsp > 0)
-					len = lastsp;
+					len = lastsp, olen = olastsp, strcpy(linecur, atsp);
 				break;
 			}
 			if (s[len] == ' ')
-				lastsp = len;
+				lastsp = len, olastsp = olen, strcpy(atsp, linecur);
 			wpx += adv;
-			o[len] = s[len];
-			len++;
+			for (int k = 0; k < step; k++)
+				o[olen++] = s[len++];
 		}
-		o[len] = 0;
+		o[olen] = 0;
 		n++;
 		s += len;
 		if (*s == '\n') { /* the line's end: what follows is the next line, empty or not */
 			s++;
+			strcpy(cur, carry ? linecur : "");
 			if (!*s && n < MAX_LINES) /* text that ends in a new line has an empty last line */
 				out[n++][0] = 0;
-		} else /* a wrapped line: the spaces it broke at go */
+		} else { /* a wrapped line: the spaces it broke at go */
+			strcpy(cur, linecur);
 			while (*s == ' ')
 				s++;
+		}
 	}
 	return n;
 }
@@ -724,7 +817,7 @@ static void draw_gtext(const gtext_t *t, int chars, int col, int bank)
 	int n, y0;
 	memcpy(s, t->msg, (size_t)chars);
 	s[chars] = 0;
-	n = split_lines(s, 248, lines);
+	n = split_lines(s, 248, lines, false);
 	if (t->y == -1)
 		y0 = 96 - PCY(6);
 	else
@@ -732,7 +825,7 @@ static void draw_gtext(const gtext_t *t, int chars, int col, int bank)
 	y0 -= LINE_H * n / 2;
 	y0 = clampy(y0, n);
 	for (int i = 0; i < n; i++) {
-		int w = Hud_TextWidth(lines[i], 1), x;
+		int w = ev_width(lines[i]), x;
 		if (t->x == -1)
 			x = 128 - w / 2;
 		else {
@@ -752,7 +845,7 @@ static uint32_t hash(uint32_t h, const void *p, int n)
 	return h;
 }
 
-static uint16_t stagepal[G_COUNT][5]; /* the groups' palette banks (entries 1-5), to write */
+static uint16_t stagepal[G_COUNT][15]; /* the groups' palette banks (entries 1-15), to write */
 static uint16_t stagebld;              /* REG_BLDALPHA, 0: no blending */
 
 static uint16_t rgb_of(float r, float g, float b)
@@ -778,6 +871,8 @@ static void set_bank(int g, const uint8_t *rgb8, float a, const uint8_t *rgb2, f
 	pal[4] = rgb2 ? rgb_of(rgb2[0] * a2 + rgb8[0] * a * (1 - a2 * e), rgb2[1] * a2 + rgb8[1] * a * (1 - a2 * e),
 	                       rgb2[2] * a2 + rgb8[2] * a * (1 - a2 * e))
 	              : 0;
+	for (int i = 0; i < 10; i++) /* ^0-^9 */
+		pal[PAL_Q0 - 1 + i] = rgb_of(qcol[i][0] * a, qcol[i][1] * a, qcol[i][2] * a);
 }
 
 static int glayer(int g) { return g >= G_TEXT0 && g <= G_QUEUE; }
@@ -791,7 +886,7 @@ static void layout(int g, const int *chars, const int *chars2)
 	if (g == G_PRINT) { /* prints: hudmins + [16,16], 14 apart */
 		y = BAND_Y0 + 1;
 		for (int i = 0; i < 5; i++) {
-			n = split_lines(tx.print[i], 250, lines);
+			n = split_lines(tx.print[i], 250, lines, false);
 			for (int j = 0; j < n; j++, y += LINE_H)
 				emit(PCY(16), y, 2, G_PRINT + 1, lines[j]);
 		}
@@ -802,15 +897,15 @@ static void layout(int g, const int *chars, const int *chars2)
 		if (chars2[c] >= 0)
 			draw_gtext(c < 5 ? &tx.text[c] : &tx.queue[0], chars2[c], 5, g + 1);
 	} else if (g == G_CHAT) { /* a field from [16, h/2 - 80], half the HUD wide and tall, its lines at the bottom */
-		n = split_lines(tx.chatfinal, 128, lines);
+		n = split_lines(tx.chatfinal, 128, lines, true);
 		y = clampy(BW_NDS_MIN(96 - PCY(80) + 96, BAND_Y1) - n * LINE_H, n);
 		for (int j = 0; j < n; j++)
 			emit(PCY(16), y + j * LINE_H, 2, G_CHAT + 1, lines[j]);
 	} else if (g == G_CENTER) { /* centred, from the middle - 69 */
-		n = split_lines(tx.center, 250, lines);
+		n = split_lines(tx.center, 250, lines, false);
 		y = clampy(96 - (n - 4) - PCY(69), n);
 		for (int j = 0; j < n; j++)
-			emit(128 - Hud_TextWidth(lines[j], 1) / 2, y + j * LINE_H, 2, G_CENTER + 1, lines[j]);
+			emit(128 - ev_width(lines[j]) / 2, y + j * LINE_H, 2, G_CENTER + 1, lines[j]);
 	} else if (g == G_FEED) { /* top right, newest on top: attacker (blue), weapon (grey), victim */
 		y = BAND_Y0 + 1;
 		for (int i = tx.feeds - 1; i >= 0; i--, y += LINE_H + 1) {
@@ -875,7 +970,7 @@ void Events_Commit2D(void)
 	band_flush();
 	/* by halfwords: palette RAM takes no byte writes, which memcpy may make */
 	for (int g = 0; g < G_COUNT; g++)
-		for (int k = 0; k < 5; k++)
+		for (int k = 0; k < 15; k++)
 			BG_PALETTE[(g + 1) * 16 + 1 + k] = stagepal[g][k];
 	/* the text layers over the 3D view, the HUD and the backdrop */
 	REG_BLDCNT = stagebld ? BLEND_ALPHA | BLEND_SRC_BG2 | BLEND_SRC_BG3 | BLEND_DST_BG0 | BLEND_DST_BG1 | BLEND_DST_BACKDROP
