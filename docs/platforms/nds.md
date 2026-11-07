@@ -788,7 +788,11 @@ The polygon count differs between runs (833 to 1114: monsters move), so
 the CPU numbers are within that spread. The ROM's code grew by 13.6 KB and
 its static data by 24 KB (the band, 16 KB); the lowest free memory seen
 went from 2.96 to 2.92 MB. All 163 records of the triggered run were
-acknowledged, none dropped. Screenshots (fade, game_text and its fade,
+acknowledged, none dropped. `tools/nds/linktest_events.py` (a host client
+on the same server) checks the delivery: 20 chat lines arrive once and in
+order; with the first 3 EVENT packets ignored they come again and still
+arrive once and in order; with nothing acknowledged during 80 lines the
+next EVENT starts 32 records past it and the last 52 lines arrive. Screenshots (fade, game_text and its fade,
 shake, damage arrow and tint, chat, centerprint, the feed) were taken with
 the rig's `evtest.sh`; they show Valve's data and stay out of the repo.
 
