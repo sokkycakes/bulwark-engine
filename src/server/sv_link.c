@@ -938,6 +938,7 @@ static void ev_read(link_t *l);
 static void ev_onemsg(client_t *c, const uint8_t *d, int len);
 static void ev_mapcheck(link_t *l);
 static void ev_worldspawn(link_t *l);
+static void ev_music(link_t *l, int op, const char *name);
 static void ev_coopfeed(link_t *l);
 static void send_events(link_t *l, double now);
 
@@ -2430,6 +2431,8 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 static void update_hud(link_t *l);
 static void send_hud(link_t *l, double now);
 static void send_sound(link_t *l, double now);
+static void snd_impacts(void);
+static void snd_precache(link_t *l);
 
 void SV_LinkSend(void)
 {
@@ -2437,6 +2440,7 @@ void SV_LinkSend(void)
 	if (sock < 0)
 		return;
 	flush_lagout();
+	snd_impacts(); /* the impact sounds the game's multicasts brought (C4) */
 	for (int i = 0; i < MAX_LINKS; i++) {
 		link_t *l = &links[i];
 		bool view;
@@ -2485,6 +2489,7 @@ void SV_LinkSend(void)
 			ev_mapcheck(l);
 			ev_worldspawn(l);
 		}
+		snd_precache(l);
 		send_events(l, now);
 		send_sound(l, now);
 		if (!l->gamedrew && now >= l->nextdefault) {
@@ -2969,6 +2974,8 @@ static float rdfloat(const uint8_t *p)
 	return f;
 }
 
+static void snd_impact_put(link_t *l, const uint8_t *d, int len);
+
 void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
 {
 	link_t *l;
@@ -2985,6 +2992,8 @@ void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
 	}
 	if (len < 14 || data[0] != CGAMEPACKET)
 		return;
+	if ((l = link_for_edict(c->edict)))
+		snd_impact_put(l, data, len); /* its sound: resolved in SV_LinkSend, where the game's code may run */
 	if (!(l = link_for_edict(c->edict)) || l->numfx >= MAX_FX)
 		return;
 	l->fx[l->numfx].flags = 0;
@@ -3401,7 +3410,12 @@ static void ev_worldspawn(link_t *l)
 		ev_put(l, LE_FADE, b, 13);
 	}
 	if (SV_InfoGet(sv.serverinfo, "chaptertitle", v, sizeof(v))[0])
-		ev_titlemsg(l, v, (int)strlen(v));
+		ev_titlemsg(l, v, (int)strlen(v));	/* worldspawn.qc:331-373: serverinfo bgm plays "sound/bgm/<x>.mp3" (looping: Music_f) */
+	if (SV_InfoGet(sv.serverinfo, "bgm", v, sizeof(v))[0]) {
+		char name[96];
+		snprintf(name, sizeof(name), "sound/bgm/%s.mp3", v);
+		ev_music(l, 2, name);
+	}
 }
 
 /* a NUL-terminated string at d (n bytes left): its length, -1 if it runs out */
@@ -3507,6 +3521,8 @@ static void ev_chat(link_t *l, int sender, int team, const char *msg, int mlen)
 	ev_text(l, LE_PRINT, &lv, 1, line, (int)strlen(line));
 }
 
+static int ev_sound(link_t *l, int ev, const uint8_t *d, int n);
+static void ev_message_sound(link_t *l, const uint8_t *snd, int slen, const uint8_t *tail);
 static void put_f32(uint8_t *o, const uint8_t *src) { memcpy(o, src, 4); } /* little-endian on both ends */
 
 /* one CSQC event (after SVC_CGAMEPACKET and its id): bytes read, -1 for an event whose
@@ -3575,6 +3591,7 @@ static int ev_game(link_t *l, int ev, const uint8_t *d, int n)
 		if ((s0 = ev_str(d, n)) < 0 || (s1 = ev_str(d + s0 + 1, n - s0 - 1)) < 0 || n < s0 + s1 + 2 + 5)
 			return -1;
 		ev_titlemsg(l, (const char *)d, s0);
+		ev_message_sound(l, d + s0 + 1, s1, d + s0 + s1 + 2);
 		return s0 + s1 + 2 + 5;
 	case EVN_OBITUARY: /* target, attacker, weapon decl, means of death (src/server/api.qc:300) */
 		if ((s0 = ev_str(d, n)) < 0 || (s1 = ev_str(d + s0 + 1, n - s0 - 1)) < 0 ||
@@ -3604,8 +3621,10 @@ static int ev_game(link_t *l, int ev, const uint8_t *d, int n)
 			return -1;
 		ev_chat(l, d[0], ev == EVN_CHAT ? 0 : d[1], (const char *)d + 2, s0);
 		return 2 + s0 + 1;
-	default:
-		return -1;
+	default: { /* the sound events (music, speech, sentences): read to their end even for a device without 'S' */
+		int r = ev_sound(l, ev, d, n);
+		return r == -2 ? -1 : r;
+	}
 	}
 }
 
@@ -4043,6 +4062,749 @@ static void send_sound(link_t *l, double now)
 	/* a little early, so that at sv_tickrate 72 it is every second frame */
 	l->sndnext = now + SND_INTERVAL - 0.004;
 	send_to(&l->from, &p);
+}
+
+
+/* --- SoundDefs (Nuclide's decls/sound/<name>.sndshd, src/shared/audio/soundDef.qc) --------------------
+ * For the sounds the PC's client game makes itself from a SoundDef (impacts, view model
+ * events), the server picks the sample, volume, pitch and attenuation as the client's
+ * SoundDef_Play/PlayAt would. A decl the server game has loaded is read from its
+ * ncSoundDict entity (SoundDef_FindSoundByName, soundDef.qc:361-371); one only the
+ * client loads is parsed here from the files, as SoundDef_Precache does (:386-440). */
+#define SDEF_SAMPLES 16
+#define SDEF_CACHE 256
+#define SND_NOMINALDISTANCE 1000.0f /* the PC's s_nominaldistance (soundDef.qc:20, snd_main.c) */
+enum { SNDFL_LOOPING = 1, SNDFL_NODUPS = 2, SNDFL_GLOBAL = 4, SNDFL_NOREVERB = 8, SNDFL_OMNI = 16, SNDFL_PRIVATE = 32,
+       SNDFL_STEP = 64, SNDFL_FOLLOW = 128, SNDFL_ALERTS = 256 }; /* SoundDict.h soundFlag_t */
+
+typedef struct {
+	char name[64];
+	bool ok;
+	int nsamp;
+	char samp[SDEF_SAMPLES][64];
+	float volume, pitch_min, pitch_max, dist_max, offset;
+	int flags;
+	char dist[64]; /* distshader */
+} sdef_t;
+
+static struct {
+	int spawncount;
+	const qcvm_t *vm;
+	sdef_t d[SDEF_CACHE];
+	int n, next;
+} sdefs;
+
+/* ncSoundDict's constructor (SoundDict.h:57-73) */
+static void sdef_defaults(sdef_t *d, const char *name)
+{
+	memset(d, 0, sizeof(*d));
+	snprintf(d->name, sizeof(d->name), "%s", name);
+	d->dist_max = 1000, d->pitch_min = d->pitch_max = 100, d->volume = 1, d->flags = SNDFL_FOLLOW;
+}
+
+static void sdef_add_samples(sdef_t *d, const char *list)
+{
+	const char *p = list;
+	while (*p && d->nsamp < SDEF_SAMPLES) {
+		const char *e = strchr(p, '\n');
+		size_t n = e ? (size_t)(e - p) : strlen(p);
+		if (n) /* tokenizebyseparator keeps no empty last token after the final \n */
+			snprintf(d->samp[d->nsamp++], sizeof(d->samp[0]), "%.*s", (int)n, p);
+		if (!e)
+			break;
+		p = e + 1;
+	}
+}
+
+/* SoundDef_ParseField (soundDef.qc:58-231) */
+static void sdef_field(sdef_t *d, int argc, const char *key, const char *valcs)
+{
+	char v[128];
+	size_t i;
+	snprintf(v, sizeof(v), "%s", valcs);
+	for (i = 0; v[i]; i++)
+		v[i] = (char)tolower((unsigned char)v[i]);
+	if (!strcmp(key, "attenuation")) {
+		if (argc == 2) {
+			if (!strcmp(v, "idle"))
+				d->dist_max = 1000 / 2.0f; /* ATTN_IDLE */
+			else if (!strcmp(v, "static"))
+				d->dist_max = 1000 / 3.0f; /* ATTN_STATIC */
+			else if (!strcmp(v, "none"))
+				d->dist_max = 0;
+			else if (!strcmp(v, "normal"))
+				d->dist_max = 1000;
+		}
+	} else if (!strcmp(key, "soundlevel")) {
+		if (argc == 2) {
+			if (!strcmp(v, "attn_idle") || !strcmp(v, "sndlvl_idle"))
+				d->dist_max = 1000 / 2.0f;
+			else if (!strcmp(v, "attn_ricochet") || !strcmp(v, "attn_static") || !strcmp(v, "sndlvl_static"))
+				d->dist_max = 1000 / 1.25f;
+			else if (!strcmp(v, "0") || !strcmp(v, "attn_none") || !strcmp(v, "sndlvl_none"))
+				d->dist_max = 0;
+			else if (!strcmp(v, "attn_norm") || !strcmp(v, "sndlvl_norm"))
+				d->dist_max = 1000 / 0.8f;
+			else if (!strcmp(v, "attn_gunfire") || !strcmp(v, "sndlvl_gunfire"))
+				d->dist_max = 1000 / 0.27f;
+			else if (!strcmp(v, "attn_talking") || !strcmp(v, "sndlvl_talking"))
+				d->dist_max = 1000 / 0.7f;
+			else if (!strncmp(v, "sndlvl_", 7)) {
+				/* substring(v, 7, -3): from 7 to 3 before the end ("sndlvl_75db") */
+				char num[32];
+				int n = (int)strlen(v) - 7 - 2;
+				float db;
+				snprintf(num, sizeof(num), "%.*s", BW_MAX(n, 0), v + 7);
+				db = (float)atof(num);
+				d->dist_max = 1000 / (db > 50 ? 20 / (db - 50) : 4);
+			}
+		}
+	} else if (!strcmp(key, "dist_max")) {
+		if (argc == 2)
+			d->dist_max = (float)atof(v);
+	} else if (!strcmp(key, "volume")) {
+		if (argc == 2)
+			d->volume = (float)atof(v);
+	} else if (!strcmp(key, "pitch")) {
+		if (argc == 2) {
+			const char *c = strchr(v, ',');
+			if (c && !strchr(c + 1, ','))
+				d->pitch_min = (float)atof(v), d->pitch_max = (float)atof(c + 1);
+			else
+				d->pitch_min = d->pitch_max = fabsf((float)atof(v)) * 100;
+		}
+	} else if (!strcmp(key, "pitch_min")) {
+		if (argc == 2)
+			d->pitch_min = fabsf((float)atof(v)) * 100;
+	} else if (!strcmp(key, "pitch_max")) {
+		if (argc == 2)
+			d->pitch_max = fabsf((float)atof(v)) * 100;
+	} else if (!strcmp(key, "offset")) {
+		if (argc == 2)
+			d->offset = (float)atof(v);
+	} else if (!strcmp(key, "looping"))
+		d->flags |= SNDFL_LOOPING;
+	else if (!strcmp(key, "nodups"))
+		d->flags |= SNDFL_NODUPS;
+	else if (!strcmp(key, "global"))
+		d->flags |= SNDFL_GLOBAL;
+	else if (!strcmp(key, "private"))
+		d->flags |= SNDFL_PRIVATE;
+	else if (!strcmp(key, "no_reverb"))
+		d->flags |= SNDFL_NOREVERB;
+	else if (!strcmp(key, "omnidirectional"))
+		d->flags |= SNDFL_OMNI;
+	else if (!strcmp(key, "follow"))
+		d->flags |= SNDFL_FOLLOW;
+	else if (!strcmp(key, "footstep"))
+		d->flags |= SNDFL_STEP;
+	else if (!strcmp(key, "distshader"))
+		snprintf(d->dist, sizeof(d->dist), "%s", valcs);
+	else if (!strcmp(key, "alerts"))
+		d->flags |= SNDFL_ALERTS;
+	else if (!strcmp(key, "wave") || !strcmp(key, "sample")) {
+		const char *s = v;
+		if (!strcmp(key, "wave") && (s[0] == '^' || s[0] == ')' || s[0] == '*'))
+			s++;
+		if (argc == 2 && d->nsamp < SDEF_SAMPLES)
+			snprintf(d->samp[d->nsamp++], sizeof(d->samp[0]), "%.63s", s);
+	}
+}
+
+typedef struct {
+	char t_name[128];
+	bool braced;
+} sdef_parse_t; /* SoundDef_Parse's statics (soundDef.qc:243-244): they last across files and calls */
+static sdef_parse_t sdef_ps;
+
+typedef struct {
+	char names[64][128];
+	int n;
+} sdef_files_t;
+
+static void sdef_list_fn(const char *name, const char *searchpath, void *ctx)
+{
+	sdef_files_t *f = ctx;
+	(void)searchpath;
+	if (f->n < 64)
+		snprintf(f->names[f->n++], sizeof(f->names[0]), "%s", name);
+}
+
+static int cmp_str128(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+
+/* SoundDef_Precache's search through the files, SoundDef_Parse line by line */
+static bool sdef_parse_files(sdef_t *d, const char *shader)
+{
+	static sdef_files_t files;
+	static cmd_tokens_t tok;
+	files.n = 0;
+	FS_List("decls/sound/*.sndshd", true, sdef_list_fn, &files);
+	qsort(files.names, (size_t)files.n, sizeof(files.names[0]), cmp_str128);
+	for (int i = 0; i < files.n; i++) {
+		size_t len;
+		char *buf = FS_LoadFile(files.names[i], &len), *line, *next;
+		if (!buf)
+			continue;
+		for (line = buf; line && *line; line = next) {
+			char *nl = strchr(line, '\n');
+			next = nl ? nl + 1 : NULL;
+			if (nl)
+				*nl = 0;
+			if (nl && nl > line && nl[-1] == '\r')
+				nl[-1] = 0;
+			Cmd_TokenizeInto(&tok, line);
+			if (tok.argc && !strcmp(tok.argv[0], "{")) {
+				if (!sdef_ps.braced && sdef_ps.t_name[0])
+					sdef_ps.braced = true;
+			} else if (tok.argc && !strcmp(tok.argv[0], "}")) {
+				if (sdef_ps.braced) {
+					bool mine = sdef_ps.t_name[0] != 0;
+					sdef_ps.braced = false, sdef_ps.t_name[0] = 0;
+					if (mine) {
+						Mem_Free(buf);
+						return true;
+					}
+				}
+			} else if (sdef_ps.braced)
+				sdef_field(d, tok.argc, tok.argc ? tok.argv[0] : "", tok.argc > 1 ? tok.argv[1] : "");
+			else if (!strcmp(line, shader))
+				snprintf(sdef_ps.t_name, sizeof(sdef_ps.t_name), "%s", line);
+			else
+				sdef_ps.t_name[0] = 0;
+		}
+		Mem_Free(buf);
+	}
+	return false;
+}
+
+static const sdef_t *sdef_find(const char *name)
+{
+	sdef_t *d;
+	qfld_t fname, fsamples, fvol, fpmin, fpmax, fdist, foffset, fflags, fdistsh;
+	if (!name || !name[0] || !sv.vm)
+		return NULL;
+	if (sdefs.spawncount != svs.spawncount || sdefs.vm != sv.vm)
+		sdefs.spawncount = svs.spawncount, sdefs.vm = sv.vm, sdefs.n = sdefs.next = 0;
+	for (int i = 0; i < sdefs.n; i++)
+		if (!strcmp(sdefs.d[i].name, name))
+			return sdefs.d[i].ok ? &sdefs.d[i] : NULL;
+	if (sdefs.n < SDEF_CACHE)
+		d = &sdefs.d[sdefs.n++];
+	else
+		d = &sdefs.d[sdefs.next++ % SDEF_CACHE];
+	sdef_defaults(d, name);
+	fname = qfld("ncSoundDict::__mname"), fsamples = qfld("ncSoundDict::__msamples");
+	fvol = qfld("ncSoundDict::__mvolume"), fpmin = qfld("ncSoundDict::__mpitch_min");
+	fpmax = qfld("ncSoundDict::__mpitch_max"), fdist = qfld("ncSoundDict::__mdist_max");
+	foffset = qfld("ncSoundDict::__moffset"), fflags = qfld("ncSoundDict::__mflags");
+	fdistsh = qfld("ncSoundDict::__mdistshader");
+	if (fname.ofs >= 0 && F.classname >= 0)
+		for (int e = 1; e < sv.vm->num_edicts; e++) {
+			if (sv.vm->edicts[e].free || strcmp(QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), "ncSoundDict") ||
+			    strcmp(qstr(e, fname), name))
+				continue;
+			sdef_add_samples(d, qstr(e, fsamples));
+			d->volume = qnum(e, fvol), d->pitch_min = qnum(e, fpmin), d->pitch_max = qnum(e, fpmax);
+			d->dist_max = qnum(e, fdist), d->offset = qnum(e, foffset), d->flags = (int)qnum(e, fflags);
+			snprintf(d->dist, sizeof(d->dist), "%s", qstr(e, fdistsh));
+			d->ok = true;
+			return d;
+		}
+	/* only the client loads it: parse it as the client does */
+	d->ok = sdef_parse_files(d, name);
+	if (sv_link_log->ivalue && d->ok)
+		for (int i = 0; i < d->nsamp; i++)
+			Con_Printf("LINKSNDUSED %s %s\n", sv.mapname, d->samp[i]);
+	return d->ok ? d : NULL;
+}
+
+static float frand(float lo, float hi) { return lo + (hi - lo) * (float)rand() / ((float)RAND_MAX + 1.0f); }
+
+/* the sample index SoundDef_* picks (random, or NODUPS's next) */
+static int sdef_pick(sdef_t *d)
+{
+	static int playc[SDEF_CACHE];
+	int r, slot = (int)(d - sdefs.d);
+	if (d->nsamp <= 0)
+		return -1;
+	r = BW_MIN((int)floorf(frand(0, (float)d->nsamp)), d->nsamp - 1);
+	if (d->flags & SNDFL_NODUPS) {
+		if (playc[slot] >= d->nsamp)
+			playc[slot] = 0;
+		r = playc[slot]++;
+	}
+	return r;
+}
+
+/* SoundDef_GetAttenuation (soundDef.qc:233-240) */
+static float sdef_atten(const sdef_t *d) { return d->dist_max == 0 ? 0 : SND_NOMINALDISTANCE / d->dist_max; }
+
+/* SoundDef_PlayAt as the PC's client runs it (soundDef.qc:716-777): pointsound_proper, whose
+ * pitch the client's builtin drops (snd_main.c:943-947), with flags 0; then the distshader
+ * (SoundDef_DistancePos, :513-567) at ATTN_NONE. CLIENTSIDE, entity 0 */
+static void sdef_play_at(link_t *l, int path, const float *pos, const char *shader)
+{
+	sdef_t *d = (sdef_t *)sdef_find(shader);
+	int r;
+	if (!d || (r = sdef_pick(d)) < 0) /* the client prints "not precached" and plays nothing */
+		return;
+	snd_record(l, path, d->samp[r], 0, 0, d->volume, sdef_atten(d), 100, 0, SL_CLIENTSIDE, pos, false, false, 0);
+	if (d->dist[0] && (d = (sdef_t *)sdef_find(d->dist)) && (r = sdef_pick(d)) >= 0)
+		snd_record(l, path, d->samp[r], 0, 0, d->volume, 0, 100, 0, SL_CLIENTSIDE, pos, false, false, 0);
+}
+
+/* --- impacts (C4): EV_SURFIMPACT and EV_SURFIMPACTID as the PC's client plays them
+ * (surfaceproperties.qc:643-700): the material of the surface near the point, its
+ * SURFDATA_SND_BULLETIMPACT SoundDef, played at the point. They come in during the
+ * game's multicast and the game's code must run to resolve them: kept until SV_LinkSend */
+#define SND_IMPACTS 32
+#define SURFDATA_SND_BULLETIMPACT 10 /* surfaceproperties.h, the enum after MATERIAL */
+static struct {
+	link_t *l;
+	float org[3];
+	int ent, matid; /* EV_SURFIMPACT's entity, or EV_SURFIMPACTID's material (ent -1) */
+} snd_imp[SND_IMPACTS];
+static int snd_nimp;
+
+static void snd_impact_put(link_t *l, const uint8_t *d, int len)
+{
+	int i = 2, ent = 0, matid = -1;
+	if (!l || !snd_ready(l) || snd_nimp >= SND_IMPACTS)
+		return;
+	if (d[1] == EV_SURFIMPACT) {
+		/* 3 coords, then the entity (a VarUInt, MSG_WriteEntity) */
+		unsigned shift = 0;
+		if (len < 15)
+			return;
+		for (i = 14; i < len && shift < 35; i++, shift += 7) {
+			ent |= (d[i] & 0x7f) << shift;
+			if (!(d[i] & 0x80))
+				break;
+		}
+	} else {
+		if (len < 2 + 24 + 4)
+			return;
+		matid = (int32_t)rd32(d + 26), ent = -1;
+	}
+	snd_imp[snd_nimp].l = l;
+	for (int k = 0; k < 3; k++)
+		snd_imp[snd_nimp].org[k] = rdfloat(d + 2 + k * 4);
+	snd_imp[snd_nimp].ent = ent, snd_imp[snd_nimp++].matid = matid;
+}
+
+static qcval_t qc_call_args(int fn, int argc, const qcval_t *a)
+{
+	qcvm_t *vm = sv.vm;
+	qcval_t r;
+	for (int i = 0; i < argc; i++)
+		vm->globals[OFS_PARM(i)] = a[i];
+	vm->argc = argc;
+	r.i = 0;
+	if (fn > 0 && QC_Execute(vm, fn))
+		r = vm->globals[OFS_RETURN];
+	return r;
+}
+
+/* the texture near the point on the entity the client's lookup finds: it queries entnum
+ * readentitynum()-1 (surfaceproperties.qc:654), so world for 0 and 1, else edict e-1 */
+static const char *impact_texture(int e, const float *org)
+{
+	qcvm_t *vm = sv.vm;
+	int s = e >= 2 ? e - 1 : 0;
+	float surf;
+	if (s > 0 && (s >= vm->num_edicts || vm->edicts[s].free))
+		return ""; /* nothing there on the client: getsurfacenearpoint fails, texture "" */
+	vm->globals[OFS_PARM(0)].i = s;
+	memcpy(&vm->globals[OFS_PARM(1)].f, org, sizeof(float) * 3);
+	vm->argc = 2;
+	W_bi_getsurfacenearpoint(vm);
+	surf = vm->globals[OFS_RETURN].f;
+	vm->globals[OFS_PARM(0)].i = s;
+	vm->globals[OFS_PARM(1)].f = surf;
+	W_bi_getsurfacetexture(vm);
+	{
+		const char *t = QC_GetString(vm, vm->globals[OFS_RETURN].i);
+		return t ? t : "";
+	}
+}
+
+static void snd_impacts(void)
+{
+	int fn_tex, fn_info;
+	if (!snd_nimp)
+		return;
+	fn_tex = qc_fn("SurfData_TexToSurfData"), fn_info = qc_fn("SurfData_GetInfo");
+	for (int i = 0; i < snd_nimp; i++) {
+		link_t *l = snd_imp[i].l;
+		int matid = snd_imp[i].matid;
+		qcval_t a[2], r;
+		const char *sfx;
+		char shader[64];
+		if (!l->used || !snd_ready(l) || fn_info <= 0)
+			continue;
+		if (snd_imp[i].ent >= 0) {
+			char tex[128];
+			snprintf(tex, sizeof(tex), "%s", impact_texture(snd_imp[i].ent, snd_imp[i].org));
+			if (fn_tex <= 0)
+				continue;
+			a[0].i = QC_NewString(sv.vm, tex);
+			matid = qc_call_args(fn_tex, 1, a).i;
+		}
+		a[0].i = matid, a[1].i = SURFDATA_SND_BULLETIMPACT;
+		r = qc_call_args(fn_info, 2, a);
+		sfx = r.i ? QC_GetString(sv.vm, r.i) : NULL;
+		if (!sfx || !sfx[0])
+			continue;
+		snprintf(shader, sizeof(shader), "%s", sfx);
+		sdef_play_at(l, SP_IMP, snd_imp[i].org, shader);
+	}
+	snd_nimp = 0;
+}
+
+/* --- the PC client game's own sounds from CSQC events (C5-C7, C9) ---------------------------- */
+#define CHAN_VOICE 2
+#define CHAN_ITEM 3
+
+/* where the device hears from: its player's eye (the "listener" sounds start there) */
+static void snd_eye(const link_t *l, float *out)
+{
+	const qcval_t *f = QC_EdictFields(sv.vm, l->client->edict);
+	for (int k = 0; k < 3; k++)
+		out[k] = f[F.origin + k].f + (F.view_ofs >= 0 ? f[F.view_ofs + k].f : 0);
+}
+
+static const float *ent_origin(int e)
+{
+	static const float zero[3];
+	return e > 0 && e < sv.vm->num_edicts && !sv.vm->edicts[e].free ? &QC_EdictFields(sv.vm, e)[F.origin].f : zero;
+}
+
+/* the client's sentence table: sound/sentences.txt read as sentences.qc Sentences_Init
+ * (CLIENT, :52-128) does: one entry per line with two tokens or more; the id is "!"
+ * and the first token upper-cased, the samples the rest joined by spaces, each "," made
+ * " vox/comma.wav" */
+#define SENT_MAX 2048
+static struct {
+	bool loaded;
+	int n;
+	char **samples; /* Mem_Alloc'd */
+} snd_sent;
+
+static void sent_load(void)
+{
+	static cmd_tokens_t tok;
+	size_t len;
+	char *buf, *line, *next;
+	if (snd_sent.loaded)
+		return;
+	snd_sent.loaded = true;
+	snd_sent.samples = Mem_Alloc(sizeof(char *) * SENT_MAX);
+	if (!(buf = FS_LoadFile("sound/sentences.txt", &len)))
+		return;
+	for (line = buf; line && *line && snd_sent.n < SENT_MAX; line = next) {
+		char joined[1024] = "", out[1400];
+		int o = 0;
+		char *nl = strchr(line, '\n');
+		next = nl ? nl + 1 : NULL;
+		if (nl)
+			*nl = 0;
+		Cmd_TokenizeInto(&tok, line);
+		if (tok.argc < 2)
+			continue;
+		for (int i = 1; i < tok.argc; i++)
+			snprintf(joined + strlen(joined), sizeof(joined) - strlen(joined), "%s%s", i > 1 ? " " : "", tok.argv[i]);
+		for (const char *p = joined; *p && o < (int)sizeof(out) - 16; p++) {
+			if (*p == ',') {
+				memcpy(out + o, " vox/comma.wav", 14), o += 14;
+			} else
+				out[o++] = *p;
+		}
+		out[o] = 0;
+		snd_sent.samples[snd_sent.n++] = Mem_Strdup(out);
+	}
+	Mem_Free(buf);
+}
+
+/* QC's tokenize (qc_builtins_core.c bi_tokenize): whitespace, quotes, {}() alone */
+static int qc_tokenize(const char *p, char tok[][64], int max)
+{
+	int n = 0;
+	for (;;) {
+		const char *start;
+		while (*p && (unsigned char)*p <= ' ')
+			p++;
+		if (!*p || (p[0] == '/' && p[1] == '/') || n >= max)
+			break;
+		if (*p == '"') {
+			const char *q = ++p;
+			while (*p && *p != '"')
+				p++;
+			snprintf(tok[n++], 64, "%.*s", (int)(p - q), q);
+			if (*p)
+				p++;
+			continue;
+		}
+		if (strchr("{}()", *p)) {
+			snprintf(tok[n++], 64, "%c", *p++);
+			continue;
+		}
+		start = p;
+		while ((unsigned char)*p > ' ' && *p != '"' && !strchr("{}()", *p))
+			p++;
+		snprintf(tok[n++], 64, "%.*s", (int)(p - start), start);
+	}
+	return n;
+}
+
+/* EV_SENTENCE (C6): ncTalkMonster::Sentence (TalkMonster.qc:1013-1040) on the client's
+ * table: each word + ".wav", Sentences_ProcessSample (sentences.qc:133-146) gives it the
+ * last path seen ("vox" to start); the device plays them one after another */
+static void ev_sentence(link_t *l, int ent, int id)
+{
+	char tok[64][64], path[64] = "vox", word[160];
+	uint8_t b[EV_REC];
+	int n, nw = 0, o = 4;
+	const char *cls;
+	float atten = 1;
+	if (!snd_ready(l))
+		return;
+	sent_load();
+	if (id < 0 || id >= snd_sent.n || ent <= 0 || ent >= sv.vm->num_edicts || sv.vm->edicts[ent].free)
+		return; /* "not in PVS": the client has no such entity */
+	/* TalkMonster.qc:1233-1243: only these classes speak sentences on the client */
+	cls = F.classname >= 0 ? QC_GetString(sv.vm, QC_EInt(sv.vm, ent, F.classname)) : "";
+	{
+		qfld_t dc = qfld("declclass");
+		const char *declclass = dc.ofs >= 0 ? qstr(ent, dc) : "";
+		bool talk = !strcmp(declclass, "ncTalkMonster") || !strcmp(cls, "ncTalkMonster") || F.flags < 0 ||
+		            ((int)QC_EFloat(sv.vm, ent, F.flags) & FL_MONSTER);
+		if (strcmp(cls, "speaker") && strcmp(cls, "ambient_generic") && !talk)
+			return;
+	}
+	if (!strcmp(cls, "ambient_generic")) {
+		qfld_t r = qfld("ambient_generic::__mm_flRadius");
+		if (r.ofs >= 0)
+			atten = qnum(ent, r); /* ambient_generic.qc:496-501 */
+	}
+	n = qc_tokenize(snd_sent.samples[id], tok, 64);
+	for (int i = 0; i < n && o + 4 <= EV_REC - 2; i++) {
+		char w[80], *slash;
+		uint32_t k;
+		snprintf(w, sizeof(w), "%.63s.wav", tok[i]);
+		if ((slash = strchr(w, '/'))) {
+			snprintf(path, sizeof(path), "%.*s", (int)(slash - w), w); /* the path sticks for later words */
+			snprintf(word, sizeof(word), "%s", w);
+		} else
+			snprintf(word, sizeof(word), "%s/%s", path, w);
+		k = snd_key(word);
+		b[o++] = (uint8_t)k, b[o++] = (uint8_t)(k >> 8), b[o++] = (uint8_t)(k >> 16), b[o++] = (uint8_t)(k >> 24);
+		nw++;
+		if (sv_link_log->ivalue)
+			Con_Printf("LINKSND %d 0 sent %s %d %d 255 %d 100 %d 0 0 0\n", (int)(l - links), word, ent, CHAN_VOICE,
+			           (int)BW_CLAMP(atten * 64, 0, 255), SF_FOLLOW | (SL_CLIENTSIDE << 8));
+	}
+	b[0] = (uint8_t)(ent & 0xff), b[1] = (uint8_t)(ent >> 8);
+	b[2] = (uint8_t)BW_CLAMP(atten * 64, 0, 255), b[3] = (uint8_t)nw;
+	l->sndmade++, l->sndbypath[SP_SENT]++;
+	ev_put(l, LE_SENTENCE, b, o);
+}
+
+/* MUSIC (C9): op 0 stop, 1 once, 2 loop, and the name as the PC's music command takes it */
+static void ev_music(link_t *l, int op, const char *name)
+{
+	uint8_t b[EV_REC];
+	int n = (int)BW_MIN(strlen(name), (size_t)EV_REC - 3);
+	if (!snd_ready(l))
+		return;
+	b[0] = (uint8_t)op;
+	memcpy(b + 1, name, (size_t)n);
+	l->sndmade++, l->sndbypath[SP_MUSIC]++;
+	if (sv_link_log->ivalue)
+		Con_Printf("LINKSND %d 0 music %s op %d\n", (int)(l - links), n ? name : "-", op);
+	ev_put(l, LE_MUSIC, b, n + 1);
+}
+
+/* the CD tracks (EV_MUSICTRACK, EV_MUSICLOOP) reach the music player only through the menu's
+ * menu_musictrack/menu_musicloop commands (src/platform/cmd.qc:27-30); a game whose menu.dat
+ * lacks them (co-op's) leaves the PC silent. The server doesn't load menu progs: it looks for
+ * the name in the file */
+static bool menu_has_music(void)
+{
+	static int spawncount = -1;
+	static bool has;
+	if (spawncount != svs.spawncount) {
+		size_t len;
+		char *buf = FS_LoadFile("menu.dat", &len);
+		spawncount = svs.spawncount, has = false;
+		if (buf) {
+			for (size_t i = 0; i + 15 <= len && !has; i++)
+				has = !memcmp(buf + i, "menu_musictrack", 15);
+			Mem_Free(buf);
+		}
+	}
+	return has;
+}
+
+/* a VarUInt (MSG_WriteEntity): bytes read, -1 short */
+static int rd_varuint(const uint8_t *d, int n, int *out)
+{
+	uint32_t v = 0;
+	for (int i = 0; i < n && i < 5; i++) {
+		v |= (uint32_t)(d[i] & 0x7f) << (7 * i);
+		if (!(d[i] & 0x80)) {
+			*out = (int)v;
+			return i + 1;
+		}
+	}
+	return -1;
+}
+
+/* the sound events ev_game reads (after SVC_CGAMEPACKET and the id): bytes read, -1 unknown */
+static int ev_sound(link_t *l, int ev, const uint8_t *d, int n)
+{
+	int e, k, s0;
+	switch (ev) {
+	case 1: /* EV_MUSICTRACK: u8 track (music.qc:29-49) */
+	case 2: /* EV_MUSICLOOP */
+		if (n < 1)
+			return -1;
+		if (menu_has_music()) {
+			char name[32];
+			snprintf(name, sizeof(name), "music/track%02d", d[0]);
+			ev_music(l, ev == 1 ? 1 : 2, name);
+		}
+		return 1;
+	case 3: /* EV_MUSIC_ONCE: f32 model index of "*M:<path>"; the PC runs "music X 0", which loops (snd_main.c:490) */
+	case 4: /* EV_MUSIC_LOOP */
+		if (n < 4)
+			return -1;
+		k = (int)rdfloat(d);
+		if (k > 0 && k < sv.nummodels && sv.models[k] && strlen(sv.models[k]) > 3)
+			ev_music(l, 2, sv.models[k] + 3);
+		return 4;
+	case 5: /* EV_MUSIC_STOP */
+		ev_music(l, 0, "");
+		return 0;
+	case 26: { /* EV_SPEAK: entity, sample, f32 pitch: sound(t, CHAN_VOICE, msg, 1, ATTN_NORM, pit) (event.qc:68-77) */
+		char sample[128];
+		if ((k = rd_varuint(d, n, &e)) < 0 || (s0 = ev_str(d + k, n - k)) < 0 || n < k + s0 + 1 + 4)
+			return -1;
+		snprintf(sample, sizeof(sample), "%.*s", s0, (const char *)d + k);
+		if (sample[0] && e > 0 && e < sv.vm->num_edicts)
+			snd_record(l, SP_SND, sample, e, CHAN_VOICE, 1, 1, rdfloat(d + k + s0 + 1), 0, SL_CLIENTSIDE, ent_origin(e),
+			           false, false, 0);
+		return k + s0 + 1 + 4;
+	}
+	case 27: /* EV_SENTENCE: entity, int id (TalkMonster.qc:1222-1245) */
+		if ((k = rd_varuint(d, n, &e)) < 0 || n < k + 4)
+			return -1;
+		ev_sentence(l, e, (int32_t)rd32(d + k));
+		return k + 4;
+	default:
+		return -2;
+	}
+}
+
+/* EV_MESSAGE's sound (C7): sound(self, CHAN_ITEM, snd, vol, atten) after the text
+ * (text.qc:312-328); self as the world: at the listener, not following */
+static void ev_message_sound(link_t *l, const uint8_t *snd, int slen, const uint8_t *tail)
+{
+	char sample[128];
+	float eye[3];
+	if (slen <= 0)
+		return;
+	snprintf(sample, sizeof(sample), "%.*s", slen, (const char *)snd);
+	snd_eye(l, eye);
+	snd_record(l, SP_SND, sample, 0, CHAN_ITEM, rdfloat(tail), (float)tail[4], 100, 0, SL_CLIENTSIDE, eye, false, false, 0);
+}
+
+/* EVENT 15 PRECACHE: the map's sound precache list, then the names the device keeps (first
+ * 0xf000): misc/talk (chat.qc:111) and the HUD's weapon selection (WeaponSelect.qc) */
+static void snd_precache(link_t *l)
+{
+	static const char *const kept[] = {"misc/talk.wav", "common/null.wav", "common/wpn_hudon.wav", "common/wpn_hudoff.wav",
+	                                   "common/wpn_moveselect.wav"};
+	static int logged = -1;
+	uint8_t b[EV_REC];
+	if (!snd_ready(l))
+		return;
+	snd_mapcheck(l);
+	if (sv_link_log->ivalue && logged != svs.spawncount) {
+		/* what S has seen named, for tools/nds/sndpack.py --used-list: the precache list
+		 * and the samples of the decls the server game loaded */
+		qfld_t fs = qfld("ncSoundDict::__msamples");
+		logged = svs.spawncount;
+		for (int i = 1; i < sv.numsounds; i++)
+			Con_Printf("LINKSNDUSED %s %s\n", sv.mapname, sv.sounds[i]);
+		if (fs.ofs >= 0 && F.classname >= 0)
+			for (int e = 1; e < sv.vm->num_edicts; e++) {
+				sdef_t tmp;
+				if (sv.vm->edicts[e].free || strcmp(QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), "ncSoundDict"))
+					continue;
+				memset(&tmp, 0, sizeof(tmp));
+				sdef_add_samples(&tmp, qstr(e, fs));
+				for (int i = 0; i < tmp.nsamp; i++)
+					Con_Printf("LINKSNDUSED %s %s\n", sv.mapname, tmp.samp[i]);
+			}
+	}
+	if (l->sndprec < 1)
+		l->sndprec = 1;
+	while (l->sndprec < sv.numsounds) {
+		int nk = BW_MIN(SND_PRECKEYS, sv.numsounds - l->sndprec), o = 3;
+		b[0] = (uint8_t)(l->sndprec & 0xff), b[1] = (uint8_t)(l->sndprec >> 8), b[2] = (uint8_t)nk;
+		for (int i = 0; i < nk; i++) {
+			uint32_t k = snd_key(sv.sounds[l->sndprec + i]);
+			for (int j = 0; j < 4; j++)
+				b[o++] = (uint8_t)(k >> (8 * j));
+		}
+		ev_put(l, LE_PRECACHE, b, o);
+		l->sndprec += nk;
+	}
+	if (!l->sndkept) {
+		int o = 3;
+		l->sndkept = true;
+		b[0] = 0x00, b[1] = 0xf0, b[2] = (uint8_t)BW_ARRAY_COUNT(kept);
+		for (size_t i = 0; i < BW_ARRAY_COUNT(kept); i++) {
+			uint32_t k = snd_key(kept[i]);
+			for (int j = 0; j < 4; j++)
+				b[o++] = (uint8_t)(k >> (8 * j));
+		}
+		ev_put(l, LE_PRECACHE, b, o);
+	}
+}
+
+/* a stuffcmd to a link player (sv_client.c bi_stuffcmd): what the PC would run of it that
+ * makes a sound. "play"/"play2"/"playvol" start a local sound at the listener (snd_main.c
+ * Play_f), "music"/"stopmusic" the music player. One line or several */
+void SV_LinkStuffCmd(client_t *c, const char *text)
+{
+	static cmd_tokens_t tok;
+	link_t *l = link_of(c);
+	char line[512];
+	const char *p = text;
+	if (!l || !snd_ready(l))
+		return;
+	while (*p) {
+		const char *e = p + strcspn(p, "\n;");
+		float eye[3];
+		snprintf(line, sizeof(line), "%.*s", (int)BW_MIN(e - p, 511), p);
+		p = *e ? e + 1 : e;
+		Cmd_TokenizeInto(&tok, line);
+		if (!tok.argc)
+			continue;
+		snd_eye(l, eye);
+		if (!Str_ICmp(tok.argv[0], "play") || !Str_ICmp(tok.argv[0], "play2"))
+			for (int i = 1; i < tok.argc; i++)
+				snd_record(l, SP_SND, tok.argv[i], 0, 0, 1, 0, 100, 0, SL_CLIENTSIDE, eye, false, false, 0);
+		else if (!Str_ICmp(tok.argv[0], "playvol"))
+			for (int i = 1; i + 1 < tok.argc; i += 2)
+				snd_record(l, SP_SND, tok.argv[i], 0, 0, (float)atof(tok.argv[i + 1]), 0, 100, 0, SL_CLIENTSIDE, eye, false,
+				           false, 0);
+		else if (!Str_ICmp(tok.argv[0], "music") && tok.argc >= 2)
+			ev_music(l, tok.argc >= 3 && !strcmp(tok.argv[2], "-") ? 1 : 2, tok.argv[1]);
+		else if (!Str_ICmp(tok.argv[0], "stopmusic"))
+			ev_music(l, 0, "");
+	}
 }
 
 /* the client's slot is going away (SV_DropClient) */
