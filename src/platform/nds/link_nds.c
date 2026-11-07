@@ -40,6 +40,7 @@
 #include "nds.h"
 #include "hull_nds.h"
 #include "weapon_nds.h"
+#include "hud_nds.h"
 
 #define LINK_PORT 27901
 #define MAX_SERVERS 8
@@ -48,7 +49,7 @@
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO };
 #define LINK_VER 2 /* JOIN and WELCOME's linkver: 2 sends movement commands (docs/spec/link.md) */
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
@@ -341,7 +342,6 @@ static struct {
 	float showntime;
 	int flashframe;            /* the refresh our muzzle flash started; its size */
 	float flashscale;
-	int hudclip, hudres;       /* what the ammo panel shows (-2 nothing yet) */
 	uint32_t replays;          /* weapon-only replays */
 } wp;
 /* the weapon's bigger tables, on the heap from the first ENTS after a map has loaded to
@@ -400,6 +400,12 @@ typedef struct {
 	uint16_t hullkb;
 } linkpred_stats_t;
 linkpred_stats_t Link_PredStats;
+/* the top screen's HUD a frame (Hud_Frame), the same way */
+typedef struct {
+	uint32_t frames, ticks_max;
+	uint64_t ticks;
+} linkhud_stats_t;
+linkhud_stats_t Link_HudStats;
 #ifndef LINK_PM_TICKS
 #define LINK_PM_TICKS() 0 /* the rig's measurement build makes this tickGetCount() */
 #endif
@@ -659,182 +665,11 @@ static void copy_str(char *dst, int size, const uint8_t *src, int len)
 	dst[n] = 0;
 }
 
-/* --- the top screen's HUD ------------------------------------------------------------ */
+/* --- the top screen's HUD: hud_nds.c ------------------------------------------------- */
 
-/* A layer in front of the 3D (BG1, banks F and G): 768 tiles, one for each
- * 8x8 cell of the screen, so the tiles are a 4-bit bitmap. The font is
- * fonts/hud.dsf when there is one (tools/nds/dsfont.py; sokky's pick is the
- * 04 series' 04b09), else the console's 8x8 font. Text gets a 1-pixel
- * outline. */
-
-enum { HC_CLEAR, HC_EDGE, HC_TEXT, HC_RED, HC_DIAG, HC_DIM, HC_WARN };
-#define TOP_TILES 768
-
-static uint16_t *topgfx;
-static uint8_t *hudfont; /* the .dsf, or NULL for the built-in font */
-static int hudh = 8;     /* its rows */
-
-static void hud_load_font(void)
-{
-	size_t size;
-	uint8_t *f = Fs_Load("fonts/hud.dsf", &size);
-	hudfont = NULL, hudh = 8;
-	if (f && size >= 8 && !memcmp(f, "DSF1", 4) && f[4] && f[4] <= 16 &&
-	    size >= 8 + (size_t)f[6] * (2 + f[4])) {
-		hudfont = f, hudh = f[4];
-		return;
-	}
-	free(f);
-}
-
-/* a glyph's rows (bit 0 the left pixel), width and advance */
-static const uint8_t *hud_glyph(int c, int *w, int *adv)
-{
-	if (hudfont) {
-		int first = hudfont[5], count = hudfont[6];
-		if (c < first || c >= first + count)
-			c = '?';
-		if (c >= first && c < first + count) {
-			const uint8_t *g = hudfont + 8 + (c - first) * (2 + hudh);
-			*adv = g[0], *w = g[1];
-			return g + 2;
-		}
-		*adv = *w = 0;
-		return NULL;
-	}
-	*adv = *w = 8;
-	return default_font_bin + (c & 255) * 8;
-}
-
-static void top_px(int x, int y, int col)
-{
-	uint16_t *p;
-	int sh;
-	if ((unsigned)x >= 256 || (unsigned)y >= 192)
-		return;
-	/* VRAM takes no byte writes: change the nibble inside its halfword */
-	p = topgfx + ((y >> 3) * 32 + (x >> 3)) * 16 + (y & 7) * 2 + ((x & 7) >> 2);
-	sh = (x & 3) * 4;
-	*p = (uint16_t)((*p & ~(0xF << sh)) | col << sh);
-}
-
-static void top_fill(int x, int y, int w, int h, int col)
-{
-	for (int j = y; j < y + h; j++)
-		for (int i = x; i < x + w; i++)
-			top_px(i, j, col);
-}
-
-static int hud_width(const char *s, int scale)
-{
-	int n = 0, w, adv;
-	for (; *s; s++)
-		hud_glyph((uint8_t)*s, &w, &adv), n += adv * scale;
-	return n;
-}
-
-/* text at (x, y), each font pixel scale x scale, with a 1-pixel outline; returns its width */
-static int hud_text(int x, int y, int scale, int col, const char *s)
-{
-	for (int pass = 0; pass < 2; pass++) {
-		int cx = x;
-		for (const char *c = s; *c; c++) {
-			int w, adv;
-			const uint8_t *g = hud_glyph((uint8_t)*c, &w, &adv);
-			for (int j = 0; g && j < hudh; j++)
-				for (int i = 0; i < w; i++)
-					if (g[j] & (1 << i)) {
-						if (pass == 0)
-							top_fill(cx + i * scale - 1, y + j * scale - 1, scale + 2, scale + 2, HC_EDGE);
-						else
-							top_fill(cx + i * scale, y + j * scale, scale, scale, col);
-					}
-			cx += adv * scale;
-		}
-	}
-	return hud_width(s, scale);
-}
-
-/* health and Barrier (the game's armour), big, at the bottom left */
-#define HUD_Y (192 - 4 - 6 * 3 - 10)
-#define HUD_AX 128 /* the ammo's half, at the bottom right */
-static void hud_stats(void)
-{
-	char n[12];
-	int x = 6;
-	top_fill(0, HUD_Y - 2, HUD_AX, 192 - HUD_Y + 2, HC_CLEAR);
-	hud_text(x, HUD_Y, 1, HC_DIM, "HEALTH");
-	snprintf(n, sizeof(n), "%d", link.health);
-	x += BW_NDS_MAX(hud_text(x, HUD_Y + 9, 3, link.health > 25 ? HC_TEXT : HC_RED, n), hud_width("HEALTH", 1)) + 14;
-	hud_text(x, HUD_Y, 1, HC_DIM, "BARRIER");
-	snprintf(n, sizeof(n), "%d", link.armor);
-	hud_text(x, HUD_Y + 9, 3, HC_TEXT, n);
-}
-
-/* the weapon's ammo at the bottom right: what is in the clip, big, and the
- * reserve after it, as the PC's HUD has them (clip -1: no clip; both -1: none) */
-static void hud_ammo(int clip, int res)
-{
-	char n[12], r[12];
-	int wn, wr, x;
-	top_fill(HUD_AX, HUD_Y - 2, 256 - HUD_AX, 192 - HUD_Y + 2, HC_CLEAR);
-	if (clip < 0 && res < 0)
-		return;
-	if (clip >= 0)
-		snprintf(n, sizeof(n), "%d", clip), snprintf(r, sizeof(r), res >= 0 ? "/%d" : "", res);
-	else
-		snprintf(n, sizeof(n), "%d", res), r[0] = 0;
-	wn = hud_width(n, 3), wr = hud_width(r, 2);
-	x = 250 - wn - wr;
-	hud_text(250 - hud_width("AMMO", 1), HUD_Y, 1, HC_DIM, "AMMO");
-	hud_text(x, HUD_Y + 9, 3, clip == 0 || (clip < 0 && res == 0) ? HC_RED : HC_TEXT, n);
-	if (r[0])
-		hud_text(x + wn, HUD_Y + 9 + hudh, 2, HC_TEXT, r);
-}
-
-/* the frame rate and counters along the top, and why the last map didn't load under them */
-static void hud_diag(const char *l1, const char *l2)
-{
-	top_fill(0, 0, 256, 2 * hudh + 4, HC_CLEAR);
-	hud_text(2, 1, 1, HC_DIAG, l1);
-	hud_text(2, hudh + 2, 1, HC_WARN, l2);
-}
-
-static void top_init(void)
-{
-	uint16_t *map;
-	int bg;
-	vramSetBankF(VRAM_F_MAIN_BG_0x06000000);
-	vramSetBankG(VRAM_G_MAIN_BG_0x06004000);
-	/* tiles at 0 (24 KB), the map at 24 KB */
-	bg = bgInit(1, BgType_Text4bpp, BgSize_T_256x256, 12, 0);
-	topgfx = bgGetGfxPtr(bg);
-	map = bgGetMapPtr(bg);
-	for (int i = 0; i < 32 * 32; i++)
-		map[i] = (uint16_t)(i < TOP_TILES ? i : 0);
-	dmaFillHalfWords(0, topgfx, TOP_TILES * 32);
-	BG_PALETTE[HC_EDGE] = RGB15(0, 0, 0);
-	BG_PALETTE[HC_TEXT] = RGB15(31, 31, 31);
-	BG_PALETTE[HC_RED] = RGB15(31, 8, 6);
-	BG_PALETTE[HC_DIAG] = RGB15(18, 31, 18);
-	BG_PALETTE[HC_DIM] = RGB15(24, 26, 31);
-	BG_PALETTE[HC_WARN] = RGB15(31, 26, 8);
-	bgSetPriority(0, 1);
-	bgSetPriority(bg, 0);
-	REG_DISPCNT |= DISPLAY_BG1_ACTIVE;
-	hud_load_font();
-}
-
-static void top_done(void)
-{
-	REG_DISPCNT &= ~DISPLAY_BG1_ACTIVE;
-	bgSetPriority(0, 0);
-	vramSetBankF(VRAM_F_LCD);
-	vramSetBankG(VRAM_G_LCD);
-	topgfx = NULL;
-	free(hudfont);
-	hudfont = NULL;
-}
+static hudin_t hudin;          /* what the link knows itself, for Hud_Frame */
+static hudent_t hudents[MAX_THINGS];
+static char huddiag[2][96];
 
 /* --- the bottom screen --------------------------------------------------------------- */
 
@@ -849,12 +684,12 @@ static void screen_init(void)
 	bg = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
 	sub = bgGetGfxPtr(bg);
 	dmaFillHalfWords(0x8000, sub, 256 * 192 * 2);
-	top_init();
+	Hud_Init();
 }
 
 static void screen_done(void)
 {
-	top_done();
+	Hud_Done();
 	sub = NULL;
 	Nds_InitConsole();
 	Mp_Init();
@@ -1118,7 +953,6 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 	if (frame < pad.jumpframes)
 		buttons |= B_JUMP;
 	if (link.statsver != pad.shownstats) {
-		hud_stats();
 		if (!pad.gamepage)
 			pad_bar();
 		pad.shownstats = link.statsver;
@@ -2169,6 +2003,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 		}
 		/* the WEAPONINFO we have (0 none yet): it also tells the server we take it */
 		p_u8(&p, 'W'), p_u16(&p, wh ? wh->info.version : 0), p_u16(&p, wh ? wh->info.edict : 0);
+		/* the HUDINFO we have (0 none yet): it also tells the server we draw the HUD */
+		p_u8(&p, 'H'), p_u16(&p, Hud_Version());
 	}
 	send_to(&link.to, &p);
 }
@@ -2978,10 +2814,11 @@ static void weapon_frame(int frame)
 		clip = wp.cur.clipsize > 0 ? wp.cur.clip : -1;
 		res = wp.cur.nammo ? wp.cur.ammo[0] : -1;
 	}
-	if (clip != wp.hudclip || res != wp.hudres) {
-		hud_ammo(clip, res);
-		wp.hudclip = clip, wp.hudres = res;
-	}
+	/* the HUD's numbers, as jtf.qc reads them: weapon.GetClip(), GetClipSize(), GetAmmo1() */
+	hudin.haveweapon = wp.havesrv && wp.cur.edict;
+	hudin.clip = wp.cur.clip, hudin.clipsize = wp.cur.clipsize;
+	hudin.reserve = res < 0 ? 0 : res;
+	(void)clip;
 }
 
 /* the punch (m_punchAngle) on the camera, as ncView::AddPunchAngle (src/client/View.qc)
@@ -2997,6 +2834,29 @@ static void weapon_punch(ndscam_t *view)
 }
 
 /* the linked loop; returns why it ended */
+/* the top screen's HUD, once a frame (hud_nds.c), from the camera drawn and the
+ * entities where they were drawn */
+static void hud_frame(const ndscam_t *view)
+{
+	int n = 0;
+	for (int i = 0; i < link.numthings; i++) {
+		const thing_t *th = &link.things[i];
+		hudent_t *e = &hudents[n++];
+		e->ent = th->ent;
+		e->slot = (int8_t)(th->model >= 1000 && th->model < MAX_STUDIO ? th->model - 1000 : -1);
+		memcpy(e->org, th->dorg, sizeof(e->org));
+		e->half = th->half, e->height = th->height;
+	}
+	hudin.health = link.health, hudin.armor = link.armor, hudin.frags = link.frags;
+	hudin.weapon = link.weapon;
+	/* the buttons that do it here (key_buttons), as the PC names its bound keys */
+	hudin.usekey = cfg.lefty ? "USE" : "X";
+	hudin.firekey = cfg.lefty ? "R" : "A";
+	hudin.diag1 = huddiag[0], hudin.diag2 = huddiag[1];
+	hudin.srvms = eclock.now, hudin.srvclock = eclock.have;
+	Hud_Frame(view, hudents, n, &hudin);
+}
+
 static const char *play(ndscam_t *cam)
 {
 	static char reason[96];
@@ -3008,7 +2868,6 @@ static const char *play(ndscam_t *cam)
 	ndscam_t view;
 	screen_init();
 	pad_reset();
-	wp.hudclip = wp.hudres = -3; /* the ammo panel is drawn once there is a weapon */
 	pad_draw();
 	link.lastrecv = Nds_Vblanks();
 	pr.cmdvb = pr.botstart = Nds_Vblanks();
@@ -3072,6 +2931,8 @@ static const char *play(ndscam_t *cam)
 				handle_brushinfo(d, len);
 			else if (type == L_WEAPONINFO)
 				handle_weaponinfo(d, len);
+			else if (type == L_HUDINFO)
+				Hud_Packet(d, len);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -3147,6 +3008,15 @@ static const char *play(ndscam_t *cam)
 		}
 		glFlush(0);
 		swiWaitForVBlank();
+		/* in the blank, while the GPU draws the next frame from what it was given */
+		{
+			uint64_t t0 = LINK_PM_TICKS();
+			uint32_t t;
+			hud_frame(&view);
+			t = (uint32_t)(LINK_PM_TICKS() - t0);
+			Link_HudStats.frames++, Link_HudStats.ticks += t;
+			Link_HudStats.ticks_max = BW_NDS_MAX(Link_HudStats.ticks_max, t);
+		}
 		if (cfg.fps30 && Nds_Vblanks() - frame < 2)
 			swiWaitForVBlank(); /* fps=30: every frame takes two refreshes */
 		/* how fast this runs, on the bottom row: frames a second, the slowest frame, peak polygons */
@@ -3166,7 +3036,8 @@ static const char *play(ndscam_t *cam)
 				         mbad, pr.on ? " P" : "", debugview == 1 ? " -T" : debugview == 2 ? " -TM" : "");
 				Link_PredStats.hullrule = (uint8_t)Hull_Rule(), Link_PredStats.on = pr.on;
 				Link_PredStats.hullkb = (uint16_t)(Hull_Bytes() / 1024);
-				hud_diag(cfg.diag ? pad.diagline : "", link.loaderr[0] ? link.loaderr : World_HullError());
+				snprintf(huddiag[0], sizeof(huddiag[0]), "%s", cfg.diag ? pad.diagline : "");
+				snprintf(huddiag[1], sizeof(huddiag[1]), "%s", link.loaderr[0] ? link.loaderr : World_HullError());
 				secstart = now, frames = 0, worst = 0, peak = 0;
 			}
 		}

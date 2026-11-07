@@ -62,6 +62,7 @@ int World_LightAt(const int16_t *org); /* 0..31, from the floor below */
 int World_TextureBytes(void);
 int World_TextureFails(void); /* textures of this map VRAM had no room for */
 bool World_HasLit(void); /* the map came with coloured light (.lit) */
+float World_TraceFraction(const float start[3], const float end[3]); /* a point through hull 0, the world alone */
 /* brush entities as a server has them (link play): shown or not, and moved
  * to org (1/8 units) and turned by ang (pitch yaw roll, libnds angles); org
  * NULL puts it back where the map built it */
