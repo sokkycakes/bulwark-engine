@@ -532,9 +532,8 @@ differs. So:
   `processmodelevents` for them (`src/client/viewmodel.qc:213-218`): from
   the last frame's time, whichever sequence that was, and from 0 only when
   the time went back;
-- the top screen shows the clip, big, and the reserve after it at the
-  bottom right, in the HUD font (only the reserve for a weapon without a
-  clip, nothing without ammo).
+- the HUD's clip (below, "The HUD") is the predicted one: it drops in the
+  frame the button goes down.
 
 The clip a reload fills is the server's (`_ReloadFinished` is a think), so
 the HUD shows it one round trip after the reload animation ends; a weapon
@@ -654,6 +653,70 @@ with each other. Not run: a moving lift or door, a monster idling past
 Screenshots of the firing run (kept outside git, as they show the game's
 data) show the flash and the clip going down while fire is held, and the
 monsters moving from frame to frame.
+
+## The HUD: the co-op HUD as the PC draws it
+
+The PC's co-op HUD is a Panorama layout (`coop/panorama/layout/coop/hud.xml`,
+`scripts/coop/hud.js`, `styles/coop/hud.css`) that `coop/src/hud/jtf.qc`
+feeds, under the Half-Life crosshair (`Jtf_DrawFeedback`) and over
+Nuclide's nameplates and target ID (`src/client/nameplates.qc`).
+`hud_nds.c` draws the same parts on the top screen's text layer (BG1,
+4bpp, 16 colours) from `HUDINFO` (`docs/spec/link.md`) and what the device
+predicts itself (health, the clip and reserve):
+
+| Part | Where (the PC's layout, 900 units high, scaled to 192 lines) |
+|---|---|
+| the objective panel: wave, monsters left (red while fighting), score, points | top left |
+| the feed: obituaries (players only, as `HUD_Obituary`) and `coop_feed`'s team events, 5 lines for 6 s, framed when they name you | top right |
+| the notice (`coop_notice`, split at `": "` or `"! "`), 3 s | centred at y 140, below the feed's lines here |
+| health with the ghost 8s, the hero's Barrier, the XPM level and gauge, Energy with Engage's tick (or armour), the Cadence chip, the ability squares (T 1 2 ENG EX) and the three nearest teammates' cards | bottom left |
+| the clip (red when low), the reserve, the weapon's title, the hero's two slots for 2 s after a switch | bottom right |
+| the respawn box and the revive bar while down (only these and the objective panel are shown then, as hud.css's `.hud.down`) | centred at y 540 |
+| the use prompt with its key, or a callout with a leader line on the item | y 510, or at the item |
+| the target ID card (the ray against the box grown by 4, then a trace) | y 558 |
+| nameplates over teammates and friendly NPCs in sight (875 units, the range where their alpha is over half) | over each |
+| the weapon's crosshair sprite, scaled by 192/480 as the PC's 480-line HUD | centre, hidden while down |
+
+Every frame each part writes a list of fills, lines and text runs; the
+lists are compared op by op with the last frame's, and only the 8 × 8
+tiles under what changed are drawn again: in a 1 KB row of tiles in RAM,
+then copied to VRAM. The panels that change only with HUDINFO, the health
+or the weapon (the objective, vitals and weapon panels) are rebuilt only
+then. At most 112 tiles are drawn in a frame; a bigger change (going down,
+getting up) finishes in the next frame or two. Nothing is allocated: the
+lists (2 × 3.4 KB), the HUD's state (6.3 KB), the row (1 KB) and the tiles'
+bookkeeping are static.
+
+Deviations from the PC, all from the screen's size: the HUD font is 5
+pixels high (04b09), so text is larger next to the screen than the PC's;
+the XPM row sits above the health instead of beside it; the notice moves
+below the feed's lines when the feed is up; fades are steps (nameplates
+shown while their alpha is over half, the target ID for half its 0.5 s
+linger, the notice without its 0.4 s fade); a nameplate's line of sight is
+traced every third frame instead of each. The crosshair takes the sprite's
+most common colour and the pixels its format draws.
+
+Not drawn yet: the damage arrows and tint, the pickup and ammo notices and
+the weapon selection list (the server doesn't pass `EV_DAMAGE` or the
+pickup events to a device).
+
+### Measured: the HUD, in melonDS 1.1 (not hardware)
+
+`coop_arena`, `bulwark-ded` on the same machine, the DS and a PC client
+(PCrig) in the game with Gina, monsters fighting, `fps=30`, `diag=1`, the
+feed full and a notice up, 85 s alive and down; a build that times
+`Hud_Frame` with `tickGetCount()` and prints each second:
+
+| | before (03c3cef, drawing to VRAM) | now (9db9469) |
+|---|---|---|
+| `Hud_Frame`, a second's mean | 5 to 12 ms | median 1.7 ms, 90th percentile 2.1 ms, worst 2.6 ms |
+| `Hud_Frame`, a second's worst frame | about 16 ms | median 3.5 ms, 90th percentile 6.7 ms, worst 11.2 ms (going down) |
+| frame rate | 30 | 30 in 84 of 85 seconds |
+| heap in use | | 514.7 to 517.6 KB (none of it the HUD's) |
+
+Against 5730913 (the old HUD: the clip, health and the diagnostics line),
+`arm-none-eabi-size` gives text 439868 bytes (+25304) and bss 192912
+(+17888).
 
 ## Map viewer controls
 

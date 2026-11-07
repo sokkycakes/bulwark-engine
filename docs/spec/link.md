@@ -115,6 +115,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x8C | PMOVEVARS | the game's movement values (link v2, below) |
 | 0x8D | BRUSHINFO | the brush entities that collide (link v2, below) |
 | 0x8E | WEAPONINFO | the weapon in hand, as its game code reads it (link v2, below) |
+| 0x8F | HUDINFO | what the co-op HUD shows (below) |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`), and every 2 s in case one was lost. The device then loads
@@ -276,6 +277,7 @@ After the 32 bytes of the v1 fields (all present):
 | 42 | u16 | `brushack`: the BRUSHINFO version it has complete for its map, 0 for none |
 | 44 | count × 14 | commands, oldest first: command `i` has sequence `newest - (count - 1) + i` |
 | 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has (0 none yet), and its edict; a device that sends it takes WEAPONINFO |
+| then | u8, u16 | optional, after `'W'` when that is there: `'H'`, the HUDINFO version the device has (0 none yet); a device that sends it draws the HUD and takes HUDINFO |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -530,6 +532,57 @@ from PSTATE's state and this block together. `VFL_FIRING`,
 state. What only the server does is not predicted: projectiles, damage,
 sounds, the clip a reload fills (`_ReloadFinished` is a think), a weapon
 switch, timed ammo regen; the next PSTATE brings it.
+
+### HUDINFO
+
+The PC's co-op HUD (`coop/src/hud/jtf.qc` `Jtf_Post` and its Panorama
+layout, `coop/panorama/layout/coop/hud.xml` and `scripts/coop/hud.js`)
+reads infokeys the rules set for each player
+(`coop/src/rules/hud_info.qc`), serverinfo keys, the weapon in hand, the
+other players' userinfo, the friendly NPCs near it
+(`src/client/nameplates.qc`) and the obituaries (`EV_OBITUARY`,
+`HUD_Obituary`). A link player is a bot to the networking and gets none of
+it, so the server puts it in one packet for each device whose INPUT carries
+the `'H'` trailer:
+
+| Field | |
+|---|---|
+| u32 session, u16 version | the version (> 0) is new whenever the body differs |
+| u8 self | the player's slot (its edict - 1) |
+| u8 nkeys, nkeys × {u8 id, u8 len, char text[len]} | the keys that are set (below) |
+| u8 nplayers, nplayers × {u8 slot, s16 health, u8 len, char name[len], u8 len, char mate[len], u8 cadence, u8 len, char team[len]} | every client with a name, this one too: health 0 while not spawned, `*mate`, `*cadence`, `*team` |
+| u8 nnpc, nnpc × {u16 entnum, s16 health, s16 max_health, u8 len, char netname[len]} | up to 8 monsters with `FL_MONSTER`, health over 0 and `m_iAlliance` `MAL_FRIEND` (0) within 2000 units |
+| u8 w, u8 h, then if w: u16 rgb15, u8 mask[(w × h + 7) / 8] | the weapon's crosshair sprite at its size in a 640-wide HUD, a bit for each pixel drawn (row by row, bit 0 first), in its most common colour; 0 × 0 none |
+| u8 obitseq, u8 n, n × 4 × {u8 len, char text[len]} | the newest obituaries, oldest first, each the target, the attacker, the weapon's `inv_name` and the means; `obitseq` counts them all (mod 256) |
+
+Key ids: 0 `*herohud`, 1 `*respawn`, 2 `*revive`, 3 `*prompt`, 4
+`*promptAt`, 5 `*usable`, 6 `*stats`, 7 `*xpm`, 8 `*cadence`, 9
+`*cadenceN` (the player's infokeys); 16 `coop_wave`, 17 `coop_left`, 18
+`coop_notice`, 19 `coop_feed`, 20 `coop_engageCost`, 21 `nameplates`, 22
+`targetid` (serverinfo); 32 the weapon's `ncWeapon::m_weaponTitle`, 33 and
+34 the `inv_name` of `*herohud`'s static and dynamic weapons (fields 8 and
+9), 35 `"1"` when the weapon needs no ammo (`!fiAmmoRequired`). A key over
+255 bytes is cut; keys stop before the body passes 900 bytes, and the body
+is at most 1300.
+
+The crosshair is the one `HUD_WeaponSwitched` (`valve/src/hud/hud.qc`)
+loads: the weapon decl's `crosshair` key, or `<class>.crosshair`; a name
+`a.b` is entry `b` of `sprites/a.txt`, one without a dot an entry of
+`sprites/hud.txt`, at resolution 640, as `InterfaceSpriteSheet.qc` reads
+them. The sprite is Half-Life's (`IDSP` version 2); a pixel counts by its
+format: alphatest not index 255, index-alpha (colour 255) index 128 and
+up, additive a colour whose channels add to 192 or more, normal every
+pixel. Over
+32 × 32, or a missing file, sends none.
+
+The server builds the body on each `VIEW` (20 a second) and sends a new
+version at once, then every 0.25 s until the device's INPUT acknowledges
+it. The first `'H'` sets the player's `phud` userinfo to 1, as the PC's
+Panorama HUD does (`jtf.qc` `Jtf_SetPhud`), so the rules leave out the
+centerprints and text lines that HUD replaces. Obituaries are taken from
+the multicasts that reach the device (`EV_OBITUARY`, 25); the weapon decl
+they name is read for its `inv_name` when the body is built, not in the
+multicast.
 
 ### The movement log
 
