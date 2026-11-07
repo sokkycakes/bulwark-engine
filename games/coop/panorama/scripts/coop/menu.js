@@ -864,9 +864,6 @@ var CoopMenu = ( function ()
 			if ( st.party )
 				cmd( "live_open " + ( ( st.party.flags & 1 ) ? "0" : "1" ) );
 		} );
-		mm.guest = mmOption( left, "Add a split-screen guest", function () { cmd( "seat_add guest" ); } );
-		mm.join = mmOption( left, "Join a party by code", function () { mmAsk = mmAsk === "join" ? "" : "join"; mmPicking = false; mmDraw( true ); } );
-		mm.leave = mmOption( left, "Leave party", function () { cmd( "live_leave" ); mmMadeParty = false; } );
 		mm.area = make( "Panel", left, "mm-card", { hittest: "false" } );
 		mm.toast = label( left, "mm-toast", "" );
 
@@ -963,10 +960,6 @@ var CoopMenu = ( function ()
 		mm.playlist.SetHasClass( "off", !online || searching );
 		mm.privacy.valueLabel.text = party ? ( ( party.flags & 1 ) ? "Open" : "Invite only" ) : "";
 		mm.privacy.SetHasClass( "off", !leader || searching );
-		mm.guest.valueLabel.text = ( st.guests || [] ).length + " / 3";
-		mm.guest.SetHasClass( "off", ( st.guests || [] ).length >= 3 || searching );
-		mm.join.SetHasClass( "off", !online || searching );
-		mm.leave.SetHasClass( "off", !party || searching || ( party.members || [] ).length < 2 );
 
 		// what fills the card area: the chooser, a question, or the card
 		var key = mmPicking ? "pick" : mmAsk ? "ask:" + mmAsk : !online && !server ? "ask:server" : "card:" + ( pl ? pl.id : "" ) + ( online ? ":on" : "" );
