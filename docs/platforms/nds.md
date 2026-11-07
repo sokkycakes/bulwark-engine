@@ -1007,7 +1007,7 @@ events. The DS mixes them as the PC's mixer does (`src/sound/snd_main.c`):
 | Loops | `ambient_generic` and `ncSound` (`ambient_generic.qc`, `Sound.qc`) | the `AMBIENT` set; a switch of sample waits until the new one is in |
 | Sentences | `sentences.qc` | each word after the previous one's length |
 | View model | `HandleAnimEvent` 1004, 1008, 5004 | `WEAPONINFO`'s table (SoundDefs with their pitch range, distance shader and start offset) |
-| Weapon switch | `HLWeaponSelect` | `common/wpn_hudon` when the list opens, `wpn_moveselect` as it moves (3 s) |
+| Weapon switch | `HLWeaponSelect` | next: `common/wpn_moveselect` (the PC's `wpn_hudon` on a wrap round to the first weapon isn't known on the DS); previous: `wpn_hudon` when the list was closed, else `wpn_moveselect`; `wpn_hudoff` when the list closes, 3 s after the last press (the PC's `Trigger` or time-out). `wpn_select` has no caller in Nuclide |
 | Chat | `chat.qc` | `misc/talk` |
 | Model events with `AT` | as the client draws the frame | started when the drawn clock (`ENTS` time less `interp`) passes `at` |
 
@@ -1053,7 +1053,7 @@ Where it differs from the PC:
 
 Not done yet: music and other streams (EVENT 14 is logged only, and
 samples over half the cache are not played), the fireInfo's release sound
-(`WEAPONINFO`'s `release` entries), `common/wpn_hudoff`.
+(`WEAPONINFO`'s `release` entries).
 
 `tools/nds/sndtest.c` checks the fixed-point gains against the PC's own
 `spatialise` (cut out of `snd_main.c` by `tools/nds/sndtest_ref.py`) over

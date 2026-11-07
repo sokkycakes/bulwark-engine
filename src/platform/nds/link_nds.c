@@ -884,7 +884,7 @@ static void pad_impulse(int n)
 	pad.impulse = (uint8_t)n;
 	pad.impseq++;
 	if (n == IMP_NEXT || n == IMP_PREV)
-		Snd_WeaponSelect(); /* the weapon selection's sounds (valve/src/hud/WeaponSelect.qc) */
+		Snd_WeaponSelect(n == IMP_NEXT); /* the weapon selection's sounds (valve/src/hud/WeaponSelect.qc) */
 }
 
 static void pad_reset(void)

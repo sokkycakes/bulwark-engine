@@ -213,6 +213,7 @@ static struct {
 	uint16_t ambver;
 	int nshader;
 	uint32_t wsel_until; /* HLWeaponSelect m_flHUDWeaponSelectTime, ticks */
+	bool wsel_open;
 	int cmdrr;           /* volume updates go round */
 	uint32_t laststat;
 	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5], statreadsum;
@@ -1363,16 +1364,21 @@ static void local_key(uint32_t key, uint16_t ent, int src)
 void Snd_Local(uint32_t key) { local_key(key, 0, SRC_LOCAL); }
 void Snd_LocalName(const char *name) { Snd_Local(snd_key(name)); }
 
-/* HLWeaponSelect::SelectNext/SelectPrevious (valve/src/hud/WeaponSelect.qc:283-343): opening
- * plays wpn_hudon, a move while open wpn_moveselect; it stays open hlhud_hideTime (3 s, hud.h:10).
- * The DS switches at once (no confirm), so there is no Trigger and no wpn_hudoff */
-void Snd_WeaponSelect(void)
+/* HLWeaponSelect (valve/src/hud/WeaponSelect.qc): SelectNext (:283-309) plays wpn_moveselect,
+ * wpn_hudon only when it wraps round to the first weapon (which the DS doesn't know: it never
+ * plays that one); SelectPrevious (:311-343) wpn_hudon when the list was closed, else
+ * wpn_moveselect. The list stays open hlhud_hideTime (3 s, hud.h:10); closing it, by Trigger
+ * or when the time is up (Draw -> Deactivate, :58-74, :93-97), plays wpn_hudoff. The DS
+ * switches at once, so its list closes 3 s after the last press. (Event_SelectionTriggered's
+ * wpn_select has no caller in Nuclide) */
+void Snd_WeaponSelect(bool next)
 {
 	uint32_t t = ticks();
 	if (!S.ready)
 		return;
-	Snd_LocalName((int32_t)(S.wsel_until - t) > 0 ? "common/wpn_moveselect.wav" : "common/wpn_hudon.wav");
+	Snd_LocalName(next || (int32_t)(S.wsel_until - t) > 0 ? "common/wpn_moveselect.wav" : "common/wpn_hudon.wav");
 	S.wsel_until = t + ms_ticks(3000);
+	S.wsel_open = true;
 }
 
 /* WEAPONINFO's table: u8 'S', u8 n, n x {u8 nsamp, nsamp x u32 key, u8 vol, u8 pitchmin,
@@ -1575,6 +1581,10 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	S.selfent = selfent;
 	S.things = things, S.nthings = nthings;
 	S.clock = clock_ms, S.haveclock = have;
+	if (S.wsel_open && (int32_t)(t0 - S.wsel_until) >= 0) { /* the weapon list closes */
+		S.wsel_open = false;
+		Snd_LocalName("common/wpn_hudoff.wav");
+	}
 	while (S.vtop > 0 && S.vst[S.vtop - 1] == V_FREE)
 		S.vtop--;
 	/* nothing playing, coming or due: only the stats */
@@ -1838,6 +1848,7 @@ static void stop_all(void)
 		memset(H->sent, 0, sizeof(H->sent));
 	S.namb = 0, S.ambver = 0;
 	S.haveseq = false;
+	S.wsel_open = false;
 }
 
 void Snd_MapChange(void)

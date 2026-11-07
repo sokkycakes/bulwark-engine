@@ -34,7 +34,7 @@ void Snd_Event(int type, const uint8_t *d, int len);
 void Snd_Local(uint32_t key);
 void Snd_LocalName(const char *name);
 /* HLWeaponSelect's open/move sounds (valve/src/hud/WeaponSelect.qc) on the DS's weapon switch */
-void Snd_WeaponSelect(void);
+void Snd_WeaponSelect(bool next);
 /* WEAPONINFO's sound table (after the sequences) and its view model events (1004, 1008, 5004) */
 void Snd_WeaponTable(const uint8_t *d, int len);
 void Snd_ViewEvent(int code, int opt);
