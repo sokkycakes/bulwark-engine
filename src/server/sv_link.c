@@ -270,6 +270,10 @@ typedef struct {
 	uint16_t ambver, amback, ambsentver;
 	double ambsent;
 	uint32_t ambpkts, ambbytes;
+	/* model events (C3): each studio entity's frame1time when last looked at, its sequence + 1 (0 not seen) and model */
+	float mevt[MAX_EDICTS_LINK];
+	int16_t mevseq[MAX_EDICTS_LINK];
+	uint16_t mevmi[MAX_EDICTS_LINK];
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -1503,6 +1507,7 @@ static void send_brushinfo(link_t *l, double now)
 
 #define WI_MAX_SEQ 64   /* view model sequences sent */
 #define WI_MAX_EV 32    /* muzzle flash events sent, all sequences */
+#define WI_MAX_EV_SND 64 /* and with the sound events, for a device that plays sound */
 #define WI_RESEND 0.25  /* WEAPONINFO again this soon while the device has not acknowledged it */
 #define WI_CHECK 1.0    /* and the decl read again this often */
 #define WI_BACKOFF 8    /* after this many sends answered by INPUT without the ack, WI_SLOW apart (a device that can't parse it) */
@@ -1789,7 +1794,15 @@ static float w_fall(const char *key)
 }
 
 /* WEAPONINFO's body (after the version): what the device needs to run weapon w */
-static void w_build(pkt_t *p, int w, int *fiammo)
+static void wsnd_begin(void);
+static bool wtab_built; /* the last w_build made the 'S' table */
+static int wsnd_event(int code, const char *data);
+static int wsnd_release(int w, const char *fi);
+static void wsnd_write(pkt_t *p, int rel0, int rel1);
+static void wsnd_log(link_t *l, int ver);
+
+/* snd: the device plays sound: the view model's sound events too, and the 'S' table after the sequences */
+static void w_build(pkt_t *p, int w, int *fiammo, bool snd)
 {
 	static const char *const wkeys[] = {"altAlternates", "removeOnEmpty", "powerAmmo", "altMode", "buggyIdleAnim"};
 	const char *prim = qstr(w, wf.primfi), *sec = qstr(w, wf.secfi);
@@ -1834,14 +1847,36 @@ static void w_build(pkt_t *p, int w, int *fiammo)
 		p_u8(p, g[i].loop ? 1 : 0);
 		p_u8(p, 0);
 	}
+	int nflash = 0, nsnd = 0, maxsnd;
+	wtab_built = snd;
+	if (snd)
+		wsnd_begin();
+	/* the muzzle flashes come first: the sound events take what is left of WI_MAX_EV_SND */
+	for (int i = 0; i < nseq && m; i++)
+		for (int k = 0, n = 0; k < m->seqs[i].numevents && n < 8; k++) {
+			int ev = m->seqs[i].events[k].event;
+			if (ev == 5001 || ev == 5011 || ev == 5021 || ev == 5031)
+				n++, nflash++;
+		}
+	maxsnd = snd ? WI_MAX_EV_SND - BW_MIN(nflash, WI_MAX_EV) : 0;
 	for (int i = 0; i < nseq && m; i++) {
 		const studio_seq_t *s = &m->seqs[i];
-		int idx[8], n = 0;
+		int idx[16], opt[16], n = 0;
 		for (int k = 0; k < s->numevents && n < 8 && nev < WI_MAX_EV; k++) {
 			int ev = s->events[k].event;
 			if (ev == 5001 || ev == 5011 || ev == 5021 || ev == 5031)
-				idx[n++] = k, nev++;
+				opt[n] = -1, idx[n++] = k, nev++;
 		}
+		for (int k = 0; k < s->numevents && n < 16 && nsnd < maxsnd; k++) {
+			int ev = s->events[k].event, o;
+			if ((ev == 1004 || ev == 1008 || ev == 5004) && (o = wsnd_event(ev, s->events[k].options)) >= 0)
+				opt[n] = o, idx[n++] = k, nsnd++;
+		}
+		for (int a = 1; a < n; a++) /* in frame order, as the model has them */
+			for (int b = a; b > 0 && s->events[idx[b]].frame < s->events[idx[b - 1]].frame; b--) {
+				int t = idx[b]; idx[b] = idx[b - 1], idx[b - 1] = t;
+				t = opt[b], opt[b] = opt[b - 1], opt[b - 1] = t;
+			}
 		p_f32(p, Studio_SeqDuration(m, i));
 		p_f32(p, s->fps);
 		p_u16(p, (unsigned)BW_CLAMP(s->numframes, 0, 65535));
@@ -1851,8 +1886,12 @@ static void w_build(pkt_t *p, int w, int *fiammo)
 			const studio_event_t *e = &s->events[idx[k]];
 			p_u16(p, (unsigned)BW_CLAMP(e->frame, 0, 65535));
 			p_u16(p, (unsigned)e->event);
-			p_u8(p, (unsigned)BW_CLAMP(w_stoi(e->options), 0, 255));
+			p_u8(p, (unsigned)(opt[k] >= 0 ? opt[k] : BW_CLAMP(w_stoi(e->options), 0, 255)));
 		}
+	}
+	if (snd) {
+		int r0 = wsnd_release(w, prim), r1 = sec[0] ? wsnd_release(w, sec) : -1;
+		wsnd_write(p, r0, r1);
 	}
 }
 
@@ -1876,7 +1915,13 @@ static void update_winfo(link_t *l, int e, double now)
 		return;
 	}
 	p.len = 0;
-	w_build(&p, w, fiammo);
+	w_build(&p, w, fiammo, l->sndcap);
+	if (l->sndcap && p.len > (int)sizeof(l->wibody)) { /* the muzzle flashes are kept, the sounds go */
+		if (sv_link_log->ivalue)
+			Con_Printf("LINKSND %d: WEAPONINFO of %d is %d bytes with its sounds: sent without\n", (int)(l - links), w, p.len);
+		p.len = 0;
+		w_build(&p, w, fiammo, false);
+	}
 	if (p.len > (int)sizeof(l->wibody)) { /* doesn't fit one packet: the device shows the server's */
 		l->wiedict = (uint16_t)w;
 		l->wiver = 0;
@@ -1891,6 +1936,7 @@ static void update_winfo(link_t *l, int e, double now)
 	if (!++l->wivers)
 		l->wivers = 1;
 	l->wiver = l->wivers;
+	wsnd_log(l, l->wiver);
 	l->wisent = 0;
 	l->wisends = 0;
 }
@@ -2433,6 +2479,9 @@ static void send_hud(link_t *l, double now);
 static void send_sound(link_t *l, double now);
 static void snd_impacts(void);
 static void snd_precache(link_t *l);
+static void update_ambient(link_t *l);
+static void snd_modelevents(link_t *l);
+static void send_ambient(link_t *l, double now);
 
 void SV_LinkSend(void)
 {
@@ -2492,6 +2541,7 @@ void SV_LinkSend(void)
 		snd_precache(l);
 		send_events(l, now);
 		send_sound(l, now);
+		send_ambient(l, now);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -2503,6 +2553,8 @@ void SV_LinkSend(void)
 		if ((view = now >= l->nextview)) {
 			send_view(l);
 			send_ents(l);
+			update_ambient(l);
+			snd_modelevents(l);
 			if (l->entsseq % 5 == 0)
 				send_models(l);
 			if (l->entsseq % 4 == 0 || l->vmplays != l->vmsent)
@@ -3794,6 +3846,7 @@ static void snd_mapcheck(link_t *l)
 	l->nloops = 0;
 	l->sndprec = 0, l->sndkept = false;
 	l->namb = 0, l->ambver = l->amback = l->ambsentver = 0;
+	memset(l->mevseq, 0, sizeof(l->mevseq));
 }
 
 /* --- does a sample loop by itself? A WAV's "cue " chunk: the PC loops it from its first
@@ -4805,6 +4858,412 @@ void SV_LinkStuffCmd(client_t *c, const char *text)
 		else if (!Str_ICmp(tok.argv[0], "stopmusic"))
 			ev_music(l, 0, "");
 	}
+}
+
+
+/* --- the view model's sound events (C2) and the release sound (C15): WEAPONINFO's 'S' table ---
+ * HandleAnimEvent (RenderableEntity.qc:1088-1146) on the PC's view model: 1004 and 1008 a
+ * sample on CHAN_BODY/CHAN_VOICE (StartSound: only when the file exists, Entity.qc:1780-1800;
+ * vol 1, ATTN_NORM, FOLLOW), 5004 a sample on CHAN_AUTO when sound/<x> exists, else a SoundDef
+ * on CHAN_BODY as the client's SoundDef_Play picks it */
+#define WSND_MAX 32
+typedef struct {
+	int nsamp;
+	uint32_t key[8];
+	char first[64]; /* the first sample's name, for the log */
+	uint8_t vol, pmin, pmax, atten, flags, chan, dist;
+	int16_t off;    /* ms */
+	char id[72];    /* what it was made from: "<code> <data>" */
+} wsnd_t;
+static struct {
+	wsnd_t s[WSND_MAX];
+	int n;
+} wtab;
+
+static void wsnd_begin(void) { wtab.n = 0; }
+
+/* the client's flags for a SoundDef (soundDef.qc:614-650) */
+static int sdef_sflags(const sdef_t *d, bool follow)
+{
+	int f = 0;
+	if (d->flags & SNDFL_NOREVERB)
+		f |= SF_NOREVERB;
+	if (d->flags & SNDFL_LOOPING)
+		f |= SF_FORCELOOP;
+	if (follow && (d->flags & SNDFL_FOLLOW))
+		f |= SF_FOLLOW;
+	if (d->flags & SNDFL_OMNI)
+		f |= SF_NOSPACIALISE;
+	return f;
+}
+
+static int wsnd_sdef(const char *shader, int chan, bool dist, const char *id);
+
+static int wsnd_put(const wsnd_t *w)
+{
+	for (int i = 0; i < wtab.n; i++)
+		if (!strcmp(wtab.s[i].id, w->id))
+			return i;
+	if (wtab.n >= WSND_MAX)
+		return -1;
+	wtab.s[wtab.n] = *w;
+	return wtab.n++;
+}
+
+static int wsnd_sample(const char *sample, int chan, const char *id)
+{
+	wsnd_t w;
+	memset(&w, 0, sizeof(w));
+	w.nsamp = 1, w.key[0] = snd_key(sample);
+	snprintf(w.first, sizeof(w.first), "%s", sample);
+	w.vol = 255, w.pmin = w.pmax = 100, w.atten = 64, w.flags = SF_FOLLOW, w.chan = (uint8_t)chan, w.dist = 0xff;
+	snprintf(w.id, sizeof(w.id), "%s", id);
+	return wsnd_put(&w);
+}
+
+/* a SoundDef as the client's SoundDef_Play would play it; dist: as SoundDef_Distance (chan 5,
+ * ATTN_NONE, no FOLLOW). A STEP decl on the view model is silent on the PC (its speed is
+ * below half the walk speed, soundDef.qc:636-641): none */
+static int wsnd_sdef(const char *shader, int chan, bool dist, const char *id)
+{
+	const sdef_t *d = sdef_find(shader);
+	wsnd_t w;
+	int me;
+	if (!d || d->nsamp <= 0 || (!dist && (d->flags & SNDFL_STEP)))
+		return -1;
+	memset(&w, 0, sizeof(w));
+	w.nsamp = BW_MIN(d->nsamp, 8);
+	for (int i = 0; i < w.nsamp; i++)
+		w.key[i] = snd_key(d->samp[i]);
+	snprintf(w.first, sizeof(w.first), "%s", d->samp[0]);
+	w.vol = (uint8_t)BW_CLAMP(lrintf(d->volume * 255), 0, 255);
+	w.pmin = (uint8_t)BW_CLAMP(lrintf(d->pitch_min), 0, 255), w.pmax = (uint8_t)BW_CLAMP(lrintf(d->pitch_max), 0, 255);
+	w.atten = dist || (d->flags & SNDFL_GLOBAL) ? 0 : (uint8_t)BW_CLAMP(lrintf(sdef_atten(d) * 64), 0, 255);
+	w.flags = (uint8_t)sdef_sflags(d, !dist);
+	w.chan = (uint8_t)(dist ? 5 : chan);
+	w.off = (int16_t)BW_CLAMP(lrintf(d->offset * 1000), -32768, 32767);
+	w.dist = 0xff;
+	snprintf(w.id, sizeof(w.id), "%s%s", dist ? "dist " : "", id);
+	if ((me = wsnd_put(&w)) >= 0 && !dist && d->dist[0] && wtab.s[me].dist == 0xff) {
+		char did[72];
+		int di;
+		snprintf(did, sizeof(did), "%s", d->dist);
+		di = wsnd_sdef(d->dist, 5, true, did);
+		if (di >= 0)
+			wtab.s[me].dist = (uint8_t)di;
+	}
+	return me;
+}
+
+/* one studio event of the view model: its index in the table, -1 when it makes no sound */
+static int wsnd_event(int code, const char *data)
+{
+	char id[72], path[96];
+	const char *s = data;
+	snprintf(id, sizeof(id), "%d %s", code, data);
+	if (code == 1004 || code == 1008) {
+		if (s[0] == '*')
+			s++;
+		snprintf(path, sizeof(path), "sound/%s", s);
+		return s[0] && FS_FileExists(path) ? wsnd_sample(s, code == 1004 ? 4 : 2, id) : -1;
+	}
+	if (code == 5004) {
+		snprintf(path, sizeof(path), "sound/%s", s);
+		if (FS_FileExists(path))
+			return wsnd_sample(s, 0, id);
+		return wsnd_sdef(s, 4, false, id);
+	}
+	return -1;
+}
+
+/* 'S', n, the shaders, then the release sound of the primary and secondary fireInfo
+ * (m_fiSndRelease, Weapon.qc:136, :1769-1771: StartSoundDef on CHAN_WEAPON), 0xff none */
+static void wsnd_write(pkt_t *p, int rel0, int rel1)
+{
+	p_u8(p, 'S');
+	p_u8(p, (unsigned)wtab.n);
+	for (int i = 0; i < wtab.n; i++) {
+		const wsnd_t *w = &wtab.s[i];
+		p_u8(p, (unsigned)w->nsamp);
+		for (int k = 0; k < w->nsamp; k++)
+			p_u32(p, w->key[k]);
+		p_u8(p, w->vol), p_u8(p, w->pmin), p_u8(p, w->pmax), p_u8(p, w->atten), p_u8(p, w->flags), p_u8(p, w->chan);
+		p_u8(p, w->dist);
+		p_u16(p, (uint16_t)w->off);
+	}
+	p_u8(p, (unsigned)(rel0 < 0 ? 0xff : rel0));
+	p_u8(p, (unsigned)(rel1 < 0 ? 0xff : rel1));
+}
+
+static int wsnd_release(int w, const char *fi)
+{
+	char v[128], id[80];
+	if (!fi || !fi[0])
+		return -1;
+	w_subdef(w, fi, "snd_release", v, sizeof(v));
+	if (!v[0])
+		return -1;
+	snprintf(id, sizeof(id), "release %s", v);
+	return wsnd_sdef(v, 1, false, id);
+}
+
+static void wsnd_log(link_t *l, int ver)
+{
+	if (!sv_link_log->ivalue || !wtab_built)
+		return;
+	for (int i = 0; i < wtab.n; i++)
+		Con_Printf("LINKSND %d 0 vm %s - %d %d %d %d-%d %d n=%d dist=%d off=%d (%s) version %d\n", (int)(l - links),
+		           wtab.s[i].first, wtab.s[i].chan, wtab.s[i].vol, wtab.s[i].atten, wtab.s[i].pmin, wtab.s[i].pmax,
+		           wtab.s[i].flags, wtab.s[i].nsamp, wtab.s[i].dist == 0xff ? -1 : wtab.s[i].dist, wtab.s[i].off,
+		           wtab.s[i].id, ver);
+}
+
+/* --- monsters' model events (C3): what the PC's client plays from the studio events of the
+ * models it draws (ncRenderableEntity::predraw, RenderableEntity.qc:729-731: the events
+ * between the last frame1time and this one, as qc_modelevents.c collect finds them). Every
+ * VIEW tick, for the non-player studio entities the device is sent */
+#define MEV_MAX 64
+
+static bool mev_in_window(float t, float lo, float hi) { return (t > lo || (lo <= 0 && t >= 0)) && t <= hi; }
+
+/* qc_modelevents.c:48-77 */
+static int mev_collect(const studio_model_t *m, int seq, float base, float target, const studio_event_t **ev, float *at)
+{
+	const studio_seq_t *s = &m->seqs[seq];
+	int n = 0, first = 0, last = 0;
+	float dur = Studio_SeqDuration(m, seq);
+	if (target < base)
+		base = 0;
+	if (target <= base && !(base <= 0 && target >= 0))
+		return 0;
+	if ((s->flags & STUDIO_LOOPING) && dur > 0) {
+		first = (int)(base / dur), last = (int)(target / dur);
+		if (last - first > 4)
+			first = last - 4;
+	}
+	for (int lap = first; lap <= last; lap++)
+		for (int i = 0; i < s->numevents && n < MEV_MAX; i++) {
+			float t = (s->fps > 0 ? s->events[i].frame / s->fps : 0) + lap * dur;
+			if (!mev_in_window(t, base, target))
+				continue;
+			ev[n] = &s->events[i], at[n++] = t;
+		}
+	return n;
+}
+
+static void mev_sound(link_t *l, int e, int code, const char *data, float evtime)
+{
+	char path[96];
+	const char *s = data;
+	const float *org = ent_origin(e);
+	int at = (int)llround(evtime * 1000);
+	if (code == 1004 || code == 1008) {
+		if (s[0] == '*')
+			s++;
+		snprintf(path, sizeof(path), "sound/%s", s);
+		if (s[0] && FS_FileExists(path))
+			snd_record(l, SP_MEV, s, e, code == 1004 ? 4 : 2, 1, 1, 100, SF_FOLLOW, SL_CLIENTSIDE, org, false, true, at);
+	} else if (code == 5004 && s[0]) {
+		snprintf(path, sizeof(path), "sound/%s", s);
+		if (FS_FileExists(path))
+			snd_record(l, SP_MEV, s, e, 0, 1, 1, 100, SF_FOLLOW, SL_CLIENTSIDE, org, false, true, at);
+		else {
+			/* SoundDef_PlayInternal as the client runs it (soundDef.qc:578-702) */
+			sdef_t *d = (sdef_t *)sdef_find(s);
+			float vol;
+			int r, off;
+			if (!d || (r = sdef_pick(d)) < 0)
+				return;
+			vol = d->volume;
+			if (d->flags & SNDFL_STEP) {
+				qfld_t vf = qfld("velocity");
+				float sp = 0, walk = 0;
+				for (int k = 0; k < 3 && vf.ofs >= 0; k++)
+					sp += QC_EdictFields(sv.vm, e)[vf.ofs + k].f * QC_EdictFields(sv.vm, e)[vf.ofs + k].f;
+				sp = sqrtf(sp);
+				pm_fields(); /* g_pmoveVars.pm_walkspeed */
+				if (pf.g_pmovevars >= 0 && pf.var[34] >= 0 && ent_live(QC_GInt(sv.vm, pf.g_pmovevars)))
+					walk = QC_EFloat(sv.vm, QC_GInt(sv.vm, pf.g_pmovevars), pf.var[34]);
+				if (sp <= walk * 0.5f)
+					return;
+				vol *= sp <= walk ? 0.35f : 0.75f;
+			}
+			off = (int)lrintf(d->offset * 1000);
+			snd_record(l, SP_MEV, d->samp[r], e, 4, vol, (d->flags & SNDFL_GLOBAL) ? 0 : sdef_atten(d),
+			           frand(d->pitch_min, d->pitch_max), sdef_sflags(d, true), SL_CLIENTSIDE, org, false, true, at - off);
+			if (d->dist[0] && (d = (sdef_t *)sdef_find(d->dist)) && (r = sdef_pick(d)) >= 0)
+				snd_record(l, SP_MEV, d->samp[r], e, 5, d->volume, 0, frand(d->pitch_min, d->pitch_max),
+				           sdef_sflags(d, false), SL_CLIENTSIDE, org, false, true, at - (int)lrintf(d->offset * 1000));
+		}
+	}
+}
+
+static void snd_modelevents(link_t *l)
+{
+	int f1t = QC_FieldOfs(sv.vm, "frame1time");
+	if (!snd_ready(l) || f1t < 0 || F.frame < 0)
+		return;
+	snd_mapcheck(l);
+	for (int e = svs.maxclients + 1; e < sv.vm->num_edicts && e < MAX_EDICTS_LINK; e++) {
+		int mi, seq, n;
+		const char *name;
+		const studio_model_t *m;
+		float t, base;
+		const studio_event_t *ev[MEV_MAX];
+		float at[MEV_MAX];
+		if (!ent_shown(e) || ent_submodel(e) >= 0 || !ent_studio(e)) {
+			l->mevseq[e] = 0;
+			continue;
+		}
+		mi = (int)QC_EFloat(sv.vm, e, F.modelindex);
+		name = mi > 0 && mi < SV_MAX_MODELS ? sv.models[mi] : NULL;
+		seq = (int)QC_EFloat(sv.vm, e, F.frame);
+		t = QC_EdictFields(sv.vm, e)[f1t].f;
+		if (!name || !(m = Studio_Cached(name)) || seq < 0 || seq >= m->numseqs) {
+			l->mevseq[e] = 0;
+			continue;
+		}
+		base = l->mevt[e];
+		l->mevt[e] = t;
+		if (!l->mevseq[e] || l->mevmi[e] != mi) { /* first seen: from now on */
+			l->mevseq[e] = (int16_t)(seq + 1), l->mevmi[e] = (uint16_t)mi;
+			continue;
+		}
+		l->mevseq[e] = (int16_t)(seq + 1);
+		n = mev_collect(m, seq, base, t, ev, at);
+		for (int i = 0; i < n; i++)
+			if (ev[i]->event == 1004 || ev[i]->event == 1008 || ev[i]->event == 5004)
+				/* the event's server time on the ENTS clock: now, less how far before t it lies */
+				mev_sound(l, e, ev[i]->event, ev[i]->options, (float)sv.time - (t - at[i]));
+	}
+}
+
+/* --- AMBIENT (C1, C10): the client-side loops of ambient_generic (ambient_generic.qc:408-493:
+ * sent while it loops and is on, not for a SoundDef one) and ncSound (Sound.qc:151-208: sent
+ * within m_radius of the player), the 64 nearest the player */
+static int cmp_amb_d2(const void *a, const void *b)
+{
+	float x = ((const float *)a)[1], y = ((const float *)b)[1];
+	return x < y ? -1 : x > y;
+}
+
+static void update_ambient(link_t *l)
+{
+	static float cand[MAX_EDICTS_LINK][2]; /* edict, distance squared */
+	lamb_t set[SND_MAXAMB];
+	int nc = 0, n = 0;
+	qfld_t ag_loops = qfld("ambient_generic::__mm_bLoops"), ag_tog = qfld("ambient_generic::__mm_bToggle"),
+	       ag_modern = qfld("ambient_generic::__mm_bIsModern"), ag_path = qfld("ambient_generic::__mm_strActivePath"),
+	       ag_vol = qfld("ambient_generic::__mm_flVolume"), ag_rad = qfld("ambient_generic::__mm_flRadius"),
+	       ag_pitch = qfld("ambient_generic::__mm_flPitch"), ag_force = qfld("ambient_generic::__mm_bForceLoop");
+	qfld_t ns_loop = qfld("ncSound::__mm_isLooping"), ns_idx = qfld("ncSound::__mm_soundIndex"),
+	       ns_vol = qfld("ncSound::__mm_volume"), ns_rad = qfld("ncSound::__mm_radius"), ns_pitch = qfld("ncSound::__mm_pitch");
+	const float *me;
+	if (!snd_ready(l) || F.classname < 0)
+		return;
+	snd_mapcheck(l);
+	me = ent_origin(l->client->edict);
+	for (int e = 1; e < sv.vm->num_edicts && e < MAX_EDICTS_LINK; e++) {
+		const char *cls;
+		const float *o;
+		float d2 = 0;
+		if (sv.vm->edicts[e].free)
+			continue;
+		cls = QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname));
+		o = ent_origin(e);
+		for (int k = 0; k < 3; k++)
+			d2 += (o[k] - me[k]) * (o[k] - me[k]);
+		if (!strcmp(cls, "ambient_generic")) {
+			const char *path = qstr(e, ag_path);
+			if (!qnum(e, ag_loops) || !qnum(e, ag_tog) || qnum(e, ag_modern) || !path[0] || snd_key(path) == SND_KEY_NULL)
+				continue;
+		} else if (!strcmp(cls, "ncSound")) {
+			float r = qnum(e, ns_rad);
+			if (!qnum(e, ns_loop) || d2 >= r * r || r <= 0)
+				continue;
+		} else
+			continue;
+		cand[nc][0] = (float)e, cand[nc++][1] = d2;
+	}
+	qsort(cand, (size_t)nc, sizeof(cand[0]), cmp_amb_d2);
+	for (int i = 0; i < nc && n < SND_MAXAMB; i++) {
+		int e = (int)cand[i][0];
+		const float *o = ent_origin(e);
+		const char *cls = QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname));
+		lamb_t *a = &set[n++];
+		memset(a, 0, sizeof(*a));
+		a->ent = (uint16_t)e;
+		for (int k = 0; k < 3; k++)
+			a->org[k] = (int16_t)BW_CLAMP(lrintf(o[k]), -32768, 32767);
+		if (!strcmp(cls, "ambient_generic")) {
+			a->key = snd_key(qstr(e, ag_path));
+			a->vol = (uint8_t)BW_CLAMP(lrintf(qnum(e, ag_vol) * 255), 0, 255);
+			/* SENDENTITY_BYTE: the client gets the radius (an ATTN_ value) as a whole byte */
+			a->atten = (uint8_t)BW_CLAMP((int)qnum(e, ag_rad) * 64, 0, 255);
+			a->pitch = (uint8_t)BW_CLAMP(lrintf(qnum(e, ag_pitch)), 0, 255);
+			a->flags = qnum(e, ag_force) ? SF_FORCELOOP : 0;
+		} else {
+			int idx = (int)qnum(e, ns_idx);
+			a->key = idx > 0 && idx < sv.numsounds && sv.sounds[idx] ? snd_key(sv.sounds[idx]) : 0;
+			a->vol = (uint8_t)BW_CLAMP(lrintf(qnum(e, ns_vol) * 255), 0, 255);
+			a->atten = (uint8_t)BW_CLAMP(lrintf(SND_NOMINALDISTANCE / qnum(e, ns_rad) * 64), 0, 255);
+			a->pitch = (uint8_t)BW_CLAMP(lrintf(qnum(e, ns_pitch)), 0, 255);
+			a->flags = SF_FORCELOOP | 128; /* KIND_SOUND */
+		}
+	}
+	if (n == l->namb && !memcmp(set, l->amb, sizeof(set[0]) * (size_t)n))
+		return;
+	if (sv_link_log->ivalue)
+		for (int i = 0; i < n; i++) {
+			bool had = false;
+			for (int j = 0; j < l->namb && !had; j++)
+				had = l->amb[j].ent == set[i].ent && l->amb[j].key == set[i].key;
+			if (!had) {
+				const char *cls = QC_GetString(sv.vm, QC_EInt(sv.vm, set[i].ent, F.classname));
+				int idx = !strcmp(cls, "ncSound") ? (int)qnum(set[i].ent, ns_idx) : 0;
+				Con_Printf("LINKSND %d 0 amb %s %d 4 %d %d %d %d %d %d %d\n", (int)(l - links),
+				           idx > 0 && idx < sv.numsounds ? sv.sounds[idx] : qstr(set[i].ent, ag_path), set[i].ent,
+				           set[i].vol, set[i].atten, set[i].pitch, set[i].flags | (SL_CLIENTSIDE << 8), set[i].org[0],
+				           set[i].org[1], set[i].org[2]);
+			}
+		}
+	for (int i = 0; i < n; i++) {
+		bool had = false;
+		for (int j = 0; j < l->namb && !had; j++)
+			had = l->amb[j].ent == set[i].ent && l->amb[j].key == set[i].key;
+		if (!had)
+			l->sndmade++, l->sndbypath[SP_AMB]++;
+	}
+	memcpy(l->amb, set, sizeof(set[0]) * (size_t)n);
+	l->namb = n;
+	if (!++l->ambver)
+		l->ambver = 1;
+}
+
+static void send_ambient(link_t *l, double now)
+{
+	pkt_t p;
+	if (!snd_ready(l) || !l->ambver)
+		return;
+	if (l->amback == l->ambver ? now < l->ambsent + AMB_PERIOD
+	                            : l->ambsentver == l->ambver && now < l->ambsent + AMB_RESEND)
+		return;
+	p_begin(&p, L_AMBIENT);
+	p_u32(&p, l->session);
+	p_u16(&p, (unsigned)svs.spawncount & 0xffff);
+	p_u16(&p, l->ambver);
+	p_u8(&p, (unsigned)l->namb);
+	for (int i = 0; i < l->namb; i++) {
+		const lamb_t *a = &l->amb[i];
+		p_u16(&p, a->ent);
+		p_u32(&p, a->key);
+		p_u8(&p, a->vol), p_u8(&p, a->atten), p_u8(&p, a->pitch), p_u8(&p, a->flags);
+		for (int k = 0; k < 3; k++)
+			p_u16(&p, (uint16_t)a->org[k]);
+	}
+	l->ambsent = now, l->ambsentver = l->ambver;
+	l->ambpkts++, l->ambbytes += (uint32_t)p.len + 28;
+	send_to(&l->from, &p);
 }
 
 /* the client's slot is going away (SV_DropClient) */

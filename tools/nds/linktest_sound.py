@@ -207,15 +207,19 @@ print('lflags:', ' '.join('%d:%d' % kv for kv in sorted(sizes.items())))
 
 if logf:
     lines = open(logf, encoding='latin1').read().splitlines()
-    made = {}; made_rel = []; svsnd = []; byname = {}; paths = {}
+    made = {}; made_rel = []; svsnd = []; server_side = []; byname = {}; paths = {}
     # LINKSND <dev> <seq> <path> <name> ent chan vol atten pitch flags x y z [at]
     for ln in lines:
+        if 'rcon from' in ln and 'link_stats' in ln:
+            break  # the test stopped listening here: what comes later never had a chance
         m = re.match(r'LINKSND (\d+) (\d+) (\S+) (\S+) (-?\d+) (-?\d+) (\d+) (\d+) (\d+) (\d+) (-?\d+) (-?\d+) (-?\d+)', ln)
         if m:
             sq = int(m.group(2)); path = m.group(3); name = m.group(4)
             paths[path] = paths.get(path, 0) + 1
             r = dict(key=key(name), ent=int(m.group(5)), chan=int(m.group(6)), vol=int(m.group(7)), atten=int(m.group(8)),
-                     pitch=int(m.group(9)), name=name, path=path)
+                     pitch=int(m.group(9)), name=name, path=path, cs=(int(m.group(10)) >> 8) & 8)
+            if path in ('snd', 'loop') and not r['cs']:
+                server_side.append(name)
             if sq == 0:
                 made_rel.append(r)
             else:
@@ -236,13 +240,20 @@ if logf:
           len(extra), len(made_rel), len(reliable), 'yes' if relok else 'NO'))
     print('by path:', ' '.join('%s:%d' % kv for kv in sorted(paths.items())))
     # E1/E2: every svc_sound the PC would get, while we were in the game, as a snd/loop record
-    nsnd = paths.get('snd', 0) + paths.get('loop', 0)
-    print('PC-side sounds (SVSND) %d; snd+loop records %d' % (len(svsnd), nsnd))
+    nsnd = len(server_side)
+    unmatched = {}
+    for n in svsnd:
+        unmatched[n] = unmatched.get(n, 0) + 1
+    for n in server_side:
+        unmatched[n] = unmatched.get(n, 0) - 1
+    unmatched = {k: v for k, v in unmatched.items() if v}
+    print('PC-side sounds (SVSND) %d; server-side snd+loop records %d; names that differ: %s' % (len(svsnd), nsnd,
+          unmatched or 'none'))
     top = {}
     for n in svsnd:
         top[n] = top.get(n, 0) + 1
     print('most heard:', ', '.join('%s %d' % kv for kv in sorted(top.items(), key=lambda kv: -kv[1])[:12]))
-    if len(lost) > max(2, 3 * exp_lost) or wrong or not relok or relmiss > 2 or abs(len(svsnd) - nsnd) > 0:
+    if len(lost) > max(2, 3 * exp_lost) or wrong or not relok or relmiss > 2 or unmatched:
         ok = False
 print(stats.strip())
 print('ok' if ok else 'FAIL')
