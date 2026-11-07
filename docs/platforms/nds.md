@@ -1037,8 +1037,12 @@ Where it differs from the PC:
 - 16 voices are heard, not up to 128. A one-shot quieter than every held
   channel is dropped (`quiet`), and one that loses its channel ends. The PC
   keeps mixing both, under 14 louder ones.
-- A loop that gets a channel back starts again from its loop point, not
-  where it would be (ADPCM can't seek).
+- A loop that gets a channel back starts again from its loop point (PCM8
+  and PCM16), not where it would be. An IMA-ADPCM loop starts again from
+  the sample's start, intro and all: the hardware takes ADPCM's decoder
+  state only from the header word at the start address, which exists only
+  at the sample's start. A held loop's channel goes only to a sound a
+  quarter louder, as a loop takes one back.
 - A one-shot whose start isn't read within 150 ms is dropped (`late`).
 - When looped samples would take more than half the cache, the quieter
   loops wait. On c2a4e with all five ambients aliased to base samples,

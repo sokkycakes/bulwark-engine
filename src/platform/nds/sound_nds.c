@@ -5,8 +5,9 @@
  *   by its formulas (spatialise :104-137, S_DistanceGain :140-153) in fixed point
  *   (sndmath_nds.h), every frame;
  * - the hardware's 16 channels go to the loudest voices: a loop that loses its channel goes
- *   on silently and starts again from its loop point when it gets one back, a one-shot that
- *   loses it ends, and a one-shot quieter than every busy channel isn't started;
+ *   on silently and starts again when it gets one back (PCM from its loop point; IMA-ADPCM
+ *   from the sample's start, as the hardware can only start ADPCM at its header), a one-shot
+ *   that loses it ends, and a one-shot quieter than every busy channel isn't started;
  * - samples: from packs (<base>/sound/NAME.dsp, the format of docs/platforms/nds.md "Sound
  *   packs"), looked up by key one 512-byte directory page at a time, cached whole in one arena
  *   (sndcache= KB), read in slices within sndreadms= a frame, and played while they load.
@@ -730,8 +731,8 @@ static int sample_timer(const skey_t *k, int pitch)
 
 static void hw_unpin(int h);
 
-/* program channel h for voice vi from its start */
-static void hw_start(int h, int vi)
+/* program channel h for voice vi from its start, or (resume) a loop from its loop point */
+static void hw_start(int h, int vi, bool resume)
 {
 	svoice_t *v = &S.v[vi];
 	skey_t *k = &S.k[v->ki];
@@ -739,6 +740,7 @@ static void hw_start(int h, int vi)
 	shw_t *c = &S.hw[h];
 	int vol, pan, timer = sample_timer(k, v->pitch);
 	unsigned words = k->bytes / 4, pnt = 0, len = words;
+	const uint8_t *sad = S.arena + b->off;
 	SoundFmt fmt = k->fmt == FMT_PCM8 ? SoundFmt_Pcm8 : k->fmt == FMT_PCM16 ? SoundFmt_Pcm16 : SoundFmt_ImaAdpcm;
 	SoundMode mode = SoundMode_OneShot;
 	if (v->loop) {
@@ -749,6 +751,12 @@ static void hw_start(int h, int vi)
 			pnt = 0;
 		len = words - pnt;
 		mode = SoundMode_Repeat;
+		/* back from silence: PCM goes in at the loop point (the PC's loop went on meanwhile,
+		 * snd_main.c:316-327, and never plays the part before it again). IMA-ADPCM can't: the
+		 * hardware takes its decoder state from the header word at SAD, which exists only at
+		 * the sample's start */
+		if (resume && fmt != SoundFmt_ImaAdpcm && pnt)
+			sad += pnt * 4, pnt = 0;
 	}
 	snd_hwvolpan(v->g, &vol, &pan);
 	if (c->blk >= 0)
@@ -761,8 +769,7 @@ static void hw_start(int h, int vi)
 	c->t_end = v->loop ? 0 : c->t_start + (uint32_t)((uint64_t)k->frames * (uint32_t)timer / 32) + 1;
 	v->hw = (int8_t)h;
 	cmd_begin();
-	soundPreparePcm((unsigned)h | SOUND_START, (unsigned)vol, (unsigned)pan, (unsigned)timer, mode, fmt, S.arena + b->off, pnt,
-	                len);
+	soundPreparePcm((unsigned)h | SOUND_START, (unsigned)vol, (unsigned)pan, (unsigned)timer, mode, fmt, sad, pnt, len);
 	cmd_end();
 	b->lastuse = S.use;
 }
@@ -776,9 +783,9 @@ static void hw_unpin(int h)
 	c->draining = false;
 }
 
-/* a channel for a voice as loud as loud: a free one, or the quietest one held if quieter.
- * -1 if none */
-static int hw_pick(int32_t loud)
+/* a channel for a voice as loud as loud: a free one, or the quietest one held if quieter
+ * (a loop's channel, or any with margin, only to one a quarter louder: no swapping back and forth). -1 if none */
+static int hw_pick(int32_t loud, bool margin)
 {
 	int q = -1;
 	for (int h = 0; h < S_HW; h++) {
@@ -789,7 +796,7 @@ static int hw_pick(int32_t loud)
 		if (q < 0 || S.v[S.hw[h].v].loud < S.v[S.hw[q].v].loud)
 			q = h;
 	}
-	if (q >= 0 && S.v[S.hw[q].v].loud < loud) {
+	if (q >= 0 && S.v[S.hw[q].v].loud < (margin || S.v[S.hw[q].v].loop ? loud - loud / 5 : loud)) {
 		int vi = S.hw[q].v;
 		svoice_t *v = &S.v[vi];
 		Snd_Stats.stolen++;
@@ -971,7 +978,7 @@ static void voice_start(int vi)
 		}
 		return;
 	}
-	if ((h = hw_pick(v->loud)) < 0) {
+	if ((h = hw_pick(v->loud, false)) < 0) {
 		if (!v->loop) {
 			Snd_Stats.quiet++;
 			voice_log(v, "quiet", -1, 0, 0, late);
@@ -979,7 +986,7 @@ static void voice_start(int vi)
 		}
 		return;
 	}
-	hw_start(h, vi);
+	hw_start(h, vi, false);
 	voice_log(v, "start", h, S.hw[h].vol, S.hw[h].pan, late);
 }
 
@@ -1674,11 +1681,11 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 				if (S.hw[k].v < 0 && !S.hw[k].draining)
 					h = k;
 			if (h < 0)
-				h = hw_pick(S.v[best].loud - S.v[best].loud / 5);
+				h = hw_pick(S.v[best].loud, true);
 			if (h < 0)
 				break;
 			S.v[best].t_start = ticks();
-			hw_start(h, best);
+			hw_start(h, best, true);
 			voice_log(&S.v[best], "resume", h, S.hw[h].vol, S.hw[h].pan, 0);
 		}
 	}
