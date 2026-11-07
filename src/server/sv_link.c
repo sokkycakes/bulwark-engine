@@ -159,6 +159,9 @@ typedef struct {
 	int8_t wiammo[2];                       /* its fireInfos' ammo types */
 	double wicheck, wisent;
 	uint16_t wilogver;                      /* the version sv_link_log printed */
+	bool wicap;                             /* its INPUT carried 'W': it takes WEAPONINFO */
+	uint8_t wisends;                        /* sends of this version so far */
+	int32_t wiclass;                        /* the weapon's classname (a QC string) */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -740,6 +743,24 @@ static int ent_studio(int e)
 	return e >= 1 && e <= svs.maxclients ? LINK_PLAYERMODEL + e - 1 : 0;
 }
 
+/* frame1time as sent (u16, 1/100 s): Nuclide only sets it back when the sequence
+ * changes (SurfacePropEntity.qc), so a monster idling for long would pass 655 s and
+ * stop there. A looping sequence repeats every Studio_SeqDuration: taken modulo the
+ * most whole laps under 600 s it poses the same, and comes round to 0 once in that
+ * while; a sequence that doesn't loop holds its last frame long before */
+static float ent_seqtime(int e, float t)
+{
+	int mi = (int)QC_EFloat(sv.vm, e, F.modelindex), seq = F.frame >= 0 ? (int)QC_EFloat(sv.vm, e, F.frame) : 0;
+	const char *name = mi > 0 && mi < SV_MAX_MODELS ? sv.models[mi] : NULL;
+	const studio_model_t *m;
+	float dur, period;
+	if (t < 600 || !ent_studio(e) || !name || !(m = Studio_Cached(name)) || seq < 0 || seq >= m->numseqs ||
+	    !(m->seqs[seq].flags & STUDIO_LOOPING) || (dur = Studio_SeqDuration(m, seq)) <= 0 || dur > 600)
+		return t;
+	period = dur * floorf(600 / dur);
+	return fmodf(t, period);
+}
+
 /* the model a player's userinfo picks, as a path */
 static void player_model(const client_t *c, char *out, size_t size)
 {
@@ -909,7 +930,7 @@ static void send_ents(link_t *l)
 		p_u8(&p, (unsigned)BW_CLAMP(-bottom, 0, 255)); /* the origin, above the bottom */
 		/* the time into that sequence (the game's frame1time, which the PC
 		 * draws the model at), 1/100 s; 0xffff when the game has none */
-		p_u16(&p, f1t < 0 ? 0xffffu : (unsigned)BW_CLAMP((int)lrintf(QC_EdictFields(sv.vm, e)[f1t].f * 100), 0, 0xfffe));
+		p_u16(&p, f1t < 0 ? 0xffffu : (unsigned)BW_CLAMP((int)lrintf(ent_seqtime(e, QC_EdictFields(sv.vm, e)[f1t].f) * 100), 0, 0xfffe));
 		if (e <= svs.maxclients && nvel < ENTS_MAXVEL && vofs >= 0)
 			velthing[nvel++] = (uint8_t)count;
 		count++;
@@ -1019,6 +1040,7 @@ static void v2_sync(link_t *l)
 	l->logmap = l->logvarsok = l->logbrushok = false;
 	l->wiedict = l->wiver = l->wiack = l->wilogver = 0;
 	l->wicheck = 0;
+	l->wiclass = 0;
 }
 
 /* the game turned the player: the device takes these angles (QC's, pitch down-positive) */
@@ -1337,6 +1359,10 @@ static void send_brushinfo(link_t *l, double now)
 #define WI_MAX_EV 32    /* muzzle flash events sent, all sequences */
 #define WI_RESEND 0.25  /* WEAPONINFO again this soon while the device has not acknowledged it */
 #define WI_CHECK 1.0    /* and the decl read again this often */
+#define WI_BACKOFF 8    /* after this many unacknowledged sends, WI_SLOW apart (a device that can't parse it) */
+#define WI_SLOW 2.0
+#define WI_MAX_ACTS 32  /* an activity's list as sent: GetSubDefAct picks among all of it, so a
+                         * device that can hold fewer leaves the weapon to the server */
 #define WI_AMMO 4
 
 /* Weapon.qc's activities, in WEAPONINFO's numbering (docs/spec/link.md) */
@@ -1522,7 +1548,7 @@ static int w_fireinfo(pkt_t *p, int w, const char *fi)
 	char v[256], onfire[256];
 	float f[25], vec[3];
 	unsigned flags = 0;
-	int16_t acts[4];
+	int16_t acts[WI_MAX_ACTS];
 	int nacts = 0, at;
 	if (w_subf(w, fi, "ammoRequired") != 0)
 		flags |= 1;
@@ -1595,10 +1621,10 @@ static int w_fireinfo(pkt_t *p, int w, const char *fi)
 	for (int i = 0; i < 25; i++)
 		p_f32(p, f[i]);
 	for (int a = 0; a < WA_COUNT; a++)
-		nacts += w_acts(w, fi, wa_names[a], acts, 4) > 0;
+		nacts += w_acts(w, fi, wa_names[a], acts, WI_MAX_ACTS) > 0;
 	p_u8(p, (unsigned)nacts);
 	for (int a = 0; a < WA_COUNT; a++) {
-		int n = w_acts(w, fi, wa_names[a], acts, 4);
+		int n = w_acts(w, fi, wa_names[a], acts, WI_MAX_ACTS);
 		if (!n)
 			continue;
 		p_u8(p, (unsigned)a);
@@ -1691,9 +1717,13 @@ static void update_winfo(link_t *l, int e, double now)
 	int w = active_weapon(e);
 	pkt_t p;
 	int fiammo[2];
-	if (w == l->wiedict && now < l->wicheck)
+	int32_t cls = w > 0 && F.classname >= 0 ? QC_EInt(sv.vm, w, F.classname) : 0;
+	/* the same edict can be another weapon within WI_CHECK (an edict is reused 0.5 s
+	 * after it is freed): its classname says so */
+	if (w == l->wiedict && cls == l->wiclass && now < l->wicheck)
 		return;
 	l->wicheck = now + WI_CHECK;
+	l->wiclass = cls;
 	if (!w || !w_usable()) {
 		l->wiedict = (uint16_t)w;
 		l->wiver = 0;
@@ -1716,6 +1746,7 @@ static void update_winfo(link_t *l, int e, double now)
 		l->wivers = 1;
 	l->wiver = l->wivers;
 	l->wisent = 0;
+	l->wisends = 0;
 }
 
 static void send_winfo(link_t *l, double now)
@@ -1729,6 +1760,8 @@ static void send_winfo(link_t *l, double now)
 	p_bytes(&p, l->wibody, l->wilen);
 	send_to(&l->from, &p);
 	l->wisent = now;
+	if (l->wisends < 255)
+		l->wisends++;
 }
 
 /* the weapon state Weapon.qc and Physics_InputPostMove keep: the player's and its weapon's */
@@ -2015,7 +2048,8 @@ static void send_v2(link_t *l, double now, bool view)
 		send_brushinfo(l, now);
 	w_fields();
 	update_winfo(l, e, now);
-	if (l->wiver && l->wiack != l->wiver && now >= l->wisent + WI_RESEND)
+	if (l->wiver && l->wicap && l->wiack != l->wiver &&
+	    now >= l->wisent + (l->wisends >= WI_BACKOFF ? WI_SLOW : WI_RESEND))
 		send_winfo(l, now);
 	/* after each batch of commands (the device's packet rate, at most 30 a
 	 * second); with a VIEW only when none ran for a while, so the two rates
@@ -2159,8 +2193,11 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		const uint8_t *t = d + 44 + 14 * count;
 		l->varsack = rd16(d + 40), l->brushack = rd16(d + 42);
 		/* after the commands: 'W', the WEAPONINFO version the device has, for which edict */
-		if (len >= 44 + 14 * count + 5 && t[0] == 'W' && rd16(t + 3) == l->wiedict)
-			l->wiack = (uint16_t)rd16(t + 1);
+		if (len >= 44 + 14 * count + 5 && t[0] == 'W') {
+			l->wicap = true; /* it takes WEAPONINFO (version 0: has none yet) */
+			if (rd16(t + 3) == l->wiedict)
+				l->wiack = (uint16_t)rd16(t + 1);
+		}
 	}
 	if (!here) {
 		/* not in the game, or the device is on another map: nothing runs,
@@ -2586,9 +2623,10 @@ static void SV_LinkStats_f(int argc, const char **argv)
 		           QC_EField(sv.vm, l->client->edict, F.view_ofs)[2].f : 0, QC_EField(sv.vm, l->client->edict, F.mins) ?
 		           QC_EField(sv.vm, l->client->edict, F.mins)[2].f : 0, l->fps, l->minfps, l->peakpolys, l->loadms);
 		if (l->v2)
-			Con_Printf("  link v2 (join %d): ran to %u, %u lost, %u clipped, pstate %u, vars %u/%u, brush %u/%u\n",
+			Con_Printf("  link v2 (join %d): ran to %u, %u lost, %u clipped, pstate %u, vars %u/%u, brush %u/%u, "
+			           "weapon %u/%u%s\n",
 			           l->joinver, l->lastrun, l->gaps, l->clipped, l->pseq, l->varsack, l->varsver, l->brushack,
-			           l->brushver);
+			           l->brushver, l->wiack, l->wiver, l->wicap ? "" : " (device takes none)");
 	}
 }
 

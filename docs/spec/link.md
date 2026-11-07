@@ -158,7 +158,11 @@ entities itself:
   a DS copy of that model (tools/nds/hlmdl.py) draws it playing `frame`'s
   sequence, and otherwise a box. `frame1time` is how long that sequence
   has played (the game's `frame1time`, which the PC client draws the
-  model at; 0xffff when the game has no such field).
+  model at; 0xffff when the game has no such field). Past 600 s a looping
+  sequence's is sent modulo the most whole laps of it (`Studio_SeqDuration`)
+  under 600 s, which poses the model the same; Nuclide only sets it back
+  when the sequence changes, so a monster idling for long would otherwise
+  reach the field's limit and stop there.
 - `time` is the game's time (`sv.time`, the time the PC's snapshots
   carry) for everything in the packet, in milliseconds. Then the velocity
   of the other players among `things` (at most 8, by their place in the
@@ -271,7 +275,7 @@ After the 32 bytes of the v1 fields (all present):
 | 40 | u16 | `varsack`: the PMOVEVARS version the device applied for its map, 0 for none |
 | 42 | u16 | `brushack`: the BRUSHINFO version it has complete for its map, 0 for none |
 | 44 | count × 14 | commands, oldest first: command `i` has sequence `newest - (count - 1) + i` |
-| 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has, and its edict |
+| 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has (0 none yet), and its edict; a device that sends it takes WEAPONINFO |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -483,15 +487,19 @@ that many activities {u8 activity, u8 n, n × s16 sequence}. Activities are
 numbered `fire fireLast fireFailed fireStart fireStop reload reloadEmpty
 reloadStart reloadEnd draw drawEmpty idle idleEmpty cock loop delay release
 cooking detonate modeOn modeOff` (0..20); one with a list (`act_fire
-"9,10"`) has its entries, which `GetSubDefAct` picks among by
-`input_sequence`.
+"9,10"`) has its entries (up to 32), which `GetSubDefAct` picks among by
+`input_sequence`. It picks among all of them, so a device that holds
+fewer (the DS: 8) leaves that weapon to the server.
 
 The server reads it with the game's own functions (`ncIO::GetSubDefString`,
 `GetSubDefAct`, `ammoNumForName`, `EntityDef_GetKeyValue`) whenever the
 weapon in hand changes and once a second, and gives it a new version when it
-differs. It sends it every 0.25 s until the device's INPUT acknowledges that
-version for that edict. A game without these functions or fields, or a body
-over 1200 bytes, gets no WEAPONINFO, and the device shows the server's.
+differs (or the edict holds a weapon of another class). It sends it only to a
+device whose INPUT carries the `'W'` trailer (version 0 while it has none),
+every 0.25 s until the device's INPUT acknowledges that version for that
+edict, and after 8 sends every 2 s. A game without these functions or fields,
+or a body over 1200 bytes, gets no WEAPONINFO, and the device shows the
+server's.
 
 **The weapon block** follows PSTATE's boxes:
 
