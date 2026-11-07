@@ -224,9 +224,12 @@ flags of the predicted movement (or of `VIEW` without prediction): the camera bo
 second sideways), and the view model swing, drift and landing kick of
 `src/client/viewbob.qc` (`cg_viewBobStyle 3`, the default). The DS turns
 the gun by the bob angles about the eye rather than adding them to the
-camera's angles, which differs only by a fraction of a degree. The view model plays the sequence the server
-says (`STATS`). Bullet impacts (`FX`) draw as a spark and fading dust, our
-own shots add a muzzle flash at the view model's barrel and a tracer, and
+camera's angles, which differs only by a fraction of a degree. The view
+model, our muzzle flash, the punch and the ammo come from the weapon
+prediction ("Weapons" below); without it the view model plays the sequence
+the server says (`STATS`). Bullet impacts (`FX`) draw as a spark and fading dust, our
+own shots add a tracer (and a muzzle flash at the view model's barrel when
+the weapon isn't predicted), and
 other players' and monsters' shots a flash and a tracer from their gun.
 These are untextured shapes; HL's sprites are not used.
 
@@ -435,6 +438,69 @@ second), not at a steady rate, and the PC sees the same updates.
 
 Not measured: brush models moving (none of the maps here opened a door
 for the rig), a DS.
+
+## Weapons: firing as the PC client does
+
+The PC client predicts its weapon with the movement: after each command,
+`ncPlayer::Physics_InputPostMove` runs the attack, reload and idle timers,
+the view model's time and the punch, and `ncPlayer::ProcessInput` calls
+`ncWeapon`'s attack, reload and idle code (`src/shared/game/Weapon.qc`),
+which picks the view model's sequence; the view model's studio events
+(5001, 5011, 5021, 5031) make the muzzle flash as the frames pass
+(`ncRenderableEntity::HandleAnimEvent`, `env_muzzleflash`, fading in 62.5 ms);
+the camera adds the punch (`ncView::AddPunchAngle`). `weapon_nds.c` is that
+code in C, with the decl's values from the server (`WEAPONINFO`,
+`docs/spec/link.md`, "Weapon prediction"), run on each command after
+`pmove_nds.c`, and run again with it from `PSTATE` when the server's state
+differs. So:
+
+- the fire sequence and the flash start in the frame the button goes down,
+  the HUD's clip drops in that frame, and the view kicks by the fireInfo's
+  `punchAngle` (or `punchSpring`, `punchKick`), easing back as the PC's
+  does; a hard landing punches as `Physics_Fall` does (`falldamage` decl);
+- reloads, bursts, semi-automatic fire, charging and released weapons,
+  overheating, alternate modes, timed (shotgun) reloads and the melee test
+  (traced through the DS's hulls and swept over the boxes `PSTATE` lists)
+  follow the decl;
+- the top screen shows the clip, big, and the reserve after it at the
+  bottom right, in the HUD font (only the reserve for a weapon without a
+  clip, nothing without ammo).
+
+The clip a reload fills is the server's (`_ReloadFinished` is a think), so
+the HUD shows it one round trip after the reload animation ends; a weapon
+switch, the ammo a pickup gives and projectiles are the server's too. With
+`predict=0`, or before the WEAPONINFO for the weapon in hand has come, the
+view model plays the server's sequence (`STATS`) and the flash comes with
+the server's impact, as before.
+
+The view model on `coop_arena` "restarting" about 15 times a second is the
+game's: the JTF PDW's idle (`act_idle 6`) is 2 frames at 16 fps, 62.5 ms,
+and `ncWeapon::Idle` starts it again whenever it ends (Weapon.qc:1833), on
+the PC too; its pose doesn't change. Gravity has nothing to do with it.
+`STATS` read that sequence (an integer field) as a float and always sent 0;
+fixed.
+
+### Measured: weapons, in melonDS 1.1 (not hardware)
+
+`coop_arena` with `bulwark-ded` on the same machine (no added latency),
+`fps=30`, the JTF PDW (burst of 3, `fireRate` 0.06, `burstTime` 0.3),
+presses from `xdotool` (held 2 s, five taps, a reload, held 1.5 s), a
+trace build printing each frame and command:
+
+| | |
+|---|---|
+| frames where the press began showing the fire sequence and the flash | 7 of 7 (observed) |
+| frames until `STATS` showed it (what the DS drew before) | 2 to 4 refreshes (observed, local server) |
+| commands whose first prediction matched the server's (sequence, anim time and next attack within 1 ms, clip, state) | 2067 of 2078, 236 firing (observed); the 11: 2 a reload's clip filled by the server, 9 a command the server's budget ran shorter |
+| `tools/nds/weptest` on that log, each command from the server's state | 2051 of 2051 identical (observed) |
+| PSTATEs replayed / compared (a build printing only a line a second, same presses) | 13 / 994 (23 / 1020 without weapon prediction) |
+| prediction per frame, average / worst (that build) | 2.47 / 3.57 ms (2.38 / 3.28 ms without; one run each, different monster waves) |
+| frame rate | 30 fps while firing, both |
+| code and data | +22 KB code, +11.5 KB bss; lowest free heap 3.14 MB (3.16 MB without) |
+
+Not exercised on this map: a landing hard enough to punch (the arena's
+jumps land at about 260 units a second, under `minLandDistance` 400),
+melee weapons, charged and released weapons, alternate modes.
 
 ## Map viewer controls
 
