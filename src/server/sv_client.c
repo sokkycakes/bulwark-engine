@@ -118,7 +118,11 @@ static void client_print(client_t *c, int level, const char *text)
 	MSG_WriteByte(&m, svc_print);
 	MSG_WriteByte(&m, level);
 	MSG_WriteString(&m, text);
-	if (c->bot || (sv_chat_only && c != sv_chat_only))
+	if (sv_chat_only && c != sv_chat_only)
+		return;
+	if (c->link) /* a DS: the link's EVENT carries it */
+		SV_LinkPrint(c, level, text);
+	if (c->bot)
 		return;
 	client_reliable(c, &m);
 }
@@ -1521,6 +1525,8 @@ void SV_ClientsAfterPhysics(void)
 		MSG_WriteVarUInt(&h, (uint32_t)msg_broadcast.len);
 		for (int i = 0; i < svs.maxclients; i++) {
 			client_t *c = &svs.clients[i];
+			if (c->state == CS_SPAWNED && c->link)
+				SV_LinkGameMessages(c, (const uint8_t *)msg_broadcast.data, (int)msg_broadcast.len);
 			if (c->state != CS_SPAWNED || c->bot)
 				continue;
 			sb_write(&c->datagram, &h);
@@ -1599,8 +1605,8 @@ static void write_bytes(qcvm_t *vm, const void *data, size_t len)
 	int to = (int)QC_PFLOAT(vm, 0);
 	strbuf_t *sb;
 	if (to == 2) {
-		for (int i = 0; i < svs.maxclients; i++)
-			if (svs.clients[i].state != CS_FREE && !svs.clients[i].bot)
+		for (int i = 0; i < svs.maxclients; i++) /* a link player's is read by sv_link.c */
+			if (svs.clients[i].state != CS_FREE && (!svs.clients[i].bot || svs.clients[i].link))
 				SB_Append(&svs.clients[i].qcrel, data, len);
 		return;
 	}
@@ -1744,6 +1750,8 @@ static void bi_centerprint(qcvm_t *vm)
 	client_t *c = SV_ClientForEdict(QC_PENT(vm, 0));
 	LOCALMSG(m, 4200);
 	concat_from(vm, 1, text, sizeof(text));
+	if (c && c->state != CS_FREE && c->link)
+		SV_LinkCenterPrint(c, text);
 	if (!c || c->state == CS_FREE || c->bot)
 		return;
 	MSG_WriteByte(&m, svc_centerprint);
