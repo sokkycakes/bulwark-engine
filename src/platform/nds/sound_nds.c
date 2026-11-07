@@ -104,6 +104,7 @@ typedef struct {
 	int8_t hw;
 	bool loop, underrun;
 	int8_t amb;          /* its AMBIENT entry, -1 none */
+	uint8_t thing;       /* where its entity was in the things list last frame (a hint) */
 	int32_t org[3];      /* 1/8 units */
 	uint32_t vol_q16, f_q8;
 	sndgain_t g;
@@ -787,26 +788,31 @@ static int hw_pick(int32_t loud)
 
 /* --- voices ---------------------------------------------------------------------------------- */
 
-static bool thing_origin(int ent, int32_t *org)
+static bool thing_origin(int ent, int32_t *org, uint8_t *hint)
 {
+	int i = hint ? *hint : 0;
 	if (ent == VIEW_ENT || (ent && ent == S.selfent)) {
 		memcpy(org, S.lorg, sizeof(S.lorg));
 		return true;
 	}
-	for (int i = 0; i < S.nthings; i++)
-		if (S.things[i].ent == ent) {
-			for (int c = 0; c < 3; c++)
-				org[c] = S.things[i].org[c] * 8;
-			return true;
-		}
-	return false;
+	if (i >= S.nthings || S.things[i].ent != ent)
+		for (i = 0; i < S.nthings && S.things[i].ent != ent; i++)
+			;
+	if (i >= S.nthings)
+		return false;
+	for (int c = 0; c < 3; c++)
+		org[c] = S.things[i].org[c] * 8;
+	if (hint)
+		*hint = (uint8_t)BW_NDS_MIN(i, 255);
+	return true;
 }
 
 static void voice_gain(svoice_t *v)
 {
 	int32_t d[3];
-	if ((v->sflags & SF_FOLLOW) && v->ent)
-		thing_origin(v->ent, v->org);
+	/* (heard straight: where it is doesn't matter) */
+	if ((v->sflags & SF_FOLLOW) && v->ent && !(v->sflags & SF_NOSPATIALISE) && !(v->lflags & LF_LISTENER))
+		thing_origin(v->ent, v->org, &v->thing);
 	for (int c = 0; c < 3; c++)
 		d[c] = v->org[c] - S.lorg[c];
 	v->g = snd_spatialise(d, S.lright, v->vol_q16, v->f_q8, v->sflags & SF_NOSPATIALISE, v->lflags & LF_LISTENER);
@@ -821,7 +827,7 @@ static uint32_t voice_pos(const svoice_t *v)
 	if (S.vst[v - S.v] != V_PLAY || v->ki < 0)
 		return 0;
 	k = &S.k[v->ki];
-	f = (uint32_t)((uint64_t)(ticks() - v->t_start) * 32 / (uint32_t)sample_timer(k, v->pitch));
+	f = SND_DIV64((uint64_t)(ticks() - v->t_start) * 32, sample_timer(k, v->pitch));
 	if (v->loop && k->frames) {
 		uint32_t ls = k->loopstart >= 0 ? (uint32_t)k->loopstart : 0;
 		if (f >= k->frames && k->frames > ls)
@@ -1184,7 +1190,7 @@ static void sentence_frame(void)
 			r.lflags = LF_CLIENTSIDE, r.sflags = SF_FOLLOW;
 			{
 				int32_t o[3];
-				if (!thing_origin(s->ent, o))
+				if (!thing_origin(s->ent, o, NULL))
 					memcpy(o, S.lorg, sizeof(o));
 				for (int c = 0; c < 3; c++)
 					r.org[c] = (int16_t)(o[c] / 8);
@@ -1492,12 +1498,13 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 				;
 			else
 				S.vst[vi] = V_FREE;
-		} else if (!S.v[c->v].loop && c->blk >= 0) {
-			/* played past what is in? */
+		} else if (!S.v[c->v].loop && c->blk >= 0 && !S.v[c->v].underrun && H->blk[c->blk].loaded < S.k[S.v[c->v].ki].bytes) {
+			/* still loading: played past what is in? (REG_DIV: a 64-bit '/' is a slow library call) */
 			svoice_t *v = &S.v[c->v];
 			skey_t *k = &S.k[v->ki];
-			uint64_t bytes = (uint64_t)(t - c->t_start) * 32 / c->timer * k->bytes / BW_NDS_MAX(k->frames, 1);
-			if (!v->underrun && bytes > H->blk[c->blk].loaded) {
+			uint32_t f = SND_DIV64((uint64_t)(t - c->t_start) * 32, c->timer);
+			uint32_t bytes = SND_DIV64((uint64_t)f * k->bytes, BW_NDS_MAX(k->frames, 1));
+			if (bytes > H->blk[c->blk].loaded) {
 				v->underrun = true;
 				Snd_Stats.underrun++;
 			}

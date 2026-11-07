@@ -126,7 +126,8 @@ static inline void snd_hwvolpan(sndgain_t g, int *vol11, int *pan)
 		*pan = 64;
 		return;
 	}
-	p = (int)(((int64_t)g.right * 128 + s / 2) / s);
+	/* L, R <= 1.0 in Q16: the quotient fits 32 bits (a 64-bit '/' is a slow library call on the ARM9) */
+	p = (int)(((uint32_t)g.right * 128u + (uint32_t)s / 2) / (uint32_t)s);
 	*pan = p < 0 ? 0 : p > 127 ? 127 : p;
 }
 
