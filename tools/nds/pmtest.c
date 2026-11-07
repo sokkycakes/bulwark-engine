@@ -671,14 +671,16 @@ static void own_move(void *ctx, const float start[3], const float mins[3], const
 	}
 }
 
-static void own_focus(void *ctx, const float org[3], const float mins[3], const float maxs[3], float radius,
-                      int flags)
+static uint32_t own_focus(void *ctx, const float org[3], const float mins[3], const float maxs[3], float radius,
+                          int flags)
 {
+	uint32_t near = 0;
 	(void)ctx;
 #ifdef PMTEST_HULL_NDS
-	Hull_Focus(ctx, org, mins, maxs, radius, flags);
+	near = Hull_Focus(ctx, org, mins, maxs, radius, flags);
 	if (!ownhull)
-		return;
+		return near;
+	near = 0;
 #endif
 	{
 	fc_on = true;
@@ -690,6 +692,8 @@ static void own_focus(void *ctx, const float org[3], const float mins[3], const 
 			if (amin[k] > org[k] + radius + 1 || amax[k] < org[k] - radius - 1)
 				in = false;
 		fc_brush[i] = in;
+		if (in)
+			near |= skin_bits(sc_brushes[i].skin);
 	}
 	for (int i = 0; i < sc_nboxes; i++) {
 		const box_t *x = &sc_boxes[i];
@@ -703,6 +707,7 @@ static void own_focus(void *ctx, const float org[3], const float mins[3], const 
 		fc_box[i] = in && !((flags & PM_FOCUS_DROPSTUCK) && stuck);
 	}
 	}
+	return near;
 }
 
 static pmtrace_if trace_if = {NULL, own_move, own_focus};

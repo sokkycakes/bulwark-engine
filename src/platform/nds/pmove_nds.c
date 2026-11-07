@@ -57,6 +57,7 @@ static float in_angles[3], in_move[3];     /* input_angles, input_movevalues */
 static float in_time;                      /* input_timelength */
 static uint32_t in_buttons;                /* input_buttons */
 static bool grounded_before;               /* g_pmoveGroundedBeforeMove, pmove_custom.qc:234 */
+static uint32_t near_bits;                 /* contents brushes near may give (pmtrace_if.focus) */
 static const float vzero[3] = {0, 0, 0};
 
 #define P(k) (V->p[PMV_##k]) /* the player's m_pmoveVars.pm_k: player_pmove.qc */
@@ -424,11 +425,18 @@ static void pmc_categorize(void)
 	if (fx_gt(S->basevel[2], 0))
 		S->flags &= ~PM_FL_ONGROUND;
 
-	/* ladder content testing (:83-116) */
+	/* ladder content testing (:83-116). Only a brush entity's skin gives
+	 * CONTENTBIT_LADDER: with none near, the probe can't find one and is
+	 * left out (the contents probe below overwrites every trace_* it would
+	 * have left; makevectors still runs: its vectors are read later) */
 	makevectors(S->v_angle);
-	for (int k = 0; k < 3; k++)
-		pos[k] = S->origin[k] + v_forward[k] * 8.0f;
-	T->move(T->ctx, pos, S->mins, S->maxs, pos, PM_MOVE_NORMAL, (int32_t)PM_CB_LADDER, &tr);
+	if (near_bits & PM_CB_LADDER) {
+		for (int k = 0; k < 3; k++)
+			pos[k] = S->origin[k] + v_forward[k] * 8.0f;
+		T->move(T->ctx, pos, S->mins, S->maxs, pos, PM_MOVE_NORMAL, (int32_t)PM_CB_LADDER, &tr);
+	} else {
+		tr.contents = 0;
+	}
 	if (tr.contents & PM_CB_LADDER)
 		S->vflags |= PM_VFL_ONLADDER;
 	else
@@ -438,7 +446,14 @@ static void pmc_categorize(void)
 	test[0] = S->origin[0] + 0;
 	test[1] = S->origin[1] + 0;
 	test[2] = S->origin[2] + (S->mins[2] + 4);
-	contents = (int)pmc_contents(test);
+	/* only a brush entity's skin gives water, slime or lava (the world's hull
+	 * gives solid or nothing, a box body): with none near, the probe can't
+	 * find any. Its trace_* would be read next only by AccelLadder (a ladder
+	 * near: then it runs); every other path traces again before reading */
+	if (near_bits & (PM_CB_WATER | PM_CB_SLIME | PM_CB_LAVA | PM_CB_LADDER))
+		contents = (int)pmc_contents(test);
+	else
+		contents = 0;
 
 	if (contents & PM_CB_WATER)
 		contents = PM_CONTENT_WATER;
@@ -1571,10 +1586,11 @@ void PM_Run(pmstate_t *s, const pmcmd_t *c, const pmvars_t *v, const pmtrace_if 
 	s->events = 0;
 
 	/* the broadphase: everything this command can reach (§3.2 of the spec) */
+	near_bits = 0xffffffffu;
 	if (t->focus) {
 		float r = (vlen(s->velocity) + vlen(s->basevel) + 1000) * (float)c->msec / 1000.0f;
 		r += P(STEPSIZE) + 64 + qmax(vlen(s->mins), vlen(s->maxs));
-		t->focus(t->ctx, s->origin, s->mins, s->maxs, r, 0);
+		near_bits = t->focus(t->ctx, s->origin, s->mins, s->maxs, r, 0);
 	}
 
 	fallvel = (s->flags & PM_FL_ONGROUND) ? 0 : QNEG(s->velocity[2]);

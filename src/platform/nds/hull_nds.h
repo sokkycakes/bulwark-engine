@@ -65,7 +65,7 @@ void Hull_SetBoxes(const hullbox_t *b, int n);
 void Hull_Move(void *ctx, const float start[3], const float mins[3], const float maxs[3],
                const float end[3], int type, int32_t mask, pmhit_t *tr);
 /* the pmtrace_if.focus contract: candidate lists for the next traces */
-void Hull_Focus(void *ctx, const float org[3], const float mins[3], const float maxs[3],
-                float radius, int flags);
+uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const float maxs[3],
+                    float radius, int flags);
 extern const pmtrace_if Hull_Pmove;                  /* { NULL, Hull_Move, Hull_Focus } */
 #endif

@@ -1934,10 +1934,10 @@ static void keep_pstate(const uint8_t *d, int len)
 
 /* boxes are where the server had them at the acked command: one that has
  * since walked into us must not pin the prediction (PM_FOCUS_DROPSTUCK) */
-static void focus_dropstuck(void *ctx, const float org[3], const float mins[3], const float maxs[3], float radius,
-                            int flags)
+static uint32_t focus_dropstuck(void *ctx, const float org[3], const float mins[3], const float maxs[3], float radius,
+                                int flags)
 {
-	Hull_Focus(ctx, org, mins, maxs, radius, flags | PM_FOCUS_DROPSTUCK);
+	return Hull_Focus(ctx, org, mins, maxs, radius, flags | PM_FOCUS_DROPSTUCK);
 }
 
 static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck};

@@ -1040,18 +1040,23 @@ static bool box_overlaps(const float *org, const float *mins, const float *maxs,
 	return true;
 }
 
-void Hull_Focus(void *ctx, const float org[3], const float mins[3], const float maxs[3],
-                float radius, int flags)
+static uint32_t skin_bits(int skin);
+
+uint32_t Hull_Focus(void *ctx, const float org[3], const float mins[3], const float maxs[3],
+                    float radius, int flags)
 {
 	int32_t r[6];
+	uint32_t near = 0;
 	for (int k = 0; k < 3; k++) {
 		r[k] = fx8_down(org[k] - radius);
 		r[3 + k] = fx8_up(org[k] + radius);
 	}
 	numcandb = numcandx = 0;
 	for (int i = 0; i < numbrushes; i++)
-		if (ib_meets(brushes[i].ib, r))
+		if (ib_meets(brushes[i].ib, r)) {
 			candb[numcandb++] = (uint16_t)i;
+			near |= skin_bits(brushes[i].b.skin);
+		}
 	for (int i = 0; i < numboxes; i++) {
 		if (!ib_meets(boxes[i].ib, r))
 			continue;
@@ -1060,6 +1065,7 @@ void Hull_Focus(void *ctx, const float org[3], const float mins[3], const float 
 		candx[numcandx++] = (uint16_t)i;
 	}
 	focused = true;
+	return near;
 }
 
 /* bspfile.c q1_contents for a brush entity's negative .skin (sv_world.c skin_contents) */
