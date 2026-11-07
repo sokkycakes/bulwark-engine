@@ -272,9 +272,9 @@ state. The DS does the same in C:
   it (within 1/32 unit and 0.5 units a second, and every other value the
   movement reads: a long jump picked up or a weapon's speed counts too),
   nothing runs again. Otherwise the commands after it run again, 16 a frame
-  at most: a longer backlog (a stall) goes on over the next frames, with
-  the view on the old prediction meanwhile, rather than one frame of up to
-  100 ms. When
+  at most, and no more once 8 ms have gone and 4 have run: a longer backlog
+  (a stall, or a heavy map) goes on over the next frames, with the view on
+  the old prediction meanwhile, rather than one frame of up to 100 ms. When
   the game turns the player (a teleport, a respawn) the DS takes the facing
   and runs the commands the server hasn't again from its state, as the PC
   does. A state made with movement values or a brush list the DS doesn't
@@ -425,11 +425,33 @@ time, each thing's `frame1time`, and the other players' velocity.
   between keyframes (`lerpframes=0` turns this off): the 12 nearest models
   within 768 units, the rest step from frame to frame.
 - Other players are drawn at the newest update moved on by their velocity
-  to the reckoned server time, for at most 0.1 s. Nuclide runs the full
-  movement code for this (`Physics_Run` with collision); the DS moves them
-  in a straight line, which differs only when one hits a wall or lands
-  within that 0.1 s. Their markers (the coloured quads for players the DS
-  has no model for) go with them.
+  to the reckoned server time, for at most 0.1 s, facing the newest way
+  and with their sequence run on as far. Nuclide runs the full movement
+  code for this (`Physics_Run`, every frame until the next snapshot), whose
+  `UpdatePlayerAnimation` turns them to the newest `v_angle` and runs their
+  animation on (`Player.qc:509-519`). The DS moves them in a straight line:
+  that differs when one hits a wall or lands, and in the air, where
+  `Physics_Run` adds gravity (up to 4 units in 0.1 s), and on the ground,
+  where it adds friction; and past 0.1 s without an update the DS waits
+  where the PC goes on. Their legs walk and run as `UpdatePlayerAnimation`
+  picks (`Player.qc:555-579`): idle under 1 unit a second, walking under
+  150, running over 200, and between those what they were. Their markers
+  (the coloured quads for players the DS has no model for) go with them.
+- A thing that was out of `ENTS` (only the nearest 48 are sent) for 3
+  updates or more, or comes back with another model on its edict, starts
+  again with no earlier updates, as the PC makes a new entity of it
+  (`cl_csqc.c:428`): it is drawn as sent until a second update comes.
+- A door or lift coming home (the server leaves a brush model at its
+  origin out of `ENTS`) is drawn on toward home until the drawn moment
+  passes that update, then at home; leaving home, it starts from where the
+  update before had it, as the PC's entity does. More than 32 brush models
+  moving at once: the rest ease toward the newest, as from an older server.
+- The doors and lifts `PSTATE` lists (those near the player) are drawn
+  where the movement prediction collides with them: the server's place for
+  them at the acknowledged command. The predicted player isn't carried by
+  them (the PC's isn't either), so its feet stay on the lift as drawn; the
+  PC draws the lift 30 ms in the past instead. Not tried on a moving lift:
+  none of the maps here has one the rig rides.
 - From an older server (no time in `ENTS`), updates are timed by when
   they come, and brush models ease toward the newest as before.
 
@@ -437,7 +459,13 @@ RAM: 64 entities and 32 brush models keep their last 3 updates, and a
 blended frame is built in a 2 KB buffer: 9.2 KB of heap, taken at the
 first `ENTS` after a map has loaded and given back before the next map
 loads, so it doesn't come out of the lowest free memory, which is while a
-map loads. The code is 4.4 KB more; static data 1.6 KB less.
+map loads (the blend buffer is asked for once a map; without room models
+step from frame to frame). A clip plays for as long as its sequence:
+`hlmdl.py` writes each clip's lap in ms (`DSLP`, before the trailer,
+where older loaders don't look); a model baked before keeps its whole
+frames a second, which could be 11 % off (10 frames of a 3 s loop at
+3 fps). The code is 4.4 KB more; static data 1.6 KB
+less.
 
 ### Measured, in melonDS 1.1 (not hardware)
 
@@ -494,8 +522,16 @@ differs. So:
   does; a hard landing punches as `Physics_Fall` does (`falldamage` decl);
 - reloads, bursts, semi-automatic fire, charging and released weapons,
   overheating, alternate modes, timed (shotgun) reloads and the melee test
-  (traced through the DS's hulls and swept over the boxes `PSTATE` lists)
-  follow the decl;
+  (traced through the DS's hulls and swept over the boxes `PSTATE` lists,
+  with `Melee_Sweep`'s test that a wall isn't in the way) follow the decl;
+  the aim and the knockback use the QC's `anglesToForward` bit for bit (as
+  the movement does), and an activity with a list (`act_fire "1,2,3,4,5"`)
+  picks among all of it, up to 8 (a longer one leaves that weapon to the
+  server);
+- the muzzle flash events are found as the PC's `View_DrawViewModel` asks
+  `processmodelevents` for them (`src/client/viewmodel.qc:213-218`): from
+  the last frame's time, whichever sequence that was, and from 0 only when
+  the time went back;
 - the top screen shows the clip, big, and the reserve after it at the
   bottom right, in the HUD font (only the reserve for a weapon without a
   clip, nothing without ammo).
@@ -576,8 +612,8 @@ these runs: 2248 commands while firing at 0 ms and 2316 at 150 ms, 2388 on
 - **RAM.** Static data is 14.5 KB more (the weapon state 9.7 KB, the
   trace cache 4 KB) and code 40 KB more. The lowest free memory on c2a4e,
   while the map loads, went from 68 KB to 32 KB: it still fits, but with
-  half the margin. Moving the weapon state to the heap after a map loads,
-  as the entity tables are, would give back about 10 KB.
+  half the margin. The review fixes (below) moved the weapon tables and
+  the trace cache to the heap after the map loads: 48 KB.
 - **c2a4e** costs 1.2 ms a frame more (drawing 0.3 ms: blended frames;
   the rest placing entities between updates), still 29 fps. Its worst
   second is the models loading after the teleport, in both builds.
@@ -587,6 +623,33 @@ The weapon prediction first replayed 10 times a second on `e0m1` and
 `frameduration` times but `WEAPONINFO` didn't carry, so the DS timed the
 idle at 10 s against the server's 0.1. `WEAPONINFO` now carries them
 (`docs/spec/link.md`); the table is after that fix.
+
+### After the review fixes, measured in melonDS 1.1 (not hardware)
+
+The same runs with the fixes (WEAPONINFO, the weapon tables and the trace
+cache on the heap, the melee wall test and `anglesToForward`, the replay
+budget, things and brush models starting again as the PC's entities do),
+against the build above, one run each, each with its own server:
+
+| Run | Build | fps, median (worst second) | CPU a frame, median (worst second) | Prediction a frame, average (worst) | `PM_Run`, average (worst) | States within 0.5 units | Error, units: average (worst) | Replays (commands) | Lowest free |
+|---|---|---|---|---|---|---|---|---|---|
+| `coop_arena`, firing | before | 30 (30) | 6.9 ms (12.3) | 1.55 ms (2.3) | 483 µs (832) | 889 of 895 | 0.017 (1.6) | 86 (0) | 2.80 MB |
+| `coop_arena`, firing | fixed | 30 (30) | 7.7 ms (12.2) | 1.69 ms (2.7) | 530 µs (1094) | 896 of 899 | 0.010 (1.0) | 80 (0) | 2.82 MB |
+| the same, 150 ms | before | 30 (30) | 7.6 ms (10.9) | 1.73 ms (9.4) | 490 µs (972) | 680 of 690 | 0.017 (1.1) | 45 (384) | 2.82 MB |
+| the same, 150 ms | fixed | 30 (30) | 7.4 ms (13.1) | 1.65 ms (7.8) | 476 µs (1056) | 700 of 713 | 0.026 (3.3) | 48 (384) | 2.82 MB |
+| the same, 400 ms | before | 30 (30) | 7.9 ms (14.0) | 2.42 ms (14.1) | 479 µs (1191) | 760 of 771 | 0.022 (2.4) | 60 (1544) | 2.80 MB |
+| the same, 400 ms | fixed | 30 (29) | 8.3 ms (16.2) | 2.67 ms (10.6) | 483 µs (1266) | 850 of 861 | 0.020 (2.7) | 71 (1863) | 2.82 MB |
+| `c2a4e`, standing (1805 polygons) | before | 28 (1, a load) | 31.8 ms | – | – | – | – | – | 32 KB |
+| `c2a4e`, standing (1805 polygons) | fixed | 28 (1, a load) | 31.9 ms | – | – | – | – | – | 48 KB |
+
+The 8 ms replay budget held the worst frame's prediction at 400 ms to
+10.6 ms (14.1 before); one frame of that run took three refreshes. The
+server acknowledged `WEAPONINFO` once per run (`weapon 1/1`), and
+`weptest` and `pmtest` on these runs' logs found 0 differences. The two
+`c2a4e` runs were made one after the other on the same server; the scene
+(the view after the teleport) varies between runs, so compare them only
+with each other. Not run: a moving lift or door, a monster idling past
+600 s, the gauntlets or machine pistols, a model baked with clip laps.
 
 Screenshots of the firing run (kept outside git, as they show the game's
 data) show the flash and the clip going down while fire is held, and the
