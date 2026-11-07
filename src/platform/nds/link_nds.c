@@ -41,6 +41,7 @@
 #include "hull_nds.h"
 #include "weapon_nds.h"
 #include "hud_nds.h"
+#include "events_nds.h"
 
 #define LINK_PORT 27901
 #define MAX_SERVERS 8
@@ -49,7 +50,7 @@
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO, L_EVENT };
 #define LINK_VER 2 /* JOIN and WELCOME's linkver: 2 sends movement commands (docs/spec/link.md) */
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
@@ -2006,6 +2007,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 		/* the HUDINFO we have (0 none yet): it also tells the server we draw the HUD */
 		p_u8(&p, 'H'), p_u16(&p, Hud_Version());
 	}
+	/* the last EVENT record we have in order: it also tells the server we take them */
+	p_u8(&p, 'E'), p_u16(&p, Events_Ack());
 	send_to(&link.to, &p);
 }
 
@@ -2868,6 +2871,7 @@ static const char *play(ndscam_t *cam)
 	ndscam_t view;
 	screen_init();
 	pad_reset();
+	Events_Reset();
 	pad_draw();
 	link.lastrecv = Nds_Vblanks();
 	pr.cmdvb = pr.botstart = Nds_Vblanks();
@@ -2933,6 +2937,8 @@ static const char *play(ndscam_t *cam)
 				handle_weaponinfo(d, len);
 			else if (type == L_HUDINFO)
 				Hud_Packet(d, len);
+			else if (type == L_EVENT)
+				Events_Packet(d, len, vb_ms(frame));
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -2989,6 +2995,8 @@ static const char *play(ndscam_t *cam)
 			move_models(dt);
 		view_motion(cam, &view, dt);
 		weapon_punch(&view);
+		Events_Frame(vb_ms(frame), link.health);
+		Events_View(&view);
 		if (World_Loaded()) {
 			if (debugview == 0)
 				add_studio_things(&view);
@@ -3002,6 +3010,8 @@ static const char *play(ndscam_t *cam)
 			draw_things();
 		draw_markers(&view);
 		draw_fx(&view);
+		Events_Draw3D(&view);
+		Events_Draw2D();
 		PROF_LAP(PROF_REST, pt);
 		{
 			int polys, verts;
