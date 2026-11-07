@@ -1455,10 +1455,36 @@ static int build_touches(const lbrush_t *br, int nbr, ltouch_t *out)
 	return n;
 }
 
+/* angles the game sets itself, with no avelocity (c1a1c's e810 rolls each frame from its
+ * think): a brush whose angles changed in the last half second is turning */
+#define TURN_EDICTS 4096
+static struct {
+	int spawncount;
+	float ang[TURN_EDICTS][3];
+	double t[TURN_EDICTS];
+} turn;
+
+static bool turned_lately(int e)
+{
+	const float *a = ent_angles(e);
+	double now = Sys_Seconds();
+	if (turn.spawncount != svs.spawncount) {
+		memset(&turn, 0, sizeof(turn));
+		turn.spawncount = svs.spawncount;
+	}
+	if (e < 0 || e >= TURN_EDICTS)
+		return false;
+	if (memcmp(turn.ang[e], a, sizeof(turn.ang[e]))) {
+		memcpy(turn.ang[e], a, sizeof(turn.ang[e]));
+		turn.t[e] = now;
+	}
+	return now - turn.t[e] < 0.5;
+}
+
 static bool at_rest(int e)
 {
 	const float *v = fvec(e, F.velocity), *av = F.avelocity >= 0 ? fvec(e, F.avelocity) : zero_ang;
-	return !v[0] && !v[1] && !v[2] && !av[0] && !av[1] && !av[2];
+	return !v[0] && !v[1] && !v[2] && !av[0] && !av[1] && !av[2] && !turned_lately(e);
 }
 
 static bool lb_turned(const float *a) { return a[0] != 0 || a[1] != 0 || a[2] != 0; }
