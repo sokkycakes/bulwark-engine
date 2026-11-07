@@ -616,6 +616,14 @@ static bool key_complete(int ki)
 	return k->state == K_FOUND && k->block >= 0 && H->blk[k->block].datapos && H->blk[k->block].loaded >= k->bytes;
 }
 
+/* a loop starts only once its sample is all in (the hardware comes round to its start again,
+ * and an underrun is never checked on a loop); a one-shot once its first 2 KB are */
+static bool sample_loops(int ki, int sflags) { return S.k[ki].loopstart >= 0 || (sflags & SF_FORCELOOP); }
+static bool voice_ready(const svoice_t *v)
+{
+	return sample_loops(v->ki, v->sflags) ? key_complete(v->ki) : key_ready(v->ki);
+}
+
 /* one read for this key: a lookup, the header and first slice, or the next slice. False when
  * there is nothing to read (in, missing, too big, or no room) */
 static bool load_step(int ki, bool evict, bool loop)
@@ -1443,7 +1451,7 @@ static void loader(void)
 		for (int i = 0; i < S.vtop; i++) {
 			svoice_t *v = &S.v[i], *o = best >= 0 ? &S.v[best] : NULL;
 			bool vl, ol;
-			if (!((S.vst[i] == V_WAIT || (S.vst[i] == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !key_ready(v->ki) &&
+			if (!((S.vst[i] == V_WAIT || (S.vst[i] == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !voice_ready(v) &&
 			      S.k[v->ki].state != K_MISS && v->skip != S.use))
 				continue;
 			vl = voice_isloop(v);
@@ -1457,9 +1465,9 @@ static void loader(void)
 			break;
 		ki = S.v[best].ki;
 		loop = voice_isloop(&S.v[best]);
-		while (!key_ready(ki) && BUDGET_LEFT() && load_step(ki, true, loop))
+		while (!voice_ready(&S.v[best]) && BUDGET_LEFT() && load_step(ki, true, loop))
 			reads++, did = true;
-		if (!did && !key_ready(ki) && S.k[ki].state == K_FOUND) {
+		if (!did && !voice_ready(&S.v[best]) && S.k[ki].state == K_FOUND) {
 			/* no room (pinned), or a stream: a one-shot goes, a loop waits */
 			S.v[best].skip = S.use;
 			if (S.k[ki].fmt == FMT_STREAM || S.k[ki].bytes > S.arenasize / 2) {
@@ -1589,8 +1597,10 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 				;
 			else
 				voice_gone(vi);
-		} else if (!S.v[c->v].loop && c->blk >= 0 && !S.v[c->v].underrun && H->blk[c->blk].loaded < S.k[S.v[c->v].ki].bytes) {
-			/* still loading: played past what is in? (REG_DIV: a 64-bit '/' is a slow library call) */
+		} else if (c->blk >= 0 && H->blk[c->blk].loaded < S.k[S.v[c->v].ki].bytes) {
+			/* still loading (a one-shot: a loop starts whole): played past what is in? Then it
+			 * stops; what lies past is stale (ADPCM decodes it as noise) (REG_DIV: a 64-bit '/'
+			 * is a slow library call) */
 			svoice_t *v = &S.v[c->v];
 			skey_t *k = &S.k[v->ki];
 			uint32_t f = SND_DIV64((uint64_t)(t - c->t_start) * 32, c->timer);
@@ -1598,6 +1608,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			if (bytes > H->blk[c->blk].loaded) {
 				v->underrun = true;
 				Snd_Stats.underrun++;
+				voice_free(c->v, "underrun");
 			}
 		}
 	}
@@ -1630,7 +1641,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			voice_gone(i);
 			continue;
 		}
-		if (key_ready(v->ki))
+		if (voice_ready(v))
 			voice_start(i);
 		else if (v->src != SRC_SENT && v->src != SRC_AMB && v->src != SRC_LOOP && !(v->sflags & SF_FORCELOOP) &&
 		         t - v->t_arrive > ms_ticks(S_LATE_MS)) {
@@ -1643,7 +1654,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	for (int i = 0; i < S.namb; i++)
 		if (H->amb[i].pendkey) {
 			int ki = key_find(H->amb[i].pendkey);
-			if (ki >= 0 && (key_ready(ki) || S.k[ki].state == K_MISS)) {
+			if (ki >= 0 && (key_complete(ki) || S.k[ki].state == K_MISS)) {
 				if (S.k[ki].state == K_FOUND) {
 					if (H->amb[i].voice >= 0)
 						voice_free(H->amb[i].voice, "ambswitch");
@@ -1668,7 +1679,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		int best = -1;
 		for (int i = 0; i < S.vtop; i++) {
 			svoice_t *v = &S.v[i];
-			if (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0 && v->loud && key_ready(v->ki) &&
+			if (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0 && v->loud && key_complete(v->ki) &&
 			    (best < 0 || v->loud > S.v[best].loud))
 				best = i;
 		}
