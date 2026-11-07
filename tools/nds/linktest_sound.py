@@ -251,7 +251,7 @@ print('lflags:', ' '.join('%d:%d' % kv for kv in sorted(sizes.items())))
 
 if logf:
     lines = open(logf, encoding='latin1').read().splitlines()
-    made = {}; made_rel = []; svsnd = []; server_side = []; byname = {}; paths = {}
+    made = {}; made_rel = []; svsnd = []; server_side = []; byname = {}; paths = {}; gone = set()
     # LINKSND <dev> <seq> <path> <name> ent chan vol atten pitch flags x y z [at]
     for ln in lines:
         if 'rcon from' in ln and 'link_stats' in ln:
@@ -269,9 +269,22 @@ if logf:
             elif sq:
                 made[sq] = r
             continue
+        # a record the server dropped after logging it (same frame on one channel, or overtaken by
+        # a reliable one), and a NOREPLACE one dropped before it was numbered
+        m = re.match(r'LINKSNDGONE (\d+) (\d+) ', ln)
+        if m:
+            gone.add(int(m.group(2)))
+            continue
+        m = re.match(r'LINKSNDSAME (\d+) (\S+) (\S+) (-?\d+) (-?\d+) (\d+)', ln)
+        if m:
+            if m.group(2) in ('snd', 'loop') and not int(m.group(6)):
+                server_side.append(m.group(3))
+            continue
         m = re.match(r'SVSND (\d+) (\S+)', ln)
         if m:
             svsnd.append(m.group(2))
+    for sq in gone:
+        made.pop(sq, None)
     lost = [sq for sq in made if sq not in seen]
     wrong = [sq for sq in made if sq in seen and (seen[sq]['key'] != made[sq]['key'] or seen[sq]['ent'] != made[sq]['ent']
              or seen[sq]['vol'] != made[sq]['vol'] or seen[sq]['pitch'] != made[sq]['pitch'])]
@@ -279,6 +292,7 @@ if logf:
     relok = [r['key'] for r in reliable] == [r['key'] for r in made_rel][:len(reliable)]
     relmiss = len(made_rel) - len(reliable)
     exp_lost = len(made) * loss * loss
+    print('server log: %d records dropped by the server after logging (same frame, overtaken)' % len(gone))
     print('server log: %d SOUND records made, %d arrived, %d lost (%.1f expected from -loss), %d with other values, %d not in the log; '
           '%d reliable made, %d arrived in order: %s' % (len(made), len(made) - len(lost), len(lost), exp_lost, len(wrong),
           len(extra), len(made_rel), len(reliable), 'yes' if relok else 'NO'))

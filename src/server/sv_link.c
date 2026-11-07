@@ -4049,7 +4049,7 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 			l->sndsameframe++;
 			if (r.sflags & SF_NOREPLACE) {
 				if (sv_link_log->ivalue)
-					Con_Printf("LINKSNDSAME %d %s %d %d noreplace\n", (int)(l - links), name, r.ent, r.chan);
+					Con_Printf("LINKSNDSAME %d %s %s %d %d %d\n", (int)(l - links), snd_paths[path], name, r.ent, r.chan, cs ? 8 : 0);
 				return;
 			}
 			if (sv_link_log->ivalue)
