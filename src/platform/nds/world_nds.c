@@ -717,7 +717,14 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		merge_faces(mf, pool, &poolused, poolsize);
 	/* out to the GPU's layout: strip order, texture coordinates moved near zero
 	 * (t16 only reaches +-2048 texels) by whole repeats of the texture */
-	w.verts = malloc(sizeof(dvert_t) * (size_t)numse);
+	{ /* as many as the faces merging left (2/3 to 4/5 of the BSP's), so the
+	   * vertices don't need room the pool still holds */
+		int nv = 0;
+		for (int i = 0; i < w.numfaces; i++)
+			if (w.faces[i].tex >= 0 && w.faces[i].alias < 0 && mf[i].num >= 3)
+				nv += mf[i].num;
+		w.verts = malloc(sizeof(dvert_t) * (size_t)(nv ? nv : 1));
+	}
 	if (!w.verts) {
 		free(pool), free(mf);
 		return false;
@@ -759,11 +766,6 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		}
 	}
 	free(pool), free(mf);
-	{ /* merged faces left the end unused: it goes back (a smaller realloc stays in place) */
-		dvert_t *v = realloc(w.verts, sizeof(dvert_t) * (size_t)(w.numverts ? w.numverts : 1));
-		if (v)
-			w.verts = v;
-	}
 	return true;
 bad:
 	light_close(&lightwin);
