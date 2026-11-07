@@ -313,9 +313,11 @@ on `coop_arena`. "150 ms" is `sv_link_lag 75` (75 ms each way).
   `e0m1`, `dev`), all bit for bit too.
 - **On the DS, against each `PSTATE`** (the table): on `e0m1` and `dev`
   every state matched, most bit for bit and the rest by less than a
-  hundredth of a unit: probably newlib's `sinf` and `cosf`, which differ
-  from glibc's in the last bit for 13022 of the 65536 angles a command can
-  carry (checked in melonDS against the PC). On
+  hundredth of a unit: newlib's `sinf` and `cosf`, which differ from
+  glibc's in the last bit for 13022 of the 65536 angles a command can
+  carry (checked in melonDS against the PC). The DS now computes them as
+  glibc does (below, "Speed"), and every state on both maps matches bit
+  for bit. On
   `coop_arena` a few states a second differ by up to about a unit. They
   are the commands the server cut short (`clipped`): melonDS runs the DS
   0.25 % faster than real time (89.26 DS seconds in 89.04), and the
@@ -323,7 +325,8 @@ on `coop_arena`. "150 ms" is `sv_link_lag 75` (75 ms each way).
   few parts per million, so that should not happen on hardware. Monsters
   pushing against the player gave a few seconds of 0.4 to 10 unit errors
   in another run.
-- **Cost.** One command takes 1.0 to 1.3 ms on `coop_arena` and 1.4 to
+- **Cost** (before "Speed" below, which brought it to about 0.5 ms).
+  One command takes 1.0 to 1.3 ms on `coop_arena` and 1.4 to
   1.9 ms on `e0m1` and `dev` (worst 4.4 ms); the hull traces are about
   half. At 30 fps that is 2.5 to 5 ms a frame. With 150 ms between the DS
   and the server a mismatch runs up to 8 commands again: 15 ms in that
@@ -362,6 +365,37 @@ map here).
 Not measured yet: ladders and water (no map here has them), doors and
 lifts moving under the player, a Half-Life campaign map with hulls, and a
 DS.
+
+### Speed: the same results in a third of the time
+
+The movement code gives the server's results bit for bit, so making it
+faster may not change a single one. `tools/nds/pmtest -dump -fuzz 8`
+writes every output state of a logged run (and of the same commands with
+their inputs nudged); each step below gave the same dump as before on all
+seven reference logs, and a build with `-DHULL_SELFCHECK` checked each
+shortcut against the long way. What changed:
+
+- Float compares and `sqrtf` take exact integer shortcuts where the
+  answer is certain (`fexact_nds.h`); a compare that isn't certain goes to
+  the float routine as before.
+- `sinf` and `cosf` are glibc's (the server's) instead of newlib's, so
+  they agree on every one of the 65536 angles a command can carry
+  (`pmtest -selftest`, and in melonDS).
+- The ladder and water probes are left out when the hull near the player
+  can't have a ladder or water in reach (they would find nothing).
+- The trace code and libgcc's soft-float routines run from ITCM; the
+  hull walk keys its nodes; a general plane is kept in fixed point to see
+  which side a box is on, the float test deciding only when it is close.
+- The last 32 traces are kept, and a trace the same as one of them takes
+  its result (relying on `Hull_Focus` never changing a result, which
+  `pmtest`'s `focus_vs_nofocus` checks).
+
+`PM_Run` per command in the DS bench (melonDS 1.1, average / worst, about
+16 µs of the bench's own timing included): `coop_arena` 1129 / 1560 µs
+before, 383 / 721 µs after; `e0m1` 1638 / 3225 to 487 / 998; `dev`
+1547 / 1986 to 638 / 1035. In the linked runs below it is 483 to 548 µs.
+The code in ITCM grew from 2.8 KB to 18 KB (of 32 KB); the trace cache
+takes 4 KB of static data.
 
 ## Other entities: drawn as the PC draws them
 
@@ -501,6 +535,62 @@ trace build printing each frame and command:
 Not exercised on this map: a landing hard enough to punch (the arena's
 jumps land at about 260 units a second, under `minLandDistance` 400),
 melee weapons, charged and released weapons, alternate modes.
+
+### Measured: all of it together, in melonDS 1.1 (not hardware)
+
+The build with movement prediction made faster, other entities drawn
+between updates and the weapon predicted, against `a5b9769` (movement
+prediction only), each with its own `bulwark-ded`. `coop_arena` with 40
+monsters (`coop_waveBase 40`, `coop_wavePerWave 0`, `coop_spawnInterval
+0.2`), `botwalk=1` walking, jumping and crouching, and fire held 1.5 s of
+every 2 s (a measurement build's `botfire=1`); `e0m1` and `dev` (`-game
+base`) walking; `c2a4e` standing at `-576 1012 84` (no hulls, so no
+prediction). 30 s each, `fps=30`, `link_god 1`. One run of each: the
+monsters wander, so the arena runs saw different scenes.
+
+| Run | Build | fps, median (worst second) | CPU a frame, median (worst second) | Prediction a frame, average (worst) | `PM_Run` a command, average (worst) | States within 0.5 units | Error, units: average (worst) | RAM in use / peak / lowest free | Received / sent |
+|---|---|---|---|---|---|---|---|---|---|
+| `coop_arena`, firing | `a5b9769` | 30 (30) | 7.7 ms (14.1) | 3.05 ms (4.4) | 1233 µs (2035) | 881 of 885 | 0.009 (3.0) | 399 / 400 KB / 2.86 MB | 33.3 / 2.3 KB/s |
+| `coop_arena`, firing | this one | 30 (30) | 6.9 ms (12.3) | 1.55 ms (2.3) | 483 µs (832) | 889 of 895 | 0.017 (1.6) | 408 / 424 KB / 2.80 MB | 37.4 / 2.5 KB/s |
+| the same, 150 ms | `a5b9769` | 30 (30) | 7.8 ms (10.9) | 3.40 ms (19.3) | 1211 µs (2129) | 691 of 705 | 0.029 (2.3) | 399 / 418 KB / 2.86 MB | 31.4 / 4.8 KB/s |
+| the same, 150 ms | this one | 30 (30) | 7.6 ms (10.9) | 1.73 ms (9.4) | 490 µs (972) | 680 of 690 | 0.017 (1.1) | 408 / 424 KB / 2.82 MB | 41.8 / 5.0 KB/s |
+| `e0m1` | `a5b9769` | 30 (30) | 6.9 ms (10.4) | 3.90 ms (7.8) | 1867 µs (4342) | 787 of 787 | 0 (0) | 586 / 587 KB / 1.77 MB | 16.4 / 2.4 KB/s |
+| `e0m1` | this one | 30 (30) | 4.4 ms (7.0) | 1.35 ms (2.4) | 548 µs (1319) | 777 of 777 | 0 (0) | 600 / 600 KB / 1.73 MB | 19.7 / 2.6 KB/s |
+| `dev` | `a5b9769` | 30 (30) | 4.6 ms (6.0) | 2.90 ms (4.1) | 1387 µs (2211) | 900 of 900 | 0 (0) | 302 / 303 KB / 2.45 MB | 16.1 / 2.3 KB/s |
+| `dev` | this one | 30 (30) | 3.1 ms (4.1) | 1.21 ms (1.9) | 485 µs (1040) | 900 of 900 | 0 (0) | 311 / 312 KB / 2.41 MB | 19.4 / 2.5 KB/s |
+| `c2a4e`, standing | `a5b9769` | 29 (1, a load) | 13.1 ms | 0.04 ms | – | – | – | 1867 / 1886 KB / 68 KB | 29.8 / 2.4 KB/s |
+| `c2a4e`, standing | this one | 29 (1, a load) | 14.3 ms | 0.17 ms | – | – | – | 1877 / 1895 KB / 32 KB | 36.2 / 2.5 KB/s |
+
+"Prediction" is the movement and the weapon together, the server's state
+included. On `e0m1` and `dev` every state matched bit for bit (777 and
+900 of them); on `coop_arena` the few that differ are the commands the
+server cut short (see above). `tools/nds/weptest` on the server's logs of
+these runs: 2248 commands while firing at 0 ms and 2316 at 150 ms, 2388 on
+`e0m1`, 2482 on `dev`, each from the server's state, 0 differences.
+`pmtest` on all 27 reference logs: bit for bit, as before.
+
+- **Traffic.** `ENTS` is about 100 bytes bigger with 40 monsters about
+  (885 against 779 bytes, 18 a second: `frame1time` and the players'
+  velocity), `PSTATE` about 90 (542 against 450 bytes, 30 a second: the
+  weapon block).
+- **RAM.** Static data is 14.5 KB more (the weapon state 9.7 KB, the
+  trace cache 4 KB) and code 40 KB more. The lowest free memory on c2a4e,
+  while the map loads, went from 68 KB to 32 KB: it still fits, but with
+  half the margin. Moving the weapon state to the heap after a map loads,
+  as the entity tables are, would give back about 10 KB.
+- **c2a4e** costs 1.2 ms a frame more (drawing 0.3 ms: blended frames;
+  the rest placing entities between updates), still 29 fps. Its worst
+  second is the models loading after the teleport, in both builds.
+
+The weapon prediction first replayed 10 times a second on `e0m1` and
+`dev`: their view models are Quake `.mdl`s with frame groups, which
+`frameduration` times but `WEAPONINFO` didn't carry, so the DS timed the
+idle at 10 s against the server's 0.1. `WEAPONINFO` now carries them
+(`docs/spec/link.md`); the table is after that fix.
+
+Screenshots of the firing run (kept outside git, as they show the game's
+data) show the flash and the clip going down while fire is held, and the
+monsters moving from frame to frame.
 
 ## Map viewer controls
 

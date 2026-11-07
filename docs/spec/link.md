@@ -466,7 +466,7 @@ it, and its view model:
 | f32 × 4 | the `falldamage` decl's `minFallDistance`, `minLandDistance`, `punchAngleScale`, `punchSpringScale` |
 | u8 nfi | 1, or 2 with a secondary fireInfo |
 | nfi × fireInfo | primary, then secondary |
-| u8 nseq | the view model's sequences, up to 64 |
+| u8 nseq | the view model's sequences, up to 64; for a view model that isn't a studio model (a Quake `.mdl` with a `.framegroups` file, a skeletal model) its frame groups, which `frameduration` times as count / fps, with no events |
 | nseq × {f32 duration, f32 fps, u16 frames, u8 loop, u8 nev, nev × {u16 frame, u16 event, u8 option}} | `frameduration` as the game gets it; the muzzle flash events (5001, 5011, 5021, 5031), the option as a number |
 
 A fireInfo: u16 flags (1 `ammoRequired`, 2 `semiAuto`, 4 `fireUnderwater`,
