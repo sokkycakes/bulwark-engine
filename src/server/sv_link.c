@@ -872,6 +872,7 @@ static void send_stats(link_t *l);
 static void watch_viewmodel(link_t *l);
 static void send_fx(link_t *l);
 static void ev_read(link_t *l);
+static void ev_onemsg(client_t *c, const uint8_t *d, int len);
 static void ev_mapcheck(link_t *l);
 static void ev_worldspawn(link_t *l);
 static void ev_coopfeed(link_t *l);
@@ -2914,7 +2915,7 @@ void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
 	if (len >= 6 && data[0] == CGAMEPACKET && data[1] == EV_OBITUARY && (l = link_for_edict(c->edict)) && l->hudcap)
 		hud_obituary(l, data, len); /* the HUD's feed (HUDINFO); EVENT skips it for such a device */
 	if (len >= 2 && data[0] == CGAMEPACKET && data[1] != EV_SURFIMPACT && data[1] != EV_SURFIMPACTID) {
-		SV_LinkGameMessages(c, data, len); /* read in SV_LinkSend (EVENT) */
+		ev_onemsg(c, data, len); /* read in SV_LinkSend (EVENT) */
 		return;
 	}
 	if (len < 14 || data[0] != CGAMEPACKET)
@@ -3010,7 +3011,10 @@ static void ev_raw(link_t *l, int kind, int level, const void *d, int len)
 
 void SV_LinkPrint(client_t *c, int level, const char *text) { ev_raw(link_of(c), RAW_PRINT, level, text, (int)strlen(text)); }
 void SV_LinkCenterPrint(client_t *c, const char *text) { ev_raw(link_of(c), RAW_CENTER, 0, text, (int)strlen(text)); }
-void SV_LinkGameMessages(client_t *c, const uint8_t *d, int len) { ev_raw(link_of(c), RAW_GAME, 0, d, len); }
+/* a multicast: one message (level 0) */
+static void ev_onemsg(client_t *c, const uint8_t *d, int len) { ev_raw(link_of(c), RAW_GAME, 0, d, len); }
+/* the game's MSG_BROADCAST writes: level 1, any number of messages one after another */
+void SV_LinkGameMessages(client_t *c, const uint8_t *d, int len) { ev_raw(link_of(c), RAW_GAME, 1, d, len); }
 
 /* the game's MSG_ONE and MSG_ALL writes to a link player, taken as they are written so
  * they keep their order against prints and multicasts: consecutive writes are one chunk */
@@ -3025,7 +3029,7 @@ void SV_LinkQCWrite(client_t *c, const void *d, int len)
 		return;
 	if (!l->evqcopen) {
 		int before = l->evrawlen;
-		ev_raw(l, RAW_GAME, 0, d, 0);
+		ev_raw(l, RAW_GAME, 1, d, 0);
 		if (l->evrawlen != before + 4) { /* it did not fit */
 			l->evqcbad = true;
 			return;
@@ -3563,8 +3567,10 @@ static void ev_read(link_t *l)
 			while (j + 2 <= len && d[j] == CGAMEPACKET && (used = ev_game(l, d[j + 1], d + j + 2, len - j - 2)) >= 0)
 				j += 2 + used;
 			/* another kind of message, or an event whose length is not known here: the
-			 * rest of this chunk cannot be read (counted in link_stats) */
-			if (j < len) {
+			 * rest of a chunk of several messages (level 1) cannot be read (counted in
+			 * link_stats); a multicast is one message, and one the DS shows nothing of
+			 * (decals, gibs, sounds) is simply left */
+			if (j < len && level == 1) {
 				l->evstops++;
 				if (sv_link_log->ivalue)
 					Con_Printf("LINKEV %s: stopped at byte %d of %d (%d %d)\n", l->client->name, j, len, d[j],
