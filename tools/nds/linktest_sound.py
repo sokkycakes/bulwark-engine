@@ -23,7 +23,7 @@ import random, re, socket, struct, sys, time
 
 MAGIC = b'BWL1'
 JOIN, INPUT, LEAVE = 2, 3, 4
-WELCOME, REFUSE, EVENT, SOUND, AMBIENT = 0x82, 0x83, 0x90, 0x91, 0x92
+WELCOME, REFUSE, WEAPONINFO, EVENT, SOUND, AMBIENT = 0x82, 0x83, 0x8e, 0x90, 0x91, 0x92
 LE_SOUND, LE_SENTENCE, LE_MUSIC, LE_PRECACHE = 12, 13, 14, 15
 
 args = sys.argv[1:]
@@ -39,7 +39,7 @@ cmds = []
 while '-cmd' in args:
     cmds.append(opt('-cmd'))
 rport = int(opt('-rcon', '27500')); secs = float(opt('-secs', '30')); logf = opt('-log'); outf = opt('-out')
-loss = float(opt('-loss', '0')); fire = flag('-fire')
+loss = float(opt('-loss', '0')); fire = flag('-fire'); v2 = flag('-v2')
 host = args[0] if args else '127.0.0.1'; port = int(args[1]) if len(args) > 1 else 27901
 
 def norm(n):
@@ -84,7 +84,7 @@ while spawn is None and time.time() - t0 < 5:
 if spawn is None:
     sys.exit('no WELCOME')
 
-have = 0; seq = 0; ambhave = 0; buttons = 0
+have = 0; seq = 0; ambhave = 0; buttons = 0; newest = 0; wiver = 0; wiedict = 0; witables = {}
 seen = {}           # SOUND seq -> record
 log = []            # (t, kind, fields)
 st = dict(sndpk=0, sndbytes=0, sndrec=0, dup=0, ignored=0, evpk=0, evbytes=0, rel=0, prec=0, sent=0, music=0,
@@ -107,11 +107,50 @@ def send_input():
     global seq
     seq = (seq + 1) & 0xffff
     p = struct.pack('<IHHBBBbbbhhHBBHHHHBB', session, seq, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 30, 0, 0, spawn, buttons, 0, 0)
+    if v2:  # one command (link.md 'C'), then the WEAPONINFO version: the server runs it and sends WEAPONINFO
+        global newest
+        newest += 1
+        p += b'C' + bytes([2]) + struct.pack('<IBBHH', newest, 1, 14, 0, 0) + struct.pack('<BhhhhhHB', 50, 0, 0, 0, 0, 0, buttons, 0)
+        p += b'W' + struct.pack('<HH', wiver, wiedict)
     p += b'E' + struct.pack('<H', have) + b'S' + struct.pack('<HB', ambhave, 1)
     s.sendto(MAGIC + bytes([INPUT]) + p, (host, port))
 
+def weaponinfo(d):
+    # docs/spec/link.md WEAPONINFO, to its 'S' table (the view model's sound events)
+    sess, sc, edict, ver = struct.unpack_from('<IHHH', d, 5); i = 15
+    i += 2 + 1 + 1 + 2 + 4 + 16
+    nfi = d[i]; i += 1
+    for _ in range(nfi):
+        i += 2 + 1 + 2 + 2 + 25 * 4
+        nact = d[i]; i += 1
+        for _ in range(nact):
+            n = d[i + 1]; i += 2 + 2 * n
+    nseq = d[i]; i += 1; evs = []
+    for _ in range(nseq):
+        i += 4 + 4 + 2 + 1; nev = d[i]; i += 1
+        for _ in range(nev):
+            fr, code, o = struct.unpack_from('<HHB', d, i); i += 5
+            if code in (1004, 1008, 5004): evs.append((code, o))
+    tab = []
+    if i < len(d) and d[i] == ord('S'):
+        n = d[i + 1]; i += 2
+        for _ in range(n):
+            ns = d[i]; keys = struct.unpack_from('<%dI' % ns, d, i + 1); i += 1 + 4 * ns
+            vol, pmin, pmax, at, fl, ch, dist, off = struct.unpack_from('<BBBBBBBh', d, i); i += 9
+            tab.append(dict(keys=[hex(k) for k in keys], vol=vol, pitch=(pmin, pmax), atten=at, flags=fl, chan=ch, dist=dist, off=off))
+        rel = (d[i], d[i + 1])
+    else:
+        rel = None
+    return edict, ver, evs, tab, rel
+
 def take(d):
-    global have, ambhave
+    global have, ambhave, wiver, wiedict
+    if d[4] == WEAPONINFO:
+        edict, ver, evs, tab, rel = weaponinfo(d)
+        if (edict, ver) not in witables:
+            witables[(edict, ver)] = (evs, tab, rel)
+        wiver, wiedict = ver, edict
+        return
     t = time.time() - tstart
     if d[4] == SOUND:
         if loss and random.random() < loss:
@@ -203,6 +242,10 @@ sizes = {}
 for t, kind, r in log:
     if kind in ('snd', 'rel'):
         sizes[r['lflags']] = sizes.get(r['lflags'], 0) + 1
+for (e, v), (evs, tab, rel) in witables.items():
+    print('WEAPONINFO edict %d version %d: %d sound events %s, table of %d, release %s' % (e, v, len(evs), evs[:8], len(tab), rel))
+    for k, t in enumerate(tab):
+        print('  shader %d: %s' % (k, t))
 print('lflags:', ' '.join('%d:%d' % kv for kv in sorted(sizes.items())))
 
 if logf:
@@ -220,9 +263,9 @@ if logf:
                      pitch=int(m.group(9)), name=name, path=path, cs=(int(m.group(10)) >> 8) & 8)
             if path in ('snd', 'loop') and not r['cs']:
                 server_side.append(name)
-            if sq == 0:
-                made_rel.append(r)
-            else:
+            if sq == 0 and path in ('snd', 'loop', 'imp', 'mev'):
+                made_rel.append(r)  # EVENT 12 (amb, vm, sent and music lines describe other packets)
+            elif sq:
                 made[sq] = r
             continue
         m = re.match(r'SVSND (\d+) (\S+)', ln)

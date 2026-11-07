@@ -5155,7 +5155,8 @@ static void update_ambient(link_t *l)
 	qfld_t ag_loops = qfld("ambient_generic::__mm_bLoops"), ag_tog = qfld("ambient_generic::__mm_bToggle"),
 	       ag_modern = qfld("ambient_generic::__mm_bIsModern"), ag_path = qfld("ambient_generic::__mm_strActivePath"),
 	       ag_vol = qfld("ambient_generic::__mm_flVolume"), ag_rad = qfld("ambient_generic::__mm_flRadius"),
-	       ag_pitch = qfld("ambient_generic::__mm_flPitch"), ag_force = qfld("ambient_generic::__mm_bForceLoop");
+	       ag_pitch = qfld("ambient_generic::__mm_flPitch"), ag_force = qfld("ambient_generic::__mm_bForceLoop"),
+	       spawncls = qfld("spawnclass");
 	qfld_t ns_loop = qfld("ncSound::__mm_isLooping"), ns_idx = qfld("ncSound::__mm_soundIndex"),
 	       ns_vol = qfld("ncSound::__mm_volume"), ns_rad = qfld("ncSound::__mm_radius"), ns_pitch = qfld("ncSound::__mm_pitch");
 	const float *me;
@@ -5173,11 +5174,13 @@ static void update_ambient(link_t *l)
 		o = ent_origin(e);
 		for (int k = 0; k < 3; k++)
 			d2 += (o[k] - me[k]) * (o[k] - me[k]);
-		if (!strcmp(cls, "ambient_generic")) {
+		/* entityDefs (base/decls/def/ambient.def) keep their own classname and set
+		 * .spawnclass (entityDef.qc:401) */
+		if (!strcmp(cls, "ambient_generic") || !strcmp(qstr(e, spawncls), "ambient_generic")) {
 			const char *path = qstr(e, ag_path);
 			if (!qnum(e, ag_loops) || !qnum(e, ag_tog) || qnum(e, ag_modern) || !path[0] || snd_key(path) == SND_KEY_NULL)
 				continue;
-		} else if (!strcmp(cls, "ncSound")) {
+		} else if (!strcmp(cls, "ncSound") || !strcmp(qstr(e, spawncls), "ncSound")) {
 			float r = qnum(e, ns_rad);
 			if (!qnum(e, ns_loop) || d2 >= r * r || r <= 0)
 				continue;
@@ -5189,13 +5192,14 @@ static void update_ambient(link_t *l)
 	for (int i = 0; i < nc && n < SND_MAXAMB; i++) {
 		int e = (int)cand[i][0];
 		const float *o = ent_origin(e);
-		const char *cls = QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname));
+		bool isamb = !strcmp(qstr(e, spawncls), "ambient_generic") ||
+		             !strcmp(QC_GetString(sv.vm, QC_EInt(sv.vm, e, F.classname)), "ambient_generic");
 		lamb_t *a = &set[n++];
 		memset(a, 0, sizeof(*a));
 		a->ent = (uint16_t)e;
 		for (int k = 0; k < 3; k++)
 			a->org[k] = (int16_t)BW_CLAMP(lrintf(o[k]), -32768, 32767);
-		if (!strcmp(cls, "ambient_generic")) {
+		if (isamb) {
 			a->key = snd_key(qstr(e, ag_path));
 			a->vol = (uint8_t)BW_CLAMP(lrintf(qnum(e, ag_vol) * 255), 0, 255);
 			/* SENDENTITY_BYTE: the client gets the radius (an ATTN_ value) as a whole byte */
@@ -5219,8 +5223,7 @@ static void update_ambient(link_t *l)
 			for (int j = 0; j < l->namb && !had; j++)
 				had = l->amb[j].ent == set[i].ent && l->amb[j].key == set[i].key;
 			if (!had) {
-				const char *cls = QC_GetString(sv.vm, QC_EInt(sv.vm, set[i].ent, F.classname));
-				int idx = !strcmp(cls, "ncSound") ? (int)qnum(set[i].ent, ns_idx) : 0;
+				int idx = (set[i].flags & 128) ? (int)qnum(set[i].ent, ns_idx) : 0;
 				Con_Printf("LINKSND %d 0 amb %s %d 4 %d %d %d %d %d %d %d\n", (int)(l - links),
 				           idx > 0 && idx < sv.numsounds ? sv.sounds[idx] : qstr(set[i].ent, ag_path), set[i].ent,
 				           set[i].vol, set[i].atten, set[i].pitch, set[i].flags | (SL_CLIENTSIDE << 8), set[i].org[0],
