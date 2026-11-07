@@ -238,7 +238,10 @@ and run commands themselves.
   hovered row. Playlist, Map and Party privacy open Halo 3: ODST-style
   flyouts: a title tab on the opening row, the choices starting in that row
   (current one first in focus), help under them or in a column at their
-  right (with an image slot for maps); choosing, Back or the tab closes it.
+  right (with an image slot for maps), drawn with ODST's panels (grey block
+  and tab, black focus bar, line and fade, dark column) over a dimmed lobby,
+  the only styled part of the page; choosing, Back, the tab or the dim
+  closes it.
   Map is the party's preferred map (`coop_mmMap`, empty = any), sent with
   `live_queue`. Right: the party code, then My Party with open seats up to
   the playlist's size, and invites. Only the

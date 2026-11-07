@@ -314,38 +314,64 @@
 /* ---- flyouts (Halo 3: ODST's leaf flyouts) ------------------------------
    ODST: tab 73-304, choice block 304-580, side column 580-856 against a
    list at 79-542; scaled by 1.4 to our 650-wide rows. The tab sits on the
-   row that opened it (.r0 .. .r3) and the choices start in that row. */
+   row that opened it (.r0 .. .r3) and the choices start in that row.
+   The flyouts are the one styled part of the lobby: ODST's panels, as the
+   reference mockups draw them (grey_menu_background, black_50, black_bar,
+   white_gradient_bar, menu_fade), and a dim over the lobby behind them
+   (ODST's dim overlay #282828). */
+.mm-dim
+{
+	x: 0px;
+	y: 0px;
+	width: 100%;
+	height: 100%;
+	background-color: #282828b8;
+	visibility: collapse;
+}
+.mm-dim.on { visibility: visible; }
+/* the button hints sit outside the lobby panel: dim them too */
+.stage.lobby-open.fly-open .page-footer { background-color: #282828b8; }
+
 .mm-fly
 {
 	x: 313px;
 	y: 634px;
 	width: 1100px;
-	height: 360px;
+	height: 460px;
 	visibility: collapse;
 }
 .mm-fly.on { visibility: visible; }
 .mm-fly.r1 { y: 676px; }
 .mm-fly.r2 { y: 718px; }
 .mm-fly.r3 { y: 760px; }
+
+/* long_skinny: the grey title tab */
 .mm-fly-tab
 {
 	x: 0px;
 	y: 0px;
 	width: 324px;
 	height: 42px;
+	background-color: #b2b8c0;
 }
 .mm-fly-title
 {
 	vertical-align: center;
 	margin-left: 14px;
 	font-size: 24px;
+	font-weight: bold;
+	color: #ffffff;
+	text-transform: uppercase;
 }
+
+/* large_block: the grey block of choices */
 .mm-fly-block
 {
 	x: 324px;
 	y: 0px;
 	width: 388px;
 	flow-children: down;
+	background-color: #b2b8c0;
 }
 .mm-fly-items
 {
@@ -357,18 +383,44 @@
 	width: 100%;
 	height: 42px;
 }
+/* black_bar: the focused choice */
+.mm-fly-item.focus { background-color: #121419; }
 .mm-fly-name
 {
 	vertical-align: center;
 	margin-left: 25px;
 	font-size: 24px;
+	color: #1a1e24;
+	text-transform: uppercase;
+}
+.mm-fly-item.focus .mm-fly-name
+{
+	color: #ffffff;
+	font-weight: bold;
+}
+/* white_gradient_bar under the choices, then menu_fade to the bottom */
+.mm-fly-line
+{
+	width: 100%;
+	height: 2px;
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #ffffffe6 ), to( #ffffff1a ) );
+}
+.mm-fly-fade
+{
+	width: 100%;
+	height: fill-parent-flow( 1.0 );
+	flow-children: down;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #b2b8c000 ), to( #1e22288c ) );
 }
 .mm-fly-help
 {
 	width: 100%;
-	margin: 12px 25px 0px 25px;
+	margin: 10px 25px 0px 25px;
 	font-size: 20px;
+	color: #1f2a36;
 }
+
+/* black_50: the dark column at the right */
 .mm-fly-side
 {
 	x: 712px;
@@ -376,6 +428,7 @@
 	width: 388px;
 	padding: 14px 25px 0px 25px;
 	flow-children: down;
+	background-color: #00000099;
 }
 /* map image slot (ODST 255x93 at the column's 11,11) */
 .mm-fly-image
@@ -383,19 +436,37 @@
 	width: 357px;
 	height: 130px;
 	margin-bottom: 14px;
+	background-color: #3a4049;
 }
 /* large icon slot (ODST 230x230) */
 .mm-fly-icon
 {
 	width: 322px;
 	height: 322px;
+	background-color: #3a4049;
 }
 .mm-fly-text
 {
 	width: 100%;
 	margin-bottom: 8px;
 	font-size: 20px;
+	color: #a9c4e0;
 }
+
+/* block and column heights: the choices, the line, and the fade (ODST's
+   blocks run about 150 px under the list; 120 here, 60 for six or more
+   choices so a long list stays on screen) */
+.mm-fly-block.n1, .mm-fly-side.n1 { height: 164px; }
+.mm-fly-block.n2, .mm-fly-side.n2 { height: 206px; }
+.mm-fly-block.n3, .mm-fly-side.n3 { height: 248px; }
+.mm-fly-block.n4, .mm-fly-side.n4 { height: 290px; }
+.mm-fly-block.n5, .mm-fly-side.n5 { height: 332px; }
+.mm-fly-block.n6, .mm-fly-side.n6 { height: 314px; }
+.mm-fly-block.n7, .mm-fly-side.n7 { height: 356px; }
+.mm-fly-block.n8, .mm-fly-side.n8 { height: 398px; }
+/* privacy: the icon slot needs the room */
+.mm-fly-side.n2 .mm-fly-icon { width: 180px; height: 180px; }
+
 /* rows and help under an open flyout */
 .mm-row.covered,
 .mm-help.covered { opacity: 0; }

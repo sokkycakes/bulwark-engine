@@ -869,6 +869,7 @@ var CoopMenu = ( function ()
 		openPage( "lobby", "Matchmaking" );
 		stage.SetHasClass( "lobby-open", true );
 		mmFly = "";
+		stage.SetHasClass( "fly-open", false );
 		mm = {};
 
 		var root = make( "Panel", body, "mm", { hittest: "false" } );
@@ -881,7 +882,6 @@ var CoopMenu = ( function ()
 		mm.timer = label( root, "mm-timer", "" );
 		mm.list = make( "Panel", root, "mm-list", { hittest: "false" } );
 		mm.help = label( root, "mm-help", "" );
-		mm.fly = make( "Panel", root, "mm-fly", { hittest: "false" } );
 
 		mm.code = label( root, "mm-code", "" );
 		var head = make( "Panel", root, "mm-roster-head", { hittest: "false" } );
@@ -890,6 +890,11 @@ var CoopMenu = ( function ()
 		var right = make( "Panel", root, "mm-right", { hittest: "false" } );
 		mm.roster = make( "Panel", right, "mm-roster", { hittest: "false" } );
 		mm.invites = make( "Panel", right, "mm-invites", { hittest: "false" } );
+
+		// behind an open flyout the lobby is dimmed; clicking the dim closes it
+		mm.dim = make( "Button", root, "mm-dim", { hittest: "true" } );
+		mm.dim.SetPanelEvent( "onactivate", function () { $.GetContextPanel().SetFocus(); if ( mmFly ) mmCloseFly(); } );
+		mm.fly = make( "Panel", root, "mm-fly", { hittest: "false" } );
 
 		button( footer, "btn", "Back", function ()
 		{
@@ -1058,6 +1063,8 @@ var CoopMenu = ( function ()
 		mmFly = "";
 		mm.fly.RemoveAndDeleteChildren();
 		mm.fly.SetHasClass( "on", false );
+		mm.dim.SetHasClass( "on", false );
+		stage.SetHasClass( "fly-open", false );
 		mmDraw( false );
 	}
 
@@ -1070,15 +1077,21 @@ var CoopMenu = ( function ()
 		mmFly = kind;
 		mm.fly.RemoveAndDeleteChildren();
 		mm.fly.SetHasClass( "on", true );
+		mm.dim.SetHasClass( "on", true );
+		stage.SetHasClass( "fly-open", true );
 		for ( var i = 0; i < 4; i++ )
 			mm.fly.SetHasClass( "r" + i, i === row );	// the tab sits on the opening row
 
 		var tab = make( "Button", mm.fly, "mm-fly-tab", { hittest: "true" } );
 		label( tab, "mm-fly-title", opener.nameLabel.text + ":" );
 		tab.SetPanelEvent( "onactivate", function () { $.GetContextPanel().SetFocus(); mmCloseFly(); } );
+		// ODST's panels: the grey block of choices, a line under them and a
+		// fade to the block's bottom, and the dark column at their right
 		var block = make( "Panel", mm.fly, "mm-fly-block", { hittest: "false" } );
 		var items = make( "Panel", block, "mm-fly-items", { hittest: "false" } );
-		var under = label( block, "mm-fly-help", "" );
+		make( "Panel", block, "mm-fly-line", { hittest: "false" } );
+		var fade = make( "Panel", block, "mm-fly-fade", { hittest: "false" } );
+		var under = label( fade, "mm-fly-help", "" );
 		var side = make( "Panel", mm.fly, "mm-fly-side", { hittest: "false" } );
 
 		var choices, current, show;
@@ -1110,13 +1123,21 @@ var CoopMenu = ( function ()
 			show = function ( c ) { under.text = c.help; };
 		}
 
-		// the current choice first in focus, like the flyouts' initial item
-		var focus = null;
+		// block and column heights follow the number of choices (.n1 .. .n8)
+		for ( var n = 1; n <= 8; n++ )
+		{
+			block.SetHasClass( "n" + n, n === Math.min( choices.length, 8 ) );
+			side.SetHasClass( "n" + n, n === Math.min( choices.length, 8 ) );
+		}
+		// one focus bar: the current choice first, then wherever the cursor is
+		var focus = null, buttons = [];
+		var setFocus = function ( b ) { buttons.forEach( function ( x ) { x.SetHasClass( "focus", x === b ); } ); };
 		choices.forEach( function ( c )
 		{
 			var b = make( "Button", items, "mm-fly-item" + ( c.id === current ? " current" : "" ), { hittest: "true" } );
+			buttons.push( b );
 			label( b, "mm-fly-name", c.name );
-			b.SetPanelEvent( "onmouseover", function () { show( c ); } );
+			b.SetPanelEvent( "onmouseover", function () { setFocus( b ); show( c ); } );
 			b.SetPanelEvent( "onactivate", function ()
 			{
 				$.GetContextPanel().SetFocus();
@@ -1132,10 +1153,13 @@ var CoopMenu = ( function ()
 				mmCloseFly();
 			} );
 			if ( c.id === current || !focus )
-				focus = c;
+				focus = { c: c, b: b };
 		} );
 		if ( focus )
-			show( focus );
+		{
+			setFocus( focus.b );
+			show( focus.c );
+		}
 		mmDraw( false );
 	}
 
