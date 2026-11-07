@@ -512,26 +512,99 @@ void Events_Draw3D(const ndscam_t *view)
 
 /* --- text on the HUD layer --------------------------------------------------------------- */
 
+/* The band is drawn in main RAM, in the layer's own tile format (a cell's row of 8
+ * pixels is a word), and only its rows of cells that changed are copied to VRAM:
+ * the PC's text changes a few times a second (the co-op hero line, the XPM line),
+ * and drawing every line again into VRAM pixel by pixel took more than a frame */
 #define LINE_H (LinkHud_Height() + 2)
 #define MAX_LINES 12
 
-/* text split at new lines, and wrapped at maxw pixels */
+static uint32_t band[BAND_ROWS * 32 * 8];
+static uint8_t bandbank[BAND_ROWS][32];
+static uint32_t cliprows; /* the rows of cells being drawn now */
+static uint32_t grouprows; /* the rows a group's lines take (measuring) */
+static bool measuring;
+
+/* each bit of a byte as a nibble of 0xF */
+static uint32_t nib[256];
+
+/* hud_text's look at scale 1: the glyph in col, with a 1-pixel black (index 1) outline.
+ * A glyph row and its outline are masks, shifted to the cells they fall in and merged
+ * a cell's row (a word) at a time */
+static int band_text(int x, int y, int col, int bank, const char *s)
+{
+	int h = LinkHud_Height(), x0 = x;
+	const uint32_t colw = (uint32_t)col * 0x11111111u, edgew = 0x11111111u;
+	if (!nib[1])
+		for (int b = 0; b < 256; b++)
+			for (int i = 0; i < 8; i++)
+				if (b >> i & 1)
+					nib[b] |= 0xFu << (i * 4);
+	for (; *s; s++) {
+		int w, adv;
+		const uint8_t *g = LinkHud_Glyph((uint8_t)*s, &w, &adv);
+		int px0 = x - 1, sh = px0 & 7, cell0 = px0 >> 3;
+		if (g && px0 >= 0)
+			for (int j = -1; j <= h; j++) {
+				int r = y + j - BAND_Y0;
+				unsigned up, me, dn, tm, em;
+				if ((unsigned)r >= BAND_ROWS * 8 || !(cliprows & 1u << (r >> 3)))
+					continue;
+				up = j > 0 ? g[j - 1] : 0, me = j >= 0 && j < h ? g[j] : 0, dn = j + 1 < h ? g[j + 1] : 0;
+				tm = me << 1;
+				em = (((up | me | dn) << 1) | ((up | me | dn) << 2) | (up | me | dn)) & ~tm;
+				tm <<= sh, em <<= sh;
+				for (int k = 0; k < 3 && cell0 + k < 32; k++) {
+					uint32_t t = nib[(tm >> (8 * k)) & 0xFF], e = nib[(em >> (8 * k)) & 0xFF], *wp;
+					if (!(t | e))
+						continue;
+					wp = &band[((r >> 3) * 32 + cell0 + k) * 8 + (r & 7)];
+					*wp = (*wp & ~(t | e)) | (t & colw) | (e & edgew);
+				}
+			}
+		x += adv;
+	}
+	/* the cells it covers take the group's palette bank */
+	for (int cy = BW_NDS_MAX(y - 1 - BAND_Y0, 0) >> 3; cy <= (y + h - BAND_Y0) >> 3 && cy < BAND_ROWS; cy++)
+		if (cliprows & 1u << cy)
+			for (int cx = BW_NDS_MAX(x0 - 1, 0) >> 3; cx <= BW_NDS_MIN(x, 255) >> 3; cx++)
+				bandbank[cy][cx] = (uint8_t)bank;
+	return x - x0;
+}
+
+/* a line of a group: measured (its rows of cells), or drawn */
+static void emit(int x, int y, int col, int bank, const char *s)
+{
+	if (!s[0] || y < BAND_Y0 || y + LINE_H > BAND_Y1)
+		return;
+	if (measuring) {
+		for (int r = (y - 1 - BAND_Y0) >> 3; r <= (y + LinkHud_Height() - BAND_Y0) >> 3; r++)
+			if (r >= 0 && r < BAND_ROWS)
+				grouprows |= 1u << r;
+		return;
+	}
+	band_text(x, y, col, bank, s);
+}
+
+/* text split at new lines, and wrapped at maxw pixels (at a space when there is one) */
 static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN])
 {
 	int n = 0;
 	while (*s && n < MAX_LINES) {
-		int len = 0, lastsp = -1;
+		int len = 0, lastsp = -1, wpx = 0;
 		char *o = out[n];
 		while (s[len] && s[len] != '\n' && len < TEXT_LEN - 1) {
-			o[len] = s[len];
-			o[len + 1] = 0;
-			if (s[len] == ' ')
-				lastsp = len;
-			if (LinkHud_Width(o, 1) > maxw && len > 0) {
+			int w, adv;
+			LinkHud_Glyph((uint8_t)s[len], &w, &adv);
+			if (wpx + adv > maxw && len > 0) {
 				if (lastsp > 0)
 					len = lastsp;
 				break;
 			}
+			if (s[len] == ' ')
+				lastsp = len;
+			wpx += adv;
+			o[len] = s[len];
 			len++;
 		}
 		o[len] = 0;
@@ -549,15 +622,6 @@ static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN])
 }
 
 static int clampy(int y, int lines) { return BW_NDS_CLAMP(y, BAND_Y0 + 1, BAND_Y1 - lines * LINE_H); }
-
-static void put_line(int x, int y, int col, int bank, const char *s)
-{
-	int w = LinkHud_Width(s, 1);
-	if (!s[0] || y < BAND_Y0 || y + LINE_H > BAND_Y1)
-		return;
-	LinkHud_Text(x, y, 1, col, s);
-	LinkHud_Bank(x - 1, y - 1, w + 2, LinkHud_Height() + 2, bank);
-}
 
 /* GameText_CharCount: the typing effect's letters by now */
 static int char_count(float fadein, float timer, const char *msg)
@@ -615,7 +679,7 @@ static void draw_gtext(const gtext_t *t, int chars, int bank)
 			if (t->x >= 0.5f)
 				x -= w;
 		}
-		put_line(BW_NDS_CLAMP(x, 1, 255 - w), y0 + LINE_H * i, 2, bank, lines[i]);
+		emit(BW_NDS_CLAMP(x, 1, 255 - w), y0 + LINE_H * i, 2, bank, lines[i]);
 	}
 }
 
@@ -635,6 +699,78 @@ static void set_bank(int g, const uint8_t *rgb8, float a)
 	pal[2] = RGB15((int)(rgb8[0] * a) >> 3, (int)(rgb8[1] * a) >> 3, (int)(rgb8[2] * a) >> 3);
 	pal[3] = RGB15((int)(0x33 * a) >> 3, (int)(0x96 * a) >> 3, (int)(0xd4 * a) >> 3); /* the feed's attacker, #3396d4 */
 	pal[4] = RGB15((int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3); /* the feed's weapon (disabled text) */
+}
+
+/* one group's lines, measured or drawn */
+static void layout(int g, const int *chars)
+{
+	char lines[MAX_LINES][TEXT_LEN];
+	int n, y;
+	if (g == G_PRINT) { /* prints: hudmins + [16,16], 14 apart */
+		y = BAND_Y0 + 1;
+		for (int i = 0; i < 5; i++) {
+			n = split_lines(tx.print[i], 250, lines);
+			for (int j = 0; j < n; j++, y += LINE_H)
+				emit(PCY(16), y, 2, G_PRINT + 1, lines[j]);
+		}
+	} else if (g >= G_TEXT0 && g <= G_QUEUE) { /* game_text */
+		int c = g - G_TEXT0;
+		draw_gtext(c < 5 ? &tx.text[c] : &tx.queue[0], chars[c], g + 1);
+	} else if (g == G_CHAT) { /* a field from [16, h/2 - 80], half the HUD wide and tall, its lines at the bottom */
+		n = split_lines(tx.chatfinal, 128, lines);
+		y = clampy(BW_NDS_MIN(96 - PCY(80) + 96, BAND_Y1) - n * LINE_H, n);
+		for (int j = 0; j < n; j++)
+			emit(PCY(16), y + j * LINE_H, 2, G_CHAT + 1, lines[j]);
+	} else if (g == G_CENTER) { /* centred, from the middle - 69 */
+		n = split_lines(tx.center, 250, lines);
+		y = clampy(96 - (n - 4) - PCY(69), n);
+		for (int j = 0; j < n; j++)
+			emit(128 - LinkHud_Width(lines[j], 1) / 2, y + j * LINE_H, 2, G_CENTER + 1, lines[j]);
+	} else if (g == G_FEED) { /* top right, newest on top: attacker (blue), weapon (grey), victim */
+		y = BAND_Y0 + 1;
+		for (int i = tx.feeds - 1; i >= 0; i--, y += LINE_H + 1) {
+			char a[44], w[44], v[44];
+			int wa, ww, wv, x;
+			snprintf(a, sizeof(a), "%s ", tx.feed[i].a);
+			snprintf(w, sizeof(w), "%s%s", tx.feed[i].w[0] ? tx.feed[i].w : "killed", tx.feed[i].v[0] ? " " : "");
+			snprintf(v, sizeof(v), "%s", tx.feed[i].v);
+			wa = LinkHud_Width(a, 1), ww = LinkHud_Width(w, 1), wv = LinkHud_Width(v, 1);
+			x = BW_NDS_MAX(255 - PCY(32) - wa - ww - wv, 1);
+			emit(x, y, 3, G_FEED + 1, a);
+			emit(x + wa, y, 4, G_FEED + 1, w);
+			emit(x + wa + ww, y, tx.feed[i].you ? 3 : 2, G_FEED + 1, v);
+		}
+	} else if (g >= G_PICK0) { /* pickups: up from 70% of the screen, right side, in the order of the three */
+		static const char *names[3] = {"BATTERY", "HEALTH KIT", "LONG JUMP"};
+		char s[32];
+		int i = g - G_PICK0;
+		y = PCY(336);
+		for (int k = 0; k <= i; k++)
+			if (tx.pickalpha[k] > 0)
+				y -= LINE_H + 1;
+		if (tx.pickcount[i] > 1)
+			snprintf(s, sizeof(s), "%d  %s", tx.pickcount[i], names[i]);
+		else
+			snprintf(s, sizeof(s), "%s", names[i]);
+		emit(255 - PCY(20) - LinkHud_Width(s, 1), y, 2, g + 1, s);
+	}
+}
+
+/* the rows of cells in cliprows, to the layer */
+static void band_flush(void)
+{
+	uint32_t *tiles = (uint32_t *)LinkHud_Tiles();
+	uint16_t *map = LinkHud_Map();
+	if (!tiles || !map)
+		return;
+	for (int r = 0; r < BAND_ROWS; r++) {
+		if (!(cliprows & 1u << r))
+			continue;
+		for (int k = 0; k < 32 * 8; k++)
+			tiles[(BAND_ROW0 + r) * 32 * 8 + k] = band[r * 32 * 8 + k];
+		for (int c = 0; c < 32; c++)
+			map[(BAND_ROW0 + r) * 32 + c] = (uint16_t)(((BAND_ROW0 + r) * 32 + c) | bandbank[r][c] << 12);
+	}
 }
 
 void Events_Draw2D(void)
@@ -710,65 +846,33 @@ void Events_Draw2D(void)
 			redraw = true;
 
 	if (redraw) {
-		char lines[MAX_LINES][TEXT_LEN];
-		int n, y;
+		static uint32_t rows[G_COUNT]; /* the rows each group's lines took when last drawn */
+		uint32_t now_rows[G_COUNT], dirty = 0;
+		uint64_t t0 = tickGetCount();
 		Events_Stats.redraws++;
-		LinkHud_Clear(BAND_ROW0, BAND_ROWS);
-		/* prints: hudmins + [16,16], 14 apart */
-		if (sig[G_PRINT])
-			for (int i = 0, y = BAND_Y0 + 1; i < 5; i++) {
-				n = split_lines(tx.print[i], 250, lines);
-				for (int j = 0; j < n; j++, y += LINE_H)
-					put_line(PCY(16), y, 2, G_PRINT + 1, lines[j]);
+		measuring = true;
+		for (int g = 0; g < G_COUNT; g++) {
+			grouprows = 0;
+			if (sig[g])
+				layout(g, chars);
+			now_rows[g] = grouprows;
+			if (sig[g] != tx.sig[g] || now_rows[g] != rows[g])
+				dirty |= rows[g] | now_rows[g];
+		}
+		measuring = false;
+		cliprows = dirty;
+		for (int r = 0; r < BAND_ROWS; r++)
+			if (dirty & 1u << r) {
+				memset(&band[r * 32 * 8], 0, 32 * 8 * 4);
+				memset(bandbank[r], 0, 32);
 			}
-		/* game_text */
-		for (int c = 0; c < 6; c++)
-			if (sig[G_TEXT0 + c])
-				draw_gtext(c < 5 ? &tx.text[c] : &tx.queue[0], chars[c], G_TEXT0 + c + 1);
-		/* chat: a field from [16, h/2 - 80], half the HUD wide and tall, its lines at the bottom */
-		if (sig[G_CHAT]) {
-			n = split_lines(tx.chatfinal, 128, lines);
-			y = BW_NDS_MIN(96 - PCY(80) + 96, BAND_Y1) - n * LINE_H;
-			y = clampy(y, n);
-			for (int j = 0; j < n; j++)
-				put_line(PCY(16), y + j * LINE_H, 2, G_CHAT + 1, lines[j]);
-		}
-		/* the centerprint: centred, from the middle - 69 */
-		if (sig[G_CENTER]) {
-			n = split_lines(tx.center, 250, lines);
-			y = clampy(96 - (n - 4) - PCY(69), n);
-			for (int j = 0; j < n; j++)
-				put_line(128 - LinkHud_Width(lines[j], 1) / 2, y + j * LINE_H, 2, G_CENTER + 1, lines[j]);
-		}
-		/* the feed: top right, newest on top: attacker (blue), weapon (grey), victim */
-		if (sig[G_FEED])
-			for (int i = tx.feeds - 1, y = BAND_Y0 + 1; i >= 0; i--, y += LINE_H + 1) {
-				char a[44], w[44], v[44];
-				int wa, ww, wv, x;
-				snprintf(a, sizeof(a), "%s ", tx.feed[i].a);
-				snprintf(w, sizeof(w), "%s%s", tx.feed[i].w[0] ? tx.feed[i].w : "killed", tx.feed[i].v[0] ? " " : "");
-				snprintf(v, sizeof(v), "%s", tx.feed[i].v);
-				wa = LinkHud_Width(a, 1), ww = LinkHud_Width(w, 1), wv = LinkHud_Width(v, 1);
-				x = BW_NDS_MAX(255 - PCY(32) - wa - ww - wv, 1);
-				LinkHud_Text(x, y, 1, 3, a);
-				LinkHud_Text(x + wa, y, 1, 4, w);
-				LinkHud_Text(x + wa + ww, y, 1, tx.feed[i].you ? 3 : 2, v);
-				LinkHud_Bank(x - 1, y - 1, wa + ww + wv + 2, LinkHud_Height() + 2, G_FEED + 1);
-			}
-		/* pickups: up from 70% of the screen, right side */
-		for (int i = 0, y = PCY(336); i < 3; i++) {
-			static const char *names[3] = {"BATTERY", "HEALTH KIT", "LONG JUMP"};
-			char s[32];
-			if (!sig[G_PICK0 + i])
-				continue;
-			y -= LINE_H + 1;
-			if (tx.pickcount[i] > 1)
-				snprintf(s, sizeof(s), "%d  %s", tx.pickcount[i], names[i]);
-			else
-				snprintf(s, sizeof(s), "%s", names[i]);
-			put_line(255 - PCY(20) - LinkHud_Width(s, 1), y, 2, G_PICK0 + i + 1, s);
-		}
+		for (int g = 0; g < G_COUNT; g++)
+			if (sig[g] && now_rows[g] & dirty)
+				layout(g, chars);
+		band_flush();
+		memcpy(rows, now_rows, sizeof(rows));
 		memcpy(tx.sig, sig, sizeof(sig));
+		Events_Stats.lastdraw_ticks = (uint32_t)(tickGetCount() - t0);
 	}
 	for (int g = 0; g < G_COUNT; g++) {
 		const uint8_t *rgb = white;
