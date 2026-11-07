@@ -141,8 +141,12 @@ typedef struct {
 	uint8_t ns;      /* samples held, oldest first */
 	bool hasvel;     /* a player whose velocity the last ENTS gave */
 	int16_t vel[3];  /* units a second */
+	uint16_t model;  /* the model of its updates */
+	uint16_t entsseq; /* the ENTS it was last in */
+	uint8_t legs;    /* a player's: 0 idle, 1 walk, 2 run (UpdatePlayerAnimation keeps it from 150 to 200) */
 	isample_t s[ISAMPLES];
 } ianim_t;
+#define ENTS_GONE 3 /* not in this many ENTS in a row: back, it starts again with no updates */
 static ianim_t *anim; /* MAX_ANIM, NULL until ents_alloc */
 
 static int anim_slot(int ent, int frame)
@@ -183,6 +187,7 @@ static struct {
 /* each brush model as the server last had it, and as drawn (easing toward it) */
 typedef struct {
 	bool moved;
+	bool wasmoved;             /* in the ENTS before (handle_ents) */
 	int8_t slot;               /* its updates in imover[], -1 for none */
 	int32_t target[3], cur[3]; /* 1/8 units */
 	int16_t tang[3], cang[3];  /* 65536 to a turn */
@@ -193,7 +198,8 @@ typedef struct {
 typedef struct {
 	uint16_t model;
 	uint8_t ns;
-	int seen;
+	bool resting;              /* left the list: its last update is home, drawn till then */
+	uint16_t entsseq;          /* the ENTS it was last in */
 	struct {
 		uint32_t time;
 		int16_t org[3]; /* 1/4 units, as sent */
@@ -201,21 +207,10 @@ typedef struct {
 	} s[ISAMPLES];
 } imover_t;
 static imover_t *imover; /* MAX_IMOVERS */
+static bool ents_prev;          /* an ENTS came before on this clock (handle_ents) */
+static uint32_t ents_prevstamp; /* and its time */
+static uint32_t ents_ms;        /* our ms clock when the newest ENTS came */
 
-/* the tables above, after a map has loaded: false if there's no room (the
- * entities are then drawn as sent) */
-static bool ents_alloc(void)
-{
-	if (!anim && (anim = calloc(MAX_ANIM, sizeof(*anim))) != NULL && !(imover = calloc(MAX_IMOVERS, sizeof(*imover))))
-		free(anim), anim = NULL;
-	return anim != NULL;
-}
-
-static void ents_free(void)
-{
-	free(anim), free(imover);
-	anim = NULL, imover = NULL;
-}
 
 static linkcfg_t cfg;
 static int sock = -1;
@@ -270,7 +265,11 @@ static linkmodel_t models[MAX_LINKMODELS];
  * ncPlayer::PreFrame does on the PC (src/shared/game/Player.qc). */
 #define PR_CMDS 64   /* commands kept, by seq & 63; more unacked than 63 and the view snaps */
 #define PR_RING 32   /* states predicted after them, by seq & 31 */
-#define PR_REPLAY 16 /* the most a frame runs again (20-30 ms); a longer backlog goes on next frame */
+#define PR_REPLAY 16 /* the most a frame runs again; a longer backlog goes on next frame */
+#define PR_REPLAY_MS 8 /* and for no longer than this, once PR_REPLAY_MIN have run (melonDS: a command
+                        * and its weapon part take 0.5 to 1.2 ms, so 16 fit on a light map, and a
+                        * heavy one keeps its frame rate) */
+#define PR_REPLAY_MIN 4 /* the most commands a frame makes: a replay always gains on them */
 #define PR_MOVERS 8
 static struct {
 	int srvver;            /* WELCOME's linkver: 0 an old server */
@@ -308,8 +307,8 @@ static struct {
 	uint16_t pseq;
 	uint8_t fixseq;
 	struct {
-		uint16_t e;
-		float vel[3];
+		uint16_t e, model; /* model: its brush model (0 for one BRUSHINFO doesn't list) */
+		float org[3], vel[3];
 	} movers[PR_MOVERS];
 	int nmovers;
 	float stairz;          /* ncView::StairSmooth's last eye height */
@@ -329,27 +328,59 @@ typedef struct {
 	int8_t waterlevel;
 	bool landed;
 } wenvrec_t; /* what a command's movement left for the weapon code, kept for a replay */
+#define LINK_BOXES 16 /* PSTATE's boxes: the server sends at most MAX_BOXES (sv_link.c) */
 static struct {
-	winfo_t info;              /* WEAPONINFO; info.version 0 none */
-	bool havesrv;              /* the last PSTATE had a weapon block */
+	bool havesrv;              /* the last PSTATE had a weapon block (and wh is there) */
 	wstate_t srv;              /* its state, after the acked command */
 	wenvrec_t base;            /* and the player's as it left it */
 	wstate_t cur;              /* after the newest command: what the view shows */
-	wstate_t rpstate;          /* the replay's, with pr.rp */
-	wstate_t ring[PR_RING];
-	uint32_t ringseq[PR_RING];
-	wenvrec_t env[PR_CMDS];
-	int nboxes;                /* the boxes near the player, for a melee weapon's sweep */
-	float bmins[HULL_MAX_BOXES][3], bmaxs[HULL_MAX_BOXES][3];
-	uint8_t bsolid[HULL_MAX_BOXES];
+	wstate_t rpstate;          /* the replay's, with pr.rp or arp */
+	bool arp;                  /* without movement prediction: a weapon replay going on over frames */
+	uint32_t arpnext;
 	bool showing;              /* the view model is ours (cur), not STATS' */
-	int shownseq;
 	float showntime;
 	int flashframe;            /* the refresh our muzzle flash started; its size */
 	float flashscale;
 	int hudclip, hudres;       /* what the ammo panel shows (-2 nothing yet) */
 	uint32_t replays;          /* weapon-only replays */
 } wp;
+/* the weapon's bigger tables, on the heap from the first ENTS after a map has loaded to
+ * the next map (with anim), so they don't take from what loading a map has */
+static struct {
+	winfo_t info;              /* WEAPONINFO; info.version 0 none */
+	wstate_t ring[PR_RING];
+	uint32_t ringseq[PR_RING];
+	wenvrec_t env[PR_CMDS];
+	int nboxes;                /* the boxes near the player, for a melee weapon's sweep */
+	float bmins[LINK_BOXES][3], bmaxs[LINK_BOXES][3];
+	uint8_t bsolid[LINK_BOXES];
+} *wh;
+
+/* the weapon state predicted after command seq, for comparing with the server's */
+static void wring_put(uint32_t seq, const wstate_t *s)
+{
+	if (wh)
+		wh->ring[seq & (PR_RING - 1)] = *s, wh->ringseq[seq & (PR_RING - 1)] = seq;
+}
+
+/* the entity and weapon tables (anim, imover, wh), after a map has loaded: false if there's no room (the
+ * entities are then drawn as sent) */
+static bool ents_alloc(void)
+{
+	if (!wh)
+		wh = calloc(1, sizeof(*wh));
+	if (!anim && (anim = calloc(MAX_ANIM, sizeof(*anim))) != NULL && !(imover = calloc(MAX_IMOVERS, sizeof(*imover))))
+		free(anim), anim = NULL;
+	return anim != NULL;
+}
+
+static void ents_free(void)
+{
+	free(anim), free(imover), free(wh);
+	anim = NULL, imover = NULL, wh = NULL;
+	ents_prev = false;
+	wp.havesrv = wp.showing = wp.arp = false;
+}
 
 /* what prediction did, for the rig's measurement build (it reads and resets it each second) */
 typedef struct {
@@ -1530,15 +1561,23 @@ static int sample_at(void *base, size_t size, uint8_t *ns, uint32_t t)
 	return n;
 }
 
-static int mover_slot(int m)
+/* model m's slot in imover[], or one for it: the one longest out of ENTS, never one this
+ * ENTS (seq) uses; -1 when all are (more than MAX_IMOVERS moving: the rest ease) */
+static int mover_slot(int m, uint16_t seq)
 {
-	int old = 0;
+	int old = -1;
 	for (int i = 0; i < MAX_IMOVERS; i++) {
 		if (imover[i].model == m && imover[i].ns)
 			return i;
-		if (imover[i].seen < imover[old].seen)
+		if (!imover[i].ns) { /* a free one first */
+			if (old < 0 || imover[old].ns)
+				old = i;
+		} else if (imover[i].entsseq != seq && (old < 0 || (imover[old].ns && (uint16_t)(seq - imover[i].entsseq) >
+		                                                                     (uint16_t)(seq - imover[old].entsseq))))
 			old = i;
 	}
+	if (old < 0)
+		return -1;
 	if (imover[old].ns && imover[old].model < MAX_LINKMODELS && models[imover[old].model].slot == old)
 		models[imover[old].model].slot = -1;
 	memset(&imover[old], 0, sizeof(imover[old]));
@@ -1553,6 +1592,7 @@ static void handle_ents(const uint8_t *d, int len)
 	uint16_t seq = (uint16_t)rd16(d + 4);
 	int n, pos, count, movers;
 	uint32_t now = vb_ms(Nds_Vblanks()), stamp = now;
+	imover_t *im;
 	if (len < 9 || (link.haveents && (int16_t)(seq - link.entsseq) <= 0))
 		return;
 	n = BW_NDS_MIN((int)rd16(d + 6), MAX_LINKMODELS);
@@ -1561,8 +1601,9 @@ static void handle_ents(const uint8_t *d, int len)
 		return;
 	link.entsseq = seq;
 	link.haveents = true;
+	ents_ms = now;
 	for (int m = 1; m < n; m++)
-		models[m].moved = false;
+		models[m].wasmoved = models[m].moved, models[m].moved = false;
 	if (!ents_alloc())
 		eclock.have = false;
 	movers = d[pos++];
@@ -1585,7 +1626,8 @@ static void handle_ents(const uint8_t *d, int len)
 			for (int i = 0; i < MAX_ANIM; i++)
 				anim[i].ns = 0;
 			for (int i = 0; i < MAX_IMOVERS; i++)
-				imover[i].ns = 0;
+				imover[i].ns = 0, imover[i].resting = false;
+			ents_prev = false;
 			eclock.now = stamp, eclock.last = now;
 			eclock.srv = stamp, eclock.recv = now, eclock.have = true;
 		} else if (ahead > 0)
@@ -1606,17 +1648,44 @@ static void handle_ents(const uint8_t *d, int len)
 		lm->moved = true;
 		if (!imover)
 			continue;
-		if (lm->slot < 0 || imover[lm->slot].model != m)
-			lm->slot = (int8_t)mover_slot(m);
-		imover[lm->slot].seen = linkframe;
-		k = sample_at(imover[lm->slot].s, sizeof(imover[0].s[0]), &imover[lm->slot].ns, stamp);
+		if (lm->slot < 0 || imover[lm->slot].model != m || !imover[lm->slot].ns)
+			lm->slot = (int8_t)mover_slot(m, seq);
+		if (lm->slot < 0)
+			continue; /* eased (move_models) */
+		im = &imover[lm->slot];
+		im->entsseq = seq;
+		im->resting = false;
+		/* leaving home, where the last ENTS had it: from there, as the PC's entity was */
+		if (!im->ns && !lm->wasmoved && ents_prev && (int32_t)(stamp - ents_prevstamp) > 0) {
+			memset(&im->s[0], 0, sizeof(im->s[0]));
+			im->s[0].time = ents_prevstamp, im->ns = 1;
+		}
+		k = sample_at(im->s, sizeof(im->s[0]), &im->ns, stamp);
 		if (k >= 0) {
-			imover[lm->slot].s[k].time = stamp;
+			im->s[k].time = stamp;
 			for (int c = 0; c < 3; c++)
-				imover[lm->slot].s[k].org[c] = (int16_t)rd16(d + pos + 2 + c * 2);
-			memcpy(imover[lm->slot].s[k].ang, lm->tang, sizeof(lm->tang));
+				im->s[k].org[c] = (int16_t)rd16(d + pos + 2 + c * 2);
+			memcpy(im->s[k].ang, lm->tang, sizeof(lm->tang));
 		}
 	}
+	/* back home (the server leaves a brush model at its origin out): drawn on toward it
+	 * until the drawn moment passes this update, as the PC draws its entity between
+	 * snapshots, then at home (move_models) */
+	for (int m = 1; m < n && imover; m++) {
+		linkmodel_t *lm = &models[m];
+		if (lm->moved || !lm->wasmoved || lm->slot < 0 || imover[lm->slot].model != m || !imover[lm->slot].ns)
+			continue;
+		im = &imover[lm->slot];
+		memset(lm->target, 0, sizeof(lm->target)), memset(lm->tang, 0, sizeof(lm->tang));
+		lm->moved = true;
+		if (!im->resting) {
+			int k = sample_at(im->s, sizeof(im->s[0]), &im->ns, stamp);
+			im->resting = true;
+			if (k >= 0)
+				memset(&im->s[k], 0, sizeof(im->s[k])), im->s[k].time = stamp;
+		}
+	}
+	ents_prev = anim != NULL, ents_prevstamp = stamp;
 	for (int m = 1; m < n; m++) {
 		bool shown = (d[8 + (m >> 3)] >> (m & 7)) & 1;
 		if (!models[m].moved)
@@ -1650,6 +1719,11 @@ static void handle_ents(const uint8_t *d, int len)
 				typeof(anim[0]) *a = &anim[t->anim = (int8_t)anim_slot(t->ent, linkframe)];
 				int k;
 				a->seen = linkframe;
+				/* back after a while, or another model on its edict: the PC makes a new
+				 * entity of it, with no updates to draw between (cl_csqc.c:428) */
+				if (a->ns && (a->model != t->model || (uint16_t)(seq - a->entsseq) > ENTS_GONE))
+					a->ns = 0, a->legs = 0;
+				a->model = t->model, a->entsseq = seq;
 				int dx = t->org[0] - a->prev[0], dy = t->org[1] - a->prev[1];
 				int sp = (int)sqrtf((float)(dx * dx + dy * dy)) * 20;
 				if (a->seq != t->seq || !a->start)
@@ -1738,6 +1812,9 @@ static int lerp_angle16(int a, int b, int f256)
 static void lerp_things(void)
 {
 	uint32_t t = eclock.now - (uint32_t)cfg.interp;
+	/* as sent, the time into a sequence runs on from when the update came (else it
+	 * would step at the ENTS rate) */
+	uint32_t sent = (uint32_t)BW_NDS_CLAMP((int32_t)(vb_ms(linkframe) - ents_ms), 0, 100);
 	for (int i = 0; i < link.numthings; i++) {
 		thing_t *th = &link.things[i];
 		typeof(anim[0]) *a = th->anim >= 0 ? &anim[th->anim] : NULL;
@@ -1747,7 +1824,7 @@ static void lerp_things(void)
 		th->dyaw = (int16_t)(th->yaw * 128);
 		th->dseq = th->seq;
 		th->speed = a ? a->speed : 0;
-		th->dms = th->f1t != F1T_NONE ? th->f1t * 10u : a ? vb_ms(linkframe - a->start) : 0;
+		th->dms = th->f1t != F1T_NONE ? th->f1t * 10u + sent : a ? vb_ms(linkframe - a->start) : 0;
 		if (!a || !cfg.interp || !a->ns)
 			continue;
 		last = &a->s[a->ns - 1];
@@ -1756,16 +1833,29 @@ static void lerp_things(void)
 			 * reckoned server time (for at most a tenth of a second: then it
 			 * waits for the next). That time can be a little before the
 			 * newest update, which came at the start of a frame rather than
-			 * when it arrived: moving it back keeps the steps even */
+			 * when it arrived: moving it back keeps the steps even. Its
+			 * facing and animation are the newest too, run on as far: the
+			 * PC's ncPlayer::predraw runs Physics_Run, whose
+			 * UpdatePlayerAnimation turns it to the newest v_angle and runs
+			 * its animation on (Player.qc:509-519, 740-756) */
 			int32_t ahead = BW_NDS_CLAMP((int32_t)(eclock.now - last->time), -100, 100);
+			float v2 = (float)a->vel[0] * a->vel[0] + (float)a->vel[1] * a->vel[1] + (float)a->vel[2] * a->vel[2];
 			for (int c = 0; c < 3; c++)
 				th->dorg[c] = (int16_t)(last->org[c] + a->vel[c] * ahead / 1000);
-			th->speed = (int16_t)sqrtf((float)a->vel[0] * a->vel[0] + (float)a->vel[1] * a->vel[1]);
+			th->dyaw = (int16_t)(last->yaw * 128);
+			if (last->f1t != F1T_NONE)
+				th->dseq = last->seq, th->dms = (uint32_t)BW_NDS_MAX((int32_t)(last->f1t * 10u) + ahead, 0);
+			/* the legs as UpdatePlayerAnimation picks them (Player.qc:555-579): idle
+			 * under 1 unit a second, walking under 150, running over 200, and between
+			 * 150 and 200 what it was; Ents_AddLinked walks over 40 and runs over 200 */
+			a->legs = v2 < 1 ? 0 : v2 < 150 * 150 ? 1 : v2 > 200 * 200 ? 2 : a->legs;
+			th->speed = a->legs == 0 ? 0 : a->legs == 1 ? 100 : 300;
+			continue;
 		}
 		if (!lerp_pick(a->s, sizeof(a->s[0]), a->ns, t, &ia, &f))
 			continue;
 		sa = &a->s[ia], sb = &a->s[ia + 1];
-		if (!a->hasvel) {
+		{
 			int64_t d2 = 0;
 			for (int c = 0; c < 3; c++)
 				d2 += (int64_t)(sb->org[c] - sa->org[c]) * (sb->org[c] - sa->org[c]);
@@ -1786,7 +1876,9 @@ static void lerp_things(void)
 }
 
 /* the moved brush models: between two updates as the things are, or, from a
- * server that doesn't send its time, eased toward the newest */
+ * server that doesn't send its time (or one with no room for its updates),
+ * eased toward the newest. The ones PSTATE lists are where the predicted
+ * player meets them */
 static void move_models(int dt)
 {
 	int n = BW_NDS_MIN(World_NumModels(), MAX_LINKMODELS);
@@ -1794,9 +1886,11 @@ static void move_models(int dt)
 	for (int m = 1; m < n; m++) {
 		linkmodel_t *lm = &models[m];
 		int ang[3], ia, f;
+		bool placed = false;
 		if (!lm->moved)
 			continue;
-		if (imover && lm->slot >= 0 && cfg.interp && eclock.servertime) {
+		if (imover && lm->slot >= 0 && imover[lm->slot].model == m && imover[lm->slot].ns && cfg.interp &&
+		    eclock.servertime) {
 			imover_t *im = &imover[lm->slot];
 			if (lerp_pick(im->s, sizeof(im->s[0]), im->ns, t, &ia, &f)) {
 				const int16_t *a = im->s[ia].org, *b = im->s[ia + 1].org;
@@ -1807,9 +1901,19 @@ static void move_models(int dt)
 					lm->cur[c] = 2 * (d2 > (int64_t)1024 * 1024 ? (f < 256 ? a[c] : b[c]) : a[c] + (b[c] - a[c]) * f / 256);
 					lm->cang[c] = (int16_t)lerp_angle16(im->s[ia].ang[c], im->s[ia + 1].ang[c], f);
 				}
-			} else
+				placed = true;
+			} else if (im->resting) { /* drawn home: the slot is free again */
+				im->ns = 0, im->resting = false, im->model = 0;
+				lm->slot = -1, lm->moved = false;
+				memset(lm->cur, 0, sizeof(lm->cur)), memset(lm->cang, 0, sizeof(lm->cang));
+				World_ModelState(m, true, NULL, NULL);
+				continue;
+			} else if (im->ns >= 2) { /* past the newest: as sent */
 				memcpy(lm->cur, lm->target, sizeof(lm->cur)), memcpy(lm->cang, lm->tang, sizeof(lm->cang));
-		} else
+				placed = true;
+			}
+		}
+		if (!placed)
 			for (int i = 0; i < dt; i++) /* a step for each refresh the last frame took */
 				for (int c = 0; c < 3; c++) {
 					int32_t delta = lm->target[c] - lm->cur[c];
@@ -1817,6 +1921,15 @@ static void move_models(int dt)
 					lm->cur[c] = delta > 1024 || delta < -1024 ? lm->target[c] : lm->cur[c] + delta / 3;
 					lm->cang[c] = (int16_t)(lm->cang[c] + (da > 8192 || da < -8192 ? da : da / 3));
 				}
+		/* a door or lift the movement prediction collides with (PSTATE's movers) is drawn
+		 * where it collides, so the predicted feet stand on what is drawn: that is the
+		 * server's place for it at the acknowledged command, which the predicted player,
+		 * not carried by it (as on the PC), stands on too */
+		if (pr.on)
+			for (int i = 0; i < pr.nmovers; i++)
+				if (pr.movers[i].model == m)
+					for (int c = 0; c < 3; c++)
+						lm->cur[c] = (int32_t)lrintf(pr.movers[i].org[c] * 8);
 		for (int c = 0; c < 3; c++)
 			ang[c] = lm->cang[c] / 2;
 		World_ModelState(m, true, lm->cur, ang);
@@ -1845,7 +1958,7 @@ static void set_viewmodel(const ndscam_t *cam, bool *loaded_one)
 	static int light = -1, lightframe;
 	thing_t t = {0};
 	int mdl;
-	t.model = (uint16_t)(wp.showing ? wp.info.viewmodel : link.vmodel);
+	t.model = (uint16_t)(wp.showing ? wh->info.viewmodel : link.vmodel);
 	mdl = thing_model(&t, loaded_one);
 	if (mdl >= 0 && (light < 0 || linkframe - lightframe > 30)) {
 		int16_t at[3];
@@ -2054,8 +2167,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 			p_u16(&p, c->buttons);
 			p_u8(&p, c->impulse);
 		}
-		if (wp.info.version) /* the WEAPONINFO we have */
-			p_u8(&p, 'W'), p_u16(&p, wp.info.version), p_u16(&p, wp.info.edict);
+		/* the WEAPONINFO we have (0 none yet): it also tells the server we take it */
+		p_u8(&p, 'W'), p_u16(&p, wh ? wh->info.version : 0), p_u16(&p, wh ? wh->info.edict : 0);
 	}
 	send_to(&link.to, &p);
 }
@@ -2204,9 +2317,11 @@ static void pred_newmap(void)
 	pr.pstatelen = 0;
 	memset(pr.predseq, 0, sizeof(pr.predseq));
 	pr.floor = pr.seq;
-	wp.info.version = 0, wp.info.edict = 0;
-	wp.havesrv = false, wp.showing = false;
-	memset(wp.ringseq, 0, sizeof(wp.ringseq));
+	if (wh) {
+		wh->info.version = 0, wh->info.edict = 0;
+		memset(wh->ringseq, 0, sizeof(wh->ringseq));
+	}
+	wp.havesrv = false, wp.showing = false, wp.arp = false;
 	Hull_SetBrushes(NULL, 0);
 	Hull_SetBoxes(NULL, 0);
 }
@@ -2356,7 +2471,7 @@ static const pmtrace_if weapon_trif = {NULL, weapon_trace, NULL};
  * predicted or isn't being run again (what it left last time is kept) */
 static void weapon_cmd(wstate_t *ws, const pmcmd_t *c, pmstate_t *ps)
 {
-	wenvrec_t *r = &wp.env[c->seq & (PR_CMDS - 1)];
+	wenvrec_t *r = &wh->env[c->seq & (PR_CMDS - 1)];
 	wenv_t e;
 	if (ps) {
 		r->health = ps->health, r->waterlevel = (int8_t)ps->waterlevel;
@@ -2373,9 +2488,9 @@ static void weapon_cmd(wstate_t *ws, const pmcmd_t *c, pmstate_t *ps)
 	e.landed = r->landed, e.downforce = r->downforce;
 	memcpy(e.eye, r->eye, sizeof(e.eye));
 	e.velocity = ps ? ps->velocity : NULL;
-	e.trace = ps && Hull_Rule() != HULL_NONE ? &weapon_trif : NULL;
-	e.nboxes = wp.nboxes, e.boxmins = wp.bmins, e.boxmaxs = wp.bmaxs, e.boxsolid = wp.bsolid;
-	Weapon_Run(ws, Weapon_Usable(ws, &wp.info) ? &wp.info : NULL, c, &e);
+	e.trace = Hull_Rule() != HULL_NONE ? &weapon_trif : NULL; /* the PC traces whether it predicts movement or not */
+	e.nboxes = wh->nboxes, e.boxmins = wh->bmins, e.boxmaxs = wh->bmaxs, e.boxsolid = wh->bsolid;
+	Weapon_Run(ws, Weapon_Usable(ws, &wh->info) ? &wh->info : NULL, c, &e);
 	if (ps) {
 		ps->vflags = (ps->vflags & ~W_VFL_BITS) | (ws->vflags & W_VFL_BITS);
 		ps->gflags = (ps->gflags & ~W_GF_BITS) | (ws->gflags & W_GF_BITS);
@@ -2387,7 +2502,7 @@ static void weapon_pstate(const uint8_t *d, int len)
 {
 	int off = 180 + d[21] * 26 + d[178] * 27;
 	wenvrec_t *b = &wp.base;
-	wp.havesrv = off < len && Weapon_ParseState(&wp.srv, d + off, len - off) > 0;
+	wp.havesrv = wh && off < len && Weapon_ParseState(&wp.srv, d + off, len - off) > 0;
 	if (!wp.havesrv)
 		return;
 	b->vflags = rd32(d + 114), b->gflags = rd32(d + 118);
@@ -2396,12 +2511,12 @@ static void weapon_pstate(const uint8_t *d, int len)
 	b->landed = false, b->downforce = 0;
 	for (int k = 0; k < 3; k++)
 		b->eye[k] = rdf32(d + 26 + k * 4) + rdf32(d + 74 + k * 4);
-	wp.nboxes = BW_NDS_MIN(d[178], HULL_MAX_BOXES);
-	for (int i = 0; i < wp.nboxes; i++) {
+	wh->nboxes = BW_NDS_MIN(d[178], LINK_BOXES);
+	for (int i = 0; i < wh->nboxes; i++) {
 		const uint8_t *x = d + 180 + d[21] * 26 + i * 27;
-		rdvec(x + 2, wp.bmins[i]);
-		rdvec(x + 14, wp.bmaxs[i]);
-		wp.bsolid[i] = x[26];
+		rdvec(x + 2, wh->bmins[i]);
+		rdvec(x + 14, wh->bmaxs[i]);
+		wh->bsolid[i] = x[26];
 	}
 }
 
@@ -2409,12 +2524,13 @@ static void weapon_pstate(const uint8_t *d, int len)
  * when it can run this weapon, else only the punch (the rest is the server's alone) */
 static bool weapon_matches(uint32_t ack)
 {
-	const wstate_t *p = &wp.ring[ack & (PR_RING - 1)];
+	const wstate_t *p;
 	if (!wp.havesrv)
 		return true;
-	if (!ack || wp.ringseq[ack & (PR_RING - 1)] != ack)
+	p = &wh->ring[ack & (PR_RING - 1)];
+	if (!ack || wh->ringseq[ack & (PR_RING - 1)] != ack)
 		return false;
-	if (Weapon_Usable(&wp.srv, &wp.info))
+	if (Weapon_Usable(&wp.srv, &wh->info))
 		return Weapon_Matches(p, &wp.srv);
 	for (int k = 0; k < 3; k++)
 		if (fabsf(p->punch[k] - wp.srv.punch[k]) > 0.01f || fabsf(p->punchvel[k] - wp.srv.punchvel[k]) > 0.05f)
@@ -2422,40 +2538,44 @@ static bool weapon_matches(uint32_t ack)
 	return true;
 }
 
-/* without movement prediction: the weapon runs on alone, from the server's state */
+/* without movement prediction: the weapon runs on alone, from the server's state;
+ * the commands it hasn't run are run again in weapon_catchup, within the frame's budget */
 static void weapon_alone(uint32_t ack)
 {
 	if (cfg.nopredict) /* predict=0: the server's, as it comes */
 		wp.cur = wp.srv;
 	if (cfg.nopredict || !wp.havesrv || weapon_matches(ack))
 		return;
-	wp.cur = wp.srv;
 	if (pr.seq - ack >= PR_CMDS) {
-		memset(wp.ringseq, 0, sizeof(wp.ringseq));
+		wp.cur = wp.srv, wp.arp = false;
+		memset(wh->ringseq, 0, sizeof(wh->ringseq));
 		return;
 	}
 	if (ack)
-		wp.ring[ack & (PR_RING - 1)] = wp.srv, wp.ringseq[ack & (PR_RING - 1)] = ack;
+		wring_put(ack, &wp.srv);
 	wp.replays++;
-	for (uint32_t s = BW_NDS_MAX(ack, pr.floor) + 1; s <= pr.seq; s++) {
-		weapon_cmd(&wp.cur, &pr.cmd[s & (PR_CMDS - 1)], NULL);
-		wp.ring[s & (PR_RING - 1)] = wp.cur, wp.ringseq[s & (PR_RING - 1)] = s;
-	}
+	wp.rpstate = wp.srv; /* the last prediction is shown until the replay is done */
+	wp.arpnext = BW_NDS_MAX(ack, pr.floor) + 1;
+	wp.arp = true;
 }
 
 /* WEAPONINFO: the weapon in hand's values, until the server names another version */
 static void handle_weaponinfo(const uint8_t *d, int len)
 {
-	static winfo_t w;
+	winfo_t *w;
 	uint16_t edict, ver;
 	if (len < 10 || (uint16_t)rd16(d + 4) != link.spawncount)
 		return;
 	edict = (uint16_t)rd16(d + 6), ver = (uint16_t)rd16(d + 8);
-	if (!ver || (ver == wp.info.version && edict == wp.info.edict))
+	if (!wh || !ver || (ver == wh->info.version && edict == wh->info.edict))
+		return; /* (no tables yet: not acknowledged, so the server sends it again) */
+	/* parsed aside, so a body that doesn't parse leaves the last one; on the heap only meanwhile */
+	if (!(w = malloc(sizeof(*w))))
 		return;
-	w.edict = edict, w.version = ver;
-	if (Weapon_ParseInfo(&w, d + 10, len - 10))
-		wp.info = w;
+	w->edict = edict, w->version = ver;
+	if (Weapon_ParseInfo(w, d + 10, len - 10))
+		wh->info = *w;
+	free(w);
 }
 
 /* close enough that replaying would change nothing worth seeing (and bit for bit, for the count).
@@ -2497,10 +2617,13 @@ static void place_movers(const uint8_t *d, int nmovers)
 		float org[3];
 		int b;
 		pr.movers[i].e = (uint16_t)rd16(m);
+		pr.movers[i].model = 0;
 		rdvec(m + 14, pr.movers[i].vel);
 		if ((b = find_brush(pr.movers[i].e)) < 0)
 			continue;
 		rdvec(m + 2, org);
+		memcpy(pr.movers[i].org, org, sizeof(org));
+		pr.movers[i].model = pr.bcur[b].model;
 		Hull_PlaceBrush(b, org);
 		pr.placed[pr.nplaced++] = b;
 	}
@@ -2524,7 +2647,7 @@ static void handle_pstate(ndscam_t *cam)
 	ack = rd32(d + 4), status = d[10];
 	Link_PredStats.clipped = d[11], Link_PredStats.gaps = (uint16_t)rd16(d + 12);
 	varsver = (uint16_t)rd16(d + 16), brushver = (uint16_t)rd16(d + 18);
-	nmovers = BW_NDS_MIN(d[21], PR_MOVERS), nboxes = BW_NDS_MIN(d[178], HULL_MAX_BOXES);
+	nmovers = BW_NDS_MIN(d[21], PR_MOVERS), nboxes = BW_NDS_MIN(d[178], LINK_BOXES);
 	if (180 + d[21] * 26 + d[178] * 27 > len)
 		return;
 	if (ack > pr.ack && ack <= pr.seq)
@@ -2568,7 +2691,7 @@ static void handle_pstate(ndscam_t *cam)
 	/* the scene as the server had it: the movers where they are, and the boxes */
 	place_movers(d, nmovers);
 	{
-		static hullbox_t boxes[HULL_MAX_BOXES];
+		static hullbox_t boxes[LINK_BOXES];
 		for (int i = 0; i < nboxes; i++) {
 			const uint8_t *b = d + 180 + d[21] * 26 + i * 27;
 			boxes[i].edict = (uint16_t)rd16(b);
@@ -2605,13 +2728,14 @@ static void handle_pstate(ndscam_t *cam)
 	 * idle one, while our INPUT is lost) matches it, and doesn't replay the backlog again */
 	if (ack && pr.seq - ack < PR_RING) {
 		pr.pred[ack & (PR_RING - 1)] = srv, pr.predseq[ack & (PR_RING - 1)] = ack;
-		wp.ring[ack & (PR_RING - 1)] = wp.srv, wp.ringseq[ack & (PR_RING - 1)] = ack;
+		wring_put(ack, &wp.srv);
 	}
 	if (pr.seq - ack >= PR_CMDS) { /* older than the commands kept: the server's state, and a snap */
 		pr.cur = srv;
 		wp.cur = wp.srv;
 		memset(pr.predseq, 0, sizeof(pr.predseq));
-		memset(wp.ringseq, 0, sizeof(wp.ringseq));
+		if (wh)
+			memset(wh->ringseq, 0, sizeof(wh->ringseq));
 		Link_PredStats.snaps += pr.on;
 		pr.stair = false;
 		pr.on = true;
@@ -2631,18 +2755,26 @@ static void handle_pstate(ndscam_t *cam)
 	pr.on = true;
 }
 
-/* the replay handle_pstate started, PR_REPLAY commands a frame: a stall's backlog
- * (up to 63) would otherwise take one frame of 100 ms */
+/* how long this frame's replays may still take (PR_REPLAY_MS from the start of the
+ * frame's prediction), as tickGetCount() counts */
+static uint64_t rp_deadline;
+static bool rp_more(int n)
+{
+	return n < PR_REPLAY && (n < PR_REPLAY_MIN || tickGetCount() < rp_deadline);
+}
+
+/* the replay handle_pstate started, PR_REPLAY commands a frame at most and no longer
+ * than PR_REPLAY_MS: a stall's backlog (up to 63) would otherwise take one frame of 100 ms */
 static void pred_catchup(void)
 {
 	int n = 0;
 	if (!pr.rp)
 		return;
-	for (; pr.rpnext <= pr.seq && n < PR_REPLAY; pr.rpnext++, n++) {
+	for (; pr.rpnext <= pr.seq && rp_more(n); pr.rpnext++, n++) {
 		run_cmd(&pr.rpstate, &pr.cmd[pr.rpnext & (PR_CMDS - 1)]);
 		if (wp.havesrv) {
 			weapon_cmd(&wp.rpstate, &pr.cmd[pr.rpnext & (PR_CMDS - 1)], &pr.rpstate);
-			wp.ring[pr.rpnext & (PR_RING - 1)] = wp.rpstate, wp.ringseq[pr.rpnext & (PR_RING - 1)] = pr.rpnext;
+			wring_put(pr.rpnext, &wp.rpstate);
 		}
 		pr.pred[pr.rpnext & (PR_RING - 1)] = pr.rpstate;
 		pr.predseq[pr.rpnext & (PR_RING - 1)] = pr.rpnext;
@@ -2658,6 +2790,26 @@ static void pred_catchup(void)
 	pr.rp = false;
 	if (pr.rpsnap)
 		Link_PredStats.snaps++, pr.stair = false;
+}
+
+/* weapon_alone's replay, as pred_catchup goes on with the movement's */
+static void weapon_catchup(void)
+{
+	int n = 0;
+	if (!wp.arp)
+		return;
+	if (pr.on || !wp.havesrv) { /* the movement's replay runs the weapon now */
+		wp.arp = false;
+		return;
+	}
+	for (; wp.arpnext <= pr.seq && rp_more(n); wp.arpnext++, n++) {
+		weapon_cmd(&wp.rpstate, &pr.cmd[wp.arpnext & (PR_CMDS - 1)], NULL);
+		wring_put(wp.arpnext, &wp.rpstate);
+	}
+	if (wp.arpnext <= pr.seq)
+		return;
+	wp.cur = wp.rpstate;
+	wp.arp = false;
 }
 
 /* botwalk=1: a fixed 12-second pattern instead of the pad, so runs repeat */
@@ -2745,11 +2897,12 @@ static int make_commands(int frame, const ndscam_t *cam, int fwd, int side, int 
 			if (!pr.rp) { /* else the replay puts its own there */
 				pr.pred[c.seq & (PR_RING - 1)] = pr.cur;
 				pr.predseq[c.seq & (PR_RING - 1)] = c.seq;
-				wp.ring[c.seq & (PR_RING - 1)] = wp.cur, wp.ringseq[c.seq & (PR_RING - 1)] = c.seq;
+				wring_put(c.seq, &wp.cur);
 			}
 		} else if (wp.havesrv && !cfg.nopredict) {
 			weapon_cmd(&wp.cur, &c, NULL);
-			wp.ring[c.seq & (PR_RING - 1)] = wp.cur, wp.ringseq[c.seq & (PR_RING - 1)] = c.seq;
+			if (!wp.arp) /* else the replay puts its own there */
+				wring_put(c.seq, &wp.cur);
 		}
 	}
 	return made;
@@ -2805,19 +2958,22 @@ static void weapon_frame(int frame)
 	int seq = wp.cur.animseq, n, clip = -1, res = -1;
 	float t = wp.cur.animtime;
 	bool was = wp.showing;
-	wp.showing = wp.havesrv && !cfg.nopredict && Weapon_Usable(&wp.cur, &wp.info);
+	wp.showing = wp.havesrv && !cfg.nopredict && Weapon_Usable(&wp.cur, &wh->info);
 	if (wp.showing) {
-		/* started (again): from 0, frame 0's events with it; else on from the last frame */
-		float base = !was ? t : seq != wp.shownseq || t < wp.showntime ? 0 : BW_NDS_MAX(wp.showntime, 1e-6f);
-		n = Weapon_Events(&wp.info, seq, base, t, ev, 4);
+		/* as the PC's View_DrawViewModel (src/client/viewmodel.qc:213-218) calls
+		 * processmodelevents: from the last frame's time whatever sequence that was,
+		 * and from 0 (frame 0's events with it) only when the time went back
+		 * (qc_modelevents.c collect). A last time of exactly 0 already had frame 0 */
+		float base = !was ? t : t < wp.showntime ? 0 : BW_NDS_MAX(wp.showntime, 1e-6f);
+		n = Weapon_Events(&wh->info, seq, base, t, ev, 4);
 		for (int i = 0; i < n; i++)
 			if (ev[i]->code == 5001 || ev[i]->code == 5011 || ev[i]->code == 5021 || ev[i]->code == 5031) {
 				wp.flashframe = frame;
 				wp.flashscale = ev[i]->opt >= 10 ? BW_NDS_CLAMP((float)(ev[i]->opt / 10), 0.5f, 3.0f) : 1.0f;
 			}
-		wp.shownseq = seq, wp.showntime = t;
+		wp.showntime = t;
 		clip = wp.cur.clipsize > 0 ? wp.cur.clip : -1;
-		res = Weapon_Ammo(&wp.cur, wp.info.primammo);
+		res = Weapon_Ammo(&wp.cur, wh->info.primammo);
 	} else if (wp.havesrv && wp.cur.edict) { /* no info: the server's numbers */
 		clip = wp.cur.clipsize > 0 ? wp.cur.clip : -1;
 		res = wp.cur.nammo ? wp.cur.ammo[0] : -1;
@@ -2933,8 +3089,10 @@ static const char *play(ndscam_t *cam)
 		{
 			uint64_t t0 = LINK_PM_TICKS();
 			uint32_t t;
+			rp_deadline = tickGetCount() + (uint64_t)PR_REPLAY_MS * TICK_FREQ / 1000;
 			handle_pstate(cam);
 			pred_catchup();
+			weapon_catchup();
 			made = make_commands(frame, cam, fwd, side, buttons);
 			t = (uint32_t)(LINK_PM_TICKS() - t0);
 			Link_PredStats.frames++;
