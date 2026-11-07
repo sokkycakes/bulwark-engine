@@ -733,14 +733,17 @@ static uint32_t hash(uint32_t h, const void *p, int n)
 	return h;
 }
 
+static uint32_t flushrows;            /* rows drawn in RAM, not on the layer yet */
+static uint16_t stagepal[G_COUNT][4]; /* the groups' palette banks (entries 1-4), to write */
+
 static void set_bank(int g, const uint8_t *rgb8, float a)
 {
-	uint16_t *pal = BG_PALETTE + (g + 1) * 16;
+	uint16_t *pal = stagepal[g]; /* the bank's entries 1-4 */
 	a = a < 0 ? 0 : a > 1 ? 1 : a;
-	pal[1] = RGB15(0, 0, 0);
-	pal[2] = RGB15((int)(rgb8[0] * a) >> 3, (int)(rgb8[1] * a) >> 3, (int)(rgb8[2] * a) >> 3);
-	pal[3] = RGB15((int)(0x33 * a) >> 3, (int)(0x96 * a) >> 3, (int)(0xd4 * a) >> 3); /* the feed's attacker, #3396d4 */
-	pal[4] = RGB15((int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3); /* the feed's weapon (disabled text) */
+	pal[0] = RGB15(0, 0, 0);
+	pal[1] = RGB15((int)(rgb8[0] * a) >> 3, (int)(rgb8[1] * a) >> 3, (int)(rgb8[2] * a) >> 3);
+	pal[2] = RGB15((int)(0x33 * a) >> 3, (int)(0x96 * a) >> 3, (int)(0xd4 * a) >> 3); /* the feed's attacker, #3396d4 */
+	pal[3] = RGB15((int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3); /* the feed's weapon (disabled text) */
 }
 
 /* one group's lines, measured or drawn */
@@ -798,7 +801,7 @@ static void layout(int g, const int *chars)
 	}
 }
 
-/* the rows of cells in cliprows, to the layer */
+/* the rows of cells in flushrows, to the layer */
 static void band_flush(void)
 {
 	uint32_t *tiles = (uint32_t *)Hud_TextTiles();
@@ -806,13 +809,23 @@ static void band_flush(void)
 	if (!tiles || !map)
 		return;
 	for (int r = 0; r < BAND_ROWS; r++) {
-		if (!(cliprows & 1u << r))
+		if (!(flushrows & 1u << r))
 			continue;
 		for (int k = 0; k < 32 * 8; k++)
 			tiles[(BAND_ROW0 + r) * 32 * 8 + k] = band[r * 32 * 8 + k];
 		for (int c = 0; c < 32; c++)
 			map[(BAND_ROW0 + r) * 32 + c] = (uint16_t)(((BAND_ROW0 + r) * 32 + c) | bandbank[r][c] << 12);
 	}
+}
+
+/* what Events_Draw2D made, to the layer and its palette: called right after the wait for
+ * the vertical blank, so no row of text or colour changes while the screen is drawn */
+void Events_Commit2D(void)
+{
+	band_flush();
+	flushrows = 0;
+	for (int g = 0; g < G_COUNT; g++)
+		memcpy(BG_PALETTE + (g + 1) * 16 + 1, stagepal[g], sizeof(stagepal[g]));
 }
 
 void Events_Draw2D(void)
@@ -917,7 +930,7 @@ void Events_Draw2D(void)
 		for (int g = 0; g < G_COUNT; g++)
 			if (sig[g] && now_rows[g] & dirty)
 				layout(g, chars);
-		band_flush();
+		flushrows |= dirty;
 		memcpy(rows, now_rows, sizeof(rows));
 		memcpy(tx.sig, sig, sizeof(sig));
 		Events_Stats.lastdraw_ticks = (uint32_t)(tickGetCount() - t0);

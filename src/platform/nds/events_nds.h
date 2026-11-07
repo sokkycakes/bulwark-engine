@@ -31,8 +31,10 @@ void Events_Frame(uint32_t ms, int health);
 void Events_View(ndscam_t *view);
 /* the fade and the damage feedback over the 3D scene (after everything else) */
 void Events_Draw3D(const ndscam_t *view);
-/* the text on the HUD layer */
+/* the text on the HUD layer: drawn in RAM, then put on the layer by Events_Commit2D
+ * right after the wait for the vertical blank */
 void Events_Draw2D(void);
+void Events_Commit2D(void);
 
 /* for the rig's checks: records taken, and what is up now */
 typedef struct {

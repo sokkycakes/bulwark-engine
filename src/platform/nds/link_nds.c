@@ -691,6 +691,7 @@ static void screen_init(void)
 static void screen_done(void)
 {
 	Hud_Done();
+	glDisable(GL_BLEND); /* Events_Reset turned it on for the link; the rest draws as before */
 	sub = NULL;
 	Nds_InitConsole();
 	Mp_Init();
@@ -3023,6 +3024,7 @@ static const char *play(ndscam_t *cam)
 		glFlush(0);
 		swiWaitForVBlank();
 		/* in the blank, while the GPU draws the next frame from what it was given */
+		Events_Commit2D();
 		{
 			uint64_t t0 = LINK_PM_TICKS();
 			uint32_t t;
