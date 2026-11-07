@@ -188,6 +188,8 @@ static struct {
 	int pagenext;
 	shw_t hw[S_HW];
 	uint32_t use; /* the LRU clock: frames */
+	uint32_t lastframe, frameint; /* ticks: the last Snd_Frame, and the time since the one before */
+	uint32_t readest;             /* ticks a read takes: the longest lately (decays each frame) */
 	/* the listener */
 	int32_t lorg[3], lright[3];
 	bool havelistener;
@@ -343,6 +345,8 @@ static bool pread_(spack_t *p, uint32_t pos, void *buf, uint32_t n)
 	uint32_t t0 = ticks(), t;
 	bool ok = !fseek(p->f, (long)pos, SEEK_SET) && fread(buf, 1, n, p->f) == n;
 	t = ticks() - t0;
+	if (t > S.readest)
+		S.readest = t;
 	Snd_Stats.reads++, Snd_Stats.readbytes += n;
 	S.statreadsum += t;
 	if (t > S.statreadmax)
@@ -1393,11 +1397,20 @@ void Snd_ViewEvent(int code, int opt)
 /* --- the frame -------------------------------------------------------------------------------- */
 
 
+/* the reads a frame: what voices wait for, within sndreadms (at least one read: a sound that
+ * came is late otherwise), a read only while the time spent and one more read fit; the
+ * precache list's preload, which nothing waits for, only in a frame that has read nothing
+ * else and then one read. A long frame (over 100 ms: the models load after the map at 1-2
+ * frames a second) gets an eighth of its length, up to 60 ms, for all of it */
 static void loader(void)
 {
 	uint32_t t0 = ticks(), budget = ms_ticks((uint32_t)S.readms);
-	int reads = 0;
-#define BUDGET_LEFT() (reads == 0 || ticks() - t0 < budget)
+	int reads = 0, r4;
+	bool longframe = S.frameint > ms_ticks(100);
+	if (longframe)
+		budget = BW_NDS_MAX(budget, BW_NDS_MIN(S.frameint / 8, ms_ticks(60)));
+#define BUDGET_LEFT() (reads == 0 || ticks() - t0 + S.readest <= budget)
+#define PRECACHE_LEFT() (longframe ? BUDGET_LEFT() : reads == r4 && r4 == 0 && ticks() - t0 + S.readest <= budget)
 	/* 1: samples a channel is playing while they load */
 	for (int h = 0; h < S_HW && BUDGET_LEFT(); h++)
 		if (S.hw[h].v >= 0 && S.hw[h].blk >= 0) {
@@ -1460,7 +1473,8 @@ static void loader(void)
 		}
 	/* 4: the precache list: each name looked up, what is found kept in size order, and read
 	 * smallest first into free room, up to 75% */
-	while (S.pkey && S.plook < S.npk && BUDGET_LEFT()) {
+	r4 = reads;
+	while (S.pkey && S.plook < S.npk && PRECACHE_LEFT()) {
 		int ki;
 		if (!S.pkey[S.plook]) {
 			S.plook++;
@@ -1476,7 +1490,7 @@ static void loader(void)
 			pord_insert(S.plook, S.k[ki].bytes);
 		S.plook++;
 	}
-	while (S.pkey && S.pnext < S.npord && BUDGET_LEFT()) {
+	while (S.pkey && S.pnext < S.npord && PRECACHE_LEFT()) {
 		int idx = (int)(S.pord[S.pnext] & 0xffff), ki = key_find(S.pkey[idx]);
 		if (ki < 0 || S.k[ki].state != K_FOUND || S.k[ki].fmt == FMT_STREAM || S.k[ki].bytes > S.arenasize / 2 ||
 		    (S.k[ki].block >= 0 && key_complete(ki))) {
@@ -1492,7 +1506,7 @@ static void loader(void)
 			break;
 		}
 		reads++;
-		while (!key_complete(ki) && BUDGET_LEFT() && load_step(ki, false, false))
+		while (!key_complete(ki) && PRECACHE_LEFT() && load_step(ki, false, false))
 			reads++;
 		if (key_complete(ki)) {
 			S.preload_bytes += S.k[ki].bytes;
@@ -1500,6 +1514,7 @@ static void loader(void)
 		}
 	}
 #undef BUDGET_LEFT
+#undef PRECACHE_LEFT
 }
 
 void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int nthings, uint32_t clock_ms, bool have)
@@ -1509,6 +1524,8 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		return;
 	S.use++;
 	cmds = 0;
+	S.frameint = t0 - S.lastframe, S.lastframe = t0;
+	S.readest -= S.readest / 32; /* (a slow read counts for a second or so) */
 	/* the listener: the camera the DS draws with (EFX_UpdateListener, SoundScape.qc:853-868); its
 	 * right vector from yaw alone ((sin yaw, -cos yaw, 0): AngleVectors with no roll) */
 	memcpy(S.lorg, cam->org, sizeof(S.lorg));
