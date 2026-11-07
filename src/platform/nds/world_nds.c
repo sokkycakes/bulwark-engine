@@ -149,6 +149,14 @@ static struct {
 	int portaltests, pvsleaves;
 	int loadms;             /* portal building time, for the stats */
 	bool haslit;            /* coloured light from a .lit */
+	int modelgen;           /* counts changes to the brush entities' states (World_ModelState) */
+	/* what the last World_Collect worked from: the same again gives the same list */
+	struct {
+		bool valid;
+		int32_t eye[3];
+		int yaw, pitch, visframe, modelgen;
+	} kept;
+	int viewyaw, viewpitch; /* this frame's (World_Begin) */
 	int texfailed;          /* textures VRAM had no room for */
 } w;
 
@@ -1282,21 +1290,21 @@ static inline void add_leafface(int i)
 	wk.vislist[wk.numvis++] = i;
 }
 
-static inline void add_face(int i)
+/* a brush entity's face; returns whether it went in the list */
+static inline bool add_face(int i)
 {
 	face_t *f = &w.faces[i];
-	const plane_t *pl;
 	int32_t d;
 	if (f->alias >= 0)
 		i = f->alias, f = &w.faces[i];
 	if (f->frame == w.frame || f->tex < 0)
-		return;
+		return false;
 	f->frame = w.frame;
-	pl = &w.planes[f->plane];
-	d = pl->n[0] * eye[0] + pl->n[1] * eye[1] + pl->n[2] * eye[2] - pl->dist;
+	d = plane_dist(&w.planes[f->plane], f->ptype);
 	if (f->back ? d > 0 : d < 0)
-		return; /* turned away */
+		return false; /* turned away */
 	w.vislist[w.numvis++] = i;
+	return true;
 }
 
 /* clip: the frustum planes the node's parent wasn't wholly inside (box_clip) */
@@ -1578,6 +1586,7 @@ void World_Begin(const ndscam_t *cam, ndsstats_t *st)
 	memcpy(eye, cam->org, sizeof(eye));
 	leaf = point_leaf(eye);
 	setup_frustum(cam);
+	w.viewyaw = cam->yaw, w.viewpitch = cam->pitch;
 	if (World_Portals != WORLD_PORTALS_OFF && w.portals.numportals && leaf > 0 && leaf <= w.visleafs &&
 	    w.portals.leaffirst[leaf] != w.portals.leaffirst[leaf + 1]) {
 		if (leaf != w.lastleaf)
@@ -1620,13 +1629,22 @@ void World_ModelState(int m, bool shown, const int32_t *org, const int *ang)
 	if (m <= 0 || m >= w.nummodels)
 		return;
 	sm = &w.models[m];
-	sm->hidden = !shown;
 	if (!org)
 		org = sm->home, ang = NULL;
-	sm->moved = org[0] || org[1] || org[2] || (ang && (ang[0] || ang[1] || ang[2]));
-	memcpy(sm->org, org, sizeof(sm->org));
-	for (int c = 0; c < 3; c++)
-		sm->ang[c] = ang ? (int16_t)ang[c] : 0;
+	{
+		bool moved = org[0] || org[1] || org[2] || (ang && (ang[0] || ang[1] || ang[2]));
+		int a[3];
+		for (int c = 0; c < 3; c++)
+			a[c] = ang ? (int16_t)ang[c] : 0;
+		if (sm->hidden == !shown && sm->moved == moved && !memcmp(sm->org, org, sizeof(sm->org)) &&
+		    !memcmp(sm->ang, a, sizeof(a)))
+			return; /* as it was: World_Collect may keep its list */
+		w.modelgen++;
+		sm->hidden = !shown;
+		sm->moved = moved;
+		memcpy(sm->org, org, sizeof(sm->org));
+		memcpy(sm->ang, a, sizeof(sm->ang));
+	}
 }
 
 int World_NumModels(void) { return w.nummodels; }
@@ -1677,17 +1695,30 @@ static void model_box(const submodel_t *sm, int16_t *mins, int16_t *maxs)
 
 void World_Collect(void)
 {
-	w.numvis = 0;
-	if (!w.loaded)
+	if (!w.loaded) {
+		w.numvis = 0;
 		return;
-	if (w.numnodes) {
+	}
+	/* standing still, looking the same way, with the same PVS: the tree's
+	 * faces are what they were (the walk takes most of a frame on a big map) */
+	if (w.kept.valid && w.kept.visframe == w.visframe && w.kept.yaw == w.viewyaw && w.kept.pitch == w.viewpitch &&
+	    !memcmp(w.kept.eye, eye, sizeof(eye))) {
+		if (w.kept.modelgen == w.modelgen)
+			return; /* and the brush entities' too */
+		w.numvis = w.numtreevis;
+	} else if (w.numnodes) {
+		w.numvis = 0;
 		wk.nodes = w.nodes, wk.leafs = w.leafs, wk.planes = w.planes, wk.faces = w.faces;
 		wk.marks = w.marks, wk.vislist = w.vislist;
 		wk.numnodes = w.numnodes, wk.visframe = w.visframe, wk.frame = w.frame, wk.numvis = w.numvis;
 		walk(0, 15);
 		w.numvis = wk.numvis;
-	}
+	} else
+		w.numvis = 0;
 	w.numtreevis = w.numvis;
+	w.kept.valid = true, w.kept.visframe = w.visframe, w.kept.modelgen = w.modelgen;
+	w.kept.yaw = w.viewyaw, w.kept.pitch = w.viewpitch;
+	memcpy(w.kept.eye, eye, sizeof(eye));
 	/* doors, lifts and other brush entities: all their faces, by box */
 	for (int m = 1; m < w.nummodels; m++) {
 		const submodel_t *sm = &w.models[m];
@@ -1709,13 +1740,9 @@ void World_Collect(void)
 		memcpy(saved, eye, sizeof(saved));
 		if (sm->moved)
 			to_model(sm, saved, eye);
-		for (int i = 0; i < sm->numfaces; i++)
-			if (sm->firstface + i < w.numfaces) {
-				int before = w.numvis;
-				add_face(sm->firstface + i);
-				if (w.numvis > before)
-					w.visdist[before] = d, w.vismodel[before] = (int16_t)m;
-			}
+		for (int i = sm->firstface, end = BW_NDS_MIN(sm->firstface + sm->numfaces, w.numfaces); i < end; i++)
+			if (add_face(i))
+				w.visdist[w.numvis - 1] = d, w.vismodel[w.numvis - 1] = (int16_t)m;
 		memcpy(eye, saved, sizeof(saved));
 	}
 }
