@@ -73,6 +73,11 @@ void Hull_PlaceBrush(int i, const float origin[3], const float angles[3]); /* en
  * the brush there, not its turned bounds (a train turned along its path keeps its spawn box) */
 void Hull_BrushBox(int i, const float absmin[3], const float absmax[3]);
 void Hull_SetBoxes(const hullbox_t *b, int n);
+/* the touches that move the player (BRUSHINFO's touch block), by edict; copied (HULL_MAX_TOUCH) */
+#define HULL_MAX_TOUCH 64
+void Hull_SetTouches(const pmtouch_t *t, int n);
+const pmtouch_t *Hull_TouchOf(void *ctx, int ent);
+int Hull_Triggers(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max);
 /* the boxes that overlap a player box at org: PM_FOCUS_DROPSTUCK keeps them (until the next Hull_SetBoxes) */
 void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3]);
 

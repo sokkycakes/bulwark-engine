@@ -304,6 +304,9 @@ static struct {
 	/* the turned entries' absmin/absmax (BRUSHINFO's turned block), by entry, for bnew and bcur */
 	struct tbox { uint16_t i; float mn[3], mx[3]; } tnew[PR_TBOX], tcur[PR_TBOX];
 	int ntnew, ntcur;
+	/* its touch block (the same for bnew; ntouchwant the number the version has) */
+	pmtouch_t touchnew[HULL_MAX_TOUCH];
+	int ntouchnew, ntouchwant;
 	int placed[PR_MOVERS]; /* bcur entries hull_nds.c has where the last PSTATE's movers were */
 	int nplaced;
 	/* the newest PSTATE, kept while packets drain, handled after */
@@ -2219,6 +2222,7 @@ static void handle_brushinfo(const uint8_t *d, int len)
 		if (total)
 			memset(pr.bhave, 0, (size_t)total);
 		pr.bnewver = ver, pr.bnewtotal = total, pr.bnewgot = 0, pr.ntnew = 0;
+		pr.ntouchnew = 0, pr.ntouchwant = 0;
 	}
 	for (int i = 0; i < count; i++) {
 		const uint8_t *e = d + 13 + i * 18;
@@ -2236,12 +2240,13 @@ static void handle_brushinfo(const uint8_t *d, int len)
 		if (!pr.bhave[first + i])
 			pr.bhave[first + i] = 1, pr.bnewgot++;
 	}
-	/* then the turned ones' boxes: u8 count, then u8 entry, absmin, absmax each */
+	/* then the turned ones' boxes: u8 count, then u8 entry, absmin, absmax each; then the
+	 * touches: u16 the version's, u8 this packet's, then 44 bytes each */
 	if (len >= 13 + count * 30 + 1) {
 		const uint8_t *t = d + 13 + count * 30;
-		int nt = t[0];
+		int nt = t[0], j;
 		t++;
-		for (int j = 0; j < nt && t + 25 <= d + len; j++, t += 25) {
+		for (j = 0; j < nt && t + 25 <= d + len; j++, t += 25) {
 			int idx = first + t[0], k;
 			if (t[0] >= count)
 				continue;
@@ -2256,8 +2261,31 @@ static void handle_brushinfo(const uint8_t *d, int len)
 			rdvec(t + 1, pr.tnew[k].mn);
 			rdvec(t + 13, pr.tnew[k].mx);
 		}
+		if (j == nt && t + 3 <= d + len) {
+			int want = rd16(t), ntc = t[2];
+			pr.ntouchwant = want < HULL_MAX_TOUCH ? want : HULL_MAX_TOUCH;
+			t += 3;
+			for (j = 0; j < ntc && t + 44 <= d + len; j++, t += 44) {
+				pmtouch_t tc;
+				int k;
+				tc.edict = (uint16_t)rd16(t);
+				tc.kind = t[2], tc.flags = t[3];
+				tc.speed = rdf32(t + 4);
+				rdvec(t + 8, tc.dir);
+				rdvec(t + 20, tc.absmin);
+				rdvec(t + 32, tc.absmax);
+				for (k = 0; k < pr.ntouchnew && pr.touchnew[k].edict != tc.edict; k++)
+					;
+				if (k == pr.ntouchnew) {
+					if (pr.ntouchnew >= HULL_MAX_TOUCH)
+						continue;
+					pr.ntouchnew++;
+				}
+				pr.touchnew[k] = tc;
+			}
+		}
 	}
-	if (pr.bnewgot < total)
+	if (pr.bnewgot < total || pr.ntouchnew < pr.ntouchwant)
 		return;
 	/* complete: it becomes the list (the buffers swap), and the scene, once; PSTATE
 	 * only places its movers */
@@ -2272,6 +2300,7 @@ static void handle_brushinfo(const uint8_t *d, int len)
 	memcpy(pr.tcur, pr.tnew, sizeof(pr.tnew[0]) * (size_t)pr.ntnew);
 	pr.ntcur = pr.ntnew, pr.ntnew = 0;
 	Hull_SetBrushes(pr.bcur, pr.bcurn);
+	Hull_SetTouches(pr.touchnew, pr.ntouchnew);
 	for (int k = 0; k < pr.ntcur; k++)
 		Hull_BrushBox(pr.tcur[k].i, pr.tcur[k].mn, pr.tcur[k].mx);
 	pr.nplaced = 0;
@@ -2315,7 +2344,7 @@ static uint32_t focus_dropstuck(void *ctx, const float org[3], const float mins[
 	return Hull_Focus(ctx, org, mins, maxs, radius, flags | PM_FOCUS_DROPSTUCK);
 }
 
-static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck};
+static const pmtrace_if pred_trace = {NULL, Hull_Move, focus_dropstuck, Hull_TouchOf, Hull_Triggers};
 
 static void run_cmd(pmstate_t *s, const pmcmd_t *c)
 {

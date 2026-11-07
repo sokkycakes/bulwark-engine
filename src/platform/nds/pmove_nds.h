@@ -61,6 +61,17 @@ typedef struct {
 	float entmins[3], entmaxs[3];  /* trace_ent.absmin, .absmax (world: 0 0 0, never linked) */
 } pmhit_t;
 
+/* what touching an entity does to the movement (link BRUSHINFO's touch block): a
+ * trigger_push from touchtriggers, a func_conveyor from PMoveCustom_DoTouch */
+enum { PM_TOUCH_PUSH = 1, PM_TOUCH_CONVEYOR = 2 };
+enum { PM_TF_ONCE = 1, PM_TF_TARGET = 2, PM_TF_UPDOWN = 4, PM_TF_VISUAL = 8 };
+typedef struct {
+	uint16_t edict;
+	uint8_t kind, flags;
+	float speed, dir[3];          /* m_flSpeed, m_vecMoveDir */
+	float absmin[3], absmax[3];   /* a trigger's */
+} pmtouch_t;
+
 typedef struct pmtrace_if {
 	void *ctx;
 	/* the server's SV_Move (sv_world.c:348-471) for the predicted player as passent:
@@ -76,6 +87,11 @@ typedef struct pmtrace_if {
 	 * probe that can find nothing is then left out */
 	uint32_t (*focus)(void *ctx, const float org[3], const float mins[3], const float maxs[3],
 	                  float radius, int flags);
+	/* may be NULL: the touch of the solid entity ent (a trace's), NULL for none */
+	const pmtouch_t *(*touchof)(void *ctx, int ent);
+	/* may be NULL: the triggers SV_TouchTriggers (sv_world.c) runs for a player linked
+	 * at absmin..absmax, in edict order: up to max in out, their number returned */
+	int (*triggers)(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max);
 } pmtrace_if;
 
 enum { PMV_G_GRAVITY, PMV_ACCELERATE, PMV_AIRACCELERATE, PMV_AIRSTEPSIZE, PMV_BOXCENTER,

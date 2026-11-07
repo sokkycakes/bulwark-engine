@@ -86,6 +86,7 @@ typedef struct {
 	int vars;                 /* index into the vars sets */
 	int brushes, nbrushes;    /* into the brush pool: the list for this command */
 	int boxes, nboxes;        /* into the box pool */
+	int touches, ntouches;    /* into the touch pool ("touch") */
 	pmstate_t pre, post;
 	pmcmd_t cmd;
 	float ran_msec;
@@ -98,6 +99,8 @@ static brush_t *brushpool;
 static int numbrushpool, capbrushpool;
 static box_t *boxpool;
 static int numboxpool, capboxpool;
+static pmtouch_t *touchpool;
+static int numtouchpool, captouchpool;
 static step_t *steps;
 static int numsteps;
 static bool verbose, nofocus, dshull0;
@@ -486,6 +489,34 @@ static const brush_t *sc_brushes;
 static int sc_nbrushes;
 static const box_t *sc_boxes;
 static int sc_nboxes;
+static const pmtouch_t *sc_touches;
+static int sc_ntouches;
+
+#ifndef PMTEST_HULL_NDS
+/* the touches of the step, as hull_nds.c's Hull_TouchOf and Hull_Triggers have them */
+static const pmtouch_t *own_touchof(void *ctx, int ent)
+{
+	(void)ctx;
+	for (int i = 0; i < sc_ntouches; i++)
+		if (sc_touches[i].edict == ent)
+			return sc_touches[i].kind == PM_TOUCH_CONVEYOR ? &sc_touches[i] : NULL;
+	return NULL;
+}
+
+static int own_triggers(void *ctx, const float *amin, const float *amax, const pmtouch_t **out, int max)
+{
+	int n = 0;
+	(void)ctx;
+	for (int i = 0; i < sc_ntouches && n < max; i++) {
+		const pmtouch_t *t = &sc_touches[i];
+		if (t->kind != PM_TOUCH_PUSH || t->absmin[0] > amax[0] || t->absmin[1] > amax[1] || t->absmin[2] > amax[2] ||
+		    t->absmax[0] < amin[0] || t->absmax[1] < amin[1] || t->absmax[2] < amin[2])
+			continue;
+		out[n++] = t;
+	}
+	return n;
+}
+#endif
 /* focus: which of them the next traces may test */
 static bool fc_on;
 static uint8_t fc_brush[MAX_BRUSHES], fc_box[MAX_BOXES];
@@ -760,10 +791,16 @@ static uint32_t own_focus(void *ctx, const float org[3], const float mins[3], co
 	return near;
 }
 
-static pmtrace_if trace_if = {NULL, own_move, own_focus};
+#ifdef PMTEST_HULL_NDS
+static pmtrace_if trace_if = {NULL, own_move, own_focus, Hull_TouchOf, Hull_Triggers};
+#else
+static pmtrace_if trace_if = {NULL, own_move, own_focus, own_touchof, own_triggers};
+#endif
 
-static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
+static void set_scene(const brush_t *b, int nb, const box_t *x, int nx, const pmtouch_t *t, int nt)
 {
+	sc_touches = t;
+	sc_ntouches = nt;
 	sc_brushes = b;
 	sc_nbrushes = nb;
 	sc_boxes = x;
@@ -792,6 +829,7 @@ static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
 			if (b[i].hasabs && turned(&b[i]))
 				Hull_BrushBox(i, b[i].amin, b[i].amax);
 		Hull_SetBoxes(hx, nx < MAX_BOXES ? nx : MAX_BOXES);
+		Hull_SetTouches(t, nt);
 	}
 #endif
 }
@@ -887,7 +925,7 @@ static int read_log(const char *path, int slot)
 	FILE *f = fopen(path, "r");
 	static char line[65536];
 	int brushlist = -1, nbrushlist = 0; /* the current "brush" version */
-	int curbrushes = -1, ncurbrushes = 0, curboxes = 0, ncurboxes = 0, curvars = -1;
+	int curbrushes = -1, ncurbrushes = 0, curboxes = 0, ncurboxes = 0, curvars = -1, curtouches = 0, ncurtouches = 0;
 	step_t *st = NULL;
 	if (!f) {
 		fprintf(stderr, "pmtest: can't read %s\n", path);
@@ -904,7 +942,7 @@ static int read_log(const char *path, int slot)
 			continue;
 		if (!strcmp(kind, "map")) {
 			brushlist = curbrushes = -1;
-			nbrushlist = ncurbrushes = ncurboxes = 0;
+			nbrushlist = ncurbrushes = ncurboxes = ncurtouches = 0;
 			printf("PMTEST log map %s", p);
 		} else if (!strcmp(kind, "vars")) {
 			pmvars_t v;
@@ -1009,6 +1047,20 @@ static int read_log(const char *path, int slot)
 				x->solid = (uint8_t)so;
 			}
 			numboxpool += ncurboxes;
+		} else if (!strcmp(kind, "touch")) {
+			long n, e, kd, fl;
+			if (!ti(&p, &n))
+				continue;
+			touchpool = grow(touchpool, &captouchpool, numtouchpool + (int)n, sizeof(pmtouch_t));
+			curtouches = numtouchpool;
+			for (ncurtouches = 0; ncurtouches < n; ncurtouches++) {
+				pmtouch_t *t = &touchpool[numtouchpool + ncurtouches];
+				if (!ti(&p, &e) || !ti(&p, &kd) || !ti(&p, &fl) || !tf(&p, &t->speed) || !tv(&p, t->dir) ||
+				    !tv(&p, t->absmin) || !tv(&p, t->absmax))
+					break;
+				t->edict = (uint16_t)e, t->kind = (uint8_t)kd, t->flags = (uint8_t)fl;
+			}
+			numtouchpool += ncurtouches;
 		} else if (!strcmp(kind, "pre")) {
 			if (numsteps >= MAX_STEPS || curvars < 0)
 				continue;
@@ -1023,6 +1075,8 @@ static int read_log(const char *path, int slot)
 			st->nbrushes = curbrushes < 0 ? 0 : ncurbrushes;
 			st->boxes = curboxes;
 			st->nboxes = ncurboxes;
+			st->touches = curtouches;
+			st->ntouches = ncurtouches;
 		} else if (!strcmp(kind, "cmd") && st) {
 			long v[9], ranimp;
 			for (int i = 0; i < 9; i++)
@@ -1179,7 +1233,7 @@ static int run_script(const char *path, const char *emit)
 			for (int k = 0; k < 3; k++)
 				c.move[k] = (int16_t)mv[k];
 			c.buttons = (uint16_t)but;
-			set_scene(brushes, nb, boxes, nx);
+			set_scene(brushes, nb, boxes, nx, NULL, 0);
 			for (long i = 0; i < count; i++) {
 				pmstate_t pre = s;
 				c.seq = ++seq;
@@ -1262,7 +1316,7 @@ static const char *flag_diff(const pmstate_t *a, const pmstate_t *b)
 static void scene_of(const step_t *st)
 {
 	set_scene(brushpool ? &brushpool[st->brushes] : NULL, st->nbrushes, boxpool ? &boxpool[st->boxes] : NULL,
-	          st->nboxes);
+	          st->nboxes, touchpool ? &touchpool[st->touches] : NULL, st->ntouches);
 }
 
 /* -dump: every value PM_Run writes, as bits */

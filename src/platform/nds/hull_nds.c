@@ -91,6 +91,8 @@ typedef struct {
 } sbox_t;
 static sbrush_t *brushes;
 static int numbrushes, brushcap;
+static pmtouch_t touches[HULL_MAX_TOUCH]; /* Hull_SetTouches */
+static int numtouches;
 static sbox_t boxes[HULL_MAX_BOXES];
 static int numboxes;
 static uint16_t candb[HULL_MAX_BRUSHES], candx[HULL_MAX_BOXES];
@@ -666,7 +668,7 @@ void Hull_Free(void)
 	memset(&hsel, 0, sizeof(hsel));
 	free(brushes);
 	brushes = NULL;
-	numbrushes = brushcap = numboxes = numcandb = numcandx = 0;
+	numbrushes = brushcap = numboxes = numcandb = numcandx = numtouches = 0;
 	focused = false;
 	drop_mask = 0, scene_gen++;
 }
@@ -1168,6 +1170,37 @@ void Hull_PlaceBrush(int i, const float origin[3], const float angles[3])
 		scene_gen++;
 	}
 	unfocus();
+}
+
+void Hull_SetTouches(const pmtouch_t *t, int n)
+{
+	numtouches = n < HULL_MAX_TOUCH ? n : HULL_MAX_TOUCH;
+	memcpy(touches, t, sizeof(*t) * (size_t)numtouches);
+}
+
+const pmtouch_t *Hull_TouchOf(void *ctx, int ent)
+{
+	(void)ctx;
+	for (int i = 0; i < numtouches; i++)
+		if (touches[i].edict == ent)
+			return touches[i].kind == PM_TOUCH_CONVEYOR ? &touches[i] : NULL;
+	return NULL;
+}
+
+/* SV_TouchTriggers (sv_world.c:493-525): a trigger whose absmin..absmax meets the player's */
+int Hull_Triggers(void *ctx, const float absmin[3], const float absmax[3], const pmtouch_t **out, int max)
+{
+	int n = 0;
+	(void)ctx;
+	for (int i = 0; i < numtouches && n < max; i++) {
+		const pmtouch_t *t = &touches[i];
+		if (t->kind != PM_TOUCH_PUSH || t->absmin[0] > absmax[0] || t->absmin[1] > absmax[1] ||
+		    t->absmin[2] > absmax[2] || t->absmax[0] < absmin[0] || t->absmax[1] < absmin[1] ||
+		    t->absmax[2] < absmin[2])
+			continue;
+		out[n++] = t;
+	}
+	return n;
 }
 
 void Hull_BrushBox(int i, const float absmin[3], const float absmax[3])

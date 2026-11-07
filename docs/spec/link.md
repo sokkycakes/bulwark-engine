@@ -437,6 +437,9 @@ the game doesn't network, and shows a `func_illusionary`).
 | | count × 12 | f32 angles[3] of each entry: a turned brush is traced in its own frame (`sv_world.c` `brush_frame`) |
 | | 1 | `nturned`: the entries with angles not all 0 |
 | | nturned × 25 | u8 entry (in this packet), f32 absmin[3], f32 absmax[3] |
+| | 2 | `ntouch`: the touches in this version |
+| | 1 | the touches in this packet |
+| | each × 44 | u16 edict, u8 kind (1 `trigger_push`, 2 `func_conveyor`), u8 flags, f32 speed, f32 dir[3], f32 absmin[3], f32 absmax[3] |
 
 Every brush entity (model `*1` and up) with `solid` 4 (`SOLID_BSP`) or 22
 (`SOLID_BSPTRIGGER`) that the server's traces test for this player (owner
@@ -451,6 +454,18 @@ the list, or a turned one whose box is not; a moving one doesn't count,
 PSTATE's movers carry it), and again 0.2 s after the last one while
 `brushack` is behind. A device that reads 18 bytes an entry stops before the
 angles.
+
+The touches are what touching an entity does to the player's movement,
+which Nuclide runs inside the movement: each `trigger_push` that
+`touchtriggers` would run (`solid` 1 or 22 with a `touch`; Nuclide makes
+them 22) and each `func_conveyor` of the list (`PMoveCustom_DoTouch`), up to
+64, by edict. `speed` and `dir` are the entity's `m_flSpeed` and
+`m_vecMoveDir`; flags: 1 `TP_ONCE`, 2 the push has a target (its velocity
+is the server's), 4 a straight up or down push (`m_pushAngle` ±90 0 0), 8 a
+conveyor's `SF_CONVEYOR_VISUAL`. They come after the brushes, in the packets
+that have room, and in packets with no entries after them when needed; the
+version is complete when all entries and all `ntouch` touches have come. A
+change in them is a new version.
 
 The device drops a PSTATE, PMOVEVARS or BRUSHINFO whose spawncount is not
 its map's.
@@ -609,6 +624,7 @@ LINKPM <slot> brush <n> {<edict> <model> <solid> <skin> <ox> <oy> <oz>}...   (wh
 LINKPM <slot> brushpos <n> {<edict> <ox> <oy> <oz>}...             (entries of the last brush line somewhere else now)
 LINKPM <slot> brushang <n> {<edict> <pitch> <yaw> <roll>}...        (the turned entries, the rest 0; while any are turned, and once after)
 LINKPM <slot> brushabs <n> {<edict> <absmin xyz> <absmax xyz>}...   (the turned entries' boxes, after brushang)
+LINKPM <slot> touch <n> {<edict> <kind> <flags> <speed> <dir xyz> <absmin xyz> <absmax xyz>}...   (BRUSHINFO's touches, when they change)
 LINKPM <slot> boxes <n> {<edict> <x0> <y0> <z0> <x1> <y1> <z1> <solid>}...   (as PSTATE's, up to 64)
 LINKPM <slot> pre <state>
 LINKPM <slot> cmd <seq> <msec> <pitch> <yaw> <fwd> <side> <up> <buttons> <impulse> <ran_msec> <ran_impulse>

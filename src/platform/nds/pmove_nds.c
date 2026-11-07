@@ -834,9 +834,72 @@ static bool pmc_fix_origin(void)
 	return false;
 }
 
-/* PMoveCustom_Move (pmove_custom.qc:551-682). PMoveCustom_DoTouch (:657,
- * :679) and portals (:648-651, :668-672) are left out: touches are the
- * server's, and the next PSTATE brings what they did (a conveyor's basevel). */
+/* PMoveCustom_DoTouch (pmove_custom.qc:440-455) for what moves the player: the
+ * touched entity's touch; the player's own touch moves nothing. func_conveyor::Touch
+ * (func_conveyor.qc:376-388): the player is Sentient */
+static void pm_dotouch(int ent)
+{
+	const pmtouch_t *t;
+	if (!T->touchof || ent <= 0 || !(t = T->touchof(T->ctx, ent)))
+		return;
+	if (t->kind == PM_TOUCH_CONVEYOR && !(t->flags & PM_TF_VISUAL))
+		for (int k = 0; k < 3; k++)
+			S->basevel[k] = t->dir[k] * (t->speed);
+}
+
+/* trigger_push::Touch (trigger_push.qc:353-404) on the player */
+static void pm_push(const pmtouch_t *t)
+{
+	switch (S->movetype) {
+	case PM_MOVETYPE_NONE:
+	case 7:  /* MOVETYPE_PUSH */
+	case PM_MOVETYPE_NOCLIP:
+	case 12: /* MOVETYPE_FOLLOW */
+		return;
+	}
+	/* m_bHasTarget: Route_GetJumpVelocity, the server's (the next PSTATE brings it) */
+	if (t->flags & PM_TF_TARGET)
+		return;
+	/* only on straight up/down will we leave standing things alone */
+	if ((S->flags & PM_FL_ONGROUND) && (t->flags & PM_TF_UPDOWN)) {
+		S->gravity = 0.75f;
+		return;
+	}
+	/* trigger_push is not supposed to work underwater */
+	if (S->waterlevel > 1)
+		return;
+	/* the player's solid is neither SOLID_NOT nor SOLID_BSP */
+	if (t->flags & PM_TF_ONCE) {
+		for (int k = 0; k < 3; k++)
+			S->velocity[k] += (t->speed * t->dir[k]) * 10.0f;
+		if (fx_gt(S->velocity[2], 0))
+			S->flags &= ~PM_FL_ONGROUND;
+	} else
+		for (int k = 0; k < 3; k++)
+			S->basevel[k] = (t->speed * t->dir[k]) * 0.5f;
+}
+
+/* touchtriggers() (pmove_custom.qc:727): SV_LinkEdict(self, true) links the player at its
+ * origin (sv_world.c:50-77) and SV_TouchTriggers runs each trigger its box meets */
+static void pm_touchtriggers(void)
+{
+	const pmtouch_t *t[16];
+	float amin[3], amax[3];
+	int n;
+	if (!T->triggers)
+		return;
+	for (int k = 0; k < 3; k++) {
+		amin[k] = S->origin[k] + S->mins[k] - 1;
+		amax[k] = S->origin[k] + S->maxs[k] + 1;
+	}
+	n = T->triggers(T->ctx, amin, amax, t, 16);
+	for (int i = 0; i < n; i++)
+		if (t[i]->kind == PM_TOUCH_PUSH)
+			pm_push(t[i]);
+}
+
+/* PMoveCustom_Move (pmove_custom.qc:551-682); portals (:648-651, :668-672) are
+ * left out */
 static void pmc_move(void)
 {
 	float dest[3], saved_plane[3], start[3];
@@ -937,7 +1000,7 @@ static void pmc_move(void)
 
 		/* stepping failed, just bounce off */
 		pmc_rebound(saved_plane);
-		/* PMoveCustom_DoTouch(trace_ent) (:657): the server's */
+		pm_dotouch(tr.ent); /* this is where m_pmoveBaseVelocity might get set */
 	}
 
 	/* touch whatever is below */
@@ -948,13 +1011,13 @@ static void pmc_move(void)
 
 		if (fx_eq(tr.fraction, 1.0f))
 			return;
-		/* portal (:668-672) and DoTouch (:679): the server's */
+		/* portal (:668-672): the server's */
+		pm_dotouch(tr.ent);
 		S->groundent = tr.ent;
 	}
 }
 
-/* PMoveCustom_RunPlayerPhysics (pmove_custom.qc:692-731); touchtriggers
- * (:727) is the server's */
+/* PMoveCustom_RunPlayerPhysics (pmove_custom.qc:692-731) */
 static void pmc_run(void)
 {
 	bool flying;
@@ -978,6 +1041,10 @@ static void pmc_run(void)
 
 	vcopy(in_angles, S->angles);
 	S->angles[0] *= -0.333f;
+
+	/* activate any SOLID_TRIGGER entities, when not in noclip anyway */
+	if (S->movetype != PM_MOVETYPE_NOCLIP)
+		pm_touchtriggers();
 }
 
 /* --- player_pmove.qc --------------------------------------------------- */
