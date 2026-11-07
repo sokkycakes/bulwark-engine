@@ -91,12 +91,14 @@ static inline void top_px(int x, int y, int col)
 	*p = (uint8_t)(x & 1 ? (*p & 0x0F) | col << 4 : (*p & 0xF0) | col);
 }
 
+/* col | FILL_DITHER: every other pixel, a checkerboard */
+#define FILL_DITHER 0x10
 static void top_fill(int x, int y, int w, int h, int col)
 {
-	int x1 = BW_NDS_MIN(x + w, clipx1), y1 = BW_NDS_MIN(y + h, clipy1);
-	x = BW_NDS_MAX(x, clipx0), y = BW_NDS_MAX(y, clipy0);
+	int x1 = BW_NDS_MIN(x + w, clipx1), y1 = BW_NDS_MIN(y + h, clipy1), step = col & FILL_DITHER ? 2 : 1;
+	x = BW_NDS_MAX(x, clipx0), y = BW_NDS_MAX(y, clipy0), col &= 15;
 	for (int j = y; j < y1; j++)
-		for (int i = x; i < x1; i++)
+		for (int i = step == 2 ? x + ((x + j + 1) & 1) : x; i < x1; i += step)
 			top_px(i, j, col);
 }
 
@@ -655,9 +657,11 @@ static void part_obj(void)
 }
 
 /* the kill feed: top right, newest on top (hud.css .kill-feed, hud.js "feed") */
+static int feed_y; /* below the feed's lines: the notice keeps clear of them */
 static void part_feed(uint32_t t)
 {
 	int y = top_y + 3;
+	feed_y = 0;
 	if (!hud.have || down_now())
 		return;
 	for (int i = 0; i < FEED_MAX; i++) {
@@ -669,17 +673,18 @@ static void part_feed(uint32_t t)
 		wtext = f->w[0] ? f->w : "killed";
 		w = (f->a[0] ? t_w(f->a, 1) + 5 : 0) + t_w(wtext, 1) + (f->v[0] ? 5 + t_w(f->v, 1) : 0) + 6;
 		x = 253 - w;
-		window(x, y, w, 9);
+		window(x, y, w, 10);
 		if (f->you)
-			w_frame(x + 1, y + 1, w - 2, 7, HC_ACCENT);
+			w_frame(x, y, w, 10, HC_ACCENT);
 		x += 3;
 		if (f->a[0])
 			x += w_text(x, y + 1, 1, HC_ACCENT, f->a, 1) + 5;
 		x += w_text(x, y + 1, 1, HC_MUTED, wtext, 1) + 5;
 		if (f->v[0])
 			w_text(x, y + 1, 1, HC_TEXT, f->v, 1);
-		y += 10;
+		y += 11;
 	}
+	feed_y = y;
 }
 
 static void upper(char *s)
@@ -693,7 +698,7 @@ static void upper(char *s)
 static void part_notice(uint32_t t)
 {
 	char title[48];
-	int tw, sw, w, x, y = PY(140);
+	int tw, sw, w, x, y = BW_NDS_MAX(PY(140), feed_y + 3), h = hud.nsub[0] ? 23 : 14;
 	if (!hud.nborn || t - hud.nborn >= NOTICE_MS || down_now())
 		return;
 	snprintf(title, sizeof(title), "%s", hud.ntitle);
@@ -702,16 +707,11 @@ static void part_notice(uint32_t t)
 	w = BW_NDS_MAX(tw, sw) + 24;
 	x = 128 - w / 2;
 	/* a band that fades out at both ends: solid in the middle, then every other pixel */
-	w_fill(x + 8, y, w - 16, hud.nsub[0] ? 22 : 14, HC_WINDOW);
-	for (int j = 0; j < (hud.nsub[0] ? 22 : 14); j++)
-		for (int i = 0; i < 8; i++)
-			if (((i + j) & 1) && i >= (j & 1) * 2) {
-				w_fill(x + i, y + j, 1, 1, HC_WINDOW);
-				w_fill(x + w - 1 - i, y + j, 1, 1, HC_WINDOW);
-			}
+	w_fill(x + 8, y, w - 16, h, HC_WINDOW);
+	w_fill(x, y, 8, h, HC_WINDOW | FILL_DITHER), w_fill(x + w - 8, y, 8, h, HC_WINDOW | FILL_DITHER);
 	w_text(128 - tw / 2, y + 2, 2, HC_TEXT, title, 0);
 	if (hud.nsub[0])
-		w_text(128 - sw / 2, y + 14, 1, HC_TEXT, hud.nsub, 0);
+		w_text(128 - sw / 2, y + 15, 1, HC_TEXT, hud.nsub, 0);
 }
 
 /* a big number over a faint row of 8s, right-aligned in cells (hud.js bigNum) */
