@@ -494,14 +494,16 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 		l->loadms = rd16(d + 24) * 10;
 	if (len >= 4 + 2 + 2 + 3 + 3 + 4 + 2 + 8)
 		l->devspawn = (uint16_t)rd16(d + 26);
-	/* after the v1 part, the commands and 'W' (link v2), or neither: 'E', the last
-	 * EVENT record the device has in order; a device that sends it takes EVENT */
+	/* after the v1 part, the commands, 'W' and 'H' (link v2), or neither: 'E', the
+	 * last EVENT record the device has in order; a device that sends it takes EVENT */
 	{
 		int t = 32;
 		if (len >= 44 && d[32] == 'C' && d[38] >= 1 && d[38] <= 8 && d[39] == 14 && len >= 44 + 14 * d[38]) {
 			t = 44 + 14 * d[38];
 			if (len >= t + 5 && d[t] == 'W')
 				t += 5;
+			if (len >= t + 3 && d[t] == 'H')
+				t += 3;
 		}
 		if (len >= t + 3 && d[t] == 'E') {
 			uint16_t ack = (uint16_t)rd16(d + t + 1);
