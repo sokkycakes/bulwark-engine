@@ -1152,6 +1152,8 @@ static void handle_ambient(const uint8_t *d, int len)
 			a->pendkey = 0;
 			continue;
 		}
+		if (a->key == o->key)
+			a->pendkey = 0; /* (back to the sample it plays: a switch waiting is called off) */
 		if (!memcmp(a, o, offsetof(samb_t, voice)))
 			continue; /* (the same entry) */
 		/* ambient_generic: soundupdate on every update (ambient_generic.qc:487-491, snd_main.c:909-939) */
