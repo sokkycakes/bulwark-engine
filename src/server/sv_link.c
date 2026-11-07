@@ -32,6 +32,8 @@
 #define MAX_EDICTS_LINK 2048
 #define FL_MONSTER 32
 #define SCREEN_RESEND 0.25
+#define MAX_FX 16 /* impacts in one FX packet */
+enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 'from') */
 #define VIEW_INTERVAL 0.05
 #define LOAD_GRACE 60.0 /* seconds a device may take to load a map it was sent to */
 #define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
@@ -41,7 +43,7 @@
 #define ENTS_RANGE 2048.0f
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
-enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS };
+enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -81,6 +83,14 @@ typedef struct {
 	int devspawn;                 /* the map (spawn count) the device says it has, -1 if it doesn't say */
 	int buttons;                  /* the game's buttons as the device mapped them, -1 if it doesn't */
 	int impseq;                   /* the count of the device's last one-shot impulse */
+	int vmseq;                    /* the view model's sequence when last looked at */
+	float vmtime;                 /* and how long it had played */
+	uint8_t vmplays, vmsent;      /* sequences started (the same one again counts), and as last sent */
+	struct {
+		uint8_t flags;      /* FX_ flags */
+		float from[3], to[3];
+	} fx[MAX_FX];
+	int numfx;                    /* impacts waiting for the next FX packet */
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -459,6 +469,8 @@ static void send_screen(link_t *l)
 	send_to(&l->from, &p);
 }
 
+static float efloat(int e, const char *name);
+
 static void send_view(link_t *l)
 {
 	pkt_t p;
@@ -480,6 +492,8 @@ static void send_view(link_t *l)
 		QC_EdictFields(sv.vm, e)[F.fixangle].f = 0;
 		flags |= 1;
 	}
+	/* 2: on the ground (FL_ONGROUND), 4: crouching (Nuclide's VFL_CROUCHING) */
+	flags |= ((int)efloat(e, "flags") & 512 ? 2 : 0) | ((int)efloat(e, "m_nuclideFlags") & 4 ? 4 : 0);
 	p_begin(&p, L_VIEW);
 	p_u32(&p, l->session);
 	p_u16(&p, ++l->viewseq);
@@ -514,6 +528,13 @@ static void send_view(link_t *l)
 	}
 	l->nummarkers = 0;
 	p.data[countpos] = (uint8_t)count;
+	/* after the markers: the player's velocity (units a second), for the
+	 * device's bob and roll, which the PC client works out from it */
+	{
+		int vofs = QC_FieldOfs(sv.vm, "velocity");
+		for (int k = 0; k < 3; k++)
+			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(vofs >= 0 ? QC_EdictFields(sv.vm, e)[vofs + k].f : 0, -32768, 32767));
+	}
 	send_to(&l->from, &p);
 }
 
@@ -579,6 +600,10 @@ static int cmp_thing(const void *a, const void *b)
 	float x = ((const thing_t *)a)->d2, y = ((const thing_t *)b)->d2;
 	return x < y ? -1 : x > y;
 }
+
+static void send_stats(link_t *l);
+static void watch_viewmodel(link_t *l);
+static void send_fx(link_t *l);
 
 /* the names of the studio models, a run at a time (docs/spec/link.md,
  * MODELS): u32 session, u16 spawncount, u8 count, count x {u16 index, u8
@@ -744,6 +769,9 @@ void SV_LinkSend(void)
 		 * on its way when the welcome went out can fool that) */
 		if (l->devspawn >= 0 ? l->devspawn != (svs.spawncount & 0xffff) : l->lastrecv < l->welcomed)
 			continue;
+		watch_viewmodel(l);
+		if (l->numfx)
+			send_fx(l);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -757,9 +785,130 @@ void SV_LinkSend(void)
 			send_ents(l);
 			if (l->entsseq % 5 == 0)
 				send_models(l);
+			if (l->entsseq % 4 == 0 || l->vmplays != l->vmsent)
+				send_stats(l);
 			l->nextview = now + VIEW_INTERVAL;
 		}
 	}
+}
+
+/* a float field by name, 0 when the game has no such field */
+static float efloat(int e, const char *name)
+{
+	int ofs = QC_FieldOfs(sv.vm, name);
+	return ofs >= 0 ? QC_EdictFields(sv.vm, e)[ofs].f : 0;
+}
+
+/* the entity in the player's hand (Nuclide's .m_activeWeapon), 0 for none */
+static int active_weapon(int e)
+{
+	int ofs = QC_FieldOfs(sv.vm, "m_activeWeapon"), w;
+	if (ofs < 0 || (w = (int)QC_EdictFields(sv.vm, e)[ofs].u) <= 0 || w >= sv.vm->num_edicts || sv.vm->edicts[w].free)
+		return 0;
+	return w;
+}
+
+/* a class member field: Nuclide's compiler names them Class::__mm_name */
+static float member(int e, const char *cls, const char *name)
+{
+	char full[96];
+	snprintf(full, sizeof(full), "%s::__mm_%s", cls, name);
+	return QC_FieldOfs(sv.vm, full) >= 0 ? efloat(e, full) : efloat(e, name);
+}
+
+/* the view model's sequence, once a server frame: a sequence started again
+ * (another shot) shows as its time going back */
+static void watch_viewmodel(link_t *l)
+{
+	int e = l->client->edict, seq = (int)member(e, "ncPlayer", "weaponAnimSequence");
+	float t = member(e, "ncPlayer", "weaponAnimTime");
+	if (seq != l->vmseq || t < l->vmtime)
+		l->vmplays++;
+	l->vmseq = seq, l->vmtime = t;
+}
+
+/* the player's numbers for the device's own status panel (docs/spec/link.md,
+ * STATS): health, armour, score, and the weapon in hand by its class name,
+ * without "weapon_" (Nuclide keeps it in .m_activeWeapon) */
+static void send_stats(link_t *l)
+{
+	pkt_t p;
+	int e = l->client->edict, w = active_weapon(e);
+	const char *wname = "";
+	size_t n;
+	p_begin(&p, L_STATS);
+	p_u32(&p, l->session);
+	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(QC_EFloat(sv.vm, e, F.health), -32768, 32767));
+	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(efloat(e, "armorvalue"), -32768, 32767));
+	p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(efloat(e, "frags"), -32768, 32767));
+	if (w) {
+		wname = QC_GetString(sv.vm, QC_EInt(sv.vm, w, F.classname));
+		if (!strncmp(wname, "weapon_", 7))
+			wname += 7;
+	}
+	n = BW_MIN(strlen(wname), 24);
+	p_u8(&p, (unsigned)n);
+	p_bytes(&p, wname, (int)n);
+	/* the view model: its model index (named by MODELS), sequence, and plays */
+	p_u16(&p, w ? (unsigned)member(w, "ncWeapon", "viewModel") : 0);
+	p_u8(&p, (unsigned)l->vmseq & 255);
+	p_u8(&p, l->vmplays);
+	l->vmsent = l->vmplays;
+	send_to(&l->from, &p);
+}
+
+/* --- bullet impacts ------------------------------------------------------------------------
+ * The PC client draws impacts from the game's CSQC events (Nuclide's
+ * SVC_CGAMEPACKET with EV_SURFIMPACT / EV_SURFIMPACTID, which start with the
+ * impact point) and its muzzle flashes and tracers itself. A DS runs no CSQC,
+ * so the server reads those multicasts as they go to a device's client and
+ * passes the point on, with where the shooter's eye was for a tracer */
+#define CGAMEPACKET 83
+#define EV_SURFIMPACT 33
+#define EV_SURFIMPACTID 34
+
+static float rdfloat(const uint8_t *p)
+{
+	uint32_t u = rd32(p);
+	float f;
+	memcpy(&f, &u, 4);
+	return f;
+}
+
+void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause)
+{
+	link_t *l;
+	if (len < 14 || data[0] != CGAMEPACKET || (data[1] != EV_SURFIMPACT && data[1] != EV_SURFIMPACTID))
+		return;
+	if (!(l = link_for_edict(c->edict)) || l->numfx >= MAX_FX)
+		return;
+	l->fx[l->numfx].flags = 0;
+	for (int k = 0; k < 3; k++)
+		l->fx[l->numfx].to[k] = rdfloat(data + 2 + k * 4);
+	if (cause >= 1 && cause < sv.vm->num_edicts && !sv.vm->edicts[cause].free) { /* a player's or a monster's shot */
+		const qcval_t *f = QC_EdictFields(sv.vm, cause);
+		l->fx[l->numfx].flags = FX_SHOT | (cause == c->edict ? FX_OWN : 0);
+		for (int k = 0; k < 3; k++)
+			l->fx[l->numfx].from[k] = f[F.origin + k].f + (F.view_ofs >= 0 ? f[F.view_ofs + k].f : 0);
+	}
+	l->numfx++;
+}
+
+static void send_fx(link_t *l)
+{
+	pkt_t p;
+	p_begin(&p, L_FX);
+	p_u32(&p, l->session);
+	p_u8(&p, (unsigned)l->numfx);
+	for (int i = 0; i < l->numfx; i++) {
+		p_u8(&p, l->fx[i].flags);
+		for (int k = 0; k < 3; k++)
+			p_u32(&p, (uint32_t)(int32_t)(l->fx[i].to[k] * 8));
+		for (int k = 0; k < 3; k++)
+			p_u32(&p, (uint32_t)(int32_t)(l->fx[i].from[k] * 8));
+	}
+	l->numfx = 0;
+	send_to(&l->from, &p);
 }
 
 /* the client's slot is going away (SV_DropClient) */

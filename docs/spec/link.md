@@ -97,10 +97,12 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x82 | WELCOME | u32 session, u8 playernum, u16 spawncount, char map[64] |
 | 0x83 | REFUSE | char reason[64] |
 | 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
-| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags, u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15} |
+| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags (1 the game turned us, 2 on the ground, 4 crouching), u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15}, then s16 velocity[3] (units a second) |
 | 0x86 | KICK | u32 session, char reason[64] |
 | 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (16), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom)} |
 | 0x88 | MODELS | u32 session, u16 spawncount, u8 count, count × {u16 model, u8 len, char name[len]} |
+| 0x89 | STATS | u32 session, s16 health, s16 armour, s16 score, u8 len, char weapon[len], u16 viewmodel, u8 sequence, u8 plays |
+| 0x8A | FX | u32 session, u8 count, count × {u8 flags, s32 hit[3] (1/8 units), s32 eye[3] (1/8 units)} |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`), and every 2 s in case one was lost. The device then loads
@@ -146,6 +148,30 @@ entities itself:
 
 `MODELS` names the model indexes in `things`, a few at a time with every
 fifth `ENTS`, until the device has had them all for this map.
+
+`STATS` comes with every fourth `ENTS`: the player's `health`,
+`armorvalue` and `frags`, and the weapon in hand as its class name without
+`weapon_` (from Nuclide's `m_activeWeapon`; empty when there is none, at
+most 24 bytes). A field the game doesn't have is sent as 0. Then the weapon's view
+model as a model index (named by `MODELS`; Nuclide's `ncWeapon::viewModel`,
+0 for none), the sequence it plays (`ncPlayer::weaponAnimSequence`), and a
+count that goes up each time a sequence starts, the same one again
+included (seen as `weaponAnimTime` going back). `STATS` also goes out with
+the next `ENTS` whenever that count changes. The DS shows
+them above its touch pad.
+
+`FX` carries bullet impacts. The PC client draws these from the game's own
+CSQC events, and draws muzzle flashes and tracers itself; a device runs no
+CSQC, so the server reads Nuclide's impact multicasts (`SVC_CGAMEPACKET`
+with `EV_SURFIMPACT` or `EV_SURFIMPACTID`, which begin with the hit point)
+as they go to a device's client, PVS rules included, and passes on the
+point. The cause is QC `self` when the multicast is made, or its `owner`
+for a projectile. Flags: 2 when there is a shooter, with `eye` its origin
+plus `view_ofs`; 1 as well when that shooter is this device's player. Up
+to 16 impacts are kept between server frames and sent once a frame. The
+device draws a puff at each hit; for a shot also a muzzle flash and a
+tracer, unless the hit is within 72 units (a melee hit), and one flash for
+a volley of pellets.
 
 A device ignores an `ENTS` older than the last one it used.
 

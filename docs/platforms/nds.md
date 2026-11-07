@@ -70,7 +70,8 @@ autojoin=1          optional: join the first server found at start-up
 controls=touch      touch (default) or classic, see below
 hand=right          left: move with A B X Y and fire with R
 sens=100            aim speed in percent (100 turns 120 degrees across the screen)
-diag=1              frame rate, polygons and models on the bottom screen's top bar
+diag=0              hide the frame rate, polygons and models along the top screen's top edge
+fps=30              optional: cap at 30 fps (every frame takes two refreshes), for testing
 ```
 
 The PC runs a normal Bulwark server (`bulwark-ded` or a listen server).
@@ -80,13 +81,22 @@ that answer, and A or a tap joins one.
 While linked, the bottom screen is a touch pad, as in Metroid Prime
 Hunters:
 
-- The top bar shows health and the map (or, with `diag=1`, frames a second
-  and the slowest frame, polygons, and models loaded and failed). Its
-  **GAME** tab swaps the pad for the game's own bottom screen (what the
+- The bar at the top shows the score and the weapon in hand (the server's
+  `STATS` packet). Its **GAME** tab swaps the pad for the game's own bottom screen (what the
   game draws with the `link_*` builtins, or the engine's name, health, map
   and player list); **PAD** swaps back. Touches on the game's screen go to
   the game.
 - Drag in the middle to aim. A double tap jumps.
+- The top screen shows health and Barrier (the game's armour) in big
+  numbers at the bottom left. Its first line shows frames a second, the
+  slowest second's rate, polygons, and models loaded and failed, and the
+  second line why the last map didn't load, if it didn't. `diag=0` hides
+  the first line. This HUD is a layer in front of the 3D (BG1 in VRAM F
+  and G, one 4-bit tile per 8x8 cell, so it works as a bitmap), drawn with
+  a 1-pixel black outline in `fonts/hud.dsf` from a base folder or the ROM,
+  else the console's 8x8 font. `tools/nds/dsfont.py font.ttf 8 hud.dsf`
+  bakes a pixel font into it (sokky's pick is 04b09 from the 04 series,
+  which is private: the baked file is not in git).
 - Eight buttons: previous and next weapon, reload, use, jump, duck (stays on
   until pressed again), flashlight and secondary fire.
 
@@ -173,8 +183,45 @@ clip for the sequence the server says, and walks or runs a model the server
 only has standing (other players) from how fast it moves. Things with no DS
 copy of their model stay boxes.
 
+The weapon in hand is drawn too, from its view model (`v_*.mdl`), baked
+with `-view`:
+
+```
+python3 tools/nds/hlmdl.py v_9mmhandgun.dump nitro/models/v_9mmhandgun.mdl -view -tris 250 -frames 60
+```
+
+`-view` keeps a clip for every sequence (the game plays them by number) and
+leaves out the arms and hands (Half-Life's glove, sleeve and forearm
+textures) and additive effect meshes. `-mirror` swaps left and right, for
+the models a weapon def marks `model_viewMirror` (CSO's). `STATS` tells the
+DS the view model, its sequence, and when a sequence starts again, so each
+shot replays it. It costs about 250 polygons.
+
 Baked models are Valve's data too: keep them out of git and public
 packages.
+
+## Feel: frame rate, view motion, effects
+
+Turning and the viewer's flying go by the refreshes a frame took, not by
+frames, so they keep their speed when a busy view drops to 30 fps. The
+linked client's jump key is held 8 refreshes, so a 30 fps frame can't drop
+it. The server sends the view 20 times a second; the DS eases toward where
+the last two said it is heading, up to 3 refreshes ahead, which removes
+most of the lag that made jumps feel floaty.
+
+The view's motion is a port of the Nuclide client code the PC runs for the
+co-op game (valve/csprogs.dat), from the velocity, on-ground and crouch
+flags in `VIEW`: the camera bob of `valve/src/client/viewmodel.qc`
+(`Viewmodel_CalcBob`) along the camera's up, the strafe roll of
+`valve/src/client/camera.qc` (`Camera_StrafeRoll`, 0.015 degrees per unit a
+second sideways), and the view model swing, drift and landing kick of
+`src/client/viewbob.qc` (`cg_viewBobStyle 3`, the default). The DS turns
+the gun by the bob angles about the eye rather than adding them to the
+camera's angles, which differs only by a fraction of a degree. The view model plays the sequence the server
+says (`STATS`). Bullet impacts (`FX`) draw as a spark and fading dust, our
+own shots add a muzzle flash at the view model's barrel and a tracer, and
+other players' and monsters' shots a flash and a tracer from their gun.
+These are untextured shapes; HL's sprites are not used.
 
 ## Map viewer controls
 
@@ -187,7 +234,7 @@ packages.
 | A / Y | rise / sink |
 | touch and drag | look around |
 | START | back to the map list |
-| SELECT | steps through one pass, one pass with flicker, two passes, two passes with flicker |
+| SELECT | steps through one pass, one pass with flicker, one pass capped at 30 fps (with and without flicker), two passes, two passes with flicker |
 
 In the map list, the D-pad and A pick a map, or you can tap a name. The
 bottom screen shows the frame rate, faces, GPU vertices and polygons, and
@@ -261,6 +308,7 @@ there. These lines change a setting for the lines after them:
 | Line | Setting |
 |---|---|
 | `multipass on` / `off` | two passes |
+| `fps 30` / `fps 60` | cap one pass at 30 fps |
 | `flicker on` / `off` | models take turns |
 | `merge on` / `off` / `2` | joining faces at load; a number sets the light step |
 | `portals on` / `off` / `auto` | following portals instead of drawing the PVS |

@@ -269,7 +269,7 @@ typedef struct {
 static void run(const skel_t *s, int count, int clip, int frames, const char *label, skrun_t *r)
 {
 	static skmat_t pose[64];
-	ndscam_t cam = {{-150 * 8, 0, 60 * 8}, 0, -1000};
+	ndscam_t cam = {{-150 * 8, 0, 60 * 8}, 0, -1000, 0};
 	int start = Nds_Vblanks(), last = start, worst = 0, n = 0, shown = 0;
 	uint32_t posesum = 0;
 	Mp_Stop();

@@ -68,6 +68,9 @@ static int nummdls;
 static ent_t ents[MAX_ENTS];
 static int numents;
 static int viewmodel = -1;
+static int viewframe, viewlight = 24; /* its frame now, and its light */
+int32_t Ents_ViewOfs[3];
+int Ents_ViewAng[3];
 static int pal_owner; /* the texture that holds the palette */
 static const uint16_t *palette;
 static int ticks;
@@ -382,6 +385,7 @@ void Ents_Load(const uint16_t *pal)
 		e = end + 1;
 	}
 	viewmodel = load_mdl("v_shot");
+	viewframe = 0, viewlight = 24;
 }
 
 int Ents_AddCrowd(const ndscam_t *cam, const char *model, int count)
@@ -456,6 +460,22 @@ int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, i
 	f = m->clips[clip].loop ? f % m->clips[clip].frames : BW_NDS_MIN(f, m->clips[clip].frames - 1);
 	e->frame = m->clips[clip].first + f;
 	return e->light;
+}
+
+/* the weapon in hand, for linked play: the model (-1 for none) and its sequence, playing for ticks */
+void Ents_SetViewModel(int mdl, int seq, int elapsed, int light)
+{
+	const mdl_t *m;
+	int clip = 0, f;
+	viewmodel = mdl >= 0 && mdl < nummdls && !mdls[mdl].bad ? mdl : -1;
+	viewframe = 0, viewlight = light >= 0 ? light : 24;
+	if (viewmodel < 0 || !(m = &mdls[viewmodel])->numclips)
+		return;
+	if (seq >= 0 && seq < m->numseqs)
+		clip = m->seqclip[seq];
+	f = elapsed * m->clips[clip].fps / 60;
+	f = m->clips[clip].loop ? f % m->clips[clip].frames : BW_NDS_MIN(f, m->clips[clip].frames - 1);
+	viewframe = m->clips[clip].first + f;
 }
 
 void Ents_Free(void)
@@ -564,11 +584,17 @@ void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool with
 	int sent = 0, drawn = 0, stored = 0, numrest = 0, restcost = 0;
 	glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
 	if (withviewmodel && viewmodel >= 0) {
-		ndscam_t eyecam = {{0, 0, 0}, 0, 0};
+		ndscam_t eyecam = {{0, 0, 0}, 0, 0, 0};
 		const mdl_t *m = &mdls[viewmodel];
 		World_SetView(&eyecam);
+		glTranslatef32(Ents_ViewOfs[0], Ents_ViewOfs[1], Ents_ViewOfs[2]);
+		/* turned about the eye the way Quake turns an entity: yaw, then
+		 * pitch, then roll (map axes: x forward, y left, z up) */
+		glRotateZi(Ents_ViewAng[1]);
+		glRotateYi(Ents_ViewAng[0]);
+		glRotateXi(Ents_ViewAng[2]);
 		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
-		draw_mdl(m, 0, 24);
+		draw_mdl(m, viewframe, viewlight);
 		World_SetView(cam);
 		sent += m->numtris, stored += STORED(m), drawn++;
 	}

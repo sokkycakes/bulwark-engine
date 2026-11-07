@@ -6,3 +6,6 @@ tests/script/game/scripts/vscripts/test_qc.lno
 # private game art (never in git)
 **/wt-private/
 **/*.bsk
+
+# baked DS HUD fonts (tools/nds/dsfont.py) are made from fonts we may not redistribute
+*.dsf

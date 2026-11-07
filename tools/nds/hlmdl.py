@@ -6,7 +6,15 @@
 # ISC licence, see LICENSE.
 #
 #   hlmdldump <model.mdl> <x.dump>                       (tools/nds/hlmdldump.c)
-#   hlmdl.py <x.dump> <out.mdl> [-tris 200] [-frames 72] [-skin 128x64]
+#   hlmdl.py <x.dump> <out.mdl> [-tris 200] [-frames 72] [-skin 128x64] [-view] [-mirror]
+#
+# -mirror swaps left and right, for view models a weapon def marks
+# "model_viewMirror" (left-handed models, such as CSO's).
+#
+# -view is for a weapon's view model (v_*.mdl): every sequence gets a clip,
+# since the game plays them by number, and the arms and hands are left out
+# (textures named like ARMS below), as are the additive effect meshes
+# ($0b... and the like), which the DS would draw solid.
 #
 # Decimation collapses edges onto one of their two vertices, so every kept
 # vertex is an original one and every frame stays exact for what is left.
@@ -19,6 +27,7 @@
 # "DSHL" from the start of the file and "DSHL" again.
 #
 # The output is the game's model cut down: keep it out of git and packages.
+import re
 import struct
 import sys
 
@@ -28,6 +37,11 @@ from PIL import Image
 # the GoldSrc activities worth a clip, most wanted first: idle, walk, run,
 # attacks, flinches, deaths (numbers as the game's sequences store them)
 WANTED = [1, 3, 4, 28, 30, 29, 31, 26, 27, 36, 37, 38, 39, 17, 18, 5, 6, 8, 9]
+
+# view model textures that are the player's arms and hands (Half-Life's
+# gloves, sleeves and forearms), and effect meshes
+ARMS = re.compile(r"glove|sleeve|forearm|cuff|knuckle|handpak|hand_", re.I)
+EFFECTS = re.compile(r"^\$0b|spark|(^|_)ef(\d|_|\.)", re.I)
 
 
 def load(path):
@@ -61,11 +75,11 @@ def load(path):
     return nv, tris, texes, seqs
 
 
-def pick_clips(seqs, budget):
-    """one clip a wanted activity, its first sequence; frames resampled to fit"""
-    chosen = []
+def pick_clips(seqs, budget, every=False):
+    """one clip a wanted activity, its first sequence (or every sequence); frames resampled to fit"""
+    chosen = list(range(len(seqs))) if every else []
     seen = set()
-    for act in WANTED:
+    for act in WANTED if not every else []:
         for i, s in enumerate(seqs):
             if s["act"] == act and act not in seen and len(s["frames"]):
                 chosen.append(i)
@@ -157,7 +171,10 @@ def decimate(tris, poses, target):
         bd = np.array([c[2] for c in cand])
         cost = np.where(bd, cost * 4 + 1e3, cost)
         best = None
-        for e in np.argsort(cost)[:64]:
+        order = np.argsort(cost)
+        # the cheapest few usually include one that doesn't fold a face over;
+        # when they all do, look further down the list
+        for e in list(order[:64]) + list(order[64:2048]):
             if not flips(tris, alive, int(keep[e]), int(gone[e]), poses[0]):
                 best = (cost[e], int(keep[e]), int(gone[e]))
                 break
@@ -234,18 +251,27 @@ def main():
     a = sys.argv[1:]
     opt = {"-tris": "200", "-frames": "72", "-skin": "128x64"}
     pos = []
+    view = mirror = False
     i = 0
     while i < len(a):
-        if a[i] in opt:
+        if a[i] in ("-view", "-mirror"):
+            view, mirror = (True, mirror) if a[i] == "-view" else (view, True)
+            i += 1
+        elif a[i] in opt:
             opt[a[i]] = a[i + 1]
             i += 2
         else:
             pos.append(a[i])
             i += 1
     nv, tris, texes, seqs = load(pos[0])
-    clips = pick_clips(seqs, int(opt["-frames"]))
+    if view:
+        tris = [t for t in tris if t[2] >= len(texes) or not (ARMS.search(texes[t[2]][0]) or EFFECTS.search(texes[t[2]][0]))]
+    clips = pick_clips(seqs, int(opt["-frames"]), view)
     smap = seq_map(seqs, clips)
     frames = np.stack([seqs[c["seq"]]["frames"][k] for c in clips for k in c["idx"]])
+    if mirror:
+        frames = frames * np.array([1, -1, 1], np.float32)  # y is left
+        tris = [(v[::-1], uv[::-1], tex) for v, uv, tex in tris]
     sample = frames[:: max(1, len(frames) // 12)]
     small = decimate([(t[0], list(t[1]), t[2]) for t in tris], sample, int(opt["-tris"]))
 
