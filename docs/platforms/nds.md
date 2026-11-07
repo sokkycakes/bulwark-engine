@@ -1314,6 +1314,127 @@ campaign and player models baked:
 melonDS's frame rate is not a hardware measurement: these need repeating
 on a DS.
 
+## Prediction over the Half-Life campaign, measured in melonDS 1.1 (not hardware)
+
+The rig: `bulwark-ded` (Nuclide `valve` + `coop`) on the original Half-Life
+BSPs (their clip hulls, real gravity), `link_god 1`, and the DS in melonDS
+1.1 with `fps=30` and `botwalk=1`, a fresh boot per map. At each spot
+(spawn, the `info_node` farthest from the start, and a ladder, water and a
+lift or train where the map has them) 12 s of DS time are recorded after
+4 s to settle. "Within" counts the commands whose predicted origin is
+within 0.5 u of what the server sent for the same command. The level-change
+chain boots once and changes level by rcon along the campaign route (103
+maps), 10 s each. Every number here is from one run in melonDS, with up to
+three melonDS and three servers sharing 4 cores; none is from hardware.
+
+What changed, and why:
+
+- **Level changes no longer drop the link.** The map loads inside the
+  receive loop, and the link's last-heard frame was the one read before
+  the load, so a load over the 5 s timeout ended the link at the next quiet
+  loop: 7 of 102 changes in the chain. `lastrecv` and the frame now move on
+  to after the load (`link_nds.c`, `handle_welcome`'s caller).
+- **Less RAM at the load's peak.** The light is read through a 64 KB window
+  instead of whole (`world_nds.c`, `light_at`), the face lumps are freed
+  before faces are merged, the merged vertices are counted before they are
+  allocated, and `mvert_t` is 16 bytes. On c4a1f → c4a3 the peak in use
+  went from 2.92 to 1.53 MB; the load takes about 5 % longer (5460 → 5710
+  ms). The drawn vertices are the same (c4a3: 14800 vertices, the same
+  hash).
+- **A body the server's player already stands in stays in the scene.** The
+  focus left out every box the predicted player overlapped
+  (`PM_FOCUS_DROPSTUCK`). The server keeps them: its trace starts solid
+  there (`sv_world.c`, `trace_aabb`) and the player stays still. This
+  caused the "server holds the player still" spots: c2a3e's spawn inside
+  the `intro_box` breakables, c1a1b's lift, and c2a2a's. PSTATE now pins
+  the boxes that overlap the server's player (`Hull_PinBoxes`).
+- **Turned brushes are traced turned.** The server traces a brush entity
+  with angles in its own frame (`sv_world.c`, `trace_brush_entity`) and
+  culls it with the absmin/absmax it was last linked with. A
+  `func_tracktrain` turned along its path keeps the box of its spawn (c2a2f).
+  BRUSHINFO and PSTATE's movers now carry the angles and that box
+  (`docs/spec/link.md`), and `hull_nds.c` traces the same float steps as the
+  server. pmtest on a c2a2f log is exact for 2563 of 2563 commands; an
+  old-format log of the same route was exact for 1332 of 2552. A brush
+  whose angles the game turns from its think, with no `avelocity` (c1a1c's
+  edict 810), counts as moving: before, it made a new BRUSHINFO version at
+  every check.
+- **Push triggers and conveyors.** Nuclide runs these touches inside the
+  movement: `PMoveCustom_DoTouch` on what the move hits and stands on
+  (`pmove_custom.qc:657`, `:679`), and `touchtriggers` at its end (`:727`).
+  `pmove_nds.c` now ports `trigger_push::Touch` (`trigger_push.qc:353-404`)
+  and `func_conveyor::Touch` (`func_conveyor.qc:376-388`). BRUSHINFO's
+  touch block gives their speed, direction, flags and box. A push with a
+  target (`Route_GetJumpVelocity`) stays the server's. In pmtest's chain
+  mode (several commands predicted in a row, as the DS does between
+  PSTATEs), falling into c1a1c's down push went from 104 to 180 of 180
+  exact, and riding a c2a4c conveyor from 37 to 180 of 180. Nuclide's
+  `func_water` is a door with no current (`func_door.qc:646`), so there is
+  no water current to predict: c3a2b's water spot was the spawn's push and
+  boxes.
+- **t0a0a, t0a0b, t0a0b1, t0a0b2, t0a0c, t0a0d** convert with `hlmap.py`.
+  Their textures are in the maps, so no WAD is needed. Their `.hul` files
+  are byte for byte the ones the campaign package has.
+
+Port check: `tools/nds/pmtest` (step mode, each logged command from the
+server's own state, through `hull_nds.c`) gives exactly the server's result
+for 370599 of the 370606 commands in the 103 new logs. Six of the other
+seven are teleports (the rig's on c1a0c, the map's on c5a1). The seventh
+is the command in which c1a4e's player died.
+
+Before (`58a5bba`) and after, fresh boot per map:
+
+| | before | after |
+|---|---|---|
+| maps measured | 97 (t0a0a-d had no DS map) | 103 |
+| commands within 0.5 u | 97.20 % (102340 of 105290) | 99.27 % (109989 of 110803) |
+| lowest free during a fresh load | 28 KB (c1a2b) | 260 KB (c2a4e) |
+| lowest free in play | 1253 KB (c2a4e) | 1327 KB (c2a4e) |
+| frame rate, median of every spot | 30 | 30 |
+| prediction per frame, average / worst second | 1.77 / 11.96 ms | 1.89 / 14.69 ms |
+| chain: level changes that lost the link | 7 of 102 | 0 of 102 |
+| chain: lowest free during a load | 0 KB (c2a5e after c2a5d) | 196 KB (c2a4e after c2a4d) |
+| chain: commands within 0.5 u | 89.7 % (23586 of 26290) | 99.77 % (30159 of 30230) |
+
+The maps that were worst:
+
+| map | within, before | within, after | error avg / max after |
+|---|---|---|---|
+| c2a3e | 56.2 % | 100.0 % | 0.000 / 0.00 u |
+| c1a1b | 70.0 % | 99.6 % | 0.004 / 1.03 u |
+| c5a1 | 68.3 % | 99.7 % (one spot of two) | 0.007 / 2.34 u |
+| c0a0 (tram) | 75.4 % | 98.7 % | 0.016 / 3.49 u |
+| c3a2b | 77.1 % | 99.2 % | 0.013 / 2.49 u |
+| c2a2f | 77.9 % | 97.1 % | 0.158 / 10.0 u |
+| c2a2a | 78.8 % | 99.4 % | 0.010 / 2.32 u |
+| c2a3a | 83.8 % | 98.9 % | 0.015 / 1.79 u |
+| c1a2b | 88.9 % | 99.1 % | 0.011 / 2.58 u |
+
+What is left (observed, causes inferred unless it says otherwise):
+
+- c1a2: 72 % of only 134 commands compared in 36 s. The server falls behind
+  on this map (1036 entities, a few PSTATEs a second) on the shared host, as
+  before. This is the rig or the server, not the DS port.
+- c1a0e's far node (71 %, max 16 u) had 13 to 22 NPC boxes near the
+  player. c1a1c's spawn (95 %, max 31 u) has a moving box (edict 2) and
+  three brushes the game rolls (810-812) within 150 u. The DS has each of
+  them where the last PSTATE put it, as the PC client does. pmtest is exact
+  on both logs.
+- Riding a moving train or lift is not predicted: c2a2g's tracktrain was
+  91 % within, max 12 u. The PC client does not predict it either
+  (`pmove_custom.qc:66-69` leaves the ground entity's velocity out), so the
+  DS shows what the PC shows: each PSTATE corrects it.
+- A `TP_ONCE` push is predicted again by each replay until the server's
+  next BRUSHINFO drops the spent trigger.
+- c5a1's lift spot ran with prediction off: the server had moved the player.
+- Single slow seconds right after a load or a teleport (c0a0d 8 fps, c1a3
+  5, c2a4e 14). The median was still 30 at every spot.
+- RAM: the hull format was left as it is. Hulls are 17-184 KB (c5a1) and
+  load after the map, with a 256 KB reserve. With the load peak lower, the
+  lowest free in play is above 1.3 MB on every map, and no map refused its
+  hull. A smaller hull would only help a map that the load itself can no
+  longer fit, and none is left.
+
 ## The draw loop: c2a4e at 30, measured in melonDS 1.1 (not hardware)
 
 The spot: `c2a4e`, linked, `link_teleport -576 1012 84 270`, facing the open
