@@ -3136,13 +3136,16 @@ static const char *play(ndscam_t *cam)
 			Ents_Draw(&view, &st);
 		} else
 			World_SetView(&view);
+		PROF_T(pt);
 		if (debugview == 0)
 			draw_things();
 		draw_markers(&view);
 		draw_fx(&view);
+		PROF_LAP(PROF_REST, pt);
 		{
 			int polys, verts;
 			Gpu_Counts(&polys, &verts);
+			PROF_LAP(PROF_WAIT2, pt);
 			peak = polys > peak ? polys : peak;
 		}
 		glFlush(0);
