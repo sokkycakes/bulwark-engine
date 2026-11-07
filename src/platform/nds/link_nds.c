@@ -14,10 +14,11 @@
  * predict=0 (shows where the server says the player is, as before link v2)
  * cmdvb=2 (a movement command every 2 refreshes instead of every one, for testing)
  * botwalk=1 (walks, strafes, jumps and crouches by itself in a fixed pattern, for testing)
+ * vm_forward=0 vm_right=-2.5 vm_up=-2.4 (map units: where view models other than Half-Life's sit)
  *
  * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
- * middle to aim, double-tap to jump, and buttons below for weapons, reload,
- * use, jump, duck, flashlight and secondary fire. Above the pad are the
+ * middle to aim, double-tap to jump, and buttons below for the last weapon
+ * (WPN, the PC's Q), reload, use, jump, duck, flashlight and secondary fire. Above the pad are the
  * player's score and weapon, and the top screen shows health and Barrier
  * (armour) in the HUD font (STATS), and the weapon's clip and reserve. The tab at the top right
  * swaps it for the game's own bottom screen (SCREEN packets) and back.
@@ -83,12 +84,20 @@ typedef struct {
 	bool botwalk;   /* botwalk=1 */
 	int sens;     /* aim speed, percent: 100 turns 120 degrees across the screen */
 	int interp;   /* interp=: ms other entities are drawn behind the server's newest, 0 as sent */
+	float vm[3];  /* vm_forward= vm_right= vm_up=: where view models other than Half-Life's sit, map units */
 } linkcfg_t;
+
+/* Counter-Strike Online's view models sit higher and further right than Half-Life's: on the
+ * DS's 4:3 screen they covered the right edge. These put the PDW's body near pixel 192,154 */
+#define VM_FORWARD 0.0f
+#define VM_RIGHT (-2.5f)
+#define VM_UP (-2.4f)
 
 /* what the game reads in input_buttons (Nuclide's INPUT_BUTTON*) */
 enum { B_ATTACK = 0x01, B_JUMP = 0x02, B_RELOAD = 0x08, B_USE = 0x10, B_ATTACK2 = 0x20, B_SPRINT = 0x40, B_CROUCH = 0x80 };
 /* Quake's next and previous weapon, Half-Life's flashlight */
 enum { IMP_NEXT = 10, IMP_PREV = 12, IMP_LIGHT = 100 };
+#define IMP_LASTWEAPON 0x100 /* not an impulse: the PC's weaplast (Q), sent as INPUT's 'L' count */
 
 typedef struct {
 	struct sockaddr_in addr;
@@ -432,6 +441,7 @@ static void read_config(void)
 	cfg.interp = LINK_INTERP_MS;
 	cfg.diag = true;
 	cfg.cmdvb = 1;
+	cfg.vm[0] = VM_FORWARD, cfg.vm[1] = VM_RIGHT, cfg.vm[2] = VM_UP;
 	snprintf(cfg.name, sizeof(cfg.name), "DS");
 	for (int b = 0; b < NDS_NUMBASEDIRS; b++) {
 		FILE *f;
@@ -472,6 +482,8 @@ static void read_config(void)
 				cfg.botwalk = atoi(v) != 0;
 			else if (!strcmp(line, "interp"))
 				cfg.interp = BW_NDS_CLAMP(atoi(v), 0, 500);
+			else if (!strcmp(line, "vm_forward") || !strcmp(line, "vm_right") || !strcmp(line, "vm_up"))
+				cfg.vm[line[3] == 'f' ? 0 : line[3] == 'r' ? 1 : 2] = BW_NDS_CLAMP((float)atof(v), -32.0f, 32.0f);
 			else if (!strcmp(line, "lerpframes"))
 				Ents_LerpFrames = atoi(v) != 0;
 			else if (Snd_Config(line, v))
@@ -613,7 +625,7 @@ static bool wifi_connect(void)
 /* --- packets ------------------------------------------------------------------------- */
 
 typedef struct {
-	uint8_t d[192]; /* INPUT with 8 commands is 161 */
+	uint8_t d[192]; /* INPUT with 8 commands is 161, 178 with its W H E S L */
 	int n;
 } pkt_t;
 
@@ -775,12 +787,12 @@ typedef struct {
 	uint8_t x, y, w, h;
 	const char *label;
 	uint16_t button; /* held while pressed */
-	uint8_t impulse; /* sent once per press */
+	uint16_t impulse; /* sent once per press (IMP_LASTWEAPON: weaplast) */
 	bool toggle;     /* stays on until pressed again */
 } padbtn_t;
 
 static const padbtn_t padbtns[] = {
-	{0, 144, 64, 24, "< WPN", 0, IMP_PREV, false},    {64, 144, 64, 24, "WPN >", 0, IMP_NEXT, false},
+	{0, 144, 128, 24, "WPN", 0, IMP_LASTWEAPON, false}, /* the last weapon used: the PC's Q */
 	{128, 144, 64, 24, "RELOAD", B_RELOAD, 0, false}, {192, 144, 64, 24, "USE", B_USE, 0, false},
 	{0, 168, 64, 24, "JUMP", B_JUMP, 0, false},       {64, 168, 64, 24, "DUCK", B_CROUCH, 0, true},
 	{128, 168, 64, 24, "LIGHT", 0, IMP_LIGHT, false}, {192, 168, 64, 24, "ALT", B_ATTACK2, 0, false},
@@ -810,6 +822,7 @@ static struct {
 	uint8_t screen[1300];    /* the game's last screen, to show when asked */
 	int screenlen;
 	bool hudforce;           /* the HUD's rows to draw again in full (pad_draw cleared them) */
+	bool lightshown;         /* LIGHT's icon shows the flashlight on */
 	char diagline[33];
 } pad;
 
@@ -824,12 +837,38 @@ static void text_mid(int x, int y, int w, uint16_t c, const char *s)
 	text(x + (w - n * 8) / 2, y, c, (const uint8_t *)s, n);
 }
 
+/* LIGHT's icon, drawn after the PC HUD's flashlight (valve/src/hud/hud.qc HLHUD_DrawFlashlight:
+ * flash_empty, and flash_full with flash_beam lit), but our own pixels: '#' the outline, 'o' the
+ * inside and '/' the beam, both drawn only while the flashlight is on */
+static const char *const flash_icon[] = {
+	"                     #       /", "                   ###      / ", "      #####     ###oo#    //  ",
+	" #####ooooo#####ooooo#   /    ", " #ooooooooooooooooooo#  /     ", " #ooooooooooooooooooo# ///////",
+	" #ooooooooooooooooooo# ///////", " #ooooooooooooooooooo#  /     ", " ###############ooooo#   /    ",
+	"                ###oo#    //  ", "                   ###      / ", "                     #       /",
+};
+#define FLASH_W 30
+#define FLASH_H ((int)(sizeof(flash_icon) / sizeof(flash_icon[0])))
+
+static bool light_on(void) { return (pr.cur.gflags & PM_GF_FLASHLIGHT) != 0; }
+
 static void pad_button(int i, bool lit)
 {
 	const padbtn_t *b = &padbtns[i];
+	uint16_t fg = lit ? C_EDGE : C_TEXT;
 	fill(b->x, b->y, b->w, b->h, C_EDGE);
 	fill(b->x + 1, b->y + 1, b->w - 2, b->h - 2, lit ? C_BTNLIT : C_BTN);
-	text_mid(b->x, b->y + (b->h - 8) / 2, b->w, lit ? C_EDGE : C_TEXT, b->label);
+	if (b->impulse == IMP_LIGHT) {
+		bool on = light_on();
+		int x0 = b->x + (b->w - FLASH_W) / 2, y0 = b->y + (b->h - FLASH_H) / 2;
+		for (int y = 0; y < FLASH_H; y++)
+			for (int x = 0; x < FLASH_W; x++) {
+				char c = flash_icon[y][x];
+				if (c == '#' || (on && (c == 'o' || c == '/')))
+					sub[(y0 + y) * 256 + x0 + x] = fg;
+			}
+		return;
+	}
+	text_mid(b->x, b->y + (b->h - 8) / 2, b->w, fg, b->label);
 }
 
 static const int pad_tab[4] = {TAB_X, TAB_Y, 256 - TAB_X - 1, TAB_H};
@@ -887,8 +926,15 @@ static void pad_dot(int x, int y)
 	pad.dotx = x, pad.doty = y;
 }
 
+static uint8_t lastweapon; /* WPN presses, INPUT's 'L' count: kept through pad_reset, as the
+                            * server takes each change of it as a press */
+
 static void pad_impulse(int n)
 {
+	if (n == IMP_LASTWEAPON) {
+		lastweapon++;
+		return;
+	}
 	pad.impulse = (uint8_t)n;
 	pad.impseq++;
 	if (n == IMP_NEXT || n == IMP_PREV)
@@ -967,6 +1013,13 @@ static int pad_frame(int frame, uint32_t held, ndscam_t *cam, bool *togame, touc
 		buttons |= B_CROUCH;
 	if (frame < pad.jumpframes)
 		buttons |= B_JUMP;
+	/* LIGHT shows whether the flashlight is on */
+	if (!pad.gamepage && light_on() != pad.lightshown) {
+		pad.lightshown = light_on();
+		for (int i = 0; i < NUM_PADBTNS; i++)
+			if (padbtns[i].impulse == IMP_LIGHT)
+				pad_button(i, i == pad.pressed);
+	}
 	return buttons;
 }
 
@@ -1315,8 +1368,12 @@ static void draw_fx(const ndscam_t *cam)
 		float sy = sinLerp(cam->yaw) / 4096.0f, cy = cosLerp(cam->yaw) / 4096.0f;
 		float sp = sinLerp(cam->pitch) / 4096.0f, cp = cosLerp(cam->pitch) / 4096.0f;
 		float f[3] = {cy * cp, sy * cp, sp}, r[3] = {sy, -cy, 0}, u[3] = {-cy * sp, -sy * sp, cp};
+		/* moved with a view model that Ents_ViewShift moves (cfg.vm) */
+		float vf = 0, vr = 0, vu = 0;
+		if (Ents_ViewShifted())
+			vf = cfg.vm[0], vr = cfg.vm[1], vu = cfg.vm[2];
 		for (int k = 0; k < 3; k++)
-			muzzle[k] = cam->org[k] + (int32_t)((f[k] * 10 + r[k] * 3.2f - u[k] * 1.7f) * 8);
+			muzzle[k] = cam->org[k] + (int32_t)((f[k] * (10 + vf) + r[k] * (3.2f + vr) + u[k] * (vu - 1.7f)) * 8);
 	}
 	glBindTexture(GL_TEXTURE_2D, 0);
 	/* our predicted flash: env_muzzleflash fades by 16 a second (62.5 ms), and its
@@ -2025,6 +2082,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 	p_u8(&p, 'E'), p_u16(&p, Events_Ack());
 	/* the AMBIENT version we have, and that we play sound: the server sends it only then */
 	p_u8(&p, 'S'), p_u16(&p, Snd_AmbientAck()), p_u8(&p, Snd_Enabled() ? 1 : 0);
+	/* how often WPN was pressed: the server switches to the last weapon on each change */
+	p_u8(&p, 'L'), p_u8(&p, lastweapon);
 	send_to(&link.to, &p);
 }
 
@@ -3195,6 +3254,8 @@ void Link_Run(const uint16_t *pal)
 	int pick;
 	palette = pal;
 	read_config();
+	Ents_ViewShift[0] = (int32_t)(cfg.vm[0] * 8), Ents_ViewShift[1] = (int32_t)(-cfg.vm[1] * 8);
+	Ents_ViewShift[2] = (int32_t)(cfg.vm[2] * 8);
 	Snd_Init();
 	consoleClear();
 	if (!wifi_connect() || !open_socket()) {

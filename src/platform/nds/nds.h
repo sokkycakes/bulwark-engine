@@ -102,6 +102,11 @@ void Ents_SetTime(uint32_t ms);
 extern bool Ents_LerpFrames;
 extern int32_t Ents_ViewOfs[3]; /* the view model moved by this (1/8 units: forward, left, up), for bob */
 extern int Ents_ViewAng[3];     /* and turned by this (libnds angles): pitch (nose down), yaw (left), roll (right) */
+/* view models other than Half-Life's own (Counter-Strike Online's and the like) are moved by this
+ * as well (1/8 units: forward, left, up; link.txt vm_forward, vm_right, vm_up): they are built to
+ * sit higher and further right */
+extern int32_t Ents_ViewShift[3];
+bool Ents_ViewShifted(void); /* the view model in hand takes Ents_ViewShift */
 void Ents_Draw(const ndscam_t *cam, ndsstats_t *stats);        /* world and models together */
 /* Ents_Draw in parts, for two passes: Select culls and sorts after World_Begin;
  * DrawPass draws the models on one side of split2 (squared map units) */

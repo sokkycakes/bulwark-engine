@@ -89,6 +89,28 @@ static uint32_t *mix;    /* draw_mdl's blended frame: on the heap once a model b
 static bool mixtried;    /* and asked for: without room, models step from frame to frame until then */
 bool Ents_LerpFrames = true;
 int32_t Ents_ViewOfs[3];
+int32_t Ents_ViewShift[3];
+
+/* Half-Life's own view models, which sit where they should on the DS as they are */
+static bool hl_viewmodel(const char *name)
+{
+	static const char *const hl[] = {"v_357", "v_9mmar", "v_9mmhandgun", "v_crossbow", "v_crowbar", "v_egon",
+	                                 "v_gauss", "v_grenade", "v_hgun", "v_rpg", "v_satchel", "v_satchel_radio",
+	                                 "v_shotgun", "v_squeak", "v_tripmine"};
+	const char *b = strrchr(name, '/');
+	size_t n;
+	b = b ? b + 1 : name;
+	n = strcspn(b, ".");
+	for (size_t i = 0; i < sizeof(hl) / sizeof(hl[0]); i++)
+		if (strlen(hl[i]) == n && !strncasecmp(b, hl[i], n))
+			return true;
+	return false;
+}
+
+bool Ents_ViewShifted(void)
+{
+	return viewmodel >= 0 && !hl_viewmodel(mdls[viewmodel].name);
+}
 int Ents_ViewAng[3];
 static int pal_owner; /* the texture that holds the palette */
 static const uint16_t *palette;
@@ -923,6 +945,8 @@ void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool with
 		const mdl_t *m = &mdls[viewmodel];
 		World_SetView(&eyecam);
 		glTranslatef32(Ents_ViewOfs[0], Ents_ViewOfs[1], Ents_ViewOfs[2]);
+		if (Ents_ViewShifted())
+			glTranslatef32(Ents_ViewShift[0], Ents_ViewShift[1], Ents_ViewShift[2]);
 		/* turned about the eye the way Quake turns an entity: yaw, then
 		 * pitch, then roll (map axes: x forward, y left, z up) */
 		glRotateZi(Ents_ViewAng[1]);
