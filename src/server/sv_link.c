@@ -99,6 +99,7 @@ typedef struct {
 #define AMB_RESEND 0.25    /* AMBIENT again this soon while the device has not acknowledged it */
 #define AMB_PERIOD 2.0     /* and this often once it has */
 enum { SL_LISTENER = 1, SL_AT = 2, SL_STOP = 4, SL_CLIENTSIDE = 8 };  /* SOUND lflags */
+#define SL_DELAYSHIFT 4 /* lflags 0x70: made this many 4 ms after the packet's first new record */
 /* the engine's sound() flags (FTE's SOUNDFLAG_*), as E1 sends them */
 enum { SF_FORCELOOP = 2, SF_NOSPACIALISE = 4, SF_ABSVOLUME = 16, SF_NOREVERB = 32, SF_FOLLOW = 64, SF_NOREPLACE = 128 };
 
@@ -3925,12 +3926,12 @@ static bool sample_loops(int idx)
 	return sndcue.loops[idx] == 2;
 }
 
-/* the 20 bytes of a record (+2 with SL_AT) */
-static int snd_bytes(uint8_t *o, const lsnd_t *r, uint16_t seq)
+/* the 20 bytes of a record (+2 with SL_AT); delay (0-7) goes in lflags' bits 4-6 */
+static int snd_bytes(uint8_t *o, const lsnd_t *r, uint16_t seq, int delay)
 {
 	int n = 0;
 	o[n++] = (uint8_t)(seq & 0xff), o[n++] = (uint8_t)(seq >> 8);
-	o[n++] = r->lflags, o[n++] = r->sflags;
+	o[n++] = (uint8_t)(r->lflags | delay << SL_DELAYSHIFT), o[n++] = r->sflags;
 	o[n++] = (uint8_t)(r->ent & 0xff), o[n++] = (uint8_t)(r->ent >> 8);
 	o[n++] = r->chan;
 	for (int k = 0; k < 4; k++)
@@ -4069,7 +4070,7 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 	}
 	if (rel) {
 		uint8_t b[24];
-		int n = snd_bytes(b, &r, 0);
+		int n = snd_bytes(b, &r, 0, 0);
 		l->sndovertaken += (uint32_t)snd_unqueue(l, r.ent, r.chan, cs);
 		l->sndrel++;
 		ev_put(l, LE_SOUND, b, n);
@@ -4124,11 +4125,16 @@ static int cmp_snd_seq(const void *a, const void *b)
 	return (int16_t)(((const lsnd_t *)a)->seq - ((const lsnd_t *)b)->seq);
 }
 
-/* SOUND: what was made since the last one, then the last one's records again */
+/* SOUND: the last one's records again (oldest first, so a device that lost that packet takes
+ * them in the order they were made), then what was made since, each with its delay after the
+ * first of them in 4 ms (up to 28): the device starts each as the PC would, one server frame
+ * after the one before, rather than all at once (where the later would replace the earlier on
+ * an entity channel before it was heard) */
 static void send_sound(link_t *l, double now)
 {
 	pkt_t p;
-	int n = 0, countpos;
+	int n = 0, countpos, nrep;
+	double t0 = 0;
 	if ((!l->sndn && !l->sndrepn) || now < l->sndnext || !snd_ready(l))
 		return;
 	snd_mapcheck(l);
@@ -4137,25 +4143,30 @@ static void send_sound(link_t *l, double now)
 		qsort(l->sndq, (size_t)l->sndn, sizeof(l->sndq[0]), cmp_snd_d2);
 		l->snddrop += (uint32_t)(l->sndn - SND_MAXREC);
 		l->sndn = SND_MAXREC;
-		qsort(l->sndq, (size_t)l->sndn, sizeof(l->sndq[0]), cmp_snd_seq);
 	}
+	/* in the order they were made (a full queue's newcomer takes the farthest one's place) */
+	qsort(l->sndq, (size_t)l->sndn, sizeof(l->sndq[0]), cmp_snd_seq);
 	p_begin(&p, L_SOUND);
 	p_u32(&p, l->session);
 	p_u16(&p, (unsigned)svs.spawncount & 0xffff);
 	countpos = p.len;
 	p_u8(&p, 0);
+	/* the repeats that fit beside the new records: the newest of them */
+	nrep = BW_MIN(l->sndrepn, SND_MAXREC - l->sndn);
+	l->sndnorep += (uint32_t)(l->sndrepn - nrep);
+	for (int i = l->sndrepn - nrep; i < l->sndrepn; i++, n++) {
+		uint8_t b[24];
+		p_bytes(&p, b, snd_bytes(b, &l->sndrep[i], l->sndrep[i].seq, 0));
+		l->sndrep2++;
+	}
+	for (int i = 0; i < l->sndn; i++)
+		if (!i || l->sndq[i].t < t0)
+			t0 = l->sndq[i].t;
 	for (int i = 0; i < l->sndn; i++, n++) {
 		uint8_t b[24];
-		p_bytes(&p, b, snd_bytes(b, &l->sndq[i], l->sndq[i].seq));
-	}
-	for (int i = 0; i < l->sndrepn; i++) {
-		uint8_t b[24];
-		if (n >= SND_MAXREC) {
-			l->sndnorep += (uint32_t)(l->sndrepn - i);
-			break;
-		}
-		p_bytes(&p, b, snd_bytes(b, &l->sndrep[i], l->sndrep[i].seq));
-		l->sndrep2++, n++;
+		/* (an AT record has its own time) */
+		int delay = (l->sndq[i].lflags & SL_AT) ? 0 : (int)BW_CLAMP(lrint((l->sndq[i].t - t0) * 250), 0, 7);
+		p_bytes(&p, b, snd_bytes(b, &l->sndq[i], l->sndq[i].seq, delay));
 	}
 	p.data[countpos] = (uint8_t)n;
 	memcpy(l->sndrep, l->sndq, (size_t)l->sndn * sizeof(l->sndq[0]));

@@ -732,7 +732,7 @@ bytes (22 with `AT`):
 | Field | |
 |---|---|
 | u16 seq | +1 each record for this device; 0 in an EVENT 12 |
-| u8 lflags | 1 LISTENER (the device's own player, a server sound: heard straight), 2 `AT` follows, 4 STOP (the sample is `common/null`: stop entity and channel), 8 CLIENTSIDE (made for the PC client game's own sounds: a client entity's channel) |
+| u8 lflags | 1 LISTENER (the device's own player, a server sound: heard straight), 2 `AT` follows, 4 STOP (the sample is `common/null`: stop entity and channel), 8 CLIENTSIDE (made for the PC client game's own sounds: a client entity's channel), bits 4-6 (0x70) DELAY: made this many 4 ms after the packet's first new record (0-7; 0 in a repeat, with `AT` and in EVENT 12) |
 | u8 sflags | the engine's sound flags as `svc_sound` has them (2 FORCELOOP, 4 NOSPACIALISE, 16 ABSVOLUME, 32 NOREVERB, 64 FOLLOW, 128 NOREPLACE) |
 | u16 entity | 0 none |
 | u8 channel | |
@@ -741,13 +741,22 @@ bytes (22 with `AT`):
 | s16 origin[3] | units (the entity's origin and the middle of its box, as `svc_sound`) |
 | s16 at | with `AT`: the server time (ms, the low 16 bits of the `ENTS` clock) at which the PC would start it, less the SoundDef's start offset |
 
-A SOUND packet goes at most every 1/36 s while records wait; each record
-goes in two consecutive packets (the device drops a seq it has had). At most
-40 a packet: the farthest from the player go first (`link_stats` counts
-them). A sound that loops (the FORCELOOP flag, or a WAV with a `cue `
+A SOUND packet goes at most every 1/36 s while records wait, so it can
+carry two server frames' records; the DELAY bits let the device start each
+as late after the first as it was made, which is when the PC would. Each
+record goes in two consecutive packets (the device drops a seq it has had,
+and one 64 or more behind the newest): a packet holds the previous one's
+records first, then its new ones in the order they were made. At most 40 a
+packet: the farthest from the player go first (`link_stats` counts them).
+Two records on one entity's channel (not 0) in the same server frame: only
+the later goes (with NOREPLACE, the earlier), which is all the PC hears of
+them (`pick_channel` replaces the first before it is mixed). A sound that loops (the FORCELOOP flag, or a WAV with a `cue `
 chunk anywhere in the file, which the PC loops), and a stop or start on the
 entity and channel (not 0) of a loop the device was sent, go as EVENT 12
-instead, which is reliable and in order. The server keeps the last 32 loops
+instead, which is reliable and in order; records on the same entity and
+channel still waiting to go unreliably (or to be repeated) are dropped,
+since they would reach the device after it and replace it, where the PC
+hears them before. The server keeps the last 32 loops
 per device; a device joining late misses loops started before, as a PC does.
 
 **AMBIENT**: u32 session, u16 spawncount, u16 version, u8 count, count ×
@@ -791,10 +800,9 @@ The DS plays these records with `src/platform/nds/sound_nds.c`, from packs made
 by `tools/nds/sndpack.py`; how, where it differs from the PC, and what was
 measured are in `docs/platforms/nds.md`, "Sound packs" and "Sound: what the
 PC client hears". Matching a device's `SND` log (`snd_log=1`) to `LINKSND` by
-seq accounts for every unreliable record: a record replaced on its
-entity's channel before its sample started is what `pick_channel` does on
-the PC too (`snd_main.c:160-167`), e.g. a zombie's `claw_miss` followed in
-the same frame by `zo_attack1` on `CHAN_WEAPON`.
+seq accounts for every unreliable record; `LINKSNDGONE <slot> <seq>
+sameframe|overtaken` names one the server dropped after logging it, and
+`LINKSNDSAME` a NOREPLACE one it never numbered.
 
 ## On the DS
 

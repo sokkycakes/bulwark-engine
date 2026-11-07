@@ -63,7 +63,9 @@ void *sbrk(ptrdiff_t);
 #define LF_AT 2
 #define LF_STOP 4
 #define LF_CLIENTSIDE 8
-#define LF_KNOWN 0x0f /* the bits a record may have: the rest are dropped */
+#define LF_DELAYSHIFT 4 /* 0x70: made this many 4 ms after the packet's first new record */
+#define LF_KNOWN 0x7f /* the bits a record may have: the rest are dropped */
+#define S_DEFER 32      /* SOUND records held for their delay */
 #define VIEW_ENT 0xffff /* the view model: follows the camera */
 
 enum { K_FREE, K_PENDING, K_FOUND, K_MISS };
@@ -943,6 +945,29 @@ typedef struct {
 	int16_t org[3];
 } srec_t;
 
+/* SOUND records held back by their delay (the server frame they were made in) */
+static struct {
+	srec_t r;
+	uint32_t due;
+} defer[S_DEFER];
+static int ndefer;
+
+static int voice_new(const srec_t *r, int src);
+
+/* the held records that are due (all: a new packet came, and what it brings is later) */
+static void defer_run(bool all)
+{
+	uint32_t t = ticks();
+	int k = 0, n = ndefer;
+	ndefer = 0; /* (voice_new adds none) */
+	for (int i = 0; i < n; i++)
+		if (all || (int32_t)(t - defer[i].due) >= 0)
+			voice_new(&defer[i].r, SRC_SND);
+		else
+			defer[k++] = defer[i];
+	ndefer = k;
+}
+
 /* a sound that came (or the DS makes): a voice waiting for its sample */
 static int voice_new(const srec_t *r, int src)
 {
@@ -1118,8 +1143,10 @@ static void handle_sound(const uint8_t *d, int len)
 	/* the records' length: 20 bytes as the spec's fields add up, 22 from a server that pads */
 	if (!walk(d, len, count, base = 20) && !walk(d, len, count, base = 22))
 		return;
+	defer_run(true); /* (what the last packet held back comes before this one's) */
 	for (int n = 0; n < count; n++) {
 		srec_t r;
+		int delay;
 		parse_rec(d + i, &r);
 		if (r.lflags & LF_AT)
 			r.at = (uint16_t)rd16(d + i + base);
@@ -1128,7 +1155,13 @@ static void handle_sound(const uint8_t *d, int len)
 			Snd_Stats.dups++;
 			continue;
 		}
-		voice_new(&r, SRC_SND);
+		/* made a server frame or more after the packet's first: as much later, as the PC hears it */
+		delay = (r.lflags >> LF_DELAYSHIFT) & 7;
+		if (delay && ndefer < S_DEFER) {
+			defer[ndefer].r = r, defer[ndefer].due = ticks() + ms_ticks((uint32_t)delay * 4);
+			ndefer++;
+		} else
+			voice_new(&r, SRC_SND);
 	}
 }
 
@@ -1589,7 +1622,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		S.vtop--;
 	/* nothing playing, coming or due: only the stats */
 	{
-		bool idle = S.plook >= S.npk && S.pnext >= S.npord;
+		bool idle = S.plook >= S.npk && S.pnext >= S.npord && !ndefer;
 		for (int i = 0; i < S.vtop && idle; i++)
 			idle = S.vst[i] == V_FREE;
 		for (int h = 0; h < S_HW && idle; h++)
@@ -1641,6 +1674,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			}
 		}
 	}
+	defer_run(false);
 	/* the delayed (AT records: when the drawn clock passes them) */
 	for (int i = 0; i < S.vtop; i++) {
 		svoice_t *v = &S.v[i];
@@ -1848,6 +1882,7 @@ static void stop_all(void)
 		memset(H->sent, 0, sizeof(H->sent));
 	S.namb = 0, S.ambver = 0;
 	S.haveseq = false;
+	ndefer = 0;
 	S.wsel_open = false;
 }
 
