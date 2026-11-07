@@ -87,7 +87,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 5 | `party_leave` | | `party_gone` |
 | 6 | `party_set` | `u8` flags, `str` info (leader only) | `party` to every member |
 | 7 | `invite` | `u32` player id | `invited` to that player |
-| 8 | `queue` | `str` playlist, `u32` seniority (leader only) | `queue_status`, then `match` |
+| 8 | `queue` | `str` playlist, `u32` seniority, optional `str` preferred map (leader only; a map the playlist doesn't play counts as none, and a new match plays the first seated party's preference in a mode that has it) | `queue_status`, then `match` |
 | 9 | `queue_cancel` | | `queue_status` with stage 255 |
 | 10 | `relay` | `u32` to player id, payload | the server sends `forward` to them |
 | 11 | `status` | `str` status line for friends lists | none |
@@ -284,7 +284,7 @@ Clients call reducers over SpacetimeDB's HTTP API. All tables are private
 | `bye()` | `bye` |
 | `party_create(max, flags, info)`, `party_join(code)`, `party_leave()`, `party_set(flags, info)` | the party messages |
 | `invite(player)` | `invite` |
-| `queue(playlist, seniority)`, `queue_cancel()` | the queue messages |
+| `queue(playlist, seniority, map)`, `queue_cancel()` | the queue messages |
 | `set_status(status)` | `status` |
 | `set_rtt(ms)` | the relay server's measurement, reported by the client |
 | `match_left(match_id)` | `match_left` |
@@ -307,7 +307,7 @@ the server, punches, direct traffic and the relay.
 | `live_disconnect` | sends `bye` |
 | `live_party [max] [open] [info]`, `live_join <code>`, `live_leave`, `live_open <0\|1> [info]` | the party messages |
 | `live_invite <id>`, `live_list` | invites and the player list |
-| `live_queue <playlist> [seniority]`, `live_cancel` | matchmaking |
+| `live_queue <playlist> [seniority] [map]`, `live_cancel` | matchmaking |
 | `live_guests <name>... \| -` | the console's split-screen guests (sends `hello` at once) |
 | `live_setstatus <text>` | the friends-list status line |
 | `live_playlists` | asks for the game's playlists again (also asked once after the first `welcome`) |

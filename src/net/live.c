@@ -1278,7 +1278,7 @@ static void Queue_f(int argc, const char **argv)
 {
 	wbuf_t w;
 	if (argc < 2) {
-		Con_Printf("usage: live_queue <playlist> [seniority]\n");
+		Con_Printf("usage: live_queue <playlist> [seniority] [map]\n");
 		return;
 	}
 	if (!need())
@@ -1286,6 +1286,8 @@ static void Queue_f(int argc, const char **argv)
 	w_start(&w, T_QUEUE);
 	w_str(&w, argv[1]);
 	w_u32(&w, (uint32_t)(argc > 2 ? strtoul(argv[2], NULL, 10) : 1));
+	if (argc > 3 && argv[3][0])	/* the party's preferred map */
+		w_str(&w, argv[3]);
 	send_server(&w);
 }
 
@@ -1398,7 +1400,7 @@ void Live_Init(void)
 	Cmd_AddD("live_open", Open_f, "Leader: live_open <0|1> [info] sets whether the code alone lets people join");
 	Cmd_AddD("live_invite", Invite_f, "Invite a player (by id from live_list) to the party");
 	Cmd_AddD("live_list", List_f, "List players of this game on Bulwark Live");
-	Cmd_AddD("live_queue", Queue_f, "Leader: search a playlist, live_queue <playlist> [seniority]");
+	Cmd_AddD("live_queue", Queue_f, "Leader: search a playlist, live_queue <playlist> [seniority] [map]");
 	Cmd_AddD("live_cancel", Cancel_f, "Stop searching");
 	Cmd_AddD("live_setstatus", SetStatus_f, "Set the status line friends see");
 	Cmd_AddD("live_guests", Guests_f, "Name the split-screen guests on this console");

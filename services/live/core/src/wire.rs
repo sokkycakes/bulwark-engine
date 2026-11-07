@@ -80,7 +80,8 @@ pub enum Client {
     PartyLeave,
     PartySet { flags: u8, info: String },
     Invite { player: u32 },
-    Queue { playlist: String, seniority: u32 },
+    /// `map`: the party's preferred map, empty = any (optional on the wire).
+    Queue { playlist: String, seniority: u32, map: String },
     QueueCancel,
     Relay { to: u32, payload: Vec<u8> },
     Status { status: String },
@@ -328,9 +329,12 @@ impl Client {
                 w.u32(*player);
                 w
             }
-            Client::Queue { playlist, seniority } => {
+            Client::Queue { playlist, seniority, map } => {
                 let mut w = W::new(t::QUEUE);
                 w.str(playlist).u32(*seniority);
+                if !map.is_empty() {
+                    w.str(map);
+                }
                 w
             }
             Client::QueueCancel => W::new(t::QUEUE_CANCEL),
@@ -376,7 +380,7 @@ impl Client {
             t::PARTY_LEAVE => Client::PartyLeave,
             t::PARTY_SET => Client::PartySet { flags: r.u8()?, info: r.str()? },
             t::INVITE => Client::Invite { player: r.u32()? },
-            t::QUEUE => Client::Queue { playlist: r.str()?, seniority: r.u32()? },
+            t::QUEUE => Client::Queue { playlist: r.str()?, seniority: r.u32()?, map: r.str().unwrap_or_default() },
             t::QUEUE_CANCEL => Client::QueueCancel,
             t::RELAY => Client::Relay { to: r.u32()?, payload: r.rest() },
             t::STATUS => Client::Status { status: r.str()? },
@@ -589,7 +593,8 @@ mod tests {
         rt_client(Client::Hello { token: 0x0102030405060708, game: "stiletto".into(), name: "sokky".into(), lan: vec![a, b6], guests: vec!["sokky (2)".into()] });
         rt_client(Client::PartyCreate { max: 4, flags: 1, info: "{}".into() });
         rt_client(Client::Relay { to: 9, payload: vec![1, 2, 3] });
-        rt_client(Client::Queue { playlist: "duel".into(), seniority: 42 });
+        rt_client(Client::Queue { playlist: "duel".into(), seniority: 42, map: String::new() });
+        rt_client(Client::Queue { playlist: "horde".into(), seniority: 1, map: "coop_arena".into() });
         rt_client(Client::Pong { nonce: 7 });
         rt_server(Server::Welcome { id: 3, public: a, interval: 5 });
         rt_server(Server::Party {

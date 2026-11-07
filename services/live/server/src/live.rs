@@ -89,6 +89,8 @@ struct Player {
 struct Queued {
     playlist: String,
     seniority: u32,
+    /// preferred map, empty = any
+    map: String,
     since: Instant,
 }
 
@@ -248,7 +250,7 @@ impl Live {
             }
             Client::PartySet { flags, info } => self.party_set(id, flags, &info),
             Client::Invite { player } => self.invite(id, player),
-            Client::Queue { playlist, seniority } => self.queue(id, &playlist, seniority, now),
+            Client::Queue { playlist, seniority, map } => self.queue(id, &playlist, seniority, &map, now),
             Client::QueueCancel => self.queue_cancel(id),
             Client::Relay { to, payload } => self.relay(id, to, payload, now),
             Client::Status { status } => {
@@ -543,7 +545,7 @@ impl Live {
         self.send(target, Server::Invited { from: id, name, code });
     }
 
-    fn queue(&mut self, id: u32, playlist: &str, seniority: u32, now: Instant) {
+    fn queue(&mut self, id: u32, playlist: &str, seniority: u32, map: &str, now: Instant) {
         let game = self.players[&id].game.clone();
         let Some(pl) = self
             .cfg
@@ -570,7 +572,9 @@ impl Live {
         if seats > pl.team_size as usize {
             return self.error(id, err::BAD, "party too big for that playlist");
         }
-        pt.ticket = Some(Queued { playlist: pl.id.clone(), seniority, since: now });
+        // a map the playlist doesn't play is the same as no preference
+        let map = if pl.maps().iter().any(|m| m == map) { map.to_string() } else { String::new() };
+        pt.ticket = Some(Queued { playlist: pl.id.clone(), seniority, map, since: now });
         pt.matched = None;
         self.send_queue_status(pid, now);
     }
@@ -818,7 +822,16 @@ impl Live {
         for f in formed {
             let mid = self.rand();
             let roll = self.rand();
-            let pick = pl.pick(roll, self.last_pick.get(&pl.id).map(|(a, b)| (a.as_str(), b.as_str())));
+            // the first seated party with a map preference names the map
+            let pref = f
+                .seats
+                .iter()
+                .filter_map(|(m, _)| self.players.get(&((*m >> 8) as u32)))
+                .filter_map(|p| p.party.and_then(|pid| self.parties.get(&pid)))
+                .filter_map(|pt| pt.ticket.as_ref().map(|q| q.map.clone()))
+                .find(|m| !m.is_empty())
+                .unwrap_or_default();
+            let pick = pl.pick_map(roll, self.last_pick.get(&pl.id).map(|(a, b)| (a.as_str(), b.as_str())), &pref);
             if !pl.modes.is_empty() {
                 self.last_pick.insert(pl.id.clone(), (pick.mode.clone(), pick.map.clone()));
             }
@@ -1184,15 +1197,15 @@ mod tests {
         n.hello_game(2, "bob", "coop", &[]);
         n.hello_game(3, "carol", "coop", &[]);
         n.hello(4, "stiletto player");
-        n.send(4, Client::Queue { playlist: "firefight".into(), seniority: 0 });
+        n.send(4, Client::Queue { playlist: "firefight".into(), seniority: 0, map: String::new() });
         assert!(n.got(4).iter().any(|m| matches!(m, Server::Error { code: err::NO_PLAYLIST, .. })));
-        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 0 });
+        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 0, map: String::new() });
         assert!(n.got(1).iter().any(|m| matches!(m, Server::Error { code: err::NO_PLAYLIST, .. })));
 
         // seniority means nothing in co-op: wildly different values still meet
-        n.send(1, Client::Queue { playlist: "firefight".into(), seniority: 1 });
-        n.send(2, Client::Queue { playlist: "firefight".into(), seniority: 900 });
-        n.send(3, Client::Queue { playlist: "firefight".into(), seniority: 40 });
+        n.send(1, Client::Queue { playlist: "firefight".into(), seniority: 1, map: String::new() });
+        n.send(2, Client::Queue { playlist: "firefight".into(), seniority: 900, map: String::new() });
+        n.send(3, Client::Queue { playlist: "firefight".into(), seniority: 40, map: String::new() });
         for c in 1..=3 {
             n.got(c);
         }
@@ -1213,8 +1226,8 @@ mod tests {
         }
 
         // the next firefight match plays the other mode
-        n.send(2, Client::Queue { playlist: "firefight".into(), seniority: 0 });
-        n.send(3, Client::Queue { playlist: "firefight".into(), seniority: 0 });
+        n.send(2, Client::Queue { playlist: "firefight".into(), seniority: 0, map: String::new() });
+        n.send(3, Client::Queue { playlist: "firefight".into(), seniority: 0, map: String::new() });
         n.got(2);
         // two players aren't a full team, so they wait for the last stage (45 s)
         let mut found = None;
@@ -1243,12 +1256,30 @@ mod tests {
     }
 
     #[test]
+    fn a_map_preference_names_the_map() {
+        for (k, map) in ["c2a3", "c3a1", "c1a1"].iter().enumerate() {
+            let mut n = Net::new(Config::default());
+            let id = 10 + k as u16;
+            n.hello_game(id, "dana", "coop", &["d2", "d3", "d4"]);
+            n.send(id, Client::Queue { playlist: "campaign".into(), seniority: 0, map: map.to_string() });
+            n.got(id);
+            n.tick(1);
+            let got = n.got(id);
+            let m = got.iter().find_map(|m| match m {
+                Server::Match { map, .. } => Some(map.clone()),
+                _ => None,
+            });
+            assert_eq!(m.as_deref(), Some(*map));
+        }
+    }
+
+    #[test]
     fn horde_starts_alone_and_takes_drop_ins() {
         let mut n = Net::new(Config::default());
         let a = n.hello_game(1, "alice", "coop", &[]);
         let b = n.hello_game(2, "bob", "coop", &["bob (2)"]);
         let c = n.hello_game(3, "carol", "coop", &[]);
-        n.send(1, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.send(1, Client::Queue { playlist: "horde".into(), seniority: 0, map: String::new() });
         n.got(1);
         n.tick(5);
         assert!(match_msgs(&n.got(1)).is_empty(), "waits a moment for company");
@@ -1259,7 +1290,7 @@ mod tests {
         assert_eq!((host, seats.len()), (a, 1));
 
         // bob and his guest drop in
-        n.send(2, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.send(2, Client::Queue { playlist: "horde".into(), seniority: 0, map: String::new() });
         n.got(2);
         n.tick(1);
         let to_b = n.got(2);
@@ -1281,7 +1312,7 @@ mod tests {
         n.send(1, Client::MatchLeft { id: mid });
         n.tick(1);
         n.hello_game(3, "carol", "coop", &[]); // still online (20 s timeout)
-        n.send(3, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.send(3, Client::Queue { playlist: "horde".into(), seniority: 0, map: String::new() });
         n.tick(1);
         assert!(match_msgs(&n.got(3)).is_empty());
         n.tick(9);
@@ -1295,13 +1326,13 @@ mod tests {
         let mut n = Net::new(Config::default());
         // a console of four, then a solo hosts... order: the four queue first
         n.hello_game(1, "couch", "coop", &["couch (2)", "couch (3)", "couch (4)"]);
-        n.send(1, Client::Queue { playlist: "horde".into(), seniority: 0 });
+        n.send(1, Client::Queue { playlist: "horde".into(), seniority: 0, map: String::new() });
         n.tick(10);
         let (mid, _, seats) = match_msgs(&n.got(1)).pop().unwrap();
         assert_eq!(seats.len(), 4);
         for k in 2..=6u16 {
             n.hello_game(k, &format!("p{k}"), "coop", &[]);
-            n.send(k, Client::Queue { playlist: "horde".into(), seniority: 0 });
+            n.send(k, Client::Queue { playlist: "horde".into(), seniority: 0, map: String::new() });
         }
         n.tick(1);
         let full = match_msgs(&n.got(1)).pop().unwrap();
@@ -1344,8 +1375,8 @@ mod tests {
         let mut n = Net::new(Config::default());
         let a = n.hello(1, "alice");
         let b = n.hello(2, "bob");
-        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 10 });
-        n.send(2, Client::Queue { playlist: "duel".into(), seniority: 11 });
+        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 10, map: String::new() });
+        n.send(2, Client::Queue { playlist: "duel".into(), seniority: 11, map: String::new() });
         n.got(1);
         n.got(2);
         n.tick(1);
@@ -1362,8 +1393,8 @@ mod tests {
 
         // Requeue at once: rematch avoidance holds them apart until the
         // last stage (60 s for duel).
-        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 10 });
-        n.send(2, Client::Queue { playlist: "duel".into(), seniority: 11 });
+        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 10, map: String::new() });
+        n.send(2, Client::Queue { playlist: "duel".into(), seniority: 11, map: String::new() });
         for i in 0..6 {
             assert_eq!(n.live.stats.matches_made, 1, "rematched after {}0 s", i);
             n.tick(10);
@@ -1381,12 +1412,12 @@ mod tests {
         let couch = n.hello_with(1, "sokky", &["sokky (2)"]);
         let b = n.hello(2, "bob");
         let c = n.hello(3, "cat");
-        n.send(1, Client::Queue { playlist: "2v2".into(), seniority: 5 });
+        n.send(1, Client::Queue { playlist: "2v2".into(), seniority: 5, map: String::new() });
         let to_couch = n.got(1);
         assert!(to_couch.iter().any(|m| matches!(m, Server::Party { members, .. } if members[0].guests == vec!["sokky (2)".to_string()])));
         assert!(to_couch.iter().any(|m| matches!(m, Server::QueueStatus { searching: 2, .. })));
-        n.send(2, Client::Queue { playlist: "2v2".into(), seniority: 5 });
-        n.send(3, Client::Queue { playlist: "2v2".into(), seniority: 5 });
+        n.send(2, Client::Queue { playlist: "2v2".into(), seniority: 5, map: String::new() });
+        n.send(3, Client::Queue { playlist: "2v2".into(), seniority: 5, map: String::new() });
         n.got(2);
         n.got(3);
         n.tick(1);
@@ -1414,7 +1445,7 @@ mod tests {
         // Three guests make four local players: too many for a 2v2 party.
         n.hello_with(4, "dan", &["d2", "d3", "d4"]);
         n.got(4);
-        n.send(4, Client::Queue { playlist: "2v2".into(), seniority: 1 });
+        n.send(4, Client::Queue { playlist: "2v2".into(), seniority: 1, map: String::new() });
         assert!(n.got(4).iter().any(|m| matches!(m, Server::Error { code: err::BAD, .. })));
     }
 
@@ -1437,12 +1468,12 @@ mod tests {
         let _b = n.hello(2, "bob");
         n.send(1, Client::PartyCreate { max: 2, flags: 1, info: String::new() });
         let code = party_code(&n.got(1));
-        n.send(1, Client::Queue { playlist: "2v2".into(), seniority: 3 });
+        n.send(1, Client::Queue { playlist: "2v2".into(), seniority: 3, map: String::new() });
         assert!(n.got(1).iter().any(|m| matches!(m, Server::QueueStatus { stage: 0, .. })));
         n.send(2, Client::PartyJoin { code });
         assert!(n.got(1).iter().any(|m| matches!(m, Server::QueueStatus { stage: STAGE_NONE, .. })));
         // Bob isn't the leader.
-        n.send(2, Client::Queue { playlist: "2v2".into(), seniority: 3 });
+        n.send(2, Client::Queue { playlist: "2v2".into(), seniority: 3, map: String::new() });
         assert!(n.got(2).iter().any(|m| matches!(m, Server::Error { code: err::NOT_LEADER, .. })));
     }
 

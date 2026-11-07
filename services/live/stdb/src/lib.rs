@@ -101,6 +101,8 @@ pub struct Ticket {
     pub party: u32,
     pub playlist: String,
     pub seniority: u32,
+    /// preferred map, empty = any
+    pub map: String,
     pub since: Timestamp,
 }
 
@@ -475,7 +477,7 @@ pub fn invite(ctx: &ReducerContext, player: u32) -> R {
 // --- queue ----------------------------------------------------------------------
 
 #[reducer]
-pub fn queue(ctx: &ReducerContext, playlist: String, seniority: u32) -> R {
+pub fn queue(ctx: &ReducerContext, playlist: String, seniority: u32, map: String) -> R {
     let p = me(ctx)?;
     let pl = playlists(&ctx.db)
         .into_iter()
@@ -490,7 +492,8 @@ pub fn queue(ctx: &ReducerContext, playlist: String, seniority: u32) -> R {
         return Err("party too big for that playlist".into());
     }
     cancel_ticket(ctx, pid);
-    ctx.db.ticket().insert(Ticket { party: pid, playlist: pl.id, seniority, since: ctx.timestamp });
+    let map = if pl.maps().contains(&map) { map } else { String::new() };
+    ctx.db.ticket().insert(Ticket { party: pid, playlist: pl.id, seniority, map, since: ctx.timestamp });
     pt.matched = 0;
     ctx.db.party().id().update(pt);
     Ok(())
@@ -637,6 +640,7 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
     let mut who: Vec<Identity> = Vec::new();
     let mut slot_of: Vec<u8> = Vec::new();
     let mut parties: Vec<u32> = Vec::new();
+    let mut prefs: Vec<String> = Vec::new();
     let mut tickets: Vec<CoreTicket> = Vec::new();
     for t in ctx.db.ticket().iter().filter(|t| t.playlist == pl.id) {
         let Some(pt) = ctx.db.party().id().find(t.party) else { continue };
@@ -654,6 +658,7 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
             }
         }
         parties.push(t.party);
+        prefs.push(t.map.clone());
         tickets.push(CoreTicket {
             key: t.party as u64,
             members: nums,
@@ -697,6 +702,8 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
         tickets.retain(|_| *k.next().unwrap());
         let mut k = keep.iter();
         parties.retain(|_| *k.next().unwrap());
+        let mut k = keep.iter();
+        prefs.retain(|_| *k.next().unwrap());
         if tickets.is_empty() {
             return;
         }
@@ -723,7 +730,9 @@ fn run_matcher(ctx: &ReducerContext, pl: &Playlist) {
             .filter(|m| m.playlist == pl.id)
             .max_by_key(|m| m.made)
             .map(|m| (m.mode, m.map));
-        let pick = pl.pick(ctx.random::<u64>(), last.as_ref().map(|(a, b)| (a.as_str(), b.as_str())));
+        // the first party with a map preference names the map
+        let pref = f.tickets.iter().map(|&ti| prefs[ti].clone()).find(|m| !m.is_empty()).unwrap_or_default();
+        let pick = pl.pick_map(ctx.random::<u64>(), last.as_ref().map(|(a, b)| (a.as_str(), b.as_str())), &pref);
         let settings: serde_json::Map<String, Value> =
             pick.settings.into_iter().map(|(k, v)| (k, Value::String(v))).collect();
         ctx.db.game_match().insert(GameMatch {

@@ -208,6 +208,45 @@ impl Playlist {
     /// `last` is the previous match's (mode, map) on this playlist, which is
     /// not repeated while there's anything else to play.
     pub fn pick(&self, roll: u64, last: Option<(&str, &str)>) -> Pick {
+        self.pick_map(roll, last, "")
+    }
+
+    /// Every map of the playlist's modes, once each, in order.
+    pub fn maps(&self) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for m in self.modes.iter().filter(|m| m.weight > 0) {
+            for map in &m.maps {
+                if !v.contains(map) {
+                    v.push(map.clone());
+                }
+            }
+        }
+        v
+    }
+
+    /// As `pick`, but a `map` the playlist plays (the party's preference)
+    /// is played, in one of the modes that has it; anything else = any map.
+    pub fn pick_map(&self, roll: u64, last: Option<(&str, &str)>, map: &str) -> Pick {
+        if !map.is_empty() {
+            let with: Vec<&Mode> = self.modes.iter().filter(|m| m.weight > 0 && m.maps.iter().any(|x| x == map)).collect();
+            if !with.is_empty() {
+                let total: u64 = with.iter().map(|m| m.weight as u64).sum();
+                let mut at = mix(roll) % total;
+                let mut chosen = with[0];
+                for m in &with {
+                    if at < m.weight as u64 {
+                        chosen = m;
+                        break;
+                    }
+                    at -= m.weight as u64;
+                }
+                return Pick {
+                    mode: chosen.id.clone(),
+                    map: map.to_string(),
+                    settings: chosen.settings.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                };
+            }
+        }
         // every (mode, map) choice that isn't a repeat
         let fresh = |m: &Mode, map: &str| last.map_or(true, |(lm, lmap)| !(m.id == lm && map == lmap));
         let maps_of = |m: &Mode, avoid: bool| -> Vec<String> {
@@ -415,6 +454,14 @@ mod tests {
         // a single choice is repeated rather than nothing played
         let one = Playlist::from_json(r#"{"id":"y","team_size":1,"teams":1,"stages":[],"modes":[{"id":"a","maps":["m"]}]}"#).unwrap();
         assert_eq!(one.pick(1, Some(("a", "m"))).map, "m");
+        // a preferred map is played in a mode that has it
+        let horde = Playlist::defaults().into_iter().find(|p| p.id == "horde").unwrap();
+        assert_eq!(horde.maps(), vec!["coop_arena".to_string()]);
+        for roll in 0..20 {
+            let p = horde.pick_map(roll, Some(("horde", "coop_arena")), "coop_arena");
+            assert_eq!(p.map, "coop_arena");
+        }
+        assert_eq!(horde.pick_map(3, None, "nowhere").map, "coop_arena");
     }
 
     #[test]

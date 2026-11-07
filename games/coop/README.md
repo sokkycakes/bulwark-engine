@@ -234,9 +234,14 @@ and run commands themselves.
   1080 lines). Left: an image slot, the playlist's name with its player
   range and population, its description, a status line (Ready, waiting for
   the leader, searching with a timer at its right, errors), the rows
-  Playlist, Party privacy and Start matchmaking, and help for the hovered
-  row. Playlist swaps the rows for the playlists. Right: My Party with open
-  seats up to the playlist's size, the party code and invites. Only the
+  Playlist, Map, Party privacy and Start matchmaking, and help for the
+  hovered row. Playlist, Map and Party privacy open Halo 3: ODST-style
+  flyouts: a title tab on the opening row, the choices starting in that row
+  (current one first in focus), help under them or in a column at their
+  right (with an image slot for maps); choosing, Back or the tab closes it.
+  Map is the party's preferred map (`coop_mmMap`, empty = any), sent with
+  `live_queue`. Right: the party code, then My Party with open seats up to
+  the playlist's size, and invites. Only the
   party leader starts or stops the search. The page makes a party on its
   own once online; with no `live_server` set it asks for one. The chosen
   playlist is `coop_mmPlaylist` (horde). `menu_coop page lobby` opens it.

@@ -785,13 +785,16 @@ var CoopMenu = ( function ()
 	// 1080-line design height): an image slot, the playlist's title and
 	// population, its description, a status line with a timer on the right,
 	// the option rows with help text under them, button hints, and the party
-	// roster at the top right. Layout only: lobby.css has no visual styling.
+	// roster at the top right. Playlist, Map and Party privacy open ODST-style
+	// flyouts: a title tab on the row that opened it, the choices starting
+	// in that row, and a column at their right for help or an image slot.
+	// Layout only: lobby.css has no visual styling.
 	// Everything shown comes from the engine's live_state cvar (JSON,
 	// src/net/live.c), read four times a second; rows run live_* commands.
 	// The matcher, playlists and drop-in are on the server (docs/spec/live.md).
 
 	var mm = null;	// the open lobby's panels, null when closed
-	var mmPicking = false;	// the playlist rows replace the option rows
+	var mmFly = "";	// the open flyout: "playlist", "map", "privacy" or ""
 	var mmErrorSeen = -1;
 	var mmMadeParty = false;
 
@@ -840,12 +843,32 @@ var CoopMenu = ( function ()
 		var b = mm.hover || mm.defaultRow;
 		mm.help.text = b ? ( typeof b.help === "function" ? b.help() : b.help ) : "";
 	}
+	function mmMapId()
+	{
+		return cvar( "coop_mmMap" ) || "";
+	}
+	// every map of a playlist's modes, once each, with the modes that play it
+	function mmMaps( pl )
+	{
+		var out = [];
+		( pl && pl.modes || [] ).forEach( function ( m )
+		{
+			( m.maps || [] ).forEach( function ( map )
+			{
+				var e = out.filter( function ( x ) { return x.id === map; } )[ 0 ];
+				if ( !e )
+					out.push( e = { id: map, modes: [] } );
+				e.modes.push( m.name );
+			} );
+		} );
+		return out;
+	}
 
 	function lobbyPage()
 	{
 		openPage( "lobby", "Matchmaking" );
 		stage.SetHasClass( "lobby-open", true );
-		mmPicking = false;
+		mmFly = "";
 		mm = {};
 
 		var root = make( "Panel", body, "mm", { hittest: "false" } );
@@ -858,22 +881,20 @@ var CoopMenu = ( function ()
 		mm.timer = label( root, "mm-timer", "" );
 		mm.list = make( "Panel", root, "mm-list", { hittest: "false" } );
 		mm.help = label( root, "mm-help", "" );
+		mm.fly = make( "Panel", root, "mm-fly", { hittest: "false" } );
 
+		mm.code = label( root, "mm-code", "" );
 		var head = make( "Panel", root, "mm-roster-head", { hittest: "false" } );
 		mm.rosterTitle = label( head, "mm-roster-title", "My Party" );
 		mm.count = label( head, "mm-count", "" );
 		var right = make( "Panel", root, "mm-right", { hittest: "false" } );
 		mm.roster = make( "Panel", right, "mm-roster", { hittest: "false" } );
-		mm.code = label( right, "mm-code", "" );
 		mm.invites = make( "Panel", right, "mm-invites", { hittest: "false" } );
 
 		button( footer, "btn", "Back", function ()
 		{
-			if ( mmPicking )
-			{
-				mmPicking = false;
-				mmDraw( true );
-			}
+			if ( mmFly )
+				mmCloseFly();
 			else
 				closePage();
 		} );
@@ -909,7 +930,7 @@ var CoopMenu = ( function ()
 		{
 			var pl = mmPlaylist( st );
 			if ( pl )
-				cmd( "live_queue " + pl.id );
+				cmd( "live_queue " + pl.id + " 1 " + quote( mmMapId() ) );
 		}
 	}
 
@@ -953,8 +974,7 @@ var CoopMenu = ( function ()
 			online ? "Waiting for the server's playlists." : "Connect to Bulwark Live to see the playlists.";
 
 		// the rows: options, the playlists, or the server question
-		var key = mmPicking ? "pick:" + ( st.playlists || [] ).map( function ( p ) { return p.id; } ).join( "," ) :
-			!online && !server ? "server" : "options";
+		var key = !online && !server ? "server" : "options";
 		if ( rebuild || key !== mm.listKey )
 		{
 			mm.listKey = key;
@@ -964,23 +984,34 @@ var CoopMenu = ( function ()
 			mm.rows = null;
 			if ( key === "options" )
 				mmDrawOptions();
-			else if ( key === "server" )
-				mmDrawServer();
 			else
-				mmDrawPicker( st );
+				mmDrawServer();
 		}
 		if ( mm.rows )
 		{
 			var r = mm.rows;
 			r.playlist.valueLabel.text = pl ? pl.name : online ? "Loading..." : "";
-			r.playlist.SetHasClass( "off", !online || searching );
+			r.playlist.SetHasClass( "off", !online || searching || !leader );
+			var mapId = mmMapId();
+			var maps = mmMaps( pl );
+			if ( mapId && pl && maps.length && !maps.some( function ( x ) { return x.id === mapId; } ) )
+			{
+				cmd( "seta coop_mmMap \"\"" );	// not on this playlist: any
+				mapId = "";
+			}
+			r.map.valueLabel.text = mapId || "Any";
+			r.map.SetHasClass( "off", !online || searching || !leader || maps.length < 2 );
 			r.privacy.valueLabel.text = party ? ( ( party.flags & 1 ) ? "Open" : "Invite only" ) : "";
 			r.privacy.SetHasClass( "off", !leader || searching );
 			r.start.nameLabel.text = searching ? "Stop searching" : "Start matchmaking";
 			r.start.SetHasClass( "off", !online || !party || !leader || !pl );
 		}
-		else if ( mm.picks )
-			mm.picks.forEach( function ( b ) { b.valueLabel.text = mmFacts( b.playlist ); } );
+		// rows under an open flyout are covered by it
+		if ( mm.rows )
+			mm.rows.order.forEach( function ( b, i ) { b.SetHasClass( "covered", !!mmFly && i >= mm.rows.order.indexOf( mm.rows[ mmFly ] ) ); } );
+		mm.help.SetHasClass( "covered", !!mmFly );
+		if ( mmFly && ( searching || !leader ) )
+			mmCloseFly();
 		mmHelp();
 
 		// errors from the server, once each, shown on the status line
@@ -1005,46 +1036,111 @@ var CoopMenu = ( function ()
 
 	function mmDrawOptions()
 	{
-		var playlist = mmRow( "Playlist", "Choose the playlist you want to play.", function () { mmPicking = true; mmDraw( true ); } );
-		var privacy = mmRow( "Party privacy", "Choose whether anyone can join your party or only players you invite.", function ()
-		{
-			var st = liveState();
-			if ( st.party )
-				cmd( "live_open " + ( ( st.party.flags & 1 ) ? "0" : "1" ) );
-		} );
+		var playlist = mmRow( "Playlist", "Choose the playlist you want to play.", function () { mmOpenFly( "playlist" ); } );
+		var map = mmRow( "Map", "Choose the map you'd like to play, or any.", function () { mmOpenFly( "map" ); } );
+		var privacy = mmRow( "Party privacy", "Choose whether anyone can join your party or only players you invite.", function () { mmOpenFly( "privacy" ); } );
 		var start = mmRow( "Start matchmaking", function ()
 		{
 			return liveState().queue ? "Stop searching and stay in the lobby." : "Search for a game in the selected playlist.";
 		}, mmStart );
-		mm.rows = { playlist: playlist, privacy: privacy, start: start };
+		mm.rows = { playlist: playlist, map: map, privacy: privacy, start: start, order: [ playlist, map, privacy, start ] };
 		mm.defaultRow = start;
 	}
 
-	function mmDrawPicker( st )
+	// ---- ODST-style flyouts ------------------------------------------------
+	// The tab (the row's name) sits on the row that opened it; the choices
+	// start in that same row, one per row, the current one first in focus;
+	// help goes under the choices (privacy) or in the column at their right
+	// (playlist; map, under an image slot). Choosing closes it; so do Back
+	// and the tab.
+	function mmCloseFly()
 	{
-		var cur = mmPlaylistId();
-		mm.picks = [];
-		( st.playlists || [] ).forEach( function ( p )
+		mmFly = "";
+		mm.fly.RemoveAndDeleteChildren();
+		mm.fly.SetHasClass( "on", false );
+		mmDraw( false );
+	}
+
+	function mmOpenFly( kind )
+	{
+		var st = liveState();
+		var pl = mmPlaylist( st );
+		var opener = mm.rows[ kind ];
+		var row = mm.rows.order.indexOf( opener );
+		mmFly = kind;
+		mm.fly.RemoveAndDeleteChildren();
+		mm.fly.SetHasClass( "on", true );
+		for ( var i = 0; i < 4; i++ )
+			mm.fly.SetHasClass( "r" + i, i === row );	// the tab sits on the opening row
+
+		var tab = make( "Button", mm.fly, "mm-fly-tab", { hittest: "true" } );
+		label( tab, "mm-fly-title", opener.nameLabel.text + ":" );
+		tab.SetPanelEvent( "onactivate", function () { $.GetContextPanel().SetFocus(); mmCloseFly(); } );
+		var block = make( "Panel", mm.fly, "mm-fly-block", { hittest: "false" } );
+		var items = make( "Panel", block, "mm-fly-items", { hittest: "false" } );
+		var under = label( block, "mm-fly-help", "" );
+		var side = make( "Panel", mm.fly, "mm-fly-side", { hittest: "false" } );
+
+		var choices, current, show;
+		if ( kind === "playlist" )
 		{
-			var b = mmRow( p.name, p.description || "", function ()
+			choices = ( st.playlists || [] ).map( function ( p ) { return { id: p.id, name: p.name, p: p }; } );
+			current = pl ? pl.id : "";
+			var text = label( side, "mm-fly-text", "" );
+			var facts = label( side, "mm-fly-text", "" );
+			show = function ( c ) { text.text = c.p.description || ""; facts.text = mmFacts( c.p ); };
+		}
+		else if ( kind === "map" )
+		{
+			choices = [ { id: "", name: "Any", modes: [] } ].concat( mmMaps( pl ).map( function ( m ) { return { id: m.id, name: m.id, modes: m.modes }; } ) );
+			current = mmMapId();
+			make( "Panel", side, "mm-fly-image", { hittest: "false" } );
+			var mtext = label( side, "mm-fly-text", "" );
+			show = function ( c )
 			{
-				cmd( "seta coop_mmPlaylist " + p.id );
-				mmPicking = false;
-				mmDraw( true );
+				mtext.text = c.id ? "Played as " + c.modes.join( " or " ) + "." : "The matchmaker picks the map and the mode.";
+			};
+		}
+		else
+		{
+			choices = [ { id: "1", name: "Open", help: "Anyone can join your party with its code, and matchmaking fills open seats." },
+				{ id: "0", name: "Invite only", help: "Only players you invite can join your party." } ];
+			current = st.party && ( st.party.flags & 1 ) ? "1" : "0";
+			make( "Panel", side, "mm-fly-icon", { hittest: "false" } );
+			show = function ( c ) { under.text = c.help; };
+		}
+
+		// the current choice first in focus, like the flyouts' initial item
+		var focus = null;
+		choices.forEach( function ( c )
+		{
+			var b = make( "Button", items, "mm-fly-item" + ( c.id === current ? " current" : "" ), { hittest: "true" } );
+			label( b, "mm-fly-name", c.name );
+			b.SetPanelEvent( "onmouseover", function () { show( c ); } );
+			b.SetPanelEvent( "onactivate", function ()
+			{
+				$.GetContextPanel().SetFocus();
+				if ( kind === "playlist" )
+				{
+					cmd( "seta coop_mmPlaylist " + c.id );
+					cmd( "seta coop_mmMap \"\"" );
+				}
+				else if ( kind === "map" )
+					cmd( "seta coop_mmMap " + quote( c.id ) );
+				else
+					cmd( "live_open " + c.id );
+				mmCloseFly();
 			} );
-			b.playlist = p;
-			b.SetHasClass( "current", p.id === cur );
-			mm.picks.push( b );
-			if ( p.id === cur )
-				mm.defaultRow = b;
+			if ( c.id === current || !focus )
+				focus = c;
 		} );
-		if ( !mm.picks.length )
-			label( mm.list, "mm-row-name", "No playlists yet." );
+		if ( focus )
+			show( focus );
+		mmDraw( false );
 	}
 
 	function mmDrawServer()
 	{
-		mm.picks = null;
 		label( mm.list, "mm-ask-text", "Matchmaking goes through a Bulwark Live server (bwlive-server). Type its address." );
 		var r = make( "Panel", mm.list, "mm-ask-row", { hittest: "false" } );
 		var e = make( "TextEntry", r, "mm-entry", { maxchars: "64", text: cvar( "live_server" ) } );
