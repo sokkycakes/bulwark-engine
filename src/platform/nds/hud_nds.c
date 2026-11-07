@@ -95,11 +95,27 @@ static inline void top_px(int x, int y, int col)
 #define FILL_DITHER 0x10
 static void top_fill(int x, int y, int w, int h, int col)
 {
-	int x1 = BW_NDS_MIN(x + w, clipx1), y1 = BW_NDS_MIN(y + h, clipy1), step = col & FILL_DITHER ? 2 : 1;
-	x = BW_NDS_MAX(x, clipx0), y = BW_NDS_MAX(y, clipy0), col &= 15;
-	for (int j = y; j < y1; j++)
-		for (int i = step == 2 ? x + ((x + j + 1) & 1) : x; i < x1; i += step)
-			top_px(i, j, col);
+	int x1 = BW_NDS_MIN(x + w, clipx1), y1 = BW_NDS_MIN(y + h, clipy1);
+	uint32_t word;
+	x = BW_NDS_MAX(x, clipx0), y = BW_NDS_MAX(y, clipy0);
+	if (x >= x1 || y >= y1)
+		return;
+	if (col & FILL_DITHER) {
+		col &= 15;
+		for (int j = y; j < y1; j++)
+			for (int i = x + ((x + j + 1) & 1); i < x1; i += 2)
+				top_px(i, j, col);
+		return;
+	}
+	/* a row of a tile is a word, a pixel to each nibble from the low end */
+	word = (uint32_t)col * 0x11111111u;
+	for (int tx = x >> 3; tx <= (x1 - 1) >> 3; tx++) {
+		int lo = BW_NDS_MAX(x - tx * 8, 0), hi = BW_NDS_MIN(x1 - tx * 8, 8);
+		uint32_t mask = (hi == 8 ? ~0u : (1u << hi * 4) - 1) & ~((1u << lo * 4) - 1);
+		uint32_t *p = (uint32_t *)(void *)(strip + tx * 32);
+		for (int j = y; j < y1; j++)
+			p[j & 7] = (p[j & 7] & ~mask) | (word & mask);
+	}
 }
 
 static int text_width(const char *s, int len, int scale)
@@ -110,14 +126,59 @@ static int text_width(const char *s, int len, int scale)
 	return n;
 }
 
+static inline int strip_px(int x, int y)
+{
+	const uint8_t *p = strip + (x >> 3) * 32 + (y & 7) * 4 + ((x & 7) >> 1);
+	return x & 1 ? *p >> 4 : *p & 15;
+}
+
 /* text at (x, y), each font pixel scale x scale, with a 1-pixel outline unless bare */
 static void draw_text(int x, int y, int scale, int col, const char *s, int len, bool bare)
 {
+	if (scale == 1) {
+		/* one pass, a glyph's rows with the outline around them (its pixels dilated by one),
+		 * which never covers the text already drawn to the left */
+		int cx = x;
+		for (int k = 0; k < len; k++) {
+			int w, adv;
+			const uint8_t *g = hud_glyph((uint8_t)s[k], &w, &adv);
+			if (g && cx + w + 1 > clipx0 && cx - 1 < clipx1)
+				for (int j = bare ? 0 : -1; j < hudh + (bare ? 0 : 1); j++) {
+					int yy = y + j;
+					unsigned fg, m;
+					if (yy < clipy0 || yy >= clipy1)
+						continue;
+					fg = j >= 0 && j < hudh ? (unsigned)g[j] << 1 : 0;
+					if (bare)
+						m = fg;
+					else {
+						m = fg | (j > 0 ? (unsigned)g[j - 1] << 1 : 0) | (j + 1 < hudh ? (unsigned)g[j + 1] << 1 : 0);
+						m |= m << 1 | m >> 1;
+					}
+					for (int b = 0; m; b++, m >>= 1)
+						if (m & 1) {
+							int px = cx + b - 1;
+							if (px < clipx0 || px >= clipx1)
+								continue;
+							if (fg >> b & 1)
+								top_px(px, yy, col);
+							else if (strip_px(px, yy) != col)
+								top_px(px, yy, HC_EDGE);
+						}
+				}
+			cx += adv;
+		}
+		return;
+	}
 	for (int pass = bare ? 1 : 0; pass < 2; pass++) {
 		int cx = x;
 		for (int k = 0; k < len; k++) {
 			int w, adv;
 			const uint8_t *g = hud_glyph((uint8_t)s[k], &w, &adv);
+			if (cx + (w + 1) * scale < clipx0 || cx - 1 >= clipx1) {
+				cx += adv * scale;
+				continue;
+			}
 			for (int j = 0; g && j < hudh; j++) {
 				if (y + (j + 1) * scale + 1 <= clipy0 || y + j * scale - 1 >= clipy1)
 					continue; /* outside the rows being drawn */
@@ -125,8 +186,6 @@ static void draw_text(int x, int y, int scale, int col, const char *s, int len, 
 					if (g[j] & (1 << i)) {
 						if (pass == 0)
 							top_fill(cx + i * scale - 1, y + j * scale - 1, scale + 2, scale + 2, HC_EDGE);
-						else if (scale == 1)
-							top_px(cx + i, y + j, col);
 						else
 							top_fill(cx + i * scale, y + j * scale, scale, scale, col);
 					}
@@ -440,21 +499,23 @@ static void news(void)
 
 /* --- widgets ------------------------------------------------------------------------------ */
 
-enum { W_DIAG, W_OBJ, W_FEED, W_NOTICE, W_VITALS, W_WEAPONS, W_DOWN, W_PLATES, W_PROMPT, W_TID, W_CROSS, W_COUNT };
+/* drawn in this order, the last on top: the nameplates under the Panorama HUD, the
+ * crosshair over it (entry.qc Nameplates_Draw then HUD_Draw, jtf.qc HUD_Draw) */
+enum { W_DIAG, W_PLATES, W_OBJ, W_FEED, W_NOTICE, W_VITALS, W_WEAPONS, W_DOWN, W_PROMPT, W_TID, W_CROSS, W_COUNT };
 enum { OP_FILL = 1, OP_TEXT, OP_LINE, OP_XHAIR };
-static const uint16_t wcap[W_COUNT] = {200, 160, 400, 160, 900, 300, 400, 300, 200, 120, 48};
+static const uint16_t wcap[W_COUNT] = {200, 300, 160, 560, 160, 900, 300, 400, 200, 120, 48};
 
 typedef struct {
 	uint8_t *buf;
 	int len, cap;
-	int16_t x0, y0, x1, y1; /* what it covers, as last drawn */
-	int16_t nx0, ny0, nx1, ny1;
+	uint32_t cover[24], ncover[24]; /* the tiles it covers as last drawn, and now: a bit for each */
 	uint32_t sig;
-	bool overflow;
+	uint32_t in; /* what it was built from, for the ones that only change with their input */
+	bool overflow, built;
 } widget_t;
 
 static widget_t wid[W_COUNT];
-static uint8_t warena[3200];
+static uint8_t warena[3400];
 static widget_t *cw; /* the one being written */
 
 static void w_bytes(const void *p, int n)
@@ -467,11 +528,17 @@ static void w_bytes(const void *p, int n)
 	cw->len += n;
 }
 
-static void w_box(int x0, int y0, int x1, int y1)
+static void mark_tiles(uint32_t *dirty, int x0, int y0, int x1, int y1)
 {
-	cw->nx0 = (int16_t)BW_NDS_MIN(cw->nx0, x0), cw->ny0 = (int16_t)BW_NDS_MIN(cw->ny0, y0);
-	cw->nx1 = (int16_t)BW_NDS_MAX(cw->nx1, x1), cw->ny1 = (int16_t)BW_NDS_MAX(cw->ny1, y1);
+	x0 = BW_NDS_MAX(x0, 0), y0 = BW_NDS_MAX(y0, 0), x1 = BW_NDS_MIN(x1, 256), y1 = BW_NDS_MIN(y1, 192);
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	for (int ty = y0 >> 3; ty <= (y1 - 1) >> 3; ty++)
+		for (int tx = x0 >> 3; tx <= (x1 - 1) >> 3; tx++)
+			dirty[ty] |= 1u << tx;
 }
+
+static void w_box(int x0, int y0, int x1, int y1) { mark_tiles(cw->ncover, x0, y0, x1, y1); }
 
 static void w_fill(int x, int y, int w, int h, int col)
 {
@@ -525,7 +592,7 @@ static void w_begin(int i)
 {
 	cw = &wid[i];
 	cw->len = 0, cw->overflow = false;
-	cw->nx0 = cw->ny0 = 32767, cw->nx1 = cw->ny1 = -32768;
+	memset(cw->ncover, 0, sizeof(cw->ncover));
 }
 
 static uint32_t fnv(const uint8_t *p, int n)
@@ -575,15 +642,6 @@ static void w_exec(const widget_t *w)
 	}
 }
 
-static void mark_tiles(uint32_t *dirty, int x0, int y0, int x1, int y1)
-{
-	x0 = BW_NDS_MAX(x0, 0), y0 = BW_NDS_MAX(y0, 0), x1 = BW_NDS_MIN(x1, 256), y1 = BW_NDS_MIN(y1, 192);
-	if (x1 <= x0 || y1 <= y0)
-		return;
-	for (int ty = y0 >> 3; ty <= (y1 - 1) >> 3; ty++)
-		for (int tx = x0 >> 3; tx <= (x1 - 1) >> 3; tx++)
-			dirty[ty] |= 1u << tx;
-}
 
 /* --- the parts --------------------------------------------------------------------------- */
 
@@ -793,7 +851,38 @@ static bool ability_state(const char *line, char keyc, char *state, int size)
 
 /* bottom left (hud.css .vitals): squad, abilities, Cadence, armour or energy, then
  * health, Barrier and level in one row at the bottom */
-static void part_vitals(const hudin_t *in, const hudent_t *ents, int nents, const ndscam_t *view)
+/* the squad: the three closest others with a card (jtf.qc Jtf_Team) */
+static int squad_pick(const ndscam_t *view, const hudent_t *ents, int nents, int pick[3])
+{
+	int dist[MAX_PLAYERS], n = 0;
+	bool used[MAX_PLAYERS] = {false};
+	for (int i = 0; i < MAX_PLAYERS; i++)
+		dist[i] = 1000000 + i;
+	for (int i = 0; i < nents; i++)
+		if (ents[i].slot >= 0 && ents[i].slot < MAX_PLAYERS && ents[i].slot != hud.self) {
+			int32_t d[3];
+			float l;
+			for (int k = 0; k < 3; k++)
+				d[k] = ents[i].org[k] * 8 - view->org[k];
+			l = sqrtf((float)d[0] * d[0] + (float)d[1] * d[1] + (float)d[2] * d[2]) / 8;
+			dist[ents[i].slot] = (int)(l + 0.5f);
+		}
+	for (; n < 3; n++) {
+		int best = -1;
+		for (int i = 0; i < MAX_PLAYERS; i++) {
+			if (i == hud.self || used[i] || !hud.pl[i].used || !hud.pl[i].name[0] || !hud.pl[i].mate[0])
+				continue;
+			if (best < 0 || dist[i] < dist[best])
+				best = i;
+		}
+		if (best < 0)
+			break;
+		used[best] = true, pick[n] = best;
+	}
+	return n;
+}
+
+static void part_vitals(const hudin_t *in, const int pick[3], int n)
 {
 	hero_t h;
 	char v[24];
@@ -903,31 +992,6 @@ static void part_vitals(const hudin_t *in, const hudent_t *ents, int nents, cons
 	}
 	/* the squad: the three closest others with a card (jtf.qc Jtf_Team) */
 	if (hud.have) {
-		int dist[MAX_PLAYERS], pick[3], n = 0;
-		bool used[MAX_PLAYERS] = {false};
-		for (int i = 0; i < MAX_PLAYERS; i++)
-			dist[i] = 1000000 + i;
-		for (int i = 0; i < nents; i++)
-			if (ents[i].slot >= 0 && ents[i].slot < MAX_PLAYERS && ents[i].slot != hud.self) {
-				int32_t d[3];
-				float l;
-				for (int k = 0; k < 3; k++)
-					d[k] = ents[i].org[k] * 8 - view->org[k];
-				l = sqrtf((float)d[0] * d[0] + (float)d[1] * d[1] + (float)d[2] * d[2]) / 8;
-				dist[ents[i].slot] = (int)(l + 0.5f);
-			}
-		for (; n < 3; n++) {
-			int best = -1;
-			for (int i = 0; i < MAX_PLAYERS; i++) {
-				if (i == hud.self || used[i] || !hud.pl[i].used || !hud.pl[i].name[0] || !hud.pl[i].mate[0])
-					continue;
-				if (best < 0 || dist[i] < dist[best])
-					best = i;
-			}
-			if (best < 0)
-				break;
-			used[best] = true, pick[n] = best;
-		}
 		/* drawn bottom up, so the first is on top */
 		for (int k = n - 1; k >= 0; k--) {
 			const hplayer_t *p = &hud.pl[pick[k]];
@@ -1024,16 +1088,18 @@ static int wrapped(int cx, int y, int maxw, int col, const char *s)
 	char line[64];
 	int n = 0;
 	while (*s) {
-		int len = 0, fit = 0;
+		int len = 0, fit = 0, wd = 0;
 		while (s[len] && len < 63) {
-			len++;
-			if ((!s[len] || s[len] == ' ') && text_width(s, len, 1) <= maxw)
-				fit = len;
-			if (text_width(s, len, 1) > maxw)
+			int gw, adv;
+			hud_glyph((uint8_t)s[len], &gw, &adv);
+			if (wd + adv > maxw)
 				break;
+			wd += adv, len++;
+			if (!s[len] || s[len] == ' ')
+				fit = len;
 		}
 		if (!fit)
-			fit = BW_NDS_MAX(len - 1, 1);
+			fit = BW_NDS_MAX(len, 1);
 		snprintf(line, sizeof(line), "%.*s", fit, s);
 		w_text(cx - t_w(line, 1) / 2, y, 1, col, line, 1);
 		y += 7, n++;
@@ -1141,6 +1207,30 @@ static float trace_frac(const float a[3], const float b[3])
 	return World_Loaded() ? World_TraceFraction(a, b) : 1.0f;
 }
 
+/* a nameplate's line of sight, traced again every third frame (a trace costs ~0.1 ms on the DS) */
+static uint32_t hud_frameno;
+static bool plate_los(uint16_t ent, const float eye[3], const float head[3])
+{
+	static struct {
+		uint16_t ent;
+		bool vis;
+		uint32_t frame;
+	} c[8];
+	int slot = 0;
+	for (int i = 0; i < 8; i++) {
+		if (c[i].frame && c[i].ent == ent) {
+			if (hud_frameno - c[i].frame < 3)
+				return c[i].vis;
+			slot = i;
+			break;
+		}
+		if (c[i].frame < c[slot].frame)
+			slot = i;
+	}
+	c[slot].ent = ent, c[slot].frame = hud_frameno, c[slot].vis = trace_frac(eye, head) >= 1.0f;
+	return c[slot].vis;
+}
+
 /* a teammate (the same team, not 0 or none) or a friendly NPC the server listed:
  * its name and health, false otherwise */
 static bool friendly(const hudent_t *e, const char **name, int *hp, int *max)
@@ -1188,7 +1278,7 @@ static void part_plates(const ndscam_t *view, const hudent_t *ents, int nents, u
 			dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 			/* in range and in front, nothing between (alpha past the last quarter of the range: shown while over a half) */
 			if (dist <= 875 && d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2] > 0 && project(view, head, &sx, &sy) &&
-			    trace_frac(eye, head) >= 1.0f) {
+			    plate_los(e->ent, eye, head)) {
 				int frac = BW_NDS_CLAMP(hp * 1000 / BW_NDS_MAX(max, 1), 0, 1000);
 				int bw = 19, nw = t_w(name, 1);
 				/* [1 - frac, frac, 0.1]: red to green */
@@ -1313,20 +1403,38 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 {
 	uint32_t t = now_ms();
 	uint32_t dirty[24] = {0}; /* a bit for each tile */
+	int pick[3] = {-1, -1, -1}, npick;
 	if (!topgfx)
 		return;
+	hud_frameno++;
 	if (hud.have)
 		news();
+	npick = hud.have ? squad_pick(view, ents, nents, pick) : 0;
 	for (int i = 0; i < W_COUNT; i++) {
 		widget_t *w = &wid[i];
-		uint32_t sig;
+		uint32_t sig, ik = 0;
+		/* the panels that only change with what they show are built again only then */
+		if (i == W_OBJ || i == W_VITALS || i == W_WEAPONS) {
+			int32_t k[12] = {hud.version, hud.have, down_now(), top_y};
+			if (i == W_VITALS)
+				k[4] = in->health, k[5] = in->armor, k[6] = npick, k[7] = pick[0], k[8] = pick[1], k[9] = pick[2];
+			if (i == W_WEAPONS) {
+				k[4] = in->clip, k[5] = in->clipsize, k[6] = in->reserve, k[7] = in->haveweapon;
+				k[8] = (int32_t)fnv((const uint8_t *)in->weapon, (int)strlen(in->weapon));
+				k[9] = hud.slotsuntil && t < hud.slotsuntil;
+			}
+			ik = fnv((const uint8_t *)k, sizeof(k)) | 1;
+			if (w->built && w->in == ik)
+				continue;
+		}
+		w->in = ik, w->built = true;
 		w_begin(i);
 		switch (i) {
 		case W_DIAG: part_diag(in); break;
 		case W_OBJ: part_obj(); break;
 		case W_FEED: part_feed(t); break;
 		case W_NOTICE: part_notice(t); break;
-		case W_VITALS: part_vitals(in, ents, nents, view); break;
+		case W_VITALS: part_vitals(in, pick, npick); break;
 		case W_WEAPONS: part_weapons(in, t); break;
 		case W_DOWN: part_down(in); break;
 		case W_PLATES: part_plates(view, ents, nents, t); break;
@@ -1335,35 +1443,36 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 		case W_CROSS: part_cross(); break;
 		}
 		sig = fnv(w->buf, w->len);
-		if (sig != w->sig || w->nx0 != w->x0 || w->ny0 != w->y0 || w->nx1 != w->x1 || w->ny1 != w->y1) {
+		if (sig != w->sig || memcmp(w->cover, w->ncover, sizeof(w->cover))) {
 			/* the tiles it covered and covers now are drawn again */
-			mark_tiles(dirty, w->x0, w->y0, w->x1, w->y1);
-			mark_tiles(dirty, w->nx0, w->ny0, w->nx1, w->ny1);
+			for (int ty = 0; ty < 24; ty++)
+				dirty[ty] |= w->cover[ty] | w->ncover[ty];
 			w->sig = sig;
-			w->x0 = w->nx0, w->y0 = w->ny0, w->x1 = w->nx1, w->y1 = w->ny1;
-			if (w->x1 <= w->x0 || w->y1 <= w->y0)
-				w->x0 = w->y0 = w->x1 = w->y1 = 0;
+			memcpy(w->cover, w->ncover, sizeof(w->cover));
 		}
 	}
-	/* each row of tiles with any to draw: every widget over them, in order, then the tiles out */
+	/* each run of tiles to draw in a row: every widget over them, in order, then the tiles out */
 	for (int ty = 0; ty < 24; ty++) {
 		uint32_t m = dirty[ty];
-		int tx0, tx1;
-		if (!m)
-			continue;
-		tx0 = __builtin_ctz(m), tx1 = 32 - __builtin_clz(m);
-		clipx0 = tx0 * 8, clipx1 = tx1 * 8, clipy0 = ty * 8, clipy1 = ty * 8 + 8;
-		memset(strip + tx0 * 32, 0, (size_t)(tx1 - tx0) * 32);
-		for (int i = 0; i < W_COUNT; i++)
-			if (wid[i].x1 > clipx0 && wid[i].x0 < clipx1 && wid[i].y1 > clipy0 && wid[i].y0 < clipy1)
-				w_exec(&wid[i]);
-		for (int tx = tx0; tx < tx1; tx++)
-			if (m & (1u << tx)) {
+		while (m) {
+			int tx0 = __builtin_ctz(m), tx1 = tx0;
+			uint32_t run;
+			while (tx1 < 32 && (m >> tx1 & 1))
+				tx1++;
+			run = (tx1 == 32 ? ~0u : (1u << tx1) - 1) & ~((1u << tx0) - 1);
+			m &= ~run;
+			clipx0 = tx0 * 8, clipx1 = tx1 * 8, clipy0 = ty * 8, clipy1 = ty * 8 + 8;
+			memset(strip + tx0 * 32, 0, (size_t)(tx1 - tx0) * 32);
+			for (int i = 0; i < W_COUNT; i++)
+				if (wid[i].cover[ty] & run)
+					w_exec(&wid[i]);
+			for (int tx = tx0; tx < tx1; tx++) {
 				const uint32_t *src = (const uint32_t *)(strip + tx * 32);
 				volatile uint32_t *dst = (volatile uint32_t *)(void *)(topgfx + (ty * 32 + tx) * 16);
 				for (int k = 0; k < 8; k++)
 					dst[k] = src[k];
 			}
+		}
 	}
 }
 
