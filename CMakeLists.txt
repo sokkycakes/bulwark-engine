@@ -31,6 +31,23 @@ if(NINTENDO_DS)
 	               src/platform/nds/portals_nds.c src/platform/nds/skel_nds.c src/platform/nds/pmove_nds.c
 	               src/platform/nds/hull_nds.c)
 	target_link_libraries(bulwark_nds PRIVATE dswifi9 filesystem fat m)
+	# libgcc's soft-float add, multiply/divide, compare and float-to-int run from ITCM (the
+	# linker script puts *.itcm.* objects there): the movement prediction spends about half
+	# its time in them. The same objects, so the same results, only faster fetched.
+	execute_process(COMMAND ${CMAKE_C_COMPILER} -march=armv5te -mtune=arm946e-s -print-libgcc-file-name
+	                OUTPUT_VARIABLE NDS_LIBGCC OUTPUT_STRIP_TRAILING_WHITESPACE)
+	set(NDS_SF_OBJS _arm_addsubsf3 _arm_muldivsf3 _arm_cmpsf2 _arm_fixsfsi _arm_unordsf2)
+	string(REPLACE ";" " " NDS_SF_LIST "${NDS_SF_OBJS}")
+	set(NDS_SF_OUT "")
+	foreach(o ${NDS_SF_OBJS})
+		list(APPEND NDS_SF_OUT ${CMAKE_BINARY_DIR}/sf_itcm/${o}.itcm.o)
+	endforeach()
+	file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/sf_itcm)
+	add_custom_command(OUTPUT ${NDS_SF_OUT}
+		COMMAND sh -c "for o in ${NDS_SF_LIST}; do ${CMAKE_AR} x ${NDS_LIBGCC} $o.o && mv $o.o $o.itcm.o; done"
+		WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/sf_itcm VERBATIM)
+	set_source_files_properties(${NDS_SF_OUT} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+	target_sources(bulwark_nds PRIVATE ${NDS_SF_OUT})
 	set(BULWARK_NDS_NITROFS "" CACHE PATH "Folder to pack into the ROM (maps/, gfx/palette.lmp)")
 	if(BULWARK_NDS_NITROFS)
 		nds_create_rom(bulwark_nds NAME "Bulwark" SUBTITLE1 "Link client and map viewer" SUBTITLE2 "github.com/sokkycakes"
