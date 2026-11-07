@@ -221,7 +221,8 @@ for c in cmds:
     rcon(c)
 mark = time.time()
 pump(secs)
-stats = rcon('link_stats')
+stats = rcon('link_stats')  # marks the log: records made after it are not counted
+pump(1.0)                    # what was on its way (sv_link_lag holds packets)
 s.sendto(MAGIC + bytes([LEAVE]) + struct.pack('<I', session), (host, port))
 dur = time.time() - mark
 
