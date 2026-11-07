@@ -117,6 +117,8 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x8E | WEAPONINFO | the weapon in hand, as its game code reads it (link v2, below) |
 | 0x8F | HUDINFO | what the co-op HUD shows (below) |
 | 0x90 | EVENT | prints, chat, centerprints and the game's CSQC events, as records (below) |
+| 0x91 | SOUND | one-shot sounds (below, "Sound") |
+| 0x92 | AMBIENT | the client-side loops near the player (below, "Sound") |
 
 The server sends `WELCOME` again whenever the map changes (new
 `spawncount`), and every 2 s in case one was lost. The device then loads
@@ -279,7 +281,8 @@ After the 32 bytes of the v1 fields (all present):
 | 44 | count × 14 | commands, oldest first: command `i` has sequence `newest - (count - 1) + i` |
 | 44 + 14 × count | u8, u16, u16 | optional: `'W'`, the WEAPONINFO version the device has (0 none yet), and its edict; a device that sends it takes WEAPONINFO |
 | then | u8, u16 | optional, after `'W'` when that is there: `'H'`, the HUDINFO version the device has (0 none yet); a device that sends it draws the HUD and takes HUDINFO |
-| then | u8, u16 | optional, last (after `'W'` and `'H'` when they are there, or at 32 without commands): `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
+| then | u8, u16 | optional (after `'W'` and `'H'` when they are there, or at 32 without commands): `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
+| then | u8, u16, u8 | optional, last, after `'E'`: `'S'`, the AMBIENT version the device has (0 none), caps (bit 0: it plays sound); a device that sends it with bit 0 takes SOUND, AMBIENT, EVENT records 12-15 and WEAPONINFO's sound events |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's
@@ -668,13 +671,20 @@ draw; titles.txt escapes become what `Titles_ParseFunString` makes of them
 | 9 | TEXTAGAIN | a TEXT on channel 0-4 the same as that channel's last | u8 channel: show it again from its start |
 | 10 | CENTERAGAIN | a `centerprint` the same as the last (the co-op rules send "Respawn in N seconds" every frame while down); while one has not gone out yet, more make none | nothing: the centerprint's 3 s start again |
 | 11 | FLASH | `EV_PICKUP` of an item whose entityDef has `pickupFlash 1` (EV_Pickup's `bf`) | nothing: the engine's gold pickup flash |
+| 12 | SOUND | a sound that starts a loop or ends one the device has ("Sound") | a SOUND record with `seq` 0 |
+| 13 | SENTENCE | `EV_SENTENCE` ("Sound") | u16 entity, u8 attenuation (×64), u8 n, n × u32 key |
+| 14 | MUSIC | `EV_MUSIC*`, serverinfo `bgm`, a `music`/`stopmusic` stuffcmd ("Sound") | u8 op (0 stop, 1 once, 2 loop), the name as the PC's `music` command takes it |
+| 15 | PRECACHE | the map's sound precache list ("Sound") | u16 first, u8 n, n × u32 key |
 
 A device that also sends `'H'` gets no FEED records: the obituaries and
 `coop_feed` reach it in `HUDINFO`, whose feed it draws.
 
 `EV_ANGLE` from a `MSG_ONE` write turns the player as the multicast does.
+The sound events (`EV_MUSICTRACK`, `EV_MUSICLOOP`, `EV_MUSIC_ONCE`,
+`EV_MUSIC_LOOP`, `EV_MUSIC_STOP`, `EV_SPEAK`, `EV_SENTENCE`) are read to
+their end for every device and make records only for one that takes sound.
 `EV_HITNOTIFY` (the PC does nothing with it) and events of other kinds
-(sounds, music, intermission, models) make no records; an event whose
+(intermission, models) make no records; an event whose
 length the server doesn't know ends that message (`link_stats` counts
 these as stops; `sv_link_log 1` prints each). The game's `MSG_ONE` and
 `MSG_ALL` writes are taken as they are written, so they keep their order
@@ -688,6 +698,94 @@ or the map changes, the next game_text and centerprint go out in full.
 | 0x01 | CLEAR | u16 rgb15 |
 | 0x02 | FILL | u8 x, u8 y, u8 w, u8 h, u16 rgb15 (w and h of 0 mean 256) |
 | 0x03 | TEXT | u8 x, u8 y, u16 rgb15, u8 len, char text[len] |
+
+## Sound
+
+A PC client hears the server's `sound()` and `pointsound()` as `svc_sound`
+(`src/server/sv_client.c` `write_sound`), which the engine sends to every
+spawned client with no PVS test, and never to a bot. For a link player the
+same call makes a record here instead (`SV_LinkSound`). The PC's client game
+also makes sounds by itself from what it is sent; a device runs no QuakeC, so
+the server works those out as the client game would and sends them as
+`CLIENTSIDE` records:
+
+| Path | What the PC's client game does | Sent as |
+|---|---|---|
+| impacts | `EV_SURFIMPACT`/`EV_SURFIMPACTID` (`surfaceproperties.qc` `SurfData_Impact_Parse`): the surface near the point on entity number `e - 1` (world for 0 and 1), its material's `SURFDATA_SND_BULLETIMPACT` SoundDef, `SoundDef_PlayAt` (pitch 100: the client's `pointsound` drops it; the decl's `distshader` too, at attenuation 0) | SOUND, entity 0 |
+| speech | `EV_SPEAK`: `sound(t, CHAN_VOICE, sample, 1, ATTN_NORM, pitch)` | SOUND on the entity |
+| sentences | `EV_SENTENCE`: the client's `sound/sentences.txt` table (`sentences.qc`), each word + `.wav`, the last path seen (`vox` to start); only for a `speaker`, `ambient_generic` (attenuation its radius) or talking monster | EVENT 13 |
+| env_message | `EV_MESSAGE`'s sound, `CHAN_ITEM` | SOUND, entity 0, at the player's eye |
+| music | `EV_MUSIC_ONCE`/`EV_MUSIC_LOOP` (a `*M:` model name; "once" loops too, as the PC's `music X 0`), `EV_MUSIC_STOP`, serverinfo `bgm` (`sound/bgm/<x>.mp3`); the CD tracks (`EV_MUSICTRACK`, `EV_MUSICLOOP`) only when the game's `menu.dat` has `menu_musictrack`, which co-op's lacks (the PC stays silent) | EVENT 14 |
+| stuffcmd | `play`, `play2`, `playvol` (a local sound at the listener), `music`, `stopmusic` | SOUND entity 0 at the eye; EVENT 14 |
+| view model | `HandleAnimEvent` 1004, 1008, 5004 on the view model | WEAPONINFO's `'S'` table |
+| model events | 1004, 1008, 5004 of the other studio entities, played as the client draws them | SOUND with `AT` |
+| loops | looping `ambient_generic` (not a SoundDef one) and `ncSound` entities | AMBIENT |
+
+**Sample names** are a key: FNV-1a 32 of the name in lower case, `\` as
+`/`, without a leading `./` or one leading `sound/`, and without a trailing
+`.wav`, `.ogg` or `.mp3`. `misc/talk.wav` is `0x7c72dd3c`,
+`common/null.wav` `0x7e3eafd0`, `Sound\Weapons\Glock1.WAV` `0xf61c39de`.
+
+**SOUND**: u32 session, u16 spawncount, u8 count, then count records of 20
+bytes (22 with `AT`):
+
+| Field | |
+|---|---|
+| u16 seq | +1 each record for this device; 0 in an EVENT 12 |
+| u8 lflags | 1 LISTENER (the device's own player, a server sound: heard straight), 2 `AT` follows, 4 STOP (the sample is `common/null`: stop entity and channel), 8 CLIENTSIDE (made for the PC client game's own sounds: a client entity's channel) |
+| u8 sflags | the engine's sound flags as `svc_sound` has them (2 FORCELOOP, 4 NOSPACIALISE, 16 ABSVOLUME, 32 NOREVERB, 64 FOLLOW, 128 NOREPLACE) |
+| u16 entity | 0 none |
+| u8 channel | |
+| u32 key | the sample |
+| u8 volume, attenuation, pitch | ×255, ×64, percent (0 means 100), as `svc_sound` |
+| s16 origin[3] | units (the entity's origin and the middle of its box, as `svc_sound`) |
+| s16 at | with `AT`: the server time (ms, the low 16 bits of the `ENTS` clock) at which the PC would start it, less the SoundDef's start offset |
+
+A SOUND packet goes at most every 1/36 s while records wait; each record
+goes in two consecutive packets (the device drops a seq it has had). At most
+40 a packet: the farthest from the player go first (`link_stats` counts
+them). A sound that loops (the FORCELOOP flag, or a WAV with a `cue `
+chunk anywhere in the file, which the PC loops), and a stop or start on the
+entity and channel (not 0) of a loop the device was sent, go as EVENT 12
+instead, which is reliable and in order. The server keeps the last 32 loops
+per device; a device joining late misses loops started before, as a PC does.
+
+**AMBIENT**: u32 session, u16 spawncount, u16 version, u8 count, count ×
+{u16 entity, u32 key, u8 volume (×255), u8 attenuation (×64), u8 pitch, u8
+flags (2 FORCELOOP, 128 an `ncSound`, else an `ambient_generic`), s16
+origin[3]}: the whole set, the 64 nearest the player. An `ambient_generic`
+(or an entityDef whose `spawnclass` is one) is in it while it loops and is on
+and is not a SoundDef one (`ambient_generic::SendEntity`); its radius is the
+whole byte the client gets. An `ncSound` while it loops and the player is
+within its radius (attenuation 1000 / radius). Read at the VIEW rate; a new
+version when it changes, sent then and every 0.25 s until INPUT's `'S'`
+acknowledges it, then every 2 s.
+
+**EVENT 15 PRECACHE**: once the device has the map, the sound precache list
+in order (`first` its index, up to 54 keys a record), and sounds precached
+later as they come; then one record with `first` 0xf000: the names the device
+keeps itself (`misc/talk`, `common/null`, `common/wpn_hudon`,
+`common/wpn_hudoff`, `common/wpn_moveselect`).
+
+**WEAPONINFO** for a device that plays sound: each sequence's event list also
+holds its 1004, 1008 and 5004 events (after the muzzle flashes, which keep
+their places; at most 64 events in all), whose `option` is an index into a
+table after the sequences: u8 `'S'`, u8 n, n × {u8 nsamples (1..8), nsamples ×
+u32 key, u8 volume (×255), u8 pitch min, pitch max (percent), u8 attenuation
+(×64), u8 flags (as SOUND's sflags), u8 channel, u8 distshader (another
+entry's index, 0xff none), s16 offset (ms)}, then u8 release[2]: the entry of
+the primary and secondary fireInfo's `snd_release` SoundDef (0xff none). 1004
+and 1008 play their file on channel 4 and 2 when it exists; 5004 its file on
+channel 0, else its SoundDef on channel 4 (a footstep one is silent on a view
+model). A body over 1200 bytes goes without its sound events.
+
+`sv_link_log 1` prints a `LINKSND <slot> <seq> <path> <name> entity channel
+volume attenuation pitch flags x y z [at]` line for each record (`flags` is
+sflags + 256 × lflags; seq 0: an EVENT, AMBIENT or WEAPONINFO entry),
+`SVSND <index> <name> entity channel` for each `svc_sound` the engine writes
+while a device takes sound (what a PC gets), and `LINKSNDUSED <map> <name>`
+for each sound the map precaches and each sample of the SoundDefs the server
+read. `tools/nds/linktest_sound.py` is a fake device that checks them.
 
 ## On the DS
 
