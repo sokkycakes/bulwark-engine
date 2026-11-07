@@ -125,6 +125,7 @@ void Fs_Init(void);
 int Fs_NumPaks(void);
 uint8_t *Fs_Load(const char *name, size_t *size); /* malloc'd, with a 0 after the end */
 uint8_t *Fs_LoadRange(const char *name, long pos, long len, size_t *size); /* part of one, the same way */
+long Fs_Size(const char *name); /* -1: not there */
 void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void *user), void *user);
 
 /* skel_nds.c: skeletons cut down on the PC (tools/nds/skelreduce), posed on

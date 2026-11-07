@@ -133,6 +133,27 @@ uint8_t *Fs_LoadRange(const char *name, long pos, long len, size_t *size)
 	return NULL;
 }
 
+/* a file's size, as Fs_Load finds it, or -1 */
+long Fs_Size(const char *name)
+{
+	char path[300];
+	for (int b = strstr(name, ":/") ? -1 : 0; b < NDS_NUMBASEDIRS; b++) {
+		FILE *f;
+		long n;
+		snprintf(path, sizeof(path), "%s%s", b < 0 ? "" : nds_basedirs[b], name);
+		if (!(f = fopen(path, "rb")))
+			continue;
+		n = fseek(f, 0, SEEK_END) ? -1 : ftell(f);
+		fclose(f);
+		return n;
+	}
+	for (int p = numpaks - 1; p >= 0; p--)
+		for (int i = 0; i < paks[p].numfiles; i++)
+			if (!strcasecmp(paks[p].files[i].name, name))
+				return (long)paks[p].files[i].len;
+	return -1;
+}
+
 /* calls fn for each file in dir ending in ext: loose files (full paths) then pak entries */
 void Fs_List(const char *dir, const char *ext, void (*fn)(const char *name, void *user), void *user)
 {

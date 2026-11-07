@@ -351,15 +351,16 @@ static uint16_t light_color(int l)
 	return RGB15(c, c, c);
 }
 
-/* the light at a point of a face, from its lightmap(s), bilinear; samples
- * are stride bytes apart (1 for the map's own, 3 for a .lit), and chan picks
- * the byte. lightlen counts samples. */
-static int sample_light(const uint8_t *light, int lightlen, int lightofs, const uint8_t *styles, int lw, int lh,
-                        float u, float v, int stride, int chan)
+/* the light at a point of a face, from its lightmap(s), bilinear; light is
+ * the face's first sample (NULL: none, full bright), avail how many samples
+ * from there are there, samples are stride bytes apart (1 for the map's
+ * own, 3 for a .lit), and chan picks the byte */
+static int sample_light(const uint8_t *light, int avail, const uint8_t *styles, int lw, int lh, float u, float v,
+                        int stride, int chan)
 {
 	int x0, y0, x1, y1, total = 0;
 	float fx, fy;
-	if (lightofs < 0)
+	if (!light)
 		return 255;
 	if (u < 0)
 		u = 0;
@@ -374,8 +375,8 @@ static int sample_light(const uint8_t *light, int lightlen, int lightofs, const 
 	y1 = y0 + 1 < lh ? y0 + 1 : y0;
 	fx = u - x0, fy = v - y0;
 	for (int s = 0; s < 4 && styles[s] != 255; s++) {
-		const uint8_t *m = light + (lightofs + s * lw * lh) * stride + chan;
-		if (lightofs + (s + 1) * lw * lh > lightlen)
+		const uint8_t *m = light + s * lw * lh * stride + chan;
+		if ((s + 1) * lw * lh > avail)
 			break;
 		total += (int)((m[(y0 * lw + x0) * stride] * (1 - fx) + m[(y0 * lw + x1) * stride] * fx) * (1 - fy) +
 		               (m[(y1 * lw + x0) * stride] * (1 - fx) + m[(y1 * lw + x1) * stride] * fx) * fy);
@@ -395,9 +396,10 @@ static int sample_light(const uint8_t *light, int lightlen, int lightofs, const 
 
 typedef struct {
 	int16_t x, y, z;
-	int32_t s, t;   /* t16, not yet moved near zero */
 	uint16_t color;
+	int32_t s, t;   /* t16, not yet moved near zero */
 } mvert_t;
+_Static_assert(sizeof(mvert_t) == 16, "the merge pool is the load's biggest block: no padding");
 
 typedef struct {
 	int first, num; /* into the mvert pool, fan order */
@@ -552,10 +554,49 @@ out:
 	free(idx);
 }
 
-/* coloured light for the map being loaded: a Quake-style .lit (QLIT,
- * version 1, RGB a sample), or NULL */
-static const uint8_t *lit;
-static int litsamples;
+/* the light of the map being loaded, read as the faces want it: a window
+ * of LIGHTWIN bytes of a Quake-style .lit (QLIT, version 1, RGB a sample)
+ * or of the BSP's own lighting lump, moved forward as the faces go (their
+ * light is in face order), never all of it at once: c5a1's .lit is 1 MB,
+ * and with the lumps and the merge pool it made the load's peak */
+#define LIGHTWIN (64 * 1024)
+typedef struct {
+	char path[300];
+	long base, len; /* where the light starts in the file, and its bytes */
+	int stride;     /* bytes a sample: 3 for a .lit, 1 for the lump */
+	uint8_t *buf;
+	long lo, n;     /* the bytes in buf */
+} lightwin_t;
+static lightwin_t lightwin;
+
+/* the light of a face (samples from lightofs on, as many as want), or NULL; *avail: how many are there */
+static const uint8_t *light_at(lightwin_t *lw, int lightofs, int want, int *avail)
+{
+	long ofs = (long)lightofs * lw->stride, n;
+	if (lightofs < 0 || !lw->len || ofs >= lw->len)
+		return NULL;
+	n = BW_NDS_MIN((long)want * lw->stride, lw->len - ofs);
+	if (!lw->buf || ofs < lw->lo || ofs + n > lw->lo + lw->n) {
+		long get = BW_NDS_MIN(BW_NDS_MAX(n, (long)LIGHTWIN), lw->len - ofs);
+		size_t got = 0;
+		free(lw->buf);
+		if (!(lw->buf = Fs_LoadRange(lw->path, lw->base + ofs, get, &got)) && get > n)
+			lw->buf = Fs_LoadRange(lw->path, lw->base + ofs, get = n, &got); /* a file cut short */
+		lw->lo = ofs, lw->n = lw->buf ? (long)got : 0;
+		if (!lw->buf || lw->n < n)
+			return NULL;
+	}
+	*avail = (int)((lw->lo + lw->n - ofs) / lw->stride);
+	return lw->buf + (ofs - lw->lo);
+}
+
+static void light_close(lightwin_t *lw)
+{
+	free(lw->buf);
+	memset(lw, 0, sizeof(*lw));
+}
+
+static void drop_lump(int i);
 
 static int light_channel(int c)
 {
@@ -566,7 +607,7 @@ static int light_channel(int c)
 static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *len)
 {
 	const uint8_t *vx = lp[L_VERTEXES], *ed = lp[L_EDGES], *se = lp[L_SURFEDGES];
-	const uint8_t *ti = lp[L_TEXINFO], *fc = lp[L_FACES], *light = lp[L_LIGHTING];
+	const uint8_t *ti = lp[L_TEXINFO], *fc = lp[L_FACES];
 	int numvx = (int)(len[L_VERTEXES] / 12), numedges = (int)(len[L_EDGES] / 4);
 	int numse = (int)(len[L_SURFEDGES] / 4), numti = (int)(len[L_TEXINFO] / 40);
 	w.numfaces = (int)(len[L_FACES] / 20);
@@ -595,10 +636,10 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		const uint8_t *f = fc + i * 20;
 		face_t *face = &w.faces[i];
 		int first = (int)rd32(f + 4), num = rd16(f + 8), texinfo = rd16(f + 10), lightofs = (int)rd32(f + 16);
-		const uint8_t *t;
+		const uint8_t *t, *light;
 		float vecs[2][4], smin = 1e9f, smax = -1e9f, tmin = 1e9f, tmax = -1e9f, sscale, tscale;
 		float pos[64][3], st[64][2];
-		int lw, lh, bmins, bmint, texnum;
+		int lw, lh, bmins, bmint, texnum, avail = 0;
 		tex_t *tex;
 		face->plane = rd16(f);
 		face->back = rd16(f + 2) != 0;
@@ -639,6 +680,12 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		tscale = (float)tex->th / tex->h;
 		face->tex = texnum;
 		mf[i].first = poolused, mf[i].num = num;
+		{
+			int nstyles = 0;
+			while (nstyles < 4 && f[12 + nstyles] != 255)
+				nstyles++;
+			light = tex->fullbright ? NULL : light_at(&lightwin, lightofs, nstyles * lw * lh, &avail);
+		}
 		for (int k = 0; k < num; k++) {
 			mvert_t *mv = &pool[poolused++];
 			int l;
@@ -649,19 +696,23 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 			mv->t = lrintf(st[k][1] * tscale * 16);
 			if (tex->fullbright) {
 				mv->color = light_color(255);
-			} else if (lit) {
+			} else if (lightwin.stride == 3) {
 				int rgb[3];
 				for (int c = 0; c < 3; c++)
-					rgb[c] = light_channel(sample_light(lit, litsamples, lightofs, f + 12, lw, lh, st[k][0] / 16 - bmins,
+					rgb[c] = light_channel(sample_light(light, avail, f + 12, lw, lh, st[k][0] / 16 - bmins,
 					                                    st[k][1] / 16 - bmint, 3, c));
 				mv->color = RGB15(rgb[0], rgb[1], rgb[2]);
 			} else {
-				l = sample_light(light, (int)len[L_LIGHTING], lightofs, f + 12, lw, lh, st[k][0] / 16 - bmins,
-				                 st[k][1] / 16 - bmint, 1, 0);
+				l = sample_light(light, avail, f + 12, lw, lh, st[k][0] / 16 - bmins, st[k][1] / 16 - bmint, 1, 0);
 				mv->color = light_color(l);
 			}
 		}
 	}
+	/* the BSP's face lumps and the light are done with: the merge and the
+	 * GPU's vertices below go where they were */
+	light_close(&lightwin);
+	vx = ed = se = ti = fc = NULL;
+	drop_lump(L_VERTEXES), drop_lump(L_EDGES), drop_lump(L_SURFEDGES), drop_lump(L_TEXINFO), drop_lump(L_FACES);
 	if (World_MergeFaces)
 		merge_faces(mf, pool, &poolused, poolsize);
 	/* out to the GPU's layout: strip order, texture coordinates moved near zero
@@ -708,8 +759,14 @@ static bool load_faces(const uint8_t *d, const uint32_t *ofs, const uint32_t *le
 		}
 	}
 	free(pool), free(mf);
+	{ /* merged faces left the end unused: it goes back (a smaller realloc stays in place) */
+		dvert_t *v = realloc(w.verts, sizeof(dvert_t) * (size_t)(w.numverts ? w.numverts : 1));
+		if (v)
+			w.verts = v;
+	}
 	return true;
 bad:
+	light_close(&lightwin);
 	free(pool), free(mf);
 	return false;
 }
@@ -958,19 +1015,23 @@ static bool world_load(const char *path, const uint16_t *palette, char *err, int
 			load_tree(NULL, ofs, len);
 		drop_lump(L_NODES), drop_lump(L_LEAFS);
 		memcpy(side + strlen(side) - 4, ".lit", 4);
-		b = uselit ? Fs_Load(side, &n) : NULL;
+		b = uselit ? Fs_LoadRange(side, 0, 8, &n) : NULL;
 		*triedlit = b != NULL;
-		if (b && n >= 8 && !memcmp(b, "QLIT", 4) && rd32(b + 4) == 1)
-			lit = b + 8, litsamples = (int)((n - 8) / 3);
-		w.haslit = lit != NULL;
+		light_close(&lightwin);
+		if (b && n >= 8 && !memcmp(b, "QLIT", 4) && rd32(b + 4) == 1) /* RGB a sample */
+			snprintf(lightwin.path, sizeof(lightwin.path), "%s", side), lightwin.base = 8,
+			    lightwin.len = BW_NDS_MAX(Fs_Size(side) - 8, 0L), lightwin.stride = 3;
+		else
+			snprintf(lightwin.path, sizeof(lightwin.path), "%s", path), lightwin.base = (long)ofs[L_LIGHTING],
+			    lightwin.len = (long)len[L_LIGHTING], lightwin.stride = 1;
+		free(b);
+		w.haslit = lightwin.stride == 3;
 		ok = ok && get_lump(path, L_VERTEXES, ofs, len) && get_lump(path, L_EDGES, ofs, len) &&
 		     get_lump(path, L_SURFEDGES, ofs, len) && get_lump(path, L_TEXINFO, ofs, len) &&
-		     get_lump(path, L_FACES, ofs, len) && get_lump(path, L_MODELS, ofs, len) &&
-		     (lit || get_lump(path, L_LIGHTING, ofs, len));
+		     get_lump(path, L_FACES, ofs, len) && get_lump(path, L_MODELS, ofs, len);
 		if (ok)
 			ok = load_faces(NULL, ofs, len);
-		free(b);
-		lit = NULL;
+		light_close(&lightwin);
 		drop_lump(L_VERTEXES), drop_lump(L_EDGES), drop_lump(L_SURFEDGES), drop_lump(L_TEXINFO);
 		drop_lump(L_FACES), drop_lump(L_LIGHTING);
 		if (!ok) {
