@@ -264,9 +264,22 @@ state. The DS does the same in C:
   bob, roll and view-model swing read the predicted velocity, on-ground
   and crouch flags.
 - When the server's state for a command matches what the DS predicted for
-  it (within 1/32 unit and 0.5 units a second), nothing runs again. When the
-  game turns the player (a teleport, a respawn) the DS takes the server's
-  state and facing as they are.
+  it (within 1/32 unit and 0.5 units a second, and every other value the
+  movement reads: a long jump picked up or a weapon's speed counts too),
+  nothing runs again. Otherwise the commands after it run again, 16 a frame
+  at most: a longer backlog (a stall) goes on over the next frames, with
+  the view on the old prediction meanwhile, rather than one frame of up to
+  100 ms. When
+  the game turns the player (a teleport, a respawn) the DS takes the facing
+  and runs the commands the server hasn't again from its state, as the PC
+  does. A state made with movement values or a brush list the DS doesn't
+  have yet (a door came to rest somewhere new) is skipped, and prediction
+  goes on.
+- Below 30 fps a command covers two refreshes, so a frame never runs more
+  than two (three at 20 fps would slow a heavy map further).
+- The hulls load after the map only if 256 KB stay free for the studio
+  models that come after it: on a map that only just fits, the monsters
+  come first and the link goes without prediction.
 - Without hulls (no `.hul` and no clip hulls in the map, or `hull: no RAM`
   on the second line of the top screen), on an old server, or while dead
   or spectating, the view is the server's, as before (`P` at the end of
@@ -317,14 +330,20 @@ on `coop_arena`. "150 ms" is `sv_link_lag 75` (75 ms each way).
 
 | Map, frame rate, delay | fps | Prediction per frame, average (worst) | States compared | Within 0.5 units | Error, units: average (worst) | Replays (commands run again) |
 |---|---|---|---|---|---|---|
-| `coop_arena`, 30 fps | 30 | 2.7 ms (3.7) | 900 | 888 | 0.016 (1.3) | 45 (0 commands) |
-| `coop_arena`, 60 fps | 60 | 1.4 ms (4.1) | 900 | 894 | 0.011 (1.0) | 43 (0) |
-| `coop_arena`, 30 fps, 150 ms | 30 | 3.3 ms (15.2) | 771 | 763 | 0.021 (3.5) | 36 (288, up to 8 at once) |
-| `coop_arena`, 30 fps, standing | 30 | 2.6 ms (3.5) | 900 | 900 | 0 (0) | 0 |
-| `coop_arena`, 30 fps, `cmdvb=2` | 30 | 1.5 ms (2.2) | 900 | 893 | 0.019 (1.3) | 101 (0) |
-| `e0m1`, 30 fps | 30 | 4.4 ms (8.1) | 796 | 796 | 0 (0) | 0 |
-| `e0m1`, 30 fps, 150 ms | 30 | 4.4 ms (8.5) | 699 | 699 | 0 (0) | 0 |
-| `dev`, 30 fps | 30 | 5.1 ms (6.3) | 900 | 900 | 0 (0) | 0 |
+| `coop_arena`, 30 fps | 30 | 2.9 ms (4.0) | 900 | 888 | 0.019 (1.1) | 54 (0 commands) |
+| `coop_arena`, 60 fps | 60 | 1.3 ms (3.2) | 899 | 895 | 0.007 (1.4) | 31 (0) |
+| `coop_arena`, 30 fps, 150 ms | 30 | 3.1 ms (17.9) | 746 | 734 | 0.018 (1.6) | 34 (274, up to 10 at once) |
+| `coop_arena`, 30 fps, 400 ms | 30 | 4.5 ms (28.6) | 837 | 829 | 0.017 (1.3) | 50 (1298, up to 24, 16 a frame) |
+| `coop_arena`, 30 fps, standing | 30 | 2.5 ms (3.3) | 900 | 900 | 0 (0) | 28 (0) |
+| `e0m1`, 30 fps | 30 | 4.3 ms (7.8) | 734 | 734 | 0 (0) | 0 |
+| `dev`, 30 fps | 30 | 2.9 ms (4.1) | 900 | 900 | 0 (0) | 0 |
+
+These are from the build after the review fixes (the brush entities are
+placed once per list, not on every state: `dev`, with 53 of them, went
+from 5.1 to 2.9 ms a frame). With a replay limited to the newest 16
+commands instead of spread over frames, 400 ms put the view 30 units off
+on average; spread, it stays as close as at 150 ms. Every logged command
+of these runs came out bit for bit in `pmtest`.
 
 RAM: the prediction code is 43 KB, its static data 18 KB, the hulls 10 KB
 (`coop_arena`) and 21 KB (`e0m1`). On `coop_arena` the heap in use went

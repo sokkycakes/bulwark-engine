@@ -58,6 +58,7 @@ void Hull_TraceModel(int model, const float origin[3], const float start[3], con
 typedef struct { uint16_t edict, model; uint8_t solid; int8_t skin; float origin[3]; } hullbrush_t;
 typedef struct { uint16_t edict; float mins[3], maxs[3]; uint8_t solid; } hullbox_t; /* absolute */
 void Hull_SetBrushes(const hullbrush_t *b, int n);
+void Hull_PlaceBrush(int i, const float origin[3]); /* entry i of the last Hull_SetBrushes list, moved */
 void Hull_SetBoxes(const hullbox_t *b, int n);
 
 /* SV_Move against world + brushes + boxes: the pmtrace_if.move contract */

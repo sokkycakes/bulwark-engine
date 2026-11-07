@@ -200,7 +200,8 @@ again the commands the server has not run yet.
 
 - The device makes a command every vblank (16 or 17 ms, `msec` in whole
   milliseconds that add up to real time at the DS's 59.8261 Hz), so two a
-  frame at 30 fps, and sends them at most 30 times a second, each `INPUT`
+  frame at 30 fps (below 30 fps one command covers two vblanks, so a frame
+  never runs more than two), and sends them at most 30 times a second, each `INPUT`
   with every command it made on this map that the server has not
   acknowledged, up to the newest 8. The PC makes 14 ms commands (72 Hz);
   33 ms commands would jump 2.5 units lower (39.6 against 42.0 on
@@ -212,12 +213,23 @@ again the commands the server has not run yet.
   player alone: while the device sends nothing (loading a map) the player
   stands still.
 - A command already run (a resend) is skipped. A sequence that never arrived
-  is lost for good and counted in PSTATE's `gaps`.
+  is lost for good and counted in PSTATE's `gaps`. Once a command has run,
+  an `INPUT` whose `newest` is more than 1024 past it is a bad packet and
+  is dropped whole.
 - While the client is not in the game, or the device's `spawncount` is not
   the server's map, commands run nothing and are acknowledged anyway, so
   commands made for another map or before this spawn never run. Sequences
   keep counting across maps.
 - PSTATE's `ack` is the last command run or dropped.
+- The device compares its own state for `ack` with PSTATE's, every field
+  the movement reads (position within 1/32 unit, velocity within 0.5 units
+  a second, the clocks and stamina within 1/1000, the rest exactly); when
+  one differs it starts from PSTATE's state and runs again the commands
+  after `ack`, 16 a frame at most (a longer backlog goes on over the next
+  frames while the view stays on the old prediction), and keeps PSTATE's
+  state as its own for `ack`. With more than 63 commands after `ack` it takes PSTATE's state
+  as it is. A PSTATE made with a `varsver` or `brushver` the device doesn't
+  have yet is skipped; it goes on predicting with what it has.
 
 A link is v2 from its first `INPUT` with a valid command list; an old device
 and an old server see nothing new (an old server reads only the v1 fields,
@@ -323,8 +335,10 @@ game lacks read 0 (the server says once per join which ones are missing).
   from `angles`), sent its `EV_ANGLE` event to this player (Nuclide's
   `Client_FixAngle`, teleporters and respawns), or the player entered the
   game (its `angles`; the `EV_ANGLE` of a first spawn reaches nobody, as the
-  client is not in the game yet). The device takes `fixpitch`/`fixyaw` and
-  the server's state as they are when `fixseq` changes; the fields persist,
+  client is not in the game yet). The device takes `fixpitch`/`fixyaw`
+  when `fixseq` changes and runs again the commands after `ack` from the
+  server's state, as for any state (the server runs them with the angles
+  they were made with); the fields persist,
   so a lost PSTATE loses nothing. `VIEW` flag 1 stays for old devices.
 - **movers**: brush entities of the current BRUSHINFO list within 256 units
   of the player (`absmin`..`absmax`) that move or are somewhere else than

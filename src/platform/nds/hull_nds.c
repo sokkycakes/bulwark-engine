@@ -32,6 +32,10 @@
 #define Q1C_SOLID (-2)
 #define MOVE_TRIGGERS 16 /* sv_local.h; pmove never asks for it */
 #define PART (8 * 1024)  /* largest read while loading */
+/* the most of each a map or .hul may say it has: past these the sizes below would wrap on the
+ * DS's 32-bit size_t and long (BSP limits are 32767 clipnodes and planes, 400-512 models) */
+#define MAX_COUNT (1 << 20)
+#define MAX_MODELS 65536
 
 enum { L_PLANES = 1, L_NODES = 5, L_CLIPNODES = 9, L_LEAFS = 10, L_MODELS = 14, NUM_LUMPS = 15 };
 
@@ -580,10 +584,13 @@ static bool load_hul(const char *hulpath, const uint8_t *hd, hull_read_fn read, 
 {
 	long ofs = 24;
 	int rule = hd[4], numhulls = hd[5], flags = hd[6] | hd[7] << 8;
-	H.numaxial = (int)rd32(hd + 8), H.numgeneral = (int)rd32(hd + 12), H.numnodes = (int)rd32(hd + 16);
+	uint32_t na = rd32(hd + 8), ng = rd32(hd + 12), nn = rd32(hd + 16);
+	uint8_t past;
+	/* narrow nodes hold 14-bit plane indices and 16-bit children */
 	if ((rule != HULL_Q1 && rule != HULL_HL) || numhulls != (rule == HULL_HL ? 2 : 1) || (int)rd32(hd + 20) != nummodels ||
-	    H.numaxial < 0 || H.numgeneral < 0 || H.numnodes < 0)
+	    na > MAX_COUNT || ng > MAX_COUNT || nn > MAX_COUNT || (!(flags & 1) && (na > 0x4000 || ng > 0x4000 || nn > 0x8000)))
 		return fail(err, errsize, "bad .hul (made for another map, or another version)");
+	H.numaxial = (int)na, H.numgeneral = (int)ng, H.numnodes = (int)nn;
 	H.rule = rule, H.numhulls = numhulls, H.nummodels = nummodels, H.t.wide = (flags & 1) != 0;
 	if (!alloc_hulls(reserve, err, errsize))
 		return false;
@@ -601,6 +608,9 @@ static bool load_hul(const char *hulpath, const uint8_t *hd, hull_read_fn read, 
 	}
 	if (!read_parts(read, ctx, hulpath, ofs, 4L * H.numhulls * H.nummodels, H.heads))
 		return fail(err, errsize, ".hul cut short");
+	ofs += 4L * H.numhulls * H.nummodels;
+	if (read(ctx, hulpath, ofs, 1, &past) > 0) /* hlmap.py writes nothing after the heads */
+		return fail(err, errsize, "bad .hul (longer than it says)");
 	if (!check_hulls())
 		return fail(err, errsize, "bad .hul (an index out of range)");
 	return true;
@@ -619,6 +629,8 @@ static bool load_clipnodes(const char *path, const uint32_t *lo, const uint32_t 
 	bool ok = false;
 	if (!ncl)
 		return fail(err, errsize, "no clip hulls (a converted map needs its .hul from hlmap.py)");
+	if (ncl > MAX_COUNT || numplanes > MAX_COUNT)
+		return fail(err, errsize, "bad map (too many clipnodes or planes)");
 	cl = malloc((size_t)ncl * 8);
 	mo = malloc((size_t)nm * 64);
 	map = malloc(sizeof(int32_t) * (size_t)ncl);
@@ -840,6 +852,8 @@ bool Hull_Load(const char *bsppath, int flags, hull_read_fn read, void *ctx, siz
 	H.nummodels = (int)(ll[L_MODELS] / 64);
 	if (H.nummodels <= 0)
 		return fail(err, errsize, "no models");
+	if (H.nummodels > MAX_MODELS)
+		return fail(err, errsize, "bad map (too many models)");
 	if (dot && !strchr(dot, '/'))
 		n = (size_t)(dot - bsppath);
 	snprintf(hulpath, sizeof(hulpath), "%.*s.hul", (int)n, bsppath);
@@ -883,6 +897,20 @@ static int32_t fx8_up(float v)
 	return v < -1e9f ? -1000000000 : v > 1e9f ? 1000000000 : (int32_t)v;
 }
 
+/* a brush at origin: its absmin/absmax, and the same in 1/8 units */
+static void place_brush(sbrush_t *s, const float origin[3])
+{
+	float mins[3], maxs[3];
+	memcpy(s->b.origin, origin, sizeof(s->b.origin));
+	Hull_ModelBounds(s->b.model, mins, maxs);
+	for (int k = 0; k < 3; k++) {
+		s->amin[k] = origin[k] + mins[k] - 1;
+		s->amax[k] = origin[k] + maxs[k] + 1;
+		s->ib[k] = fx8_down(s->amin[k]);
+		s->ib[3 + k] = fx8_up(s->amax[k]);
+	}
+}
+
 void Hull_SetBrushes(const hullbrush_t *b, int n)
 {
 	n = n < 0 ? 0 : n > HULL_MAX_BRUSHES ? HULL_MAX_BRUSHES : n;
@@ -894,18 +922,18 @@ void Hull_SetBrushes(const hullbrush_t *b, int n)
 			brushes = nb, brushcap = n;
 	}
 	for (int i = 0; i < n; i++) {
-		sbrush_t *s = &brushes[i];
-		float mins[3], maxs[3];
-		s->b = b[i];
-		Hull_ModelBounds(b[i].model, mins, maxs);
-		for (int k = 0; k < 3; k++) {
-			s->amin[k] = b[i].origin[k] + mins[k] - 1;
-			s->amax[k] = b[i].origin[k] + maxs[k] + 1;
-			s->ib[k] = fx8_down(s->amin[k]);
-			s->ib[3 + k] = fx8_up(s->amax[k]);
-		}
+		brushes[i].b = b[i];
+		place_brush(&brushes[i], b[i].origin);
 	}
 	numbrushes = n;
+	focused = false;
+}
+
+void Hull_PlaceBrush(int i, const float origin[3])
+{
+	if (i < 0 || i >= numbrushes)
+		return;
+	place_brush(&brushes[i], origin);
 	focused = false;
 }
 

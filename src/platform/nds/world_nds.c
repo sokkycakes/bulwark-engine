@@ -968,7 +968,8 @@ static bool world_load(const char *path, const uint16_t *palette, char *err, int
 
 /* --- clip hulls for the link's movement prediction (hull_nds.c) ------------------------- */
 
-#define HULL_RESERVE (48 * 1024) /* left free for what loads after the map: the studio models */
+#define HULL_RESERVE (256 * 1024) /* left free for what loads after the map, the studio models: they come
+                                    * first, a map that only just fits goes without prediction */
 static char hullerr[64];
 
 const char *World_HullError(void) { return hullerr; }

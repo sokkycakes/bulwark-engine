@@ -69,6 +69,7 @@ typedef struct {
 #define BOX_RANGE 512.0f
 #define PM_PERIOD 2.0      /* PMOVEVARS and BRUSHINFO again this often */
 #define PM_RESEND 0.2      /* and this soon while the device has not acknowledged them */
+#define CMD_WINDOW 1024    /* the most newer than the last run an INPUT may be (17 s of commands) */
 #define PSTATE_IDLE 0.1    /* PSTATE with a VIEW when no command ran for this long (movers, boxes) */
 #define BRUSH_CHECK 0.25   /* how often the brush list is compared */
 
@@ -1582,6 +1583,10 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 	if (!sv_link_log->ivalue)
 		l->logon = false;
 	v2_sync(l);
+	/* a device makes at most 4 commands a frame: a jump past CMD_WINDOW is a bad packet,
+	 * which would otherwise leave every later command looking like a resend */
+	if (l->lastrun && newest > l->lastrun && newest - l->lastrun > CMD_WINDOW)
+		return;
 	if (l->devspawn == (svs.spawncount & 0xffff)) /* acks for another map mean nothing here */
 		l->varsack = rd16(d + 40), l->brushack = rd16(d + 42);
 	if (!here) {
@@ -1600,7 +1605,7 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		bool log = sv_link_log->ivalue != 0;
 		if (s <= l->lastrun)
 			continue; /* run already: a resend */
-		if (s > l->lastrun + 1)
+		if (s - l->lastrun > 1)
 			l->gaps += (uint16_t)(s - l->lastrun - 1); /* lost for good */
 		memset(&u, 0, sizeof(u));
 		u.sequence = s;

@@ -278,7 +278,9 @@ static int load_mdl(const char *name)
 		goto fail;
 	numskins = rd32(p + 48), sw = rd32(p + 52), sh = rd32(p + 56);
 	nv = rd32(p + 60), nt = rd32(p + 64), nf = rd32(p + 68);
-	if (sw <= 0 || sh <= 0 || nv <= 0 || nt <= 0 || nf <= 0 || nv > 4096)
+	/* past these the sizes below wrap in the DS's 32-bit long */
+	if (sw <= 0 || sh <= 0 || nv <= 0 || nt <= 0 || nf <= 0 || nv > 4096 || nt > 65536 || nf > 65536 || sw > 1024 ||
+	    sh > 1024 || numskins > 256)
 		goto fail;
 	for (int k = 0; k < 3; k++) {
 		scale[k] = rdf(p + 8 + k * 4);
@@ -314,6 +316,8 @@ static int load_mdl(const char *name)
 			if (!(p = mfile_get(&f, at + 4, 4, 4)))
 				goto fail;
 			n = rd32(p);
+			if (n <= 0 || n > 256) /* a group of skins; past this the sizes wrap */
+				goto fail;
 			if (skinat < 0)
 				skinat = at + 8 + n * 4;
 			at += 8 + n * 4 + (long)n * sw * sh;
@@ -373,13 +377,15 @@ static int load_mdl(const char *name)
 			if (!(p = mfile_get(&f, at, 4, MDL_PART)))
 				goto fail;
 			n = rd32(p);
+			if (n <= 0 || n > 65536) /* a group of frames; past this the sizes wrap */
+				goto fail;
 			at += 4 + 8 + n * 4; /* count, bounds, intervals */
 		}
 		for (int g = 0; g < n && m->numframes < maxframes; g++) {
 			uint8_t *fr;
 			if (m->numframes == room) {
 				/* this group's frames, and one for each entry after it */
-				int want = BW_NDS_MIN(m->numframes + (n - g) + (nf - fi - 1), maxframes);
+				int want = (int)BW_NDS_MIN((int64_t)m->numframes + (n - g) + (nf - fi - 1), maxframes);
 				uint8_t *more = realloc(m->frames, (size_t)want * nv * 4);
 				if (!more)
 					goto fail;

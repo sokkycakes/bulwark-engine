@@ -193,8 +193,9 @@ static linkmodel_t models[MAX_LINKMODELS];
  * last and where that left the player. Commands the server hasn't run yet
  * are run again from its state whenever ours turns out to differ, as
  * ncPlayer::PreFrame does on the PC (src/shared/game/Player.qc). */
-#define PR_CMDS 64 /* commands kept, by seq & 63 */
-#define PR_RING 32 /* states predicted after them, by seq & 31 */
+#define PR_CMDS 64   /* commands kept, by seq & 63; more unacked than 63 and the view snaps */
+#define PR_RING 32   /* states predicted after them, by seq & 31 */
+#define PR_REPLAY 16 /* the most a frame runs again (20-30 ms); a longer backlog goes on next frame */
 #define PR_MOVERS 8
 static struct {
 	int srvver;            /* WELCOME's linkver: 0 an old server */
@@ -208,14 +209,23 @@ static struct {
 	pmstate_t pred[PR_RING];
 	uint32_t predseq[PR_RING]; /* the command each holds the state after, 0 none */
 	pmstate_t cur;         /* after the newest command: what the view shows */
+	/* a replay longer than PR_REPLAY, going on over frames: the view stays on cur
+	 * (the last prediction, still run on) until it has caught up */
+	bool rp;
+	bool rpsnap;           /* it ends in a jump of over 64 units */
+	uint32_t rpnext;       /* the next command it runs */
+	pmstate_t rpstate;
 	bool on;               /* predicting; else the view eases toward VIEW */
 	pmvars_t vars;
 	uint16_t varsver;      /* PMOVEVARS applied, 0 none */
-	/* BRUSHINFO: the version being put together from its pages, and the last complete one */
-	hullbrush_t *bnew, *bcur, *bscene;
+	/* BRUSHINFO: the version being put together from its pages, and the last complete one
+	 * (hull_nds.c holds its own copy, with the movers placed); both only grow, and swap */
+	hullbrush_t *bnew, *bcur;
 	uint8_t *bhave;
-	int bnewtotal, bnewgot, bcurn;
+	int bnewtotal, bnewgot, bcurn, bnewcap, bcurcap, bhavecap;
 	uint16_t bnewver, bcurver;
+	int placed[PR_MOVERS]; /* bcur entries hull_nds.c has where the last PSTATE's movers were */
+	int nplaced;
 	/* the newest PSTATE, kept while packets drain, handled after */
 	uint8_t pstate[1024];
 	int pstatelen;
@@ -239,6 +249,7 @@ typedef struct {
 	uint32_t verr_max;                      /* velocity error, units a second */
 	uint32_t replays, replayed, replay_max; /* PSTATE replays; commands replayed */
 	uint32_t rp_skip, rp_exact;             /* replays skipped (matched); of those, bit-identical */
+	uint32_t rp_cut;                        /* frames a replay went on past, PR_REPLAY each */
 	uint32_t pm_runs, cmds, frames;         /* PM_Run calls; commands made; frames */
 	uint64_t pm_ticks;
 	uint32_t pm_ticks_max;                  /* per PM_Run (LINK_PM_TICKS) */
@@ -1791,10 +1802,11 @@ static void rdvec(const uint8_t *d, float *v)
 
 static void pred_freebrushes(void)
 {
-	free(pr.bnew), free(pr.bcur), free(pr.bscene), free(pr.bhave);
-	pr.bnew = pr.bcur = pr.bscene = NULL, pr.bhave = NULL;
-	pr.bnewtotal = pr.bnewgot = pr.bcurn = 0;
+	free(pr.bnew), free(pr.bcur), free(pr.bhave);
+	pr.bnew = pr.bcur = NULL, pr.bhave = NULL;
+	pr.bnewtotal = pr.bnewgot = pr.bcurn = pr.bnewcap = pr.bcurcap = pr.bhavecap = 0;
 	pr.bnewver = pr.bcurver = 0;
+	pr.nplaced = 0;
 }
 
 /* a WELCOME for another map (or the first): nothing of the last map's holds,
@@ -1804,6 +1816,7 @@ static void pred_newmap(void)
 	pred_freebrushes();
 	pr.varsver = 0;
 	pr.on = false;
+	pr.rp = false;
 	pr.stair = false;
 	pr.havepseq = false;
 	pr.pstatelen = 0;
@@ -1840,15 +1853,26 @@ static void handle_brushinfo(const uint8_t *d, int len)
 	ver = (uint16_t)rd16(d + 6), total = rd16(d + 8), first = rd16(d + 10), count = d[12];
 	if (!ver || ver == pr.bcurver || total > HULL_MAX_BRUSHES || first + count > total || len < 13 + count * 18)
 		return;
-	if (ver != pr.bnewver || total != pr.bnewtotal || (!pr.bnew && total)) {
-		free(pr.bnew), free(pr.bhave);
-		pr.bnew = total ? malloc(sizeof(hullbrush_t) * (size_t)total) : NULL;
-		pr.bhave = total ? calloc((size_t)total, 1) : NULL;
-		if (total && (!pr.bnew || !pr.bhave)) {
-			free(pr.bnew), free(pr.bhave);
-			pr.bnew = NULL, pr.bhave = NULL, pr.bnewver = 0;
-			return;
+	if (ver != pr.bnewver || total != pr.bnewtotal) {
+		/* the buffers only grow: a door coming to rest is a new version, often */
+		if (total > pr.bnewcap) {
+			hullbrush_t *nb = realloc(pr.bnew, sizeof(hullbrush_t) * (size_t)total);
+			if (!nb) {
+				pr.bnewver = 0;
+				return;
+			}
+			pr.bnew = nb, pr.bnewcap = total;
 		}
+		if (total > pr.bhavecap) {
+			uint8_t *nh = realloc(pr.bhave, (size_t)total);
+			if (!nh) {
+				pr.bnewver = 0;
+				return;
+			}
+			pr.bhave = nh, pr.bhavecap = total;
+		}
+		if (total)
+			memset(pr.bhave, 0, (size_t)total);
 		pr.bnewver = ver, pr.bnewtotal = total, pr.bnewgot = 0;
 	}
 	for (int i = 0; i < count; i++) {
@@ -1864,11 +1888,34 @@ static void handle_brushinfo(const uint8_t *d, int len)
 	}
 	if (pr.bnewgot < total)
 		return;
-	/* complete: it becomes the list, with a copy to put the movers in */
-	free(pr.bcur), free(pr.bscene), free(pr.bhave);
-	pr.bcur = pr.bnew, pr.bcurn = total, pr.bcurver = ver;
-	pr.bscene = total ? malloc(sizeof(hullbrush_t) * (size_t)total) : NULL;
-	pr.bnew = NULL, pr.bhave = NULL, pr.bnewver = 0, pr.bnewtotal = 0;
+	/* complete: it becomes the list (the buffers swap), and the scene, once; PSTATE
+	 * only places its movers */
+	{
+		hullbrush_t *t = pr.bcur;
+		int cap = pr.bcurcap;
+		pr.bcur = pr.bnew, pr.bcurcap = pr.bnewcap;
+		pr.bnew = t, pr.bnewcap = cap;
+	}
+	pr.bcurn = total, pr.bcurver = ver;
+	pr.bnewver = 0, pr.bnewtotal = 0;
+	Hull_SetBrushes(pr.bcur, pr.bcurn);
+	pr.nplaced = 0;
+}
+
+/* the bcur entry for an edict (the list is sorted by edict), or -1 */
+static int find_brush(int e)
+{
+	int lo = 0, hi = pr.bcurn - 1;
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		if (pr.bcur[mid].edict == e)
+			return mid;
+		if (pr.bcur[mid].edict < e)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return -1;
 }
 
 /* keeps the newest PSTATE for this map; handled once the packets are drained */
@@ -1906,19 +1953,52 @@ static void run_cmd(pmstate_t *s, const pmcmd_t *c)
 	Link_PredStats.pm_ticks_max = BW_NDS_MAX(Link_PredStats.pm_ticks_max, t);
 }
 
-/* close enough that replaying would change nothing worth seeing (and bit for bit, for the count) */
+/* close enough that replaying would change nothing worth seeing (and bit for bit, for the count).
+ * Every field PM_Run reads is compared: what isn't would never be taken from the server while
+ * nothing mispredicts (the PC starts each frame from the server's state, Player.qc:1287-1320),
+ * so a long jump picked up, a weapon's speed or the stamina left must force a replay too */
 static bool state_matches(const pmstate_t *a, const pmstate_t *b, bool *exact)
 {
 	for (int k = 0; k < 3; k++)
 		if (fabsf(a->origin[k] - b->origin[k]) > 1.0f / 32 || fabsf(a->velocity[k] - b->velocity[k]) > 0.5f)
 			return false;
 	if (a->flags != b->flags || a->vflags != b->vflags || a->gflags != b->gflags || a->movetype != b->movetype ||
-	    a->waterlevel != b->waterlevel || a->groundent != b->groundent || memcmp(a->mins, b->mins, 12) ||
-	    memcmp(a->maxs, b->maxs, 12) || memcmp(a->view_ofs, b->view_ofs, 12) || memcmp(a->basevel, b->basevel, 12) ||
-	    memcmp(a->hookvel, b->hookvel, 12) || a->gravity != b->gravity || a->friction != b->friction)
+	    a->solid != b->solid || a->waterlevel != b->waterlevel || a->watertype != b->watertype ||
+	    a->groundent != b->groundent || memcmp(a->mins, b->mins, 12) || memcmp(a->maxs, b->maxs, 12) ||
+	    memcmp(a->view_ofs, b->view_ofs, 12) || memcmp(a->basevel, b->basevel, 12) ||
+	    memcmp(a->hookvel, b->hookvel, 12) || a->gravity != b->gravity || a->friction != b->friction ||
+	    a->maxspeed != b->maxspeed || a->wsm != b->wsm || a->wsmfire != b->wsmfire || a->wsmzoom != b->wsmzoom ||
+	    a->viewzoom != b->viewzoom || a->health != b->health || a->rules != b->rules)
+		return false;
+	/* the clocks and stamina run on with each command: what float rounding leaves alone */
+	if (fabsf(a->time_since_jump - b->time_since_jump) > 1e-3f ||
+	    fabsf(a->time_since_teleport - b->time_since_teleport) > 1e-3f || fabsf(a->stamina - b->stamina) > 1e-3f ||
+	    fabsf(a->speed_target - b->speed_target) > 0.5f)
 		return false;
 	*exact = !memcmp(a->origin, b->origin, 12) && !memcmp(a->velocity, b->velocity, 12);
 	return true;
+}
+
+/* the movers where the server had them: last PSTATE's back at rest, this one's placed
+ * (the list went to hull_nds.c once, when its version came complete) */
+static void place_movers(const uint8_t *d, int nmovers)
+{
+	for (int i = 0; i < pr.nplaced; i++)
+		Hull_PlaceBrush(pr.placed[i], pr.bcur[pr.placed[i]].origin);
+	pr.nplaced = 0;
+	pr.nmovers = nmovers;
+	for (int i = 0; i < nmovers; i++) {
+		const uint8_t *m = d + 180 + i * 26;
+		float org[3];
+		int b;
+		pr.movers[i].e = (uint16_t)rd16(m);
+		rdvec(m + 14, pr.movers[i].vel);
+		if ((b = find_brush(pr.movers[i].e)) < 0)
+			continue;
+		rdvec(m + 2, org);
+		Hull_PlaceBrush(b, org);
+		pr.placed[pr.nplaced++] = b;
+	}
 }
 
 /* PSTATE (docs/spec/link.md): the server's state after the command it ran
@@ -1963,28 +2043,23 @@ static void handle_pstate(ndscam_t *cam)
 		pr.fixseq = d[20];
 		cam->pitch = (int16_t)rd16(d + 22) / 2;
 		cam->yaw = (int16_t)rd16(d + 24) / 2;
+		pr.stair = false;
 	}
 
-	/* everything prediction needs, for this state; else the view shows VIEW as before */
+	/* nothing to predict with here: the view shows VIEW as before */
 	if (cfg.nopredict || pr.srvver < LINK_VER || !(status & 1) || Hull_Rule() == HULL_NONE || !pr.varsver ||
-	    (int16_t)(pr.varsver - varsver) < 0 || !pr.bcurver || pr.bcurver != brushver) {
+	    !pr.bcurver) {
 		pr.on = false;
+		pr.rp = false;
 		return;
 	}
+	/* made with movement values or a brush list we don't have yet (a door came to rest, a
+	 * page is on its way): predicting goes on from what we have, and the next one counts */
+	if ((int16_t)(pr.varsver - varsver) < 0 || pr.bcurver != brushver)
+		return;
 
-	/* the scene as the server had it: the brush list with the movers where they are, and the boxes */
-	pr.nmovers = nmovers;
-	if (pr.bcurn)
-		memcpy(pr.bscene, pr.bcur, sizeof(hullbrush_t) * (size_t)pr.bcurn);
-	for (int i = 0; i < nmovers; i++) {
-		const uint8_t *m = d + 180 + i * 26;
-		pr.movers[i].e = (uint16_t)rd16(m);
-		rdvec(m + 14, pr.movers[i].vel);
-		for (int b = 0; b < pr.bcurn; b++)
-			if (pr.bscene[b].edict == pr.movers[i].e)
-				rdvec(m + 2, pr.bscene[b].origin);
-	}
-	Hull_SetBrushes(pr.bscene, pr.bcurn);
+	/* the scene as the server had it: the movers where they are, and the boxes */
+	place_movers(d, nmovers);
 	{
 		static hullbox_t boxes[HULL_MAX_BOXES];
 		for (int i = 0; i < nboxes; i++) {
@@ -1997,16 +2072,9 @@ static void handle_pstate(ndscam_t *cam)
 		Hull_SetBoxes(boxes, nboxes);
 	}
 
-	/* turned: its state as it is (the commands it hasn't run were made facing the old way) */
-	if (turned) {
-		pr.cur = srv;
-		memset(pr.predseq, 0, sizeof(pr.predseq));
-		pr.stair = false;
-		pr.on = true;
-		return;
-	}
-
-	had = pr.on && pr.predseq[ack & (PR_RING - 1)] == ack && ack;
+	/* turned, it goes on as any other state: the server still runs the commands it hasn't
+	 * with the angles they were made with (input_v2), and so do we (the PC's PreFrame) */
+	had = !turned && pr.on && pr.predseq[ack & (PR_RING - 1)] == ack && ack && (!pr.rp || ack < pr.rpnext);
 	if (had) {
 		const pmstate_t *p = &pr.pred[ack & (PR_RING - 1)];
 		float dv = 0;
@@ -2026,27 +2094,52 @@ static void handle_pstate(ndscam_t *cam)
 			return;
 		}
 	}
-	if (pr.seq - ack >= PR_RING) { /* older than the ring: the server's state, and a snap */
+	/* the server's state at ack holds from now on: a PSTATE with the same ack again (an
+	 * idle one, while our INPUT is lost) matches it, and doesn't replay the backlog again */
+	if (ack && pr.seq - ack < PR_RING)
+		pr.pred[ack & (PR_RING - 1)] = srv, pr.predseq[ack & (PR_RING - 1)] = ack;
+	if (pr.seq - ack >= PR_CMDS) { /* older than the commands kept: the server's state, and a snap */
 		pr.cur = srv;
 		memset(pr.predseq, 0, sizeof(pr.predseq));
 		Link_PredStats.snaps += pr.on;
 		pr.stair = false;
 		pr.on = true;
+		pr.rp = false;
 		return;
 	}
 	/* run what the server hasn't, from its state (never what was made for another map) */
 	Link_PredStats.replays++;
 	Link_PredStats.replay_max = BW_NDS_MAX(Link_PredStats.replay_max, pr.seq - ack);
-	for (uint32_t s = BW_NDS_MAX(ack, pr.floor) + 1; s <= pr.seq; s++) {
-		run_cmd(&srv, &pr.cmd[s & (PR_CMDS - 1)]);
-		pr.pred[s & (PR_RING - 1)] = srv;
-		pr.predseq[s & (PR_RING - 1)] = s;
+	if (!pr.on)
+		pr.cur = srv; /* nothing to show meanwhile but the server's state */
+	pr.rp = true;
+	pr.rpsnap = had && err > 64;
+	pr.rpnext = BW_NDS_MAX(ack, pr.floor) + 1;
+	pr.rpstate = srv;
+	pr.on = true;
+}
+
+/* the replay handle_pstate started, PR_REPLAY commands a frame: a stall's backlog
+ * (up to 63) would otherwise take one frame of 100 ms */
+static void pred_catchup(void)
+{
+	int n = 0;
+	if (!pr.rp)
+		return;
+	for (; pr.rpnext <= pr.seq && n < PR_REPLAY; pr.rpnext++, n++) {
+		run_cmd(&pr.rpstate, &pr.cmd[pr.rpnext & (PR_CMDS - 1)]);
+		pr.pred[pr.rpnext & (PR_RING - 1)] = pr.rpstate;
+		pr.predseq[pr.rpnext & (PR_RING - 1)] = pr.rpnext;
 		Link_PredStats.replayed++;
 	}
-	pr.cur = srv;
-	if (had && err > 64)
+	if (pr.rpnext <= pr.seq) {
+		Link_PredStats.rp_cut++; /* frames it went on past */
+		return;
+	}
+	pr.cur = pr.rpstate;
+	pr.rp = false;
+	if (pr.rpsnap)
 		Link_PredStats.snaps++, pr.stair = false;
-	pr.on = true;
 }
 
 /* botwalk=1: a fixed 12-second pattern instead of the pad, so runs repeat */
@@ -2096,10 +2189,12 @@ static void make_move(int fwd, int side, int *buttons, int16_t *out)
 /* the millisecond clock of a refresh, at the DS's 59.8261 Hz */
 static uint32_t vb_ms(int vb) { return (uint32_t)((uint64_t)(uint32_t)vb * 1000000 / 59826); }
 
-/* the commands due by this refresh, each predicted on from the last; returns how many */
+/* the commands due by this refresh, each predicted on from the last; returns how many.
+ * Below 30 fps a command covers two refreshes, as with cmdvb=2: a slow map stays at two
+ * PM_Run a frame (three at 20 fps would slow it further), and the server runs the same */
 static int make_commands(int frame, const ndscam_t *cam, int fwd, int side, int buttons)
 {
-	int step = cfg.cmdvb, due = (frame - pr.cmdvb) / step, made = 0;
+	int step = cfg.cmdvb, due = (frame - pr.cmdvb) / step, made = 0, left;
 	pmcmd_t c;
 	memset(&c, 0, sizeof(c));
 	if (due > 4) { /* a long frame (a map load): the last 4, the first taking up to 100 ms */
@@ -2111,9 +2206,10 @@ static int make_commands(int frame, const ndscam_t *cam, int fwd, int side, int 
 	c.pitch = (int16_t)(cam->pitch * 2), c.yaw = (int16_t)(cam->yaw * 2);
 	make_move(fwd, side, &buttons, c.move);
 	c.buttons = (uint16_t)buttons;
-	for (; made < due; made++) {
-		int32_t ms;
-		pr.cmdvb += step;
+	left = due * step;
+	for (; left > 0; made++) {
+		int32_t ms, n = step == 1 && due >= 3 && left >= 2 ? 2 : step;
+		pr.cmdvb += n, left -= n;
 		ms = BW_NDS_CLAMP((int32_t)(vb_ms(pr.cmdvb) - pr.cmdms), 1, 100);
 		pr.cmdms += (uint32_t)ms;
 		c.seq = ++pr.seq;
@@ -2126,8 +2222,10 @@ static int make_commands(int frame, const ndscam_t *cam, int fwd, int side, int 
 		Link_PredStats.cmds++;
 		if (pr.on) {
 			run_cmd(&pr.cur, &c);
-			pr.pred[c.seq & (PR_RING - 1)] = pr.cur;
-			pr.predseq[c.seq & (PR_RING - 1)] = c.seq;
+			if (!pr.rp) { /* else the replay puts its own there */
+				pr.pred[c.seq & (PR_RING - 1)] = pr.cur;
+				pr.predseq[c.seq & (PR_RING - 1)] = c.seq;
+			}
 		}
 	}
 	return made;
@@ -2265,6 +2363,7 @@ static const char *play(ndscam_t *cam)
 			uint64_t t0 = LINK_PM_TICKS();
 			uint32_t t;
 			handle_pstate(cam);
+			pred_catchup();
 			made = make_commands(frame, cam, fwd, side, buttons);
 			t = (uint32_t)(LINK_PM_TICKS() - t0);
 			Link_PredStats.frames++;
