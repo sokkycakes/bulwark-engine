@@ -87,6 +87,7 @@ typedef struct {
 #define HUD_RESEND 0.25    /* HUDINFO again this soon while the device has not acknowledged it */
 #define HUD_NPCRANGE 2000.0f /* friendly NPCs HUDINFO lists: Nameplates' cg_targetIDRange */
 #define HUD_MAXNPC 8
+#define HUD_NAME 31        /* an NPC's netname in HUDINFO is cut to this */
 
 typedef struct {
 	uint16_t e, model; /* edict; the * number of its brush model */
@@ -182,6 +183,7 @@ typedef struct {
 	int hudlen;
 	double hudsent;
 	uint8_t obitseq;                        /* obituaries seen, mod 256 */
+	uint8_t obitkept;                       /* of them in obit[], at most HUD_OBITS (obitseq wraps) */
 	struct {
 		char who[32], by[32], weapon[32], how[16];
 		bool named; /* weapon is the decl's inv_name now */
@@ -218,6 +220,8 @@ typedef struct {
 	uint8_t data[1400];
 	int len;
 } pkt_t;
+/* HUDINFO: magic, type, session, version, then the body */
+_Static_assert(MAX_HUDBODY + 11 <= sizeof(((pkt_t *)0)->data), "HUDINFO's body must fit a packet");
 
 static void p_begin(pkt_t *p, int type)
 {
@@ -2670,10 +2674,11 @@ static void p_hstr(pkt_t *p, const char *s)
 	p_bytes(p, s, (int)n);
 }
 
-static void p_hkey(pkt_t *p, int *count, int id, const char *v)
+/* a key while the body stays under limit (what the roster, NPCs, crosshair and obituaries keep) */
+static void p_hkey(pkt_t *p, int *count, int id, const char *v, int limit)
 {
-	if (!v[0] || p->len + 2 + (int)BW_MIN(strlen(v), 255) > MAX_HUDBODY - 400)
-		return; /* the roster, NPCs and crosshair keep at least 400 bytes */
+	if (!v[0] || p->len + 2 + (int)BW_MIN(strlen(v), 255) > limit)
+		return;
 	p_u8(p, (unsigned)id);
 	p_hstr(p, v);
 	(*count)++;
@@ -2684,7 +2689,7 @@ static void update_hud(link_t *l)
 {
 	pkt_t p;
 	char v[512], tok[64];
-	int e = l->client->edict, w = active_weapon(e), countat, count = 0, nat, n = 0;
+	int e = l->client->edict, w = active_weapon(e), countat, count = 0, nat, n = 0, reserve, keylim, nobit;
 	qfld_t title = qfld("ncWeapon::__mm_weaponTitle"), ammoreq = qfld("ncWeapon::__mm_fiAmmoRequired");
 	qfld_t alliance = qfld("m_iAlliance");
 	const float *org = &QC_EdictFields(sv.vm, e)[F.origin].f;
@@ -2693,14 +2698,30 @@ static void update_hud(link_t *l)
 		l->hudwclass = 0;
 		l->hudstatic[0] = l->huddynamic[0] = l->hudstaticname[0] = l->huddynamicname[0] = 0;
 	}
+	/* the crosshair and the obituaries come last and always fit: the sections before them
+	 * stop at what those two need (the body may not pass MAX_HUDBODY: hudbody is that big) */
+	nobit = BW_MIN(l->obitkept, HUD_OBITS);
+	reserve = 2 + (l->xw ? 2 + (l->xw * l->xh + 7) / 8 : 0) + 2;
+	for (int i = nobit; i >= 1; i--) {
+		int k = (uint8_t)(l->obitseq - i) % HUD_OBITS;
+		if (!l->obit[k].named) { /* by its inv_name (jtf.qc HUD_Obituary), outside the multicast */
+			char def[32];
+			snprintf(def, sizeof(def), "%s", l->obit[k].weapon);
+			if (def[0])
+				def_title(def, l->obit[k].weapon, sizeof(l->obit[k].weapon));
+			l->obit[k].named = true;
+		}
+		reserve += 4 + (int)(strlen(l->obit[k].who) + strlen(l->obit[k].by) + strlen(l->obit[k].weapon) + strlen(l->obit[k].how));
+	}
+	keylim = MAX_HUDBODY - reserve - 2 - 160; /* the roster's and the NPCs' counts, and a few players */
 	p.len = 0;
 	p_u8(&p, (unsigned)(e - 1));
 	countat = p.len;
 	p_u8(&p, 0);
 	for (int k = 0; k < HK_SELFKEYS; k++)
-		p_hkey(&p, &count, k, SV_InfoGet(l->client->userinfo, hud_selfkeys[k], v, sizeof(v)));
+		p_hkey(&p, &count, k, SV_InfoGet(l->client->userinfo, hud_selfkeys[k], v, sizeof(v)), keylim);
 	for (int k = HK_WAVE; k < HK_SERVERKEYS_END; k++)
-		p_hkey(&p, &count, k, SV_InfoGet(sv.serverinfo, hud_serverkeys[k - HK_WAVE], v, sizeof(v)));
+		p_hkey(&p, &count, k, SV_InfoGet(sv.serverinfo, hud_serverkeys[k - HK_WAVE], v, sizeof(v)), keylim);
 	/* the weapon in hand: jtf.qc's title, noAmmo, and held (title against the hero's two) */
 	if (w) {
 		int32_t cls = QC_EInt(sv.vm, w, F.classname);
@@ -2708,9 +2729,9 @@ static void update_hud(link_t *l)
 			l->hudwclass = cls;
 			hud_crosshair(l, QC_GetString(sv.vm, cls));
 		}
-		p_hkey(&p, &count, HK_WTITLE, qstr(w, title));
+		p_hkey(&p, &count, HK_WTITLE, qstr(w, title), keylim);
 		if (ammoreq.ofs >= 0 && !qnum(w, ammoreq))
-			p_hkey(&p, &count, HK_NOAMMO, "1");
+			p_hkey(&p, &count, HK_NOAMMO, "1", keylim);
 	}
 	/* *herohud's static and dynamic weapons (fields 8 and 9) by their inv_name */
 	SV_InfoGet(l->client->userinfo, "*herohud", v, sizeof(v));
@@ -2732,8 +2753,8 @@ static void update_hud(link_t *l)
 			}
 			f = end ? end + 1 : NULL;
 		}
-		p_hkey(&p, &count, HK_STATICNAME, l->hudstaticname);
-		p_hkey(&p, &count, HK_DYNAMICNAME, l->huddynamicname);
+		p_hkey(&p, &count, HK_STATICNAME, l->hudstaticname, keylim);
+		p_hkey(&p, &count, HK_DYNAMICNAME, l->huddynamicname, keylim);
 	}
 	p.data[countat] = (uint8_t)count;
 	/* everyone with a name (getplayerkeyvalue's players), by slot, this player too */
@@ -2747,7 +2768,7 @@ static void update_hud(link_t *l)
 		SV_InfoGet(c->userinfo, "*mate", mate, sizeof(mate));
 		SV_InfoGet(c->userinfo, "*cadence", cad, sizeof(cad));
 		SV_InfoGet(c->userinfo, "*team", team, sizeof(team));
-		if (p.len + 8 + (int)strlen(name) + (int)strlen(mate) + (int)strlen(team) > MAX_HUDBODY - 160)
+		if (p.len + 8 + (int)strlen(name) + (int)strlen(mate) + (int)strlen(team) > MAX_HUDBODY - reserve - 1)
 			break;
 		p_u8(&p, (unsigned)i);
 		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(c->state == CS_SPAWNED ? QC_EFloat(sv.vm, c->edict, F.health) : 0,
@@ -2764,6 +2785,7 @@ static void update_hud(link_t *l)
 	p_u8(&p, 0);
 	for (int i = svs.maxclients + 1; alliance.ofs >= 0 && i < sv.vm->num_edicts && n < HUD_MAXNPC; i++) {
 		const float *o;
+		const char *nn;
 		float d2 = 0, hp, mx;
 		if (!ent_live(i) || !((int)QC_EFloat(sv.vm, i, F.flags) & FL_MONSTER) || (hp = QC_EFloat(sv.vm, i, F.health)) <= 0 ||
 		    (int)qnum(i, alliance) != 0) /* MAL_FRIEND, the enum's first (src/shared/ai/Monster.h) */
@@ -2773,11 +2795,15 @@ static void update_hud(link_t *l)
 			d2 += (o[k] - org[k]) * (o[k] - org[k]);
 		if (d2 > HUD_NPCRANGE * HUD_NPCRANGE)
 			continue;
+		nn = F.netname >= 0 ? QC_GetString(sv.vm, QC_EInt(sv.vm, i, F.netname)) : "";
+		if (p.len + 7 + (int)BW_MIN(strlen(nn), HUD_NAME) > MAX_HUDBODY - reserve)
+			break;
 		mx = efloat(i, "max_health");
 		p_u16(&p, (unsigned)i);
 		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(ceilf(hp), -32768, 32767));
 		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(mx > 0 ? mx : hp, -32768, 32767));
-		p_hstr(&p, F.netname >= 0 ? QC_GetString(sv.vm, QC_EInt(sv.vm, i, F.netname)) : "");
+		p_u8(&p, (unsigned)BW_MIN(strlen(nn), HUD_NAME));
+		p_bytes(&p, nn, (int)BW_MIN(strlen(nn), HUD_NAME));
 		n++;
 	}
 	p.data[nat] = (uint8_t)n;
@@ -2788,18 +2814,14 @@ static void update_hud(link_t *l)
 		p_bytes(&p, l->xmask, (l->xw * l->xh + 7) / 8);
 	}
 	/* the newest obituaries */
-	n = BW_MIN(l->obitseq, HUD_OBITS);
-	p_u8(&p, l->obitseq), p_u8(&p, (unsigned)n);
-	for (int i = n; i >= 1; i--) {
+	p_u8(&p, l->obitseq), p_u8(&p, (unsigned)nobit);
+	for (int i = nobit; i >= 1; i--) {
 		int k = (uint8_t)(l->obitseq - i) % HUD_OBITS;
-		if (!l->obit[k].named) { /* by its inv_name (jtf.qc HUD_Obituary), outside the multicast */
-			char def[32];
-			snprintf(def, sizeof(def), "%s", l->obit[k].weapon);
-			if (def[0])
-				def_title(def, l->obit[k].weapon, sizeof(l->obit[k].weapon));
-			l->obit[k].named = true;
-		}
 		p_hstr(&p, l->obit[k].who), p_hstr(&p, l->obit[k].by), p_hstr(&p, l->obit[k].weapon), p_hstr(&p, l->obit[k].how);
+	}
+	if (p.len > MAX_HUDBODY) { /* cannot happen with the budget above; never send a cut body */
+		Con_Printf("link: %s: HUDINFO body %d bytes, over %d: not sent\n", l->client->name, p.len, MAX_HUDBODY);
+		return;
 	}
 	if (p.len != l->hudlen || memcmp(p.data, l->hudbody, (size_t)p.len)) {
 		memcpy(l->hudbody, p.data, (size_t)p.len);
@@ -2843,6 +2865,8 @@ static void hud_obituary(link_t *l, const uint8_t *data, int len)
 		l->obit[k].named = false;
 		snprintf(l->obit[k].how, sizeof(l->obit[k].how), "%.15s", s[3]);
 		l->obitseq++;
+		if (l->obitkept < HUD_OBITS)
+			l->obitkept++;
 	}
 }
 
