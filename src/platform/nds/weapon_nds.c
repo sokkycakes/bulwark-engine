@@ -117,6 +117,7 @@ bool Weapon_ParseInfo(winfo_t *w, const uint8_t *d, int len)
 				s->nev++;
 			}
 	}
+	w->used = (uint16_t)(p - d);
 	return true;
 }
 

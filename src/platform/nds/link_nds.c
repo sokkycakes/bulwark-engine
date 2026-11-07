@@ -42,6 +42,7 @@
 #include "weapon_nds.h"
 #include "hud_nds.h"
 #include "events_nds.h"
+#include "sound_nds.h"
 
 #define LINK_PORT 27901
 #define MAX_SERVERS 8
@@ -50,7 +51,7 @@
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO, L_EVENT };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO, L_EVENT, L_SOUND, L_AMBIENT };
 #define LINK_VER 2 /* JOIN and WELCOME's linkver: 2 sends movement commands (docs/spec/link.md) */
 
 #define MAX_LINKMODELS 1024 /* brush models the server can move */
@@ -239,6 +240,7 @@ static struct {
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
 	int health;
+	int selfent;                /* our player's entity number (WELCOME's client number + 1) */
 	int armor, frags;           /* from STATS */
 	char weapon[25];            /* the weapon in hand, by class name without "weapon_" */
 	int statsver;               /* bumped when any of the above changes */
@@ -465,6 +467,8 @@ static void read_config(void)
 				cfg.interp = BW_NDS_CLAMP(atoi(v), 0, 500);
 			else if (!strcmp(line, "lerpframes"))
 				Ents_LerpFrames = atoi(v) != 0;
+			else if (Snd_Config(line, v))
+				; /* volume, bgmvolume, sndcache, sndreadms, snd_log, sound */
 			else if (!strcmp(line, "server")) {
 				char *colon = strchr(v, ':');
 				if (colon)
@@ -879,6 +883,8 @@ static void pad_impulse(int n)
 {
 	pad.impulse = (uint8_t)n;
 	pad.impseq++;
+	if (n == IMP_NEXT || n == IMP_PREV)
+		Snd_WeaponSelect(); /* the weapon selection's sounds (valve/src/hud/WeaponSelect.qc) */
 }
 
 static void pad_reset(void)
@@ -1160,7 +1166,9 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	uint16_t spawncount = (uint16_t)rd16(d + 5);
 	copy_str(map, sizeof(map), d + 7, BW_NDS_MIN(len - 7, 64));
 	link.spawncount = spawncount;
+	link.selfent = d[4] + 1; /* the client's number; its player is the edict after the world */
 	Events_MapChange();
+	Snd_MapChange(); /* every sound stops (cl_cmds.c:318-325), the same map again too */
 	pr.srvver = len >= 72 ? d[71] : 0;
 	pred_newmap();
 	eclock.have = false; /* the next ENTS starts the clock and the entities' updates again */
@@ -1168,6 +1176,7 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 		return;
 	snprintf(link.map, sizeof(link.map), "%s", map);
 	reset_studio(); /* the models' textures go before VRAM is reset, not after */
+	Snd_MapUnload(); /* what sound holds goes before the load, and comes back after it */
 	World_Free();
 	Nds_ResetTextures();
 	link.haveview = false;
@@ -1184,6 +1193,7 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 			snprintf(link.loaderr, sizeof(link.loaderr), "%s", err);
 		link.loadms = (Nds_Vblanks() - start) * 1000 / 60;
 	}
+	Snd_MapLoaded();
 }
 
 static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
@@ -2011,6 +2021,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 	}
 	/* the last EVENT record we have in order: it also tells the server we take them */
 	p_u8(&p, 'E'), p_u16(&p, Events_Ack());
+	/* the AMBIENT version we have, and that we play sound: the server sends it only then */
+	p_u8(&p, 'S'), p_u16(&p, Snd_AmbientAck()), p_u8(&p, Snd_Enabled() ? 1 : 0);
 	send_to(&link.to, &p);
 }
 
@@ -2414,8 +2426,10 @@ static void handle_weaponinfo(const uint8_t *d, int len)
 	if (!(w = malloc(sizeof(*w))))
 		return;
 	w->edict = edict, w->version = ver;
-	if (Weapon_ParseInfo(w, d + 10, len - 10))
+	if (Weapon_ParseInfo(w, d + 10, len - 10)) {
 		wh->info = *w;
+		Snd_WeaponTable(d + 10 + w->used, len - 10 - w->used); /* the sound table after the sequences */
+	}
 	free(w);
 }
 
@@ -2811,7 +2825,8 @@ static void weapon_frame(int frame)
 			if (ev[i]->code == 5001 || ev[i]->code == 5011 || ev[i]->code == 5021 || ev[i]->code == 5031) {
 				wp.flashframe = frame;
 				wp.flashscale = ev[i]->opt >= 10 ? BW_NDS_CLAMP((float)(ev[i]->opt / 10), 0.5f, 3.0f) : 1.0f;
-			}
+			} else if (ev[i]->code == 1004 || ev[i]->code == 1008 || ev[i]->code == 5004)
+				Snd_ViewEvent(ev[i]->code, ev[i]->opt); /* the sound events, played on the view model */
 		wp.showntime = t;
 		clip = wp.cur.clipsize > 0 ? wp.cur.clip : -1;
 		res = Weapon_Ammo(&wp.cur, wh->info.primammo);
@@ -2941,6 +2956,8 @@ static const char *play(ndscam_t *cam)
 				Hud_Packet(d, len);
 			else if (type == L_EVENT)
 				Events_Packet(d, len, vb_ms(frame));
+			else if (type == L_SOUND || type == L_AMBIENT)
+				Snd_Packet(type, d, len, link.spawncount);
 			else if (type == L_KICK) {
 				char why[65];
 				copy_str(why, sizeof(why), d + 4, len - 4);
@@ -2999,6 +3016,18 @@ static const char *play(ndscam_t *cam)
 		weapon_punch(&view);
 		Events_Frame(vb_ms(frame), link.health);
 		Events_View(&view);
+		{
+			/* sound hears from the camera drawn; things that make sounds where they are drawn */
+			sndthing_t st_[MAX_THINGS];
+			int n = 0;
+			for (int i = 0; i < link.numthings; i++) {
+				const thing_t *th = &link.things[i];
+				st_[n].ent = th->ent;
+				st_[n].org[0] = th->dorg[0], st_[n].org[1] = th->dorg[1], st_[n].org[2] = (int16_t)(th->dorg[2] + th->lift);
+				n++;
+			}
+			Snd_Frame(&view, link.selfent, st_, n, eclock.now - (uint32_t)cfg.interp, eclock.have);
+		}
 		if (World_Loaded()) {
 			if (debugview == 0)
 				add_studio_things(&view);
@@ -3073,6 +3102,7 @@ void Link_Run(const uint16_t *pal)
 	int pick;
 	palette = pal;
 	read_config();
+	Snd_Init();
 	consoleClear();
 	if (!wifi_connect() || !open_socket()) {
 		iprintf("\nA or START: back\n");
@@ -3086,6 +3116,7 @@ void Link_Run(const uint16_t *pal)
 	consoleClear();
 	memset(&cam, 0, sizeof(cam));
 	if (!join(&servers[pick], &cam)) {
+		Snd_Shutdown();
 		close_socket();
 		iprintf("\nA or START: back\n");
 		wait_keys_or(1 << 30, KEY_A | KEY_START);
@@ -3094,6 +3125,7 @@ void Link_Run(const uint16_t *pal)
 	for (int i = 0; i < MAX_STUDIO; i++)
 		studiomdl[i] = -2;
 	iprintf("%s\n", play(&cam));
+	Snd_Shutdown();
 	close_socket();
 	reset_studio();
 	World_Free();
