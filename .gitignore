@@ -9,3 +9,7 @@ tests/script/game/scripts/vscripts/test_qc.lno
 
 # baked DS HUD fonts (tools/nds/dsfont.py) are made from fonts we may not redistribute
 *.dsf
+
+# DS sound packs and music (tools/nds/sndpack.py) are game data
+*.dsp
+*.dsm
