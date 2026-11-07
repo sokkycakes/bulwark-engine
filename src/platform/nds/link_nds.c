@@ -2908,8 +2908,15 @@ static const char *play(ndscam_t *cam)
 			    (type != L_REFUSE && rd32(d) != link.session))
 				continue;
 			link.lastrecv = frame;
-			if (type == L_WELCOME && len >= 7 && rd16(d + 5) != link.spawncount)
+			if (type == L_WELCOME && len >= 7 && rd16(d + 5) != link.spawncount) {
 				handle_welcome(d, len, cam);
+				/* a map load takes seconds (17 s for the biggest Half-Life maps) inside
+				 * this loop: that time is not silence from the server, and frame was
+				 * read before it, so both move on to now (else a load over the 5 s
+				 * below ends the link at the next loop without a packet) */
+				frame = Nds_Vblanks();
+				link.lastrecv = frame;
+			}
 			else if (type == L_SCREEN && len >= 6) {
 				uint16_t version = (uint16_t)rd16(d + 4);
 				if (version != link.screen_ack) {
