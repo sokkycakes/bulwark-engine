@@ -71,45 +71,46 @@ static inline sndgain_t snd_spatialise(const int32_t d[3], const int32_t right[3
 {
 	sndgain_t g;
 	int64_t d2 = (int64_t)d[0] * d[0] + (int64_t)d[1] * d[1] + (int64_t)d[2] * d[2];
-	uint32_t dist8, gain;
+	uint32_t dist, gain; /* dist in 1/128 units: 1/8 units would be 0.25% off at 50 units */
 	int32_t pan;
 	if (listener) {
 		g.left = g.right = (int32_t)vol_q16;
 		return g;
 	}
-	dist8 = SND_SQRT64(d2);
+	dist = SND_SQRT64(d2 << 8);
 	if (!f_q8)
 		gain = vol_q16;
 	else {
-		/* gain = vol x min(1, f x 8 / max(8, dist8)) = min(vol, vol x f_q8 x 2048 / (65536... )) in Q16:
-		 * vol_q16 x f_q8 / 256 x 8 / dist8 = k / dist8 / 65536 with k = vol x f_q8 x 2048 */
-		uint64_t k = snd_k(vol_q16, f_q8);
-		uint32_t den = dist8 < 8 ? 8 : dist8;
+		/* gain = vol x min(1, f / max(1, dist)) in Q16: vol_q16 x (f_q8 / 256) / (dist / 128)
+		 * = k x 16 / dist / 65536 with k = vol x f_q8 x 2048 (snd_k) */
+		uint64_t k = snd_k(vol_q16, f_q8) * 16;
+		uint32_t den = dist < 128 ? 128 : dist;
 		/* k / den >= vol << 16 means saturated (and keeps the quotient in 32 bits) */
 		if (k >= ((uint64_t)vol_q16 << 16) * den)
 			gain = vol_q16;
 		else
-			gain = SND_DIV64(k >> 16, den) /* k >> 16 < vol x den: fits */;
+			gain = SND_DIV64((k + 32768) >> 16, den) /* < vol: fits */;
 	}
 	if (gain < SND_CULL_Q16)
 		gain = 0;
-	if (!gain || nospatialise || dist8 < 8) { /* dist < 1 unit */
+	if (!gain || nospatialise || dist < 128) { /* dist < 1 unit */
 		g.left = g.right = (int32_t)gain;
 		return g;
 	}
 	{
-		/* pan = dot(d, right) / dist x 0.7 x min(1, dist / 36) = dot x 0.7 / max(dist, 36) */
-		int64_t dot = ((int64_t)d[0] * right[0] + (int64_t)d[1] * right[1] + (int64_t)d[2] * right[2]) >> 12;
-		uint32_t den = dist8 < SND_REFDIST * 8 ? SND_REFDIST * 8 : dist8;
-		int64_t num = dot * SND_PAN_Q16;
+		/* pan = dot(d, right) / dist x 0.7 x min(1, dist / 36) = dot x 0.7 / max(dist, 36);
+		 * dot in 1/8 units, dist in 1/128 */
+		int64_t dot = (int64_t)d[0] * right[0] + (int64_t)d[1] * right[1] + (int64_t)d[2] * right[2]; /* Q12, 1/8 units */
+		uint32_t den = dist < SND_REFDIST * 128 ? SND_REFDIST * 128 : dist;
+		int64_t num = dot * SND_PAN_Q16 / 256; /* x 16 (1/8 to 1/128 units) / 4096 (Q12) */
 		pan = num >= 0 ? (int32_t)SND_DIV64(num, den) : -(int32_t)SND_DIV64(-num, den);
 		if (pan > SND_PAN_Q16)
 			pan = SND_PAN_Q16;
 		if (pan < -SND_PAN_Q16)
 			pan = -SND_PAN_Q16;
 	}
-	g.left = (int32_t)(((int64_t)gain * (SND_ONE - (pan > 0 ? pan : 0))) >> 16);
-	g.right = (int32_t)(((int64_t)gain * (SND_ONE - (pan < 0 ? -pan : 0))) >> 16);
+	g.left = (int32_t)(((int64_t)gain * (SND_ONE - (pan > 0 ? pan : 0)) + 32768) >> 16);
+	g.right = (int32_t)(((int64_t)gain * (SND_ONE - (pan < 0 ? -pan : 0)) + 32768) >> 16);
 	return g;
 }
 

@@ -1,0 +1,131 @@
+/* Bulwark engine - checks the DS's fixed-point sound gains (src/platform/nds/sndmath_nds.h)
+ * against the PC mixer's own code (src/sound/snd_main.c spatialise, S_SoundLevel,
+ * S_DistanceGain, cut out as it is by tools/nds/sndtest_ref.py) on a grid of positions,
+ * facings, attenuations and volumes: the DS's hardware volume (0..2047) within 1 and its pan
+ * (0..127) within 1 of what the PC's left/right gains give. ISC licence, see LICENSE.
+ *
+ *   python3 tools/nds/sndtest_ref.py src/sound/snd_main.c > /tmp/sndref.c
+ *   cc -O2 -std=c99 -Wall -I/tmp -Isrc/platform/nds -o /tmp/sndtest tools/nds/sndtest.c -lm
+ *   /tmp/sndtest            (exit status 1 on a miss; -v lists every miss)
+ */
+#define _DEFAULT_SOURCE
+#include <math.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "sndmath_nds.h"
+
+/* what the cut-out code needs from the engine, at the PC's defaults (snd_main.c:835-839) */
+typedef struct sfx_s sfx_t;
+typedef struct {
+	float value;
+} cvar_t;
+#define BW_MIN(a, b) ((a) < (b) ? (a) : (b))
+#define BW_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define BW_CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
+#define DotProduct(a, b) ((a)[0] * (b)[0] + (a)[1] * (b)[1] + (a)[2] * (b)[2])
+#define SND_CULL_GAIN 0.002f
+#define SNDF_FORCELOOP 2
+#define SNDF_NOSPATIALISE 4
+#define SNDF_ABSVOLUME 16
+#define SNDF_FOLLOW 64
+#define SNDF_NOREPLACE 128
+#define SNDF_CSQCENT (1 << 20)
+static struct {
+	int playerent;
+} cl = {1};
+static cvar_t nominal = {1000}, refdb = {60}, refdist = {36};
+static cvar_t *s_nominaldist = &nominal, *s_refdb = &refdb, *s_refdist = &refdist;
+static float listener_origin[3], listener_right[3], listener_forward[3];
+static float master_volume = 0.7f;
+static bool speakers_back;
+static int speaker_mode;
+
+#include "sndref.c"
+
+/* the DS's hardware volume and pan from left/right gains, the same mapping as snd_hwvolpan */
+static void float_volpan(float l, float r, int *vol, int *pan)
+{
+	float s = l + r;
+	*vol = (int)floorf(s / 2 * 2047 + 0.5f);
+	*vol = *vol > 2047 ? 2047 : *vol;
+	*pan = s <= 0 ? 64 : (int)floorf(128 * r / s + 0.5f);
+	*pan = *pan > 127 ? 127 : *pan;
+}
+
+int main(int argc, char **argv)
+{
+	static const int attens[] = {0, 1, 8, 16, 32, 48, 64, 96, 128, 192, 255};
+	static const int vols[] = {255, 200, 128, 26, 3};
+	static const int dists[] = {0, 1, 7, 8, 20, 36, 37, 50, 100, 255, 512, 1000, 1500, 2500, 4000, 8000, 16000};
+	bool verbose = argc > 1 && !strcmp(argv[1], "-v");
+	long tests = 0, misses = 0, maxdv = 0, maxdp = 0;
+	(void)entity_origin;
+	for (int yaw = 0; yaw < 32768; yaw += 32768 / 24 + 7) {
+		/* the DS: right = (sin yaw, -cos yaw, 0) in Q12 (sinLerp's scale); the PC: the same in float */
+		double a = yaw * 2 * M_PI / 32768;
+		int32_t rq[3] = {(int32_t)lround(sin(a) * 4096), (int32_t)lround(-cos(a) * 4096), 0};
+		listener_right[0] = (float)sin(a), listener_right[1] = (float)-cos(a), listener_right[2] = 0;
+		for (size_t di = 0; di < sizeof(dists) / sizeof(dists[0]); di++)
+			for (int dir = 0; dir < 16; dir++) {
+				double b = dir * 2 * M_PI / 16, el = (dir % 3 - 1) * 0.4;
+				int32_t d8[3];
+				for (int c = 0; c < 3; c++) {
+					double u = c == 0 ? cos(b) * cos(el) : c == 1 ? sin(b) * cos(el) : sin(el);
+					d8[c] = (int32_t)lround(u * dists[di] * 8);
+				}
+				for (size_t ai = 0; ai < sizeof(attens) / sizeof(attens[0]); ai++)
+					for (size_t vi = 0; vi < sizeof(vols) / sizeof(vols[0]); vi++)
+						for (int flags = 0; flags < 3; flags++) {
+							channel_t ch;
+							sndgain_t g;
+							uint32_t vol_q16 = (uint32_t)(((uint64_t)vols[vi] * 45875 + 127) / 255);
+							int pv, pp, dv, dp;
+							memset(&ch, 0, sizeof(ch));
+							for (int c = 0; c < 3; c++)
+								ch.origin[c] = d8[c] / 8.0f;
+							ch.volume = vols[vi] / 255.0f;
+							ch.attenuation = attens[ai] / 64.0f;
+							ch.flags = flags == 1 ? SNDF_NOSPATIALISE : 0;
+							ch.ent = flags == 2 ? 1 : 0; /* the listener's own: heard straight */
+							spatialise(&ch);
+							g = snd_spatialise(d8, rq, vol_q16, snd_factor_q8(attens[ai]), flags == 1, flags == 2);
+							float_volpan(ch.left, ch.right, &pv, &pp);
+							{
+								int v2, p2;
+								snd_hwvolpan(g, &v2, &p2);
+								dv = abs(v2 - pv), dp = abs(p2 - pp);
+								if (pv == 0 && v2 == 0)
+									dp = 0; /* silent: the pan doesn't matter */
+								tests++;
+								maxdv = dv > maxdv ? dv : maxdv, maxdp = dp > maxdp ? dp : maxdp;
+								if (dv > 1 || dp > 1) {
+									misses++;
+									if (verbose)
+										printf("miss yaw=%d d=(%d %d %d)/8 atten=%d vol=%d flags=%d: pc vol=%d pan=%d (L %.5f R %.5f), ds vol=%d pan=%d\n",
+										       yaw, d8[0], d8[1], d8[2], attens[ai], vols[vi], flags, pv, pp, ch.left, ch.right, v2, p2);
+								}
+							}
+						}
+			}
+	}
+	/* the key's test vectors (docs/spec/link.md "Sample names") */
+	{
+		static const struct {
+			const char *name;
+			uint32_t key;
+		} kv[] = {{"misc/talk.wav", 0x7c72dd3c},      {"common/null.wav", 0x7e3eafd0}, {"weapons/glock1.wav", 0xf61c39de},
+		          {"Sound\\Weapons\\Glock1.WAV", 0xf61c39de}, {"vox/hello", 0x98432201},       {"music/track02", 0xc3df92fe}};
+		for (size_t i = 0; i < sizeof(kv) / sizeof(kv[0]); i++) {
+			tests++;
+			if (snd_key(kv[i].name) != kv[i].key) {
+				misses++;
+				printf("key %s: %08x, want %08x\n", kv[i].name, snd_key(kv[i].name), kv[i].key);
+			}
+		}
+	}
+	printf("sndtest: %ld cases, %ld misses; largest difference: volume %ld of 2047, pan %ld of 127\n", tests, misses, maxdv, maxdp);
+	return misses ? 1 : 0;
+}
