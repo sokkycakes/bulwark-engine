@@ -19,6 +19,8 @@
 #include "hud_nds.h" /* the font, and the text's layer */
 
 void Events_Reset(void);
+/* the map changed (a WELCOME with another spawncount) */
+void Events_MapChange(void);
 /* an EVENT packet after the type byte (from the session on) */
 void Events_Packet(const uint8_t *d, int len, uint32_t ms);
 /* the last record taken in order, for INPUT's 'E' */

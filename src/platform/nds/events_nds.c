@@ -340,6 +340,21 @@ void Events_Reset(void)
 	glEnable(GL_BLEND);
 }
 
+/* a new map: FTE starts the PC's CSQC again, so what it showed goes (the shake, the fade,
+ * the damage cues, prints, chat, centerprint, game_text and its queue, the feed, the
+ * pickups); records keep their numbers. What was drawn stays known, so it is cleared */
+void Events_MapChange(void)
+{
+	uint32_t sig[G_COUNT];
+	memcpy(sig, tx.sig, sizeof(sig));
+	memset(&sh, 0, sizeof(sh));
+	memset(&fd, 0, sizeof(fd));
+	memset(&dm, 0, sizeof(dm));
+	memset(&tx, 0, sizeof(tx));
+	tx.printlines = tx.chatlines = -1;
+	memcpy(tx.sig, sig, sizeof(sig));
+}
+
 uint16_t Events_Ack(void) { return have; }
 
 /* u32 session, u16 first, u8 count (its top bit: only new records, the ones before

@@ -1159,6 +1159,7 @@ static void handle_welcome(const uint8_t *d, int len, ndscam_t *cam)
 	uint16_t spawncount = (uint16_t)rd16(d + 5);
 	copy_str(map, sizeof(map), d + 7, BW_NDS_MIN(len - 7, 64));
 	link.spawncount = spawncount;
+	Events_MapChange();
 	pr.srvver = len >= 72 ? d[71] : 0;
 	pred_newmap();
 	eclock.have = false; /* the next ENTS starts the clock and the entities' updates again */
