@@ -255,13 +255,17 @@ static void make_strips(mdl_t *m)
 		}
 	}
 	free(first), free(list), free(used);
-	{
-		mcorner_t *less = realloc(c, sizeof(mcorner_t) * (size_t)n);
-		m->corners = less ? less : c;
-	}
-	m->numcorners = n;
+	/* the corners into the triangles' place (they take less), so the heap
+	 * keeps no hole where they were: a model can load before the map */
 	free(m->tris);
 	m->tris = NULL;
+	m->corners = malloc(sizeof(mcorner_t) * (size_t)n);
+	if (m->corners) {
+		memcpy(m->corners, c, sizeof(mcorner_t) * (size_t)n);
+		free(c);
+	} else
+		m->corners = c;
+	m->numcorners = n;
 }
 
 /* shade bytes for one frame: light from above and a little in front, by vertex normal */

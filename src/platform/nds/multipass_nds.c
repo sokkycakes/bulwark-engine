@@ -94,8 +94,9 @@ void Mp_Frame(const ndscam_t *cam, ndsstats_t *st)
 	/* the near pass holds the backdrop, the view model, and the nearest faces
 	 * and models that fit */
 	{
-		static int32_t mdist[256];
-		static int mpolys[256];
+		/* on the (DTCM) stack: 2 KB of RAM the map load can have */
+		int32_t mdist[256];
+		int mpolys[256];
 		int viewpolys, n = Ents_Costs(mdist, mpolys, 256, &viewpolys);
 		k = World_Split(WORLD_MAX_VERTS - viewpolys * 3 - QUAD_VERTS, WORLD_MAX_POLYS - viewpolys - QUAD_POLYS, mdist,
 		                mpolys, n, &split2);
