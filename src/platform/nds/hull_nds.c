@@ -730,7 +730,10 @@ static bool alloc_hulls(size_t reserve, char *err, int errsize)
 	return true;
 }
 
-/* every node a kept head reaches, every plane they use, and the heads, in range */
+/* every node a kept head reaches, every plane they use, and the heads, in range; and each
+ * child after its node (BSP compilers write clipnodes depth first and hlmap.py keeps their
+ * order: all 103 Half-Life maps' do), so no walk can go round a loop and a .hul written
+ * wrong can't hang the trace */
 static bool check_hulls(void)
 {
 	for (int i = 0; i < H.numnodes; i++) {
@@ -738,9 +741,11 @@ static bool check_hulls(void)
 		uint32_t idx = H.t.wide ? pl & 0x3fffffffu : pl & 0x3fffu;
 		if (idx >= (uint32_t)(type < 3 ? H.numaxial : H.numgeneral))
 			return false;
-		for (int s = 0; s < 2; s++)
-			if (H_CHILD(H.t.wide, &H.t, i, s) >= H.numnodes)
+		for (int s = 0; s < 2; s++) {
+			int c = H_CHILD(H.t.wide, &H.t, i, s);
+			if (c >= H.numnodes || (c >= 0 && c <= i))
 				return false;
+		}
 	}
 	for (int i = 0; i < H.numhulls * H.nummodels; i++)
 		if (H.heads[i] >= H.numnodes)
