@@ -1040,6 +1040,16 @@ static void world_hull0(void *ctx, int model, const float origin[3], const float
 }
 
 static const hull0_if world_hull0_if = {NULL, world_hull0};
+
+/* a point trace through the world alone (hull 0), as far as it gets: the HUD's
+ * nameplates and target ID look for a wall between the eye and a teammate */
+float World_TraceFraction(const float start[3], const float end[3])
+{
+	static const float zero[3] = {0, 0, 0};
+	hulltrace_t tr;
+	world_hull0(NULL, 0, zero, start, end, &tr);
+	return tr.startsolid ? 0.0f : tr.fraction;
+}
 _Static_assert(offsetof(node_t, plane) == offsetof(hull_fxnode_t, plane) &&
                offsetof(node_t, children) == offsetof(hull_fxnode_t, children) && offsetof(leaf_t, contents) == 0 &&
                sizeof(plane_t) == sizeof(hull_fxplane_t), "the tree as Hull_Trace0Fixed reads it");
