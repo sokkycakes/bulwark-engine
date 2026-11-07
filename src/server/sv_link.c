@@ -2692,6 +2692,7 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		if (l->selent > 0) { /* a weapon the game or the device picked: as the PC's client sends it */
 			if (l->selent < sv.vm->num_edicts && !sv.vm->edicts[l->selent].free)
 				u.cursor_entity = l->selent;
+			Con_DPrintf("link: %s command %u selects edict %d\n", c->name, s, u.cursor_entity);
 			l->selent = 0;
 		}
 		u.servertime_ms = 0; /* no lag to rewind: the device sees the others where the server has them */
@@ -5218,6 +5219,7 @@ void SV_LinkStuffCmd(client_t *c, const char *text)
 		 * does that for it */
 		if (!Str_ICmp(tok.argv[0], "selectItem") && tok.argc >= 2) {
 			int w = owned_weapon(c->edict, tok.argv[1]);
+			Con_DPrintf("link: %s selectItem %s: edict %d\n", c->name, tok.argv[1], w);
 			if (w)
 				l->selent = w;
 			continue;
