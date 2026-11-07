@@ -1068,6 +1068,60 @@ campaign and player models baked:
 melonDS's frame rate is not a hardware measurement: these need repeating
 on a DS.
 
+## The draw loop: c2a4e at 30, measured in melonDS 1.1 (not hardware)
+
+The spot: `c2a4e`, linked, `link_teleport -576 1012 84 270`, facing the open
+area (about 1805 polygons before, 1928 after: more of the world now fits in
+the 2048 budget). Times are melonDS's `tickGetCount` around each part of the
+frame (`BULWARK_NDS_PROF`, `nds.h`: off in a normal build), median of a 20 s
+run, turning 30 degrees right and back with touch drags unless it says
+standing. Observed, one run each.
+
+| Change (commit) | Tree walk (`World_Collect`) | Models | Chaining | Vertex submission | GPU polygons |
+|---|---|---|---|---|---|
+| before (`5730913`) | 17.0 ms | 7.8 ms | 1.15 ms | 2.75 ms | 1805 |
+| the walk from ITCM in ARM code, clip flags, frustum in DTCM (`95e8727`) | 9.1 ms | 7.8 ms | – | – | 1805 |
+| leaf face lists resolved at load, axial planes, three-word vertices, models in three loads a corner (`7b15964`) | 7.4 ms | 6.9 ms | – | – | 1805 |
+| the face list kept while the view stands (`797f477`) | 1.4 ms standing, about 5 ms turning | – | – | – | 1805 |
+| models as triangle strips made at load (`0a3d2ac`, `41242ae`) | – | 4.9 ms | – | – | 1805 |
+| models before the walk when they don't flicker, chaining from ITCM (`6155b0e`) | 1.4 ms standing, 4.9 turning | 4.3 ms | 0.93 ms | 2.74 ms | 1916 |
+| colour written only when it changes (`439f063`) | 1.4 / 5.0 ms | 4.3 ms | 1.0 ms | 2.61 ms | 1928 |
+
+The waits on the GX engine (`Gpu_Counts`) measured 0-1 µs before and after:
+the CPU was never waiting on the GPU here, so no busy-wait was removed.
+DMA to the GX FIFO was measured and not used: in melonDS it costs about
+4 cycles a word with the CPU stopped, against 8-12 for a CPU write, and
+the vertex loop's loads are what is left of the 2.6 ms.
+
+The DS's own frame rate (sent to the server with its input, `link_stats`),
+a normal build, 20 s each:
+
+| Build | Standing: seconds at 30 (worst second) | Turning: seconds at 30 (worst second) |
+|---|---|---|
+| before (`5730913`) | 0 of 20: 27-29 (worst 15-20) | – |
+| after (`439f063`) | 20 of 20 (30) | 7 of 17, the rest 29 (20) |
+| after, with `wip/hud`'s `hud_diag` fix merged (scratch, not committed) | 20 of 20 (30) | 20 of 20 (30) |
+
+What is left while turning is `hud_diag`: 15.5 ms once a second, on top of
+an 18 ms frame (observed). Its fix is on `wip/hud`, not here.
+
+RAM: the lowest free during load, linked on `c2a4e`, is 49152 bytes before
+and after (observed, `minfree_ever`). The strips' working lists are 16-bit
+and freed before the corners are allocated, and `Mp_Frame`'s model lists
+moved to the stack. In the viewer bench (`c2a4e`, `c1a0`, `coop_arena`, one
+and two passes) the polygon, model and vertex counts are the same before and
+after, the light maps hold 60/60 and two passes 30/30; the lowest free there
+is 45056 before and after, and 40960 only with the profile hooks built in
+(4 KB pages).
+
+Not done:
+
+- Two passes linked: the second pass needs VRAM banks C and D, and linked
+  the bottom screen's 16-bit bitmap is in bank C.
+- c1a2: no converted c1a2 was available, so its 20 fps spot is not
+  measured again.
+- melonDS's timings are not a hardware measurement: repeat on a DS.
+
 ## Not supported yet
 
 - Half-Life maps straight off the disc (convert them, above) and Quake 3 maps.
