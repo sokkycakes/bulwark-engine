@@ -326,6 +326,9 @@ void Events_Reset(void)
 	memset(&tx, 0, sizeof(tx));
 	tx.printlines = tx.chatlines = -1;
 	memset(&Events_Stats, 0, sizeof(Events_Stats));
+	/* translucent polygons blend only with this on (the fade, the damage feedback, and
+	 * link_nds.c's impact effects, whose alphas were drawn solid before) */
+	glEnable(GL_BLEND);
 }
 
 uint16_t Events_Ack(void) { return have; }

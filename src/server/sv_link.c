@@ -2624,6 +2624,9 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 		int off = type == LE_PRINT ? 1 : type == LE_TEXT ? 32 : type == LE_FEED ? 1 : (type == LE_CENTER || type == LE_PICKUP) ? 0 : -1;
 		if (off >= 0 && len > off)
 			snprintf(show, sizeof(show), " \"%.*s\"", BW_MIN(len - off, 48), (const char *)d + off);
+		if (type == LE_DAMAGE && len >= 8)
+			snprintf(show, sizeof(show), " at %d %d %d take %d", (int16_t)rd16(d), (int16_t)rd16(d + 2), (int16_t)rd16(d + 4),
+			         (int16_t)rd16(d + 6));
 		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 10 ? type : 0], len, show);
 	}
 	l->evnext++;
