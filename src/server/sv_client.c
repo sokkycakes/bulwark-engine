@@ -1605,10 +1605,19 @@ static void write_bytes(qcvm_t *vm, const void *data, size_t len)
 	int to = (int)QC_PFLOAT(vm, 0);
 	strbuf_t *sb;
 	if (to == 2) {
-		for (int i = 0; i < svs.maxclients; i++) /* a link player's is read by sv_link.c */
-			if (svs.clients[i].state != CS_FREE && (!svs.clients[i].bot || svs.clients[i].link))
+		for (int i = 0; i < svs.maxclients; i++) /* a link player's goes to sv_link.c as it is written */
+			if (svs.clients[i].state != CS_FREE && svs.clients[i].link)
+				SV_LinkQCWrite(&svs.clients[i], data, (int)len);
+			else if (svs.clients[i].state != CS_FREE && !svs.clients[i].bot)
 				SB_Append(&svs.clients[i].qcrel, data, len);
 		return;
+	}
+	if (to == 1) {
+		client_t *c = SV_ClientForEdict(QC_GInt(vm, G.msg_entity));
+		if (c && c->state != CS_FREE && c->link) {
+			SV_LinkQCWrite(c, data, (int)len);
+			return;
+		}
 	}
 	sb = write_target(vm, to);
 	if (!sb)

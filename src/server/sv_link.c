@@ -206,6 +206,12 @@ typedef struct {
 	uint32_t evdropped, evcount;            /* records lost to a full ring; records made */
 	char evfeed[96];                        /* serverinfo coop_feed as last seen */
 	uint32_t evtext[5];                     /* each game_text channel's last record (a hash), 0 none */
+	uint32_t evcenter;                      /* the last centerprint (a hash), 0 none */
+	double evstamp[EV_RING];                /* when each record last went out (a long time ago: never) */
+	int evmap;                              /* the spawncount evtext, evcenter and the obituaries belong to */
+	int evqcopen;                           /* 1 + where in evraw the game's MSG_ONE/ALL writes this frame go on, 0 none */
+	bool evqcbad;                           /* one of those writes did not fit: the rest of them this frame go too */
+	uint32_t evstops;                       /* game messages the server could not read to their end */
 	bool evfeedinit;
 } link_t;
 
@@ -2948,7 +2954,7 @@ static void send_fx(link_t *l)
  * records the device draws as the PC's client does. Records go in order, each once,
  * and again until the device says it has them (docs/spec/link.md, EVENT) */
 enum { RAW_GAME = 1, RAW_PRINT, RAW_CENTER };
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN };
 /* Nuclide's src/common/c_events.h */
 enum { EVN_PICKUP = 7, EVN_DAMAGE = 8, EVN_HITNOTIFY = 9, EVN_ANGLE = 10, EVN_SHAKE = 15, EVN_HUDHINT = 16, EVN_FADE = 17,
        EVN_TEXT = 18, EVN_TEXT_STRING = 19, EVN_MESSAGE = 20, EVN_OBITUARY = 25, EVN_CHAT = 28, EVN_CHAT_TEAM = 29 };
@@ -2963,10 +2969,26 @@ static link_t *link_of(const client_t *c)
 	return l->used && l->client == c ? l : NULL;
 }
 
+/* the link's text state for one map: FTE starts the PC's CSQC again on a level change,
+ * so the channels' last texts, the last centerprint and the obituaries go with the map */
+static void ev_mapcheck(link_t *l)
+{
+	if (l->evmap == svs.spawncount)
+		return;
+	l->evmap = svs.spawncount;
+	memset(l->evtext, 0, sizeof(l->evtext));
+	l->evcenter = 0;
+	l->obitkept = 0;
+}
+
 static void ev_raw(link_t *l, int kind, int level, const void *d, int len)
 {
 	uint8_t *o;
 	len = BW_MIN(len, 0xffff);
+	if (l) {
+		ev_mapcheck(l);
+		l->evqcopen = 0; /* anything else between the game's writes ends their message */
+	}
 	if (!l || l->evrawlen + 4 + len > EV_RAW) {
 		if (l)
 			l->evdropped++;
@@ -2981,6 +3003,38 @@ static void ev_raw(link_t *l, int kind, int level, const void *d, int len)
 void SV_LinkPrint(client_t *c, int level, const char *text) { ev_raw(link_of(c), RAW_PRINT, level, text, (int)strlen(text)); }
 void SV_LinkCenterPrint(client_t *c, const char *text) { ev_raw(link_of(c), RAW_CENTER, 0, text, (int)strlen(text)); }
 void SV_LinkGameMessages(client_t *c, const uint8_t *d, int len) { ev_raw(link_of(c), RAW_GAME, 0, d, len); }
+
+/* the game's MSG_ONE and MSG_ALL writes to a link player, taken as they are written so
+ * they keep their order against prints and multicasts: consecutive writes are one chunk */
+void SV_LinkQCWrite(client_t *c, const void *d, int len)
+{
+	link_t *l = link_of(c);
+	uint8_t *h;
+	int n;
+	if (!l || len <= 0)
+		return;
+	if (l->evqcbad)
+		return;
+	if (!l->evqcopen) {
+		int before = l->evrawlen;
+		ev_raw(l, RAW_GAME, 0, d, 0);
+		if (l->evrawlen != before + 4) { /* it did not fit */
+			l->evqcbad = true;
+			return;
+		}
+		l->evqcopen = l->evrawlen - 4 + 1;
+	}
+	h = l->evraw + l->evqcopen - 1;
+	n = h[2] | h[3] << 8;
+	if (l->evrawlen + len > EV_RAW || n + len > 0xffff) {
+		l->evqcbad = true; /* a message cut short would be read wrong: none of the rest */
+		l->evdropped++;
+		return;
+	}
+	memcpy(l->evraw + l->evrawlen, d, (size_t)len);
+	l->evrawlen += len, n += len;
+	h[2] = (uint8_t)(n & 0xff), h[3] = (uint8_t)(n >> 8);
+}
 
 /* the text without the game's colour codes (^0-^9, ^xRGB, ^b and the like), at most size - 1 bytes */
 static void ev_plain(char *out, int size, const char *s, int len)
@@ -3022,13 +3076,17 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 	if ((uint16_t)(l->evnext - l->evack - 1) >= EV_RING) {
 		l->evack++;
 		l->evdropped++;
+		/* the dropped one may be the full text a later TEXTAGAIN or CENTERAGAIN means */
+		memset(l->evtext, 0, sizeof(l->evtext));
+		l->evcenter = 0;
 	}
 	r = l->evring[l->evnext % EV_RING];
 	r[0] = (uint8_t)type, r[1] = (uint8_t)len;
 	memcpy(r + 2, d, (size_t)len);
 	l->evlen[l->evnext % EV_RING] = (uint8_t)(len + 2);
+	l->evstamp[l->evnext % EV_RING] = -1e9;
 	if (sv_link_log->ivalue) {
-		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again"};
+		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again", "cagain"};
 		char show[64] = "";
 		int off = type == LE_PRINT ? 1 : type == LE_TEXT ? 32 : type == LE_FEED ? 1 : (type == LE_CENTER || type == LE_PICKUP) ? 0 : -1;
 		if (off >= 0 && len > off)
@@ -3036,14 +3094,16 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 		if (type == LE_DAMAGE && len >= 8)
 			snprintf(show, sizeof(show), " at %d %d %d take %d", (int16_t)rd16(d), (int16_t)rd16(d + 2), (int16_t)rd16(d + 4),
 			         (int16_t)rd16(d + 6));
-		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 10 ? type : 0], len, show);
+		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 11 ? type : 0], len, show);
 	}
 	l->evnext++;
 	l->evcount++;
 }
 
 /* a record of fixed fields then text (the rest of it). game_text sent again as it was
- * (the co-op hero line, 4 times a second) is only its channel: the device starts it over */
+ * (the co-op hero line, 4 times a second) is only its channel: the device starts it over.
+ * A centerprint the same as the last is CENTERAGAIN (the co-op rules' "Respawn in N
+ * seconds" comes every frame while down), and one not sent yet stands for any more */
 static void ev_text(link_t *l, int type, const uint8_t *head, int hlen, const char *text, int tlen)
 {
 	uint8_t b[EV_REC];
@@ -3063,6 +3123,22 @@ static void ev_text(link_t *l, int type, const uint8_t *head, int hlen, const ch
 			return;
 		}
 		l->evtext[b[0]] = h;
+	}
+	if (type == LE_CENTER) {
+		uint32_t h = 2166136261u;
+		uint16_t last = (uint16_t)(l->evnext - 1);
+		for (int i = 0; i < n; i++)
+			h = (h ^ b[i]) * 16777619u;
+		h |= 1;
+		if (h == l->evcenter) {
+			/* the newest record is a CENTERAGAIN still to go out: that one does */
+			if (l->evnext != l->evsentnext && (uint16_t)(last - l->evsentnext) < (uint16_t)(l->evnext - l->evsentnext) &&
+			    (uint16_t)(l->evnext - l->evack - 1) > 0 && l->evring[last % EV_RING][0] == LE_CENTERAGAIN)
+				return;
+			ev_put(l, LE_CENTERAGAIN, b, 0);
+			return;
+		}
+		l->evcenter = h;
 	}
 	ev_put(l, type, b, hlen + n);
 }
@@ -3281,6 +3357,7 @@ static int ev_game(link_t *l, int ev, const uint8_t *d, int n)
 static void ev_read(link_t *l)
 {
 	int i = 0;
+	ev_mapcheck(l);
 	while (i + 4 <= l->evrawlen) {
 		const uint8_t *h = l->evraw + i, *d = h + 4;
 		int kind = h[0], level = h[1], len = h[2] | h[3] << 8;
@@ -3294,12 +3371,22 @@ static void ev_read(link_t *l)
 				ev_text(l, LE_PRINT, &lv, 1, (const char *)d, len);
 		} else if (kind == RAW_CENTER)
 			ev_text(l, LE_CENTER, NULL, 0, (const char *)d, len);
-		else
-			for (int j = 0, used; j + 2 <= len && d[j] == CGAMEPACKET; j += 2 + used)
-				if ((used = ev_game(l, d[j + 1], d + j + 2, len - j - 2)) < 0)
-					break;
+		else {
+			int j = 0, used = 0;
+			while (j + 2 <= len && d[j] == CGAMEPACKET && (used = ev_game(l, d[j + 1], d + j + 2, len - j - 2)) >= 0)
+				j += 2 + used;
+			/* another kind of message, or an event whose length is not known here: the
+			 * rest of this chunk cannot be read (counted in link_stats) */
+			if (j < len) {
+				l->evstops++;
+				if (sv_link_log->ivalue)
+					Con_Printf("LINKEV %s: stopped at byte %d of %d (%d %d)\n", l->client->name, j, len, d[j],
+					           j + 1 < len ? d[j + 1] : -1);
+			}
+		}
 	}
 	l->evrawlen = 0;
+	l->evqcopen = 0, l->evqcbad = false;
 }
 
 /* serverinfo coop_feed, "seq|who|verb|whom": the co-op rules' team events (revives) for the
@@ -3330,27 +3417,39 @@ static void ev_coopfeed(link_t *l)
 		ev_feed(l, f[1], f[2], f[3]);
 }
 
+/* New records go out as they are made, on their own (count's top bit: records before
+ * `first` are still on their way); everything the device has not acknowledged goes
+ * again once the oldest of it has waited EV_RESEND */
 static void send_events(link_t *l, double now)
 {
 	pkt_t p;
-	uint16_t first = (uint16_t)(l->evack + 1);
+	uint16_t first = (uint16_t)(l->evack + 1), from, s;
 	int count = 0;
+	bool partial;
 	if (l->evnext == first || !l->evcap)
 		return;
-	if (l->evnext == l->evsentnext && now - l->evsent < EV_RESEND)
+	if (now - l->evstamp[first % EV_RING] >= EV_RESEND)
+		from = first;
+	else if (l->evnext != l->evsentnext && (uint16_t)(l->evsentnext - first) < (uint16_t)(l->evnext - first))
+		from = l->evsentnext;
+	else
 		return;
+	partial = from != first;
 	p_begin(&p, L_EVENT);
 	p_u32(&p, l->session);
-	p_u16(&p, first);
+	p_u16(&p, from);
 	p_u8(&p, 0);
-	for (uint16_t s = first; s != l->evnext && count < 255; s++, count++) {
+	for (s = from; s != l->evnext && count < 127; s++, count++) {
 		int n = l->evlen[s % EV_RING];
 		if (p.len + n > (int)sizeof(p.data))
 			break;
 		p_bytes(&p, l->evring[s % EV_RING], n);
+		l->evstamp[s % EV_RING] = now;
 	}
-	p.data[5 + 6] = (uint8_t)count;
-	l->evsent = now, l->evsentnext = l->evnext;
+	p.data[5 + 6] = (uint8_t)(count | (partial ? 0x80 : 0));
+	l->evsent = now;
+	if ((uint16_t)(s - first) > (uint16_t)(l->evsentnext - first) || !partial)
+		l->evsentnext = s;
 	send_to(&l->from, &p);
 }
 
@@ -3510,8 +3609,8 @@ static void SV_LinkStats_f(int argc, const char **argv)
 			           "weapon %u/%u%s\n",
 			           l->joinver, l->lastrun, l->gaps, l->clipped, l->pseq, l->varsack, l->varsver, l->brushack,
 			           l->brushver, l->wiack, l->wiver, l->wicap ? "" : " (device takes none)");
-		Con_Printf("  events: %u made, %u acked of %u, %u dropped%s\n", l->evcount, (uint16_t)(l->evack),
-		           (uint16_t)(l->evnext - 1), l->evdropped, l->evcap ? "" : " (device takes none)");
+		Con_Printf("  events: %u made, %u acked of %u, %u dropped, %u stops%s\n", l->evcount, (uint16_t)(l->evack),
+		           (uint16_t)(l->evnext - 1), l->evdropped, l->evstops, l->evcap ? "" : " (device takes none)");
 	}
 }
 

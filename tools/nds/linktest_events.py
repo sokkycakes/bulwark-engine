@@ -3,7 +3,10 @@
 (docs/spec/link.md, "Events") and acknowledges them with INPUT's 'E', and
 triggers prints with rcon "say".
 
-  linktest_events.py [host] [link port] [-rcon PORT] [-scenario NAME]
+  linktest_events.py [host] [link port] [-rcon PORT] [-scenario NAME] [-v2]
+
+-v2 sends INPUT as the DS does with prediction on: 'C' with one command, 'W' and
+'H' before 'E' (the layout f902f74 fixed); without it 'E' is at offset 32.
 
 Scenarios:
   order     20 chat lines: each arrives once, in order
@@ -25,6 +28,9 @@ def opt(name, default=None):
         i = args.index(name); v = args[i + 1]; del args[i:i + 2]; return v
     return default
 rport = int(opt('-rcon', '27500')); scenario = opt('-scenario', 'order')
+v2 = '-v2' in args
+if v2:
+    args.remove('-v2')
 host = args[0] if args else '127.0.0.1'; port = int(args[1]) if len(args) > 1 else 27901
 
 def rcon(cmd):
@@ -47,16 +53,21 @@ while spawn is None and time.time() - t0 < 5:
 if spawn is None:
     sys.exit('no WELCOME')
 
-have = 0; seq = 0; packets = 0; ignored = 0; gaps = 0; lines = []; acking = True
+have = 0; seq = 0; packets = 0; ignored = 0; gaps = 0; lines = []; acking = True; newest = 0
+partials = 0; partial_dropped = 0; maxcount = 0
 def send_input():
-    global seq
+    global seq, newest
     seq = (seq + 1) & 0xffff
     p = struct.pack('<IHHBBBbbbhhHBBHHHHBB', session, seq, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 30, 0, 0, spawn, 0, 0, 0)
+    if v2: # one command (link.md 'C'), WEAPONINFO and HUDINFO versions, then 'E'
+        newest += 1
+        p += b'C' + bytes([2]) + struct.pack('<IBBHH', newest, 1, 14, 0, 0) + bytes([0] * 12 + [33, 0])
+        p += b'W' + struct.pack('<HH', 0, 0) + b'H' + struct.pack('<H', 0)
     p += b'E' + struct.pack('<H', have if acking else 0)
     s.sendto(MAGIC + bytes([INPUT]) + p, (host, port))
 
 def pump(secs):
-    global have, packets, ignored, gaps
+    global have, packets, ignored, gaps, partials, partial_dropped, maxcount
     end = time.time() + secs; nxt = 0
     while time.time() < end:
         if time.time() >= nxt:
@@ -73,6 +84,11 @@ def pump(secs):
         if not acking:
             continue
         first, count = struct.unpack('<HB', d[9:12]); i = 12
+        partial = count & 0x80; count &= 0x7f; maxcount = max(maxcount, count)
+        if partial:
+            partials += 1
+            if first != (have + 1) & 0xffff and ((first - (have + 1)) & 0xffff) < 0x8000:
+                partial_dropped += 1; continue # the resend brings the ones before
         if ((first - (have + 1)) & 0xffff) < 0x8000 and first != (have + 1) & 0xffff:
             gaps += (first - have - 1) & 0xffff; have = (first - 1) & 0xffff
         for k in range(count):
@@ -93,6 +109,7 @@ acking = True
 pump(2.0)
 s.sendto(MAGIC + bytes([4]) + struct.pack('<I', session), (host, port))
 ok = lines == list(range(n)) if scenario != 'overflow' else (lines == list(range(n - len(lines), n)) and gaps > 0 and len(lines) <= 64)
-print('%s: %s, %d lines (%s..%s), %d EVENT packets, %d ignored, gap %d, last record %d' % (
-    scenario, 'ok' if ok else 'FAIL', len(lines), lines[0] if lines else '-', lines[-1] if lines else '-', packets, ignored, gaps, have))
+print('%s: %s, %d lines (%s..%s), %d EVENT packets (%d new-only, %d of those waited), %d ignored, gap %d, last record %d' % (
+    scenario, 'ok' if ok else 'FAIL', len(lines), lines[0] if lines else '-', lines[-1] if lines else '-', packets, partials,
+    partial_dropped, ignored, gaps, have))
 sys.exit(0 if ok else 1)

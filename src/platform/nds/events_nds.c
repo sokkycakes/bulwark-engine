@@ -15,7 +15,7 @@
 
 #include "events_nds.h"
 
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN };
 #define PRINT_CHAT 3
 
 evstats_t Events_Stats;
@@ -275,6 +275,12 @@ static void take(int type, const uint8_t *d, int len)
 		tx.centeralpha = 1;
 		tx.centertime = now + 3;
 		break;
+	case LE_CENTERAGAIN: /* the same centerprint again: its 3 s start over */
+		if (tx.center[0]) {
+			tx.centeralpha = 1;
+			tx.centertime = now + 3;
+		}
+		break;
 	case LE_SHAKE: /* EV_Shake: duration, amplitude, frequency */
 		if (len >= 12)
 			shake_start(rdf(d + 4), rdf(d + 8), rdf(d));
@@ -333,7 +339,8 @@ void Events_Reset(void)
 
 uint16_t Events_Ack(void) { return have; }
 
-/* u32 session, u16 first, u8 count, then count records of u8 type, u8 length, payload */
+/* u32 session, u16 first, u8 count (its top bit: only new records, the ones before
+ * first are on their way), then count records of u8 type, u8 length, payload */
 void Events_Packet(const uint8_t *d, int len, uint32_t ms)
 {
 	uint16_t seq;
@@ -343,7 +350,10 @@ void Events_Packet(const uint8_t *d, int len, uint32_t ms)
 	if (!started)
 		now = ms / 1000.0f, started = true;
 	seq = (uint16_t)(d[4] | d[5] << 8);
-	count = d[6];
+	count = d[6] & 0x7f;
+	/* new records past one we lack: the resend of all of them follows */
+	if (d[6] & 0x80 && (int16_t)(seq - (uint16_t)(have + 1)) > 0)
+		return;
 	/* the server sends from the record after the last we acknowledged; a first one past
 	 * ours means it dropped some (its ring was full): take on from there */
 	if ((int16_t)(seq - (uint16_t)(have + 1)) > 0) {

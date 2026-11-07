@@ -638,13 +638,18 @@ and its `MSG_ONE` writes, which are read from the client's QC reliable buffer
 (nothing else empties it for a bot). Once a frame, outside the game's code,
 those become records, numbered from 1 for each device. `EVENT` carries the
 ones the device has not acknowledged (INPUT's `'E'`), oldest first, as many
-as fit, whenever there are new ones and again every 0.2 s until it does.
+as fit, once the oldest of them has waited 0.2 s since it last went out.
+New records go out the frame they are made in an `EVENT` of their own,
+with the top bit of `count` set: the records before its `first` are still on
+their way, and a device that lacks one of them drops that packet and waits
+for the resend.
 The server keeps 64; when a device falls further behind, the oldest go, and
 the next `EVENT` starts past the device's last: the device takes on from
 there. `sv_link_log 1` prints each record made as a `LINKEV` line, and
 `link_stats` counts them.
 
-`EVENT`: u32 session, u16 `first` (the first record's number), u8 `count`,
+`EVENT`: u32 session, u16 `first` (the first record's number), u8 `count`
+(bit 7: new records only, as above),
 then `count` records of u8 type, u8 length, payload. Strings run to the end
 of the record, without the game's colour codes (`^1`, `^xRGB`) or titles.txt
 escapes (`\y`, `\n`: a new line).
@@ -660,6 +665,7 @@ escapes (`\y`, `\n`: a new line).
 | 7 | FEED | `EV_OBITUARY` for a player's death (as `coop/src/hud/jtf.qc HUD_Obituary` passes it to the Panorama feed: no attacker when the means of death says `self`, the weapon decl's `inv_name`); serverinfo `coop_feed` changes (team events) | u8 about us, u8 length, attacker (or the victim, with weapon "died"), u8 length, weapon, victim |
 | 8 | PICKUP | `EV_PICKUP` | the item's class (`EntityDef_NameFromNetID`) |
 | 9 | TEXTAGAIN | a TEXT on channel 0-4 the same as that channel's last | u8 channel: show it again from its start |
+| 10 | CENTERAGAIN | a `centerprint` the same as the last (the co-op rules send "Respawn in N seconds" every frame while down); while one has not gone out yet, more make none | nothing: the centerprint's 3 s start again |
 
 A device that also sends `'H'` gets no FEED records: the obituaries and
 `coop_feed` reach it in `HUDINFO`, whose feed it draws.
@@ -667,7 +673,11 @@ A device that also sends `'H'` gets no FEED records: the obituaries and
 `EV_ANGLE` from a `MSG_ONE` write turns the player as the multicast does.
 `EV_HITNOTIFY` (the PC does nothing with it) and events of other kinds
 (sounds, music, intermission, models) make no records; an event whose
-length the server doesn't know ends that message.
+length the server doesn't know ends that message (`link_stats` counts
+these as stops; `sv_link_log 1` prints each). The game's `MSG_ONE` and
+`MSG_ALL` writes are taken as they are written, so they keep their order
+against prints and multicasts. When the server drops records (a full ring),
+or the map changes, the next game_text and centerprint go out in full.
 
 ### Screen commands
 

@@ -359,6 +359,7 @@ void SV_LinkMulticast(client_t *c, const uint8_t *data, int len, int cause); /* 
 void SV_LinkPrint(client_t *c, int level, const char *text);
 void SV_LinkCenterPrint(client_t *c, const char *text);
 void SV_LinkGameMessages(client_t *c, const uint8_t *data, int len);
+void SV_LinkQCWrite(client_t *c, const void *data, int len);
 client_t *SV_SpawnLinkClient(const char *name, int link);
 void SV_UpdateStats(client_t *c);
 void SV_ResetStats(client_t *c);
