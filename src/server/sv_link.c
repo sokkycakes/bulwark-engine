@@ -54,7 +54,7 @@ enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 
 
 enum { L_DISCOVER = 1, L_JOIN, L_INPUT, L_LEAVE };
 enum { L_INFO = 0x81, L_WELCOME, L_REFUSE, L_SCREEN, L_VIEW, L_KICK, L_ENTS, L_MODELS, L_STATS, L_FX,
-       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO, L_EVENT };
+       L_PSTATE, L_PMOVEVARS, L_BRUSHINFO, L_WEAPONINFO, L_HUDINFO, L_EVENT, L_SOUND, L_AMBIENT };
 enum { SC_CLEAR = 1, SC_FILL, SC_TEXT };
 
 typedef struct {
@@ -88,6 +88,38 @@ typedef struct {
 #define HUD_NPCRANGE 2000.0f /* friendly NPCs HUDINFO lists: Nameplates' cg_targetIDRange */
 #define HUD_MAXNPC 8
 #define HUD_NAME 31        /* an NPC's netname in HUDINFO is cut to this */
+
+/* sound (docs/spec/link.md, "Sound") */
+#define SND_QUEUE 256      /* records made between two SOUND packets */
+#define SND_MAXREC 40      /* records in one SOUND packet */
+#define SND_INTERVAL (1.0 / 36) /* SOUND at most this often: each second frame at sv_tickrate 72 */
+#define SND_LOOPS 32       /* live loops a device is known to have (EVENT 12 when they change) */
+#define SND_PRECKEYS 54    /* keys in one EVENT 15 record (EV_REC's 222-byte payload) */
+#define SND_MAXAMB 64      /* AMBIENT entries */
+#define AMB_RESEND 0.25    /* AMBIENT again this soon while the device has not acknowledged it */
+#define AMB_PERIOD 2.0     /* and this often once it has */
+enum { SL_LISTENER = 1, SL_AT = 2, SL_STOP = 4, SL_CLIENTSIDE = 8 };  /* SOUND lflags */
+/* the engine's sound() flags (FTE's SOUNDFLAG_*), as E1 sends them */
+enum { SF_FORCELOOP = 2, SF_NOSPACIALISE = 4, SF_ABSVOLUME = 16, SF_NOREVERB = 32, SF_FOLLOW = 64, SF_NOREPLACE = 128 };
+
+typedef struct {
+	uint16_t seq;
+	uint8_t lflags, sflags;
+	uint16_t ent;
+	uint8_t chan;
+	uint32_t key;
+	uint8_t vol, atten, pitch;
+	int16_t org[3];
+	int16_t at;   /* with SL_AT */
+	float d2;     /* from the player, squared: the farthest go when there are too many */
+} lsnd_t;
+
+typedef struct {
+	uint16_t ent;
+	uint32_t key;
+	uint8_t vol, atten, pitch, flags;
+	int16_t org[3];
+} lamb_t;
 
 typedef struct {
 	uint16_t e, model; /* edict; the * number of its brush model */
@@ -214,6 +246,30 @@ typedef struct {
 	bool evqcbad;                           /* one of those writes did not fit: the rest of them this frame go too */
 	uint32_t evstops;                       /* game messages the server could not read to their end */
 	bool evfeedinit;
+	/* sound: SOUND, AMBIENT and EVENT 12-15 for a device whose INPUT carries 'S' */
+	bool sndcap;                            /* 'S' with caps bit 0: it plays sound */
+	uint16_t sndseq;                        /* the last SOUND record's seq */
+	lsnd_t sndq[SND_QUEUE];                 /* made since the last SOUND packet */
+	int sndn;
+	lsnd_t sndrep[SND_MAXREC];              /* in the last SOUND packet: they go once more */
+	int sndrepn;
+	double sndnext;                         /* no SOUND packet before this */
+	int sndmap;                             /* the spawncount the loops, the queue and the precache belong to */
+	struct {
+		uint16_t ent;
+		uint8_t chan, cs;                   /* cs: a CLIENTSIDE loop */
+		uint32_t key;
+	} loops[SND_LOOPS];                     /* loops the device was told about reliably, oldest first */
+	int nloops;
+	int sndprec;                            /* sound precache entries sent in EVENT 15 */
+	bool sndkept;                           /* and the always-kept names */
+	uint32_t sndmade, snddrop, sndrep2, sndnorep, sndrel, sndpkts, sndbytes, sndoff; /* link_stats */
+	uint32_t sndbypath[8];
+	lamb_t amb[SND_MAXAMB];                 /* AMBIENT: the set now */
+	int namb;
+	uint16_t ambver, amback, ambsentver;
+	double ambsent;
+	uint32_t ambpkts, ambbytes;
 } link_t;
 
 static link_t links[MAX_LINKS];
@@ -522,6 +578,13 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 			/* only forward, and never past what was made */
 			if ((uint16_t)(ack - l->evack) <= (uint16_t)(l->evnext - 1 - l->evack))
 				l->evack = ack;
+			t += 3;
+			/* then 'S': the AMBIENT version the device has (0 none), caps (bit 0: it plays sound) */
+			if (len >= t + 4 && d[t] == 'S') {
+				l->sndcap = (d[t + 3] & 1) != 0;
+				if (l->devspawn == (svs.spawncount & 0xffff))
+					l->amback = (uint16_t)rd16(d + t + 1);
+			}
 		}
 	}
 	/* the v2 extension: 'C', version, u32 newest, u8 count, u8 cmdsize, u16
@@ -2366,6 +2429,7 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 
 static void update_hud(link_t *l);
 static void send_hud(link_t *l, double now);
+static void send_sound(link_t *l, double now);
 
 void SV_LinkSend(void)
 {
@@ -2422,6 +2486,7 @@ void SV_LinkSend(void)
 			ev_worldspawn(l);
 		}
 		send_events(l, now);
+		send_sound(l, now);
 		if (!l->gamedrew && now >= l->nextdefault) {
 			default_screen(l);
 			l->nextdefault = now + 1;
@@ -2963,7 +3028,8 @@ static void send_fx(link_t *l)
  * records the device draws as the PC's client does. Records go in order, each once,
  * and again until the device says it has them (docs/spec/link.md, EVENT) */
 enum { RAW_GAME = 1, RAW_PRINT, RAW_CENTER };
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN, LE_FLASH };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN, LE_FLASH,
+       LE_SOUND, LE_SENTENCE, LE_MUSIC, LE_PRECACHE };
 /* Nuclide's src/common/c_events.h */
 enum { EVN_PICKUP = 7, EVN_DAMAGE = 8, EVN_HITNOTIFY = 9, EVN_ANGLE = 10, EVN_SHAKE = 15, EVN_HUDHINT = 16, EVN_FADE = 17,
        EVN_TEXT = 18, EVN_TEXT_STRING = 19, EVN_MESSAGE = 20, EVN_OBITUARY = 25, EVN_CHAT = 28, EVN_CHAT_TEAM = 29 };
@@ -3091,7 +3157,7 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 	l->evlen[l->evnext % EV_RING] = (uint8_t)(len + 2);
 	l->evstamp[l->evnext % EV_RING] = -1e9;
 	if (sv_link_log->ivalue) {
-		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again", "cagain", "flash"};
+		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again", "cagain", "flash", "sound", "sentence", "music", "precache"};
 		char show[64] = "";
 		int off = type == LE_PRINT ? 1 : type == LE_TEXT ? 32 : type == LE_FEED ? 1 : (type == LE_CENTER || type == LE_PICKUP) ? 0 : -1;
 		if (off >= 0 && len > off)
@@ -3099,7 +3165,7 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 		if (type == LE_DAMAGE && len >= 8)
 			snprintf(show, sizeof(show), " at %d %d %d take %d", (int16_t)rd16(d), (int16_t)rd16(d + 2), (int16_t)rd16(d + 4),
 			         (int16_t)rd16(d + 6));
-		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 12 ? type : 0], len, show);
+		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 16 ? type : 0], len, show);
 	}
 	l->evnext++;
 	l->evcount++;
@@ -3645,6 +3711,327 @@ static void send_events(link_t *l, double now)
 	send_to(&l->from, &p);
 }
 
+/* --- sound (SOUND, AMBIENT, EVENT 12-15) ------------------------------------------------------
+ * docs/spec/link.md, "Sound". The PC hears the server's sound() and pointsound()
+ * as svc_sound (sv_client.c write_sound), which skips bots, so a link player
+ * gets them here instead (SV_LinkSound). The PC's client game also makes sounds
+ * by itself from what it is sent (impacts, speech, sentences, view model events,
+ * looping ambient_generics): the device runs no QuakeC, so the server works them
+ * out as the client game would and sends them as CLIENTSIDE records. Samples are
+ * named by a hash of their normalised name (FNV-1a 32), which the device looks up
+ * in its sound packs. One-shots go unreliably, each in two SOUND packets; what
+ * starts or ends a loop goes reliably as an EVENT record. */
+
+/* lower case, '\' as '/', no leading "./" or one leading "sound/", no .wav/.ogg/.mp3:
+ * the PC lets an .ogg stand in for a .wav (snd_mem.c find_and_decode) */
+static void snd_norm(const char *in, char *out, size_t size)
+{
+	size_t n = 0, len;
+	const char *s = in;
+	char *e;
+	while (*s && n + 1 < size) {
+		char ch = *s++ == '\\' ? '/' : (char)tolower((unsigned char)s[-1]);
+		out[n++] = ch;
+	}
+	out[n] = 0;
+	if (!strncmp(out, "./", 2))
+		memmove(out, out + 2, strlen(out + 2) + 1);
+	if (!strncmp(out, "sound/", 6))
+		memmove(out, out + 6, strlen(out + 6) + 1);
+	len = strlen(out);
+	if (len > 4 && (e = out + len - 4) && (!strcmp(e, ".wav") || !strcmp(e, ".ogg") || !strcmp(e, ".mp3")))
+		*e = 0;
+}
+
+static uint32_t snd_key(const char *name)
+{
+	char n[256];
+	uint32_t h = 2166136261u;
+	snd_norm(name, n, sizeof(n));
+	for (const unsigned char *p = (const unsigned char *)n; *p; p++)
+		h = (h ^ *p) * 16777619u;
+	return h;
+}
+
+#define SND_KEY_NULL 0x7e3eafd0u /* common/null: Nuclide's StopSound (soundDef.qc:570-574) */
+
+enum { SP_SND, SP_LOOP, SP_AMB, SP_IMP, SP_SENT, SP_VM, SP_MEV, SP_MUSIC };
+static const char *const snd_paths[8] = {"snd", "loop", "amb", "imp", "sent", "vm", "mev", "music"};
+
+/* the device has this map and takes sound */
+static bool snd_ready(const link_t *l)
+{
+	return l && l->sndcap && l->evcap && l->client && l->client->state == CS_SPAWNED &&
+	       l->spawncount == svs.spawncount &&
+	       (l->devspawn >= 0 ? l->devspawn == (svs.spawncount & 0xffff) : l->lastrecv >= l->welcomed);
+}
+
+static void snd_mapcheck(link_t *l)
+{
+	if (l->sndmap == svs.spawncount)
+		return;
+	l->sndmap = svs.spawncount;
+	l->sndn = l->sndrepn = 0;
+	l->nloops = 0;
+	l->sndprec = 0, l->sndkept = false;
+	l->namb = 0, l->ambver = l->amback = l->ambsentver = 0;
+}
+
+/* --- does a sample loop by itself? A WAV's "cue " chunk: the PC loops it from its first
+ * cue point (snd_mem.c decode_wav, snd_main.c mixing). The chunks are walked through the
+ * whole file as decode_wav does: the cue often follows the data (ambience/comp1.wav) */
+static struct {
+	int spawncount;
+	const qcvm_t *vm;
+	int8_t loops[SV_MAX_SOUNDS]; /* 0 unknown, 1 one-shot, 2 loops */
+} sndcue;
+
+static bool wav_loops(const uint8_t *buf, size_t len)
+{
+	const uint8_t *p = buf + 12, *end = buf + len;
+	uint32_t pcmlen = 0;
+	int bits = 0, channels = 0, loop = -1;
+	if (len < 12 || memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4))
+		return false;
+	while (p + 8 <= end) {
+		uint32_t size = rd32(p + 4);
+		const uint8_t *body = p + 8;
+		if (size > (uint32_t)(end - body))
+			size = (uint32_t)(end - body);
+		if (!memcmp(p, "fmt ", 4) && size >= 16)
+			channels = rd16(body + 2), bits = rd16(body + 14);
+		else if (!memcmp(p, "data", 4))
+			pcmlen = size;
+		else if (!memcmp(p, "cue ", 4) && size >= 28 && rd32(body) > 0)
+			loop = (int)rd32(body + 4 + 20);
+		p = body + size + (size & 1);
+	}
+	if ((bits != 8 && bits != 16) || channels < 1 || channels > 2)
+		return false;
+	return loop >= 0 && (uint32_t)loop < pcmlen / (uint32_t)(bits / 8 * channels);
+}
+
+/* the file find_and_decode would play (snd_mem.c:186-201): only a WAV can carry a cue */
+static bool sample_loops_name(const char *name)
+{
+	char base[200], *ext;
+	size_t len;
+	uint8_t *buf;
+	bool r = false;
+	const char *try[4];
+	snprintf(base, sizeof(base), "%s", name);
+	if ((ext = strrchr(base, '.')) && !strchr(ext, '/'))
+		*ext = 0;
+	char p0[256], p2[256], p3[256];
+	snprintf(p0, sizeof(p0), "sound/%s", name);
+	snprintf(p2, sizeof(p2), "sound/%s.ogg", base);
+	snprintf(p3, sizeof(p3), "sound/%s.wav", base);
+	try[0] = p0, try[1] = name, try[2] = p2, try[3] = p3;
+	for (int i = 0; i < 4; i++) {
+		if (!(buf = (uint8_t *)FS_LoadFile(try[i], &len)))
+			continue;
+		r = len >= 4 && !memcmp(buf, "RIFF", 4) && wav_loops(buf, len);
+		Mem_Free(buf);
+		break;
+	}
+	return r;
+}
+
+static bool sample_loops(int idx)
+{
+	if (sndcue.spawncount != svs.spawncount || sndcue.vm != sv.vm) {
+		memset(sndcue.loops, 0, sizeof(sndcue.loops));
+		sndcue.spawncount = svs.spawncount, sndcue.vm = sv.vm;
+	}
+	if (idx <= 0 || idx >= sv.numsounds || idx >= SV_MAX_SOUNDS || !sv.sounds[idx])
+		return false;
+	if (!sndcue.loops[idx])
+		sndcue.loops[idx] = sample_loops_name(sv.sounds[idx]) ? 2 : 1;
+	return sndcue.loops[idx] == 2;
+}
+
+/* the 20 bytes of a record (+2 with SL_AT) */
+static int snd_bytes(uint8_t *o, const lsnd_t *r, uint16_t seq)
+{
+	int n = 0;
+	o[n++] = (uint8_t)(seq & 0xff), o[n++] = (uint8_t)(seq >> 8);
+	o[n++] = r->lflags, o[n++] = r->sflags;
+	o[n++] = (uint8_t)(r->ent & 0xff), o[n++] = (uint8_t)(r->ent >> 8);
+	o[n++] = r->chan;
+	for (int k = 0; k < 4; k++)
+		o[n++] = (uint8_t)(r->key >> (8 * k));
+	o[n++] = r->vol, o[n++] = r->atten, o[n++] = r->pitch;
+	for (int k = 0; k < 3; k++)
+		o[n++] = (uint8_t)((uint16_t)r->org[k] & 0xff), o[n++] = (uint8_t)((uint16_t)r->org[k] >> 8);
+	if (r->lflags & SL_AT)
+		o[n++] = (uint8_t)((uint16_t)r->at & 0xff), o[n++] = (uint8_t)((uint16_t)r->at >> 8);
+	return n;
+}
+
+static int loop_find(const link_t *l, int ent, int chan, bool cs)
+{
+	for (int i = 0; i < l->nloops; i++)
+		if (l->loops[i].ent == ent && l->loops[i].chan == chan && l->loops[i].cs == cs)
+			return i;
+	return -1;
+}
+
+static void loop_remove(link_t *l, int i)
+{
+	memmove(&l->loops[i], &l->loops[i + 1], (size_t)(l->nloops - i - 1) * sizeof(l->loops[0]));
+	l->nloops--;
+}
+
+/* one sound for the device. vol, atten and pitch as the engine's sound() takes them (E1
+ * makes bytes of them the same way); loops: the sample loops by itself (a cue). A start
+ * that loops, and a stop or start that ends a loop the device has, go reliably (EVENT 12) */
+static void snd_record(link_t *l, int path, const char *name, int ent, int chan, float vol, float atten, float pitch,
+                       int sflags, int lflags, const float *org, bool loops, bool hasat, int at)
+{
+	lsnd_t r;
+	const float *me;
+	bool cs = (lflags & SL_CLIENTSIDE) != 0, rel = false;
+	int li;
+	if (!snd_ready(l) || !name || !name[0])
+		return;
+	snd_mapcheck(l);
+	memset(&r, 0, sizeof(r));
+	r.key = snd_key(name);
+	r.lflags = (uint8_t)(lflags & ~SL_AT);
+	r.sflags = (uint8_t)(sflags & 0xff);
+	r.ent = (uint16_t)BW_CLAMP(ent, 0, 0xffff);
+	r.chan = (uint8_t)(chan & 0xff);
+	r.vol = (uint8_t)BW_MAX(0.0f, BW_MIN(vol * 255, 255.0f));
+	r.atten = (uint8_t)BW_MAX(0.0f, BW_MIN(atten * 64, 255.0f));
+	r.pitch = (uint8_t)BW_MAX(0.0f, BW_MIN(pitch, 255.0f));
+	for (int k = 0; k < 3; k++)
+		r.org[k] = (int16_t)BW_CLAMP(lrintf(org ? org[k] : 0), -32768, 32767);
+	if (hasat)
+		r.lflags |= SL_AT, r.at = (int16_t)(uint16_t)(at & 0xffff);
+	if (r.key == SND_KEY_NULL)
+		r.lflags |= SL_STOP;
+	if (!cs && ent > 0 && ent == l->client->edict)
+		r.lflags |= SL_LISTENER; /* the PC hears its own player's server sounds straight (snd_main.c:75-80) */
+	me = &QC_EdictFields(sv.vm, l->client->edict)[F.origin].f;
+	r.d2 = 0;
+	for (int k = 0; k < 3; k++)
+		r.d2 += ((float)r.org[k] - me[k]) * ((float)r.org[k] - me[k]);
+	/* loops */
+	li = loop_find(l, r.ent, r.chan, cs);
+	if (r.lflags & SL_STOP) {
+		/* the PC stops (ent, chan) for chan != 0 (snd_main.c pick_channel); null.wav on CHAN_AUTO mixes silence */
+		if (li >= 0 && r.chan != 0)
+			rel = true, loop_remove(l, li);
+	} else {
+		if (li >= 0 && r.chan != 0)
+			rel = true, loop_remove(l, li); /* it replaces the loop */
+		if ((r.sflags & SF_FORCELOOP) || loops) {
+			rel = true;
+			if (l->nloops == SND_LOOPS)
+				loop_remove(l, 0);
+			l->loops[l->nloops].ent = r.ent, l->loops[l->nloops].chan = r.chan, l->loops[l->nloops].cs = cs;
+			l->loops[l->nloops++].key = r.key;
+		}
+	}
+	if (rel && path == SP_SND)
+		path = SP_LOOP;
+	l->sndmade++;
+	l->sndbypath[path]++;
+	if (sv_link_log->ivalue) {
+		char at_s[16] = "";
+		if (hasat)
+			snprintf(at_s, sizeof(at_s), " %u", (unsigned)(uint16_t)r.at);
+		Con_Printf("LINKSND %d %u %s %s %d %d %d %d %d %d %d %d %d%s\n", (int)(l - links), rel ? 0u : (unsigned)(uint16_t)(l->sndseq + 1),
+		           snd_paths[path], name, r.ent, r.chan, r.vol, r.atten, r.pitch, r.sflags | (r.lflags << 8), r.org[0],
+		           r.org[1], r.org[2], at_s);
+	}
+	if (rel) {
+		uint8_t b[24];
+		int n = snd_bytes(b, &r, 0);
+		l->sndrel++;
+		ev_put(l, LE_SOUND, b, n);
+		return;
+	}
+	r.seq = ++l->sndseq;
+	if (l->sndn == SND_QUEUE) {
+		/* full: the farthest of the queue and this one goes */
+		int far = 0;
+		for (int i = 1; i < l->sndn; i++)
+			if (l->sndq[i].d2 > l->sndq[far].d2)
+				far = i;
+		l->snddrop++;
+		if (l->sndq[far].d2 <= r.d2)
+			return;
+		l->sndq[far] = r;
+		return;
+	}
+	l->sndq[l->sndn++] = r;
+}
+
+/* the server's sound() and pointsound() (sv_client.c write_sound: E1, E2) */
+void SV_LinkSound(client_t *c, int e, int chan, int idx, float vol, float atten, float pitch, int flags, const float *org)
+{
+	link_t *l = link_of(c);
+	if (!l || !snd_ready(l) || idx <= 0 || idx >= sv.numsounds || !sv.sounds[idx])
+		return;
+	snd_record(l, SP_SND, sv.sounds[idx], e, chan, vol, atten, pitch, flags, 0, org, sample_loops(idx), false, 0);
+}
+
+static int cmp_snd_d2(const void *a, const void *b)
+{
+	float x = ((const lsnd_t *)a)->d2, y = ((const lsnd_t *)b)->d2;
+	return x < y ? -1 : x > y;
+}
+
+static int cmp_snd_seq(const void *a, const void *b)
+{
+	return (int16_t)(((const lsnd_t *)a)->seq - ((const lsnd_t *)b)->seq);
+}
+
+/* SOUND: what was made since the last one, then the last one's records again */
+static void send_sound(link_t *l, double now)
+{
+	pkt_t p;
+	int n = 0, countpos;
+	if ((!l->sndn && !l->sndrepn) || now < l->sndnext || !snd_ready(l))
+		return;
+	snd_mapcheck(l);
+	if (l->sndn > SND_MAXREC) {
+		/* the farthest from the player go (the PC drops nothing short of a full datagram) */
+		qsort(l->sndq, (size_t)l->sndn, sizeof(l->sndq[0]), cmp_snd_d2);
+		l->snddrop += (uint32_t)(l->sndn - SND_MAXREC);
+		l->sndn = SND_MAXREC;
+		qsort(l->sndq, (size_t)l->sndn, sizeof(l->sndq[0]), cmp_snd_seq);
+	}
+	p_begin(&p, L_SOUND);
+	p_u32(&p, l->session);
+	p_u16(&p, (unsigned)svs.spawncount & 0xffff);
+	countpos = p.len;
+	p_u8(&p, 0);
+	for (int i = 0; i < l->sndn; i++, n++) {
+		uint8_t b[24];
+		p_bytes(&p, b, snd_bytes(b, &l->sndq[i], l->sndq[i].seq));
+	}
+	for (int i = 0; i < l->sndrepn; i++) {
+		uint8_t b[24];
+		if (n >= SND_MAXREC) {
+			l->sndnorep += (uint32_t)(l->sndrepn - i);
+			break;
+		}
+		p_bytes(&p, b, snd_bytes(b, &l->sndrep[i], l->sndrep[i].seq));
+		l->sndrep2++, n++;
+	}
+	p.data[countpos] = (uint8_t)n;
+	memcpy(l->sndrep, l->sndq, (size_t)l->sndn * sizeof(l->sndq[0]));
+	l->sndrepn = l->sndn;
+	l->sndn = 0;
+	l->sndpkts++;
+	l->sndbytes += (uint32_t)p.len + 28; /* and the UDP/IP headers */
+	/* a little early, so that at sv_tickrate 72 it is every second frame */
+	l->sndnext = now + SND_INTERVAL - 0.004;
+	send_to(&l->from, &p);
+}
+
 /* the client's slot is going away (SV_DropClient) */
 void SV_LinkClientDropped(client_t *c, const char *reason)
 {
@@ -3803,6 +4190,15 @@ static void SV_LinkStats_f(int argc, const char **argv)
 			           l->brushver, l->wiack, l->wiver, l->wicap ? "" : " (device takes none)");
 		Con_Printf("  events: %u made, %u acked of %u, %u dropped, %u stops%s\n", l->evcount, (uint16_t)(l->evack),
 		           (uint16_t)(l->evnext - 1), l->evdropped, l->evstops, l->evcap ? "" : " (device takes none)");
+		if (l->sndcap) {
+			Con_Printf("  sound: %u made (snd %u loop %u amb %u imp %u sent %u vm %u mev %u music %u), %u reliable, "
+			           "%u dropped, %u repeated, %u not repeated, %u packets, %u bytes; %d loops live\n",
+			           l->sndmade, l->sndbypath[0], l->sndbypath[1], l->sndbypath[2], l->sndbypath[3], l->sndbypath[4],
+			           l->sndbypath[5], l->sndbypath[6], l->sndbypath[7], l->sndrel, l->snddrop, l->sndrep2, l->sndnorep,
+			           l->sndpkts, l->sndbytes, l->nloops);
+			Con_Printf("  ambient: version %u acked %u, %d entries, %u packets, %u bytes\n", l->ambver, l->amback, l->namb,
+			           l->ambpkts, l->ambbytes);
+		}
 	}
 }
 

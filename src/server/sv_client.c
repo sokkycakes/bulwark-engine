@@ -2033,6 +2033,8 @@ static void write_sound(int e, int chan, int idx, float vol, float atten, float 
 		client_t *c = &svs.clients[i];
 		if (c->state == CS_SPAWNED && !c->bot)
 			sb_write(&c->datagram, &m);
+		else if (c->state == CS_SPAWNED && c->link) /* a link player: as a SOUND record (sv_link.c) */
+			SV_LinkSound(c, e, chan, idx, vol, atten, pitch, flags, org);
 	}
 }
 
