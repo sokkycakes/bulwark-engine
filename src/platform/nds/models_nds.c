@@ -56,6 +56,8 @@ typedef struct {
 typedef struct {
 	int mdl;
 	int16_t org[3];
+	int8_t next;   /* the next baked frame, from frame, */
+	uint8_t blend; /* and blend/256 of the way to it (0: frame alone) */
 	int yaw;
 	int phase;
 	int frame; /* -1: animate from phase */
@@ -69,6 +71,10 @@ static ent_t ents[MAX_ENTS];
 static int numents;
 static int viewmodel = -1;
 static int viewframe, viewlight = 24; /* its frame now, and its light */
+static int viewframe2, viewblend;
+static uint32_t clockms; /* Ents_SetTime: what plays a walk or run the server doesn't */
+static uint32_t *mix;    /* draw_mdl's blended frame: on the heap once a model blends, to Ents_Free */
+bool Ents_LerpFrames = true;
 int32_t Ents_ViewOfs[3];
 int Ents_ViewAng[3];
 static int pal_owner; /* the texture that holds the palette */
@@ -436,7 +442,7 @@ static void add_ent(int mdl, const float *org, float angle, int phase)
 		e->org[c] = (int16_t)BW_NDS_CLAMP(lrintf(org[c]), -4000, 4000);
 	e->yaw = (int)(angle * 32768 / 360);
 	e->phase = phase;
-	e->frame = -1;
+	e->frame = -1, e->blend = 0;
 	e->light = World_LightAt(e->org);
 }
 
@@ -530,14 +536,36 @@ static int clip_for(const mdl_t *m, int act)
 	return -1;
 }
 
+void Ents_SetTime(uint32_t ms) { clockms = ms; }
+
+/* the baked frames ms into a clip, and how far between them: Half-Life
+ * models are posed at any time into a sequence (the PC's frame1time), the
+ * DS has at most 10 frames a second of each, so it blends the two around
+ * that time when Ents_LerpFrames is set */
+static void clip_frames(const mdl_t *m, int clip, uint32_t ms, int *frame, int *frame2, int *blend)
+{
+	uint32_t pos = ms * m->clips[clip].fps; /* frames x 1000 */
+	int n = m->clips[clip].frames, f = (int)(pos / 1000), next;
+	*blend = Ents_LerpFrames ? (int)(pos % 1000) * 256 / 1000 : 0;
+	if (m->clips[clip].loop)
+		f %= n, next = f + 1 < n ? f + 1 : 0;
+	else if (f >= n - 1)
+		f = next = n - 1, *blend = 0;
+	else
+		next = f + 1;
+	*frame = m->clips[clip].first + f;
+	*frame2 = m->clips[clip].first + next;
+}
+
 /* speed: map units a second the thing is moving at, to walk or run a model
- * the server only has standing (players animate on their own machines) */
-int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, int speed, int light)
+ * the server only has standing (players animate on their own machines);
+ * ms: how long its sequence has played */
+int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, int speed, int light)
 {
 	const mdl_t *m;
 	ent_t *e;
 	float o[3] = {org[0], org[1], org[2]};
-	int clip = 0, f;
+	int clip = 0;
 	if (mdl < 0 || mdl >= nummdls || mdls[mdl].bad || numents >= MAX_ENTS)
 		return light;
 	m = &mdls[mdl];
@@ -545,7 +573,7 @@ int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, i
 	e->mdl = mdl;
 	for (int c = 0; c < 3; c++)
 		e->org[c] = (int16_t)BW_NDS_CLAMP(o[c], -4000, 4000);
-	e->yaw = yaw, e->phase = 0, e->frame = -1;
+	e->yaw = yaw, e->phase = 0, e->frame = -1, e->blend = 0;
 	/* the floor's light takes a walk through the leaf's faces: the caller keeps it */
 	e->light = light >= 0 ? light : World_LightAt(e->org);
 	if (!m->numclips)
@@ -557,28 +585,29 @@ int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, int elapsed, i
 		if (c < 0 && speed > 40)
 			c = clip_for(m, speed > 200 ? 3 : 4);
 		if (c >= 0)
-			clip = c, elapsed = ticks;
+			clip = c, ms = clockms;
 	}
-	f = elapsed * m->clips[clip].fps / 60;
-	f = m->clips[clip].loop ? f % m->clips[clip].frames : BW_NDS_MIN(f, m->clips[clip].frames - 1);
-	e->frame = m->clips[clip].first + f;
+	{
+		int f2, bl;
+		clip_frames(m, clip, ms, &e->frame, &f2, &bl);
+		/* the next frame as an offset: a clip of over 128 frames goes without blending at its end */
+		e->next = (int8_t)(f2 - e->frame >= -128 ? f2 - e->frame : 0), e->blend = (uint8_t)(f2 - e->frame >= -128 ? bl : 0);
+	}
 	return e->light;
 }
 
-/* the weapon in hand, for linked play: the model (-1 for none) and its sequence, playing for ticks */
-void Ents_SetViewModel(int mdl, int seq, int elapsed, int light)
+/* the weapon in hand, for linked play: the model (-1 for none) and its sequence, playing for ms */
+void Ents_SetViewModel(int mdl, int seq, uint32_t ms, int light)
 {
 	const mdl_t *m;
-	int clip = 0, f;
+	int clip = 0;
 	viewmodel = mdl >= 0 && mdl < nummdls && !mdls[mdl].bad ? mdl : -1;
-	viewframe = 0, viewlight = light >= 0 ? light : 24;
+	viewframe = 0, viewblend = 0, viewlight = light >= 0 ? light : 24;
 	if (viewmodel < 0 || !(m = &mdls[viewmodel])->numclips)
 		return;
 	if (seq >= 0 && seq < m->numseqs)
 		clip = m->seqclip[seq];
-	f = elapsed * m->clips[clip].fps / 60;
-	f = m->clips[clip].loop ? f % m->clips[clip].frames : BW_NDS_MIN(f, m->clips[clip].frames - 1);
-	viewframe = m->clips[clip].first + f;
+	clip_frames(m, clip, ms, &viewframe, &viewframe2, &viewblend);
 }
 
 void Ents_Free(void)
@@ -593,12 +622,37 @@ void Ents_Free(void)
 	nummdls = numents = 0;
 	viewmodel = -1;
 	pal_owner = 0;
+	free(mix);
+	mix = NULL;
 }
 
-ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int light)
+#define MAX_BLEND_VERTS 512 /* a bigger model is drawn without blending */
+/* blending costs about 50 us a model (melonDS): only the nearest
+ * BLEND_MODELS within BLEND_DIST map units blend; further off, a blend moves
+ * a vertex by less than a pixel */
+#define BLEND_DIST 768
+#define BLEND_MODELS 12
+static int32_t blend_lim;
+ITCM_CODE static void draw_mdl(const mdl_t *m, int frame, int frame2, int blend, int light)
 {
 	const uint8_t *fr = m->frames + (size_t)(frame % m->numframes) * m->numverts * 4;
 	uint16_t lut[32];
+	if (blend > 0 && frame2 != frame && m->numverts <= MAX_BLEND_VERTS && (mix || (mix = malloc(MAX_BLEND_VERTS * 4)))) {
+		/* between two baked frames: each vertex blend/256 of the way to the
+		 * next one, once (a vertex serves about five triangle corners) */
+		const uint32_t *a = (const uint32_t *)fr;
+		const uint32_t *b = (const uint32_t *)(m->frames + (size_t)(frame2 % m->numframes) * m->numverts * 4);
+		uint32_t wb = (uint32_t)blend, wa = 256 - wb;
+		/* x, y, z and shade at once, two bytes to a 16-bit lane: a byte
+		 * times 256 at most still fits its lane */
+		for (int i = 0; i < m->numverts; i++) {
+			uint32_t va = a[i], vb = b[i];
+			uint32_t lo = ((va & 0xff00ffu) * wa + (vb & 0xff00ffu) * wb) >> 8 & 0xff00ffu;
+			uint32_t hi = (((va >> 8) & 0xff00ffu) * wa + ((vb >> 8) & 0xff00ffu) * wb) & 0xff00ff00u;
+			mix[i] = lo | hi;
+		}
+		fr = (const uint8_t *)mix;
+	}
 	for (int i = 0; i < 32; i++) {
 		int c = i * light / 24;
 		c = c > 31 ? 31 : c;
@@ -649,6 +703,8 @@ void Ents_Select(const ndscam_t *cam)
 			order[k] = order[k - 1], k--;
 		order[k] = i;
 	}
+	blend_lim = numorder > BLEND_MODELS ? ents[order[BLEND_MODELS - 1]].dist : BLEND_DIST * BLEND_DIST;
+	blend_lim = BW_NDS_MIN(blend_lim, BLEND_DIST * BLEND_DIST);
 }
 
 /* what the visible models will cost the GPU, nearest first: about half
@@ -671,7 +727,10 @@ static void draw_ent(const ent_t *e)
 	glTranslatef32(e->org[0] * 8, e->org[1] * 8, e->org[2] * 8);
 	glRotateZi(e->yaw);
 	glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
-	draw_mdl(m, e->frame >= 0 ? e->frame : ticks / 6 + e->phase, e->light);
+	if (e->frame >= 0) /* further off, a blend moves a vertex less than a pixel */
+		draw_mdl(m, e->frame, e->frame + e->next, e->dist <= blend_lim ? e->blend : 0, e->light);
+	else
+		draw_mdl(m, ticks / 6 + e->phase, 0, 0, e->light);
 	glPopMatrix(1);
 }
 
@@ -697,7 +756,7 @@ void Ents_DrawPass(const ndscam_t *cam, int32_t split2, bool nearside, bool with
 		glRotateYi(Ents_ViewAng[0]);
 		glRotateXi(Ents_ViewAng[2]);
 		glTranslatef32(m->trans[0], m->trans[1], m->trans[2]);
-		draw_mdl(m, viewframe, viewlight);
+		draw_mdl(m, viewframe, viewframe2, viewblend, viewlight);
 		World_SetView(cam);
 		sent += m->numtris, stored += STORED(m), drawn++;
 	}
