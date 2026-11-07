@@ -623,11 +623,17 @@ static void emit(int x, int y, int col, int bank, const char *s)
 {
 	if (!s[0] || y < BAND_Y0 || y + LINE_H > BAND_Y1)
 		return;
-	if (measuring) {
+	{
+		uint32_t m = 0; /* the rows of cells the line touches */
 		for (int r = (y - 1 - BAND_Y0) >> 3; r <= (y + Hud_FontHeight() - BAND_Y0) >> 3; r++)
 			if (r >= 0 && r < BAND_ROWS)
-				grouprows |= 1u << r;
-		return;
+				m |= 1u << r;
+		if (measuring) {
+			grouprows |= m;
+			return;
+		}
+		if (!(m & cliprows)) /* none being drawn now */
+			return;
 	}
 	band_text(x, y, col, bank, s);
 }
