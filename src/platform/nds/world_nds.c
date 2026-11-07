@@ -1375,6 +1375,13 @@ static inline bool chain_face(int i, int *verts, int *polys, int maxverts, int m
 	return true;
 }
 
+/* the tree's faces from..to into their textures' chains, in what's left of the budget */
+ITCM_CODE ARM_CODE static void chain_range(int from, int to, int *verts, int *polys, int maxverts, int maxpolys, ndsstats_t *st)
+{
+	for (int k = from; k < to; k++)
+		chain_face(w.vislist[k], verts, polys, maxverts, maxpolys, st);
+}
+
 ITCM_CODE ARM_CODE static void draw_chains(void)
 {
 	for (int t = 0; t < w.numtexs; t++) {
@@ -1795,8 +1802,7 @@ void World_DrawPass(int from, int to, int32_t split2, bool nearside, ndsstats_t 
 	PROF_T(pt);
 	if (!w.loaded)
 		return;
-	for (int k = from; k < to && k < w.numtreevis; k++)
-		chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);
+	chain_range(from, BW_NDS_MIN(to, w.numtreevis), &verts, &polys, maxverts, maxpolys, st);
 	for (int k = w.numtreevis; k < w.numvis; k++)
 		if ((w.visdist[k] < split2) == nearside && !w.models[w.vismodel[k]].moved)
 			chain_face(w.vislist[k], &verts, &polys, maxverts, maxpolys, st);

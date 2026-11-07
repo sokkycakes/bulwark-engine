@@ -996,11 +996,21 @@ void Ents_Draw(const ndscam_t *cam, ndsstats_t *st)
 	PROF_LAP(PROF_BEGIN, pt);
 	Ents_Select(cam);
 	PROF_LAP(PROF_SELECT, pt);
-	World_Collect();
-	PROF_LAP(PROF_COLLECT, pt);
-	wpolys = World_Cost(0, World_NumTreeFaces(), INT32_MAX, true, &wverts);
-	Ents_DrawPass(cam, INT32_MAX, true, true, Ents_FlickerBudget(wpolys, wverts), st);
-	PROF_LAP(PROF_ENTS, pt);
+	if (Ents_Flicker) {
+		/* the models share what the world leaves: count the world first */
+		World_Collect();
+		PROF_LAP(PROF_COLLECT, pt);
+		wpolys = World_Cost(0, World_NumTreeFaces(), INT32_MAX, true, &wverts);
+		Ents_DrawPass(cam, INT32_MAX, true, true, Ents_FlickerBudget(wpolys, wverts), st);
+		PROF_LAP(PROF_ENTS, pt);
+	} else {
+		/* the models first, then the tree walk while the geometry engine
+		 * works through them, so the count below needn't wait */
+		Ents_DrawPass(cam, INT32_MAX, true, true, -1, st);
+		PROF_LAP(PROF_ENTS, pt);
+		World_Collect();
+		PROF_LAP(PROF_COLLECT, pt);
+	}
 	Gpu_Counts(&polys, &verts);
 	PROF_LAP(PROF_WAIT1, pt);
 	World_DrawPass(0, World_NumTreeFaces(), INT32_MAX, true, st, WORLD_MAX_VERTS - verts, WORLD_MAX_POLYS - polys);
