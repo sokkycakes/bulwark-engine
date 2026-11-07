@@ -33,4 +33,11 @@ void Hud_Packet(const uint8_t *d, int len); /* HUDINFO after the type byte (from
 uint16_t Hud_Version(void);                 /* the HUDINFO version we have, for INPUT */
 /* once a frame: view is the camera drawn this frame */
 void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudin_t *in);
+/* the HUD's font, and the event text's own layer (BG2, in front of the HUD: cell i is
+ * tile i, 4 bits a pixel, NULL when off), for events_nds.c */
+const uint8_t *Hud_Glyph(int c, int *w, int *adv); /* a glyph's rows (bit 0 the left pixel) */
+int Hud_TextWidth(const char *s, int scale);
+int Hud_FontHeight(void);
+uint16_t *Hud_TextTiles(void);
+uint16_t *Hud_TextMap(void);
 #endif

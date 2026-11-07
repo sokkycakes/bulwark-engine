@@ -3,10 +3,10 @@
  * names the client code it follows.
  *
  * Times run on the link's clock in seconds, and each part steps by the frame's
- * time as the QC steps by clframetime. Text is drawn into the HUD layer only when
+ * time as the QC steps by clframetime. Text is drawn into its layer (BG2) only when
  * what shows changes; each text group has its own palette bank, so its fading is a
  * palette write a frame. The PC's text fades to nothing; here the letters darken
- * to their black outline and then go (BG1 is opaque). */
+ * to their black outline and then go (the layer is opaque). */
 #include <math.h>
 #include <nds.h>
 #include <stdio.h>
@@ -116,7 +116,7 @@ static struct {
 
 /* --- text ------------------------------------------------------------------------------ */
 
-/* the band of the HUD layer this draws in: under the frame rate lines, over health and ammo */
+/* the band of the text's layer (BG2) this draws in: under the frame rate lines, over health and ammo */
 #define BAND_ROW0 3
 #define BAND_ROWS 16
 #define BAND_Y0 (BAND_ROW0 * 8)
@@ -510,13 +510,13 @@ void Events_Draw3D(const ndscam_t *view)
 	glColor(RGB15(31, 31, 31));
 }
 
-/* --- text on the HUD layer --------------------------------------------------------------- */
+/* --- text on its layer (BG2, in front of the HUD) ------------------------------------------ */
 
 /* The band is drawn in main RAM, in the layer's own tile format (a cell's row of 8
  * pixels is a word), and only its rows of cells that changed are copied to VRAM:
  * the PC's text changes a few times a second (the co-op hero line, the XPM line),
  * and drawing every line again into VRAM pixel by pixel took more than a frame */
-#define LINE_H (LinkHud_Height() + 2)
+#define LINE_H (Hud_FontHeight() + 2)
 #define MAX_LINES 12
 
 static uint32_t band[BAND_ROWS * 32 * 8];
@@ -533,7 +533,7 @@ static uint32_t nib[256];
  * a cell's row (a word) at a time */
 static int band_text(int x, int y, int col, int bank, const char *s)
 {
-	int h = LinkHud_Height(), x0 = x;
+	int h = Hud_FontHeight(), x0 = x;
 	const uint32_t colw = (uint32_t)col * 0x11111111u, edgew = 0x11111111u;
 	if (!nib[1])
 		for (int b = 0; b < 256; b++)
@@ -542,7 +542,7 @@ static int band_text(int x, int y, int col, int bank, const char *s)
 					nib[b] |= 0xFu << (i * 4);
 	for (; *s; s++) {
 		int w, adv;
-		const uint8_t *g = LinkHud_Glyph((uint8_t)*s, &w, &adv);
+		const uint8_t *g = Hud_Glyph((uint8_t)*s, &w, &adv);
 		int px0 = x - 1, sh = px0 & 7, cell0 = px0 >> 3;
 		if (g && px0 >= 0)
 			for (int j = -1; j <= h; j++) {
@@ -578,7 +578,7 @@ static void emit(int x, int y, int col, int bank, const char *s)
 	if (!s[0] || y < BAND_Y0 || y + LINE_H > BAND_Y1)
 		return;
 	if (measuring) {
-		for (int r = (y - 1 - BAND_Y0) >> 3; r <= (y + LinkHud_Height() - BAND_Y0) >> 3; r++)
+		for (int r = (y - 1 - BAND_Y0) >> 3; r <= (y + Hud_FontHeight() - BAND_Y0) >> 3; r++)
 			if (r >= 0 && r < BAND_ROWS)
 				grouprows |= 1u << r;
 		return;
@@ -595,7 +595,7 @@ static int split_lines(const char *s, int maxw, char out[MAX_LINES][TEXT_LEN])
 		char *o = out[n];
 		while (s[len] && s[len] != '\n' && len < TEXT_LEN - 1) {
 			int w, adv;
-			LinkHud_Glyph((uint8_t)s[len], &w, &adv);
+			Hud_Glyph((uint8_t)s[len], &w, &adv);
 			if (wpx + adv > maxw && len > 0) {
 				if (lastsp > 0)
 					len = lastsp;
@@ -671,7 +671,7 @@ static void draw_gtext(const gtext_t *t, int chars, int bank)
 	y0 -= LINE_H * n / 2;
 	y0 = clampy(y0, n);
 	for (int i = 0; i < n; i++) {
-		int w = LinkHud_Width(lines[i], 1), x;
+		int w = Hud_TextWidth(lines[i], 1), x;
 		if (t->x == -1)
 			x = 128 - w / 2;
 		else {
@@ -725,7 +725,7 @@ static void layout(int g, const int *chars)
 		n = split_lines(tx.center, 250, lines);
 		y = clampy(96 - (n - 4) - PCY(69), n);
 		for (int j = 0; j < n; j++)
-			emit(128 - LinkHud_Width(lines[j], 1) / 2, y + j * LINE_H, 2, G_CENTER + 1, lines[j]);
+			emit(128 - Hud_TextWidth(lines[j], 1) / 2, y + j * LINE_H, 2, G_CENTER + 1, lines[j]);
 	} else if (g == G_FEED) { /* top right, newest on top: attacker (blue), weapon (grey), victim */
 		y = BAND_Y0 + 1;
 		for (int i = tx.feeds - 1; i >= 0; i--, y += LINE_H + 1) {
@@ -734,7 +734,7 @@ static void layout(int g, const int *chars)
 			snprintf(a, sizeof(a), "%s ", tx.feed[i].a);
 			snprintf(w, sizeof(w), "%s%s", tx.feed[i].w[0] ? tx.feed[i].w : "killed", tx.feed[i].v[0] ? " " : "");
 			snprintf(v, sizeof(v), "%s", tx.feed[i].v);
-			wa = LinkHud_Width(a, 1), ww = LinkHud_Width(w, 1), wv = LinkHud_Width(v, 1);
+			wa = Hud_TextWidth(a, 1), ww = Hud_TextWidth(w, 1), wv = Hud_TextWidth(v, 1);
 			x = BW_NDS_MAX(255 - PCY(32) - wa - ww - wv, 1);
 			emit(x, y, 3, G_FEED + 1, a);
 			emit(x + wa, y, 4, G_FEED + 1, w);
@@ -752,15 +752,15 @@ static void layout(int g, const int *chars)
 			snprintf(s, sizeof(s), "%d  %s", tx.pickcount[i], names[i]);
 		else
 			snprintf(s, sizeof(s), "%s", names[i]);
-		emit(255 - PCY(20) - LinkHud_Width(s, 1), y, 2, g + 1, s);
+		emit(255 - PCY(20) - Hud_TextWidth(s, 1), y, 2, g + 1, s);
 	}
 }
 
 /* the rows of cells in cliprows, to the layer */
 static void band_flush(void)
 {
-	uint32_t *tiles = (uint32_t *)LinkHud_Tiles();
-	uint16_t *map = LinkHud_Map();
+	uint32_t *tiles = (uint32_t *)Hud_TextTiles();
+	uint16_t *map = Hud_TextMap();
 	if (!tiles || !map)
 		return;
 	for (int r = 0; r < BAND_ROWS; r++) {

@@ -41,6 +41,7 @@ enum {
 #define PY(v) ((v) * 192 / 900) /* Panorama layout units (900 tall) to rows */
 
 static uint16_t *topgfx;
+static uint16_t *textgfx, *textmap; /* the event text's layer (BG2, events_nds.c) */
 static uint8_t *hudfont; /* the .dsf, or NULL for the built-in font */
 static int hudh = 8;     /* its rows */
 
@@ -1542,7 +1543,7 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 void Hud_Init(void)
 {
 	uint16_t *map;
-	int bg, off = 0;
+	int bg, bg2, off = 0;
 	vramSetBankF(VRAM_F_MAIN_BG_0x06000000);
 	vramSetBankG(VRAM_G_MAIN_BG_0x06004000);
 	/* tiles at 0 (24 KB), the map at 24 KB */
@@ -1567,9 +1568,23 @@ void Hud_Init(void)
 	BG_PALETTE[HC_TROUGH] = RGB15(24, 24, 24);  /* #f3f3f3 .. #bdbdbd */
 	BG_PALETTE[HC_FILL] = RGB15(4, 11, 21);     /* #2063b4, #15539e */
 	BG_PALETTE[HC_XHAIR] = RGB15(0, 31, 0);
-	bgSetPriority(0, 1);
-	bgSetPriority(bg, 0);
-	REG_DISPCNT |= DISPLAY_BG1_ACTIVE;
+	/* The event text (events_nds.c) has its own layer, BG2, so neither redraws the
+	 * other's tiles: its tiles in bank D (kept from textures for the viewer's two
+	 * passes, which a link session doesn't use), its map after BG1's. In front of
+	 * the HUD, as entry.qc CSQC_Update2D draws Chat_Draw, Print_Draw and
+	 * Print_DrawCenterprint after HUD_Draw (game_text, drawn before it there,
+	 * shares the layer and so is in front too) */
+	vramSetBankD(VRAM_D_MAIN_BG_0x06020000);
+	bg2 = bgInit(2, BgType_Text4bpp, BgSize_T_256x256, 13, 8);
+	textgfx = bgGetGfxPtr(bg2);
+	textmap = bgGetMapPtr(bg2);
+	for (int i = 0; i < 32 * 32; i++)
+		textmap[i] = (uint16_t)(i < TOP_TILES ? i : 0);
+	dmaFillHalfWords(0, textgfx, TOP_TILES * 32);
+	bgSetPriority(0, 2);
+	bgSetPriority(bg, 1);
+	bgSetPriority(bg2, 0);
+	REG_DISPCNT |= DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE;
 	hud_load_font();
 	memset(&hud, 0, sizeof(hud));
 	hud.self = -1;
@@ -1582,11 +1597,19 @@ void Hud_Init(void)
 
 void Hud_Done(void)
 {
-	REG_DISPCNT &= ~DISPLAY_BG1_ACTIVE;
+	REG_DISPCNT &= ~(DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE);
 	bgSetPriority(0, 0);
 	vramSetBankF(VRAM_F_LCD);
 	vramSetBankG(VRAM_G_LCD);
-	topgfx = NULL;
+	vramSetBankD(VRAM_D_LCD); /* back as Mp_Init leaves it */
+	topgfx = textgfx = textmap = NULL;
 	free(hudfont);
 	hudfont = NULL;
 }
+
+/* the font and the event text's layer, for events_nds.c */
+const uint8_t *Hud_Glyph(int c, int *w, int *adv) { return hud_glyph(c, w, adv); }
+int Hud_TextWidth(const char *s, int scale) { return text_width(s, (int)strlen(s), scale); }
+int Hud_FontHeight(void) { return hudh; }
+uint16_t *Hud_TextTiles(void) { return textgfx; }
+uint16_t *Hud_TextMap(void) { return textmap; }

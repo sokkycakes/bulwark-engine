@@ -17,7 +17,7 @@ import socket, struct, sys, time
 
 MAGIC = b'BWL1'
 JOIN, INPUT = 2, 3
-WELCOME, REFUSE, EVENT = 0x82, 0x83, 0x8F
+WELCOME, REFUSE, EVENT = 0x82, 0x83, 0x90
 
 args = sys.argv[1:]
 def opt(name, default=None):

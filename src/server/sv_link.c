@@ -3093,6 +3093,8 @@ static void ev_feed(link_t *l, const char *a, const char *w, const char *v)
 	uint8_t b[EV_REC];
 	char pa[64], pw[64], pv[64], me[64];
 	int n = 1;
+	if (l->hudcap) /* a device that draws the HUD has the feed in HUDINFO (obituaries, coop_feed) */
+		return;
 	ev_plain(pa, sizeof(pa), a, (int)strlen(a));
 	ev_plain(pw, sizeof(pw), w, (int)strlen(w));
 	ev_plain(pv, sizeof(pv), v, (int)strlen(v));

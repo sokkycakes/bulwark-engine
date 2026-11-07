@@ -6,7 +6,7 @@
  * tint (coop/src/hud/jtf.qc Jtf_DrawFeedback), centerprints, prints and chat
  * (src/client/prints.qc, chat.qc), game_text and env_message (src/client/text.qc),
  * the co-op kill feed (coop/panorama hud.js) and pickup notices (valve/src/hud/hud.qc).
- * Text goes on the top screen's HUD layer (BG1, drawn by link_nds.c), the rest on
+ * Text goes on its own layer in front of the HUD (BG2, set up by hud_nds.c), the rest on
  * the 3D view. */
 #ifndef BW_EVENTS_NDS_H
 #define BW_EVENTS_NDS_H
@@ -16,12 +16,7 @@
 
 #include "nds.h"
 
-/* link_nds.c's HUD layer, for the text */
-const uint8_t *LinkHud_Glyph(int c, int *w, int *adv); /* a glyph's rows (bit 0 the left pixel) */
-int LinkHud_Width(const char *s, int scale);
-int LinkHud_Height(void);                              /* the font's rows */
-uint16_t *LinkHud_Tiles(void);                         /* its tiles (cell i is tile i, 4 bits a pixel), NULL when off */
-uint16_t *LinkHud_Map(void);
+#include "hud_nds.h" /* the font, and the text's layer */
 
 void Events_Reset(void);
 /* an EVENT packet after the type byte (from the session on) */
