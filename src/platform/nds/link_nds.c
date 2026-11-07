@@ -2809,7 +2809,7 @@ static void pred_view(ndscam_t *cam, int dt)
  * (processmodelevents, as the PC's view model calls it each frame); the ammo */
 static void weapon_frame(int frame)
 {
-	const wev_t *ev[4];
+	const wev_t *ev[8]; /* flashes and sound events share it: 8 a frame keeps a slow frame's sounds */
 	int seq = wp.cur.animseq, n, clip = -1, res = -1;
 	float t = wp.cur.animtime;
 	bool was = wp.showing;
@@ -2820,7 +2820,7 @@ static void weapon_frame(int frame)
 		 * and from 0 (frame 0's events with it) only when the time went back
 		 * (qc_modelevents.c collect). A last time of exactly 0 already had frame 0 */
 		float base = !was ? t : t < wp.showntime ? 0 : BW_NDS_MAX(wp.showntime, 1e-6f);
-		n = Weapon_Events(&wh->info, seq, base, t, ev, 4);
+		n = Weapon_Events(&wh->info, seq, base, t, ev, (int)(sizeof(ev) / sizeof(ev[0])));
 		for (int i = 0; i < n; i++)
 			if (ev[i]->code == 5001 || ev[i]->code == 5011 || ev[i]->code == 5021 || ev[i]->code == 5031) {
 				wp.flashframe = frame;
