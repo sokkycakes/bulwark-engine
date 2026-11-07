@@ -1012,8 +1012,8 @@ events. The DS mixes them as the PC's mixer does (`src/sound/snd_main.c`):
 | Model events with `AT` | as the client draws the frame | started when the drawn clock (`ENTS` time less `interp`) passes `at` |
 
 Samples are named by key (FNV-1a 32 of the normalised name) and come from
-sound packs, `<base>/sound/*.dsp` (`tools/nds/sndpack.py`; until it is in, any
-pack in the spec's layout), searched last name first like game folders.
+sound packs, `<base>/sound/*.dsp` (made by `tools/nds/sndpack.py`, "Sound
+packs" above), searched last name first like game folders.
 A pack's directory is read a 512-byte page at a time. Samples are kept in one
 cache, `sndcache=` KB (192 by default, less if the heap would keep under
 384 KB for the models still to load), filled after each map loads and freed
@@ -1061,7 +1061,7 @@ match the spec's test values.
 
 Test packs made from base's WAVs (PCM8, and ADPCM for `ambience/`) and a few
 Half-Life names aliased to them (Half-Life's own sounds aren't here). The
-server is `wip/snd-server` (c4a0539), with `sv_link_log 1`. All values are
+server is the `snd-server` work before the merge (c4a0539), with `sv_link_log 1`. All values are
 observed. "CPU" is `Snd_Frame` with its reads, from `SNDSTAT`:
 
 | What | Result |
@@ -1075,6 +1075,51 @@ observed. "CPU" is `Snd_Frame` with its reads, from `SNDSTAT`:
 | RAM, c2a4e standing | used at peak 2.18 MB against 1.94 MB with `sound=0` (the 192 KB cache and about 46 KB of tables); 1.25 MB still free; the lowest free during the map load 124 KB in both, since sound frees everything first |
 | Frame time, c2a4e | 13.6 to 13.8 ms against 13.5 ms with `sound=0`, 30 fps in both |
 | Code | `sound_nds.o` 27.7 KB of code, 1.7 KB of bss |
+
+### Measured after the merge, against 58a5bba (melonDS 1.1, not hardware)
+
+The three parts together: the server (`bulwark-ded` RelWithDebInfo), the
+measurement build of the DS (the rig's `make_meas_src`, which adds the
+`MEAS` line each second), and packs made by `sndpack.py` from `games/base`,
+`games/coop` and stand-in Half-Life files (`10base`, `40coop`, `30hldata`;
+none of them in git). 58a5bba is the ROM and server before sound. Each run
+is 30 to 40 s after the join and 10 s settling, the first second left out;
+coop_arena has 40 monsters and fire held 1.5 s of every 2 s; c2a4e is in
+zero gravity at -576 1012 84 (no hulls on the DS), where four glass
+breakables make about 380 sounds a second for the PC as well (`SVSND`).
+`snd_log=2` (the stats only) for the timings below. All observed:
+
+| Run | fps median / lowest | CPU ms a frame, median / worst | Sound ms a frame, median / worst | RAM in use / peak / lowest free (KB) | rx KB/s | Sounds started / dropped (quiet, late, missing) |
+|---|---|---|---|---|---|---|
+| coop_arena, 58a5bba | 60 / 54 | 11.21 / 18.96 | - | 414 / 427 / 2796 | 44.8 | - |
+| coop_arena, sound | 59 / 55 | 11.17 / 18.55 | 0.14 / 1.84 | 646 / 656 / 2556 | 43.1 | 639 / 22, 0, 1 |
+| coop_arena 150 ms, 58a5bba | 59 / 57 | 11.68 / 17.27 | - | 414 / 431 / 2776 | 42.3 | - |
+| coop_arena 150 ms, sound | 60 / 56 | 11.64 / 17.50 | 0.11 / 1.63 | 646 / 657 / 2548 | 45.0 | 421 / 0, 0, 1 |
+| c2a4e, 58a5bba | 59 / 57 | 12.62 / 41.94 | - | 1878 / 1886 / 156 | 33.4 | - |
+| c2a4e, sound | 57 / 53 | 13.28 / 18.64 | 0.39 / 1.04 | 2109 / 2128 / 124 | 46.2 | 3012 / 0, 0, 0 |
+| e0m1, 58a5bba | 60 / 60 | 2.47 / 3.88 | - | 612 / 613 / 1680 | 19.2 | - |
+| e0m1, sound | 60 / 60 | 2.60 / 4.67 | 0.08 / 0.26 | 844 / 845 / 1648 | 19.8 | the comp1 ambient, vol 8 pan 93 |
+
+- RAM: the lowest free while c2a4e loads falls from 156 KB to 124 KB with
+  sound; in use goes up about 232 KB (the 192 KB cache and the tables).
+- The cache: with `snd_log=1`, 98 to 99% of the starts in coop_arena found
+  their sample already in (12 samples read in 28 s under fire), 94% in
+  c2a4e's flood.
+- Every record accounted for (`snd_log=1`, each `SND` line matched to the
+  server's `LINKSND` by seq): coop_arena 674 records: 538 started, 113
+  replaced on their channel before they started (as on the PC), 21 quiet,
+  2 missing (`buttons/bell1`, in no source here); at 150 ms 805: 687, 99,
+  14 silent, 4 quiet, 1 missing; c2a4e 8789: 2379 started, 6410 replaced.
+  None unaccounted for. Starts came 2 ms (median) after the record, at
+  most 23 ms.
+- `snd_log=1` costs: each `SND` line goes out of the debug port, so in
+  c2a4e's flood the frame took 19.3 ms against 13.3 ms, 33 fps against 57.
+  Leave it off except to test.
+- An old ROM (58a5bba) on the new server gets no sound records and runs as
+  before (coop_arena: 60 fps, 10.77 ms).
+- Audio (SDL disk capture, coop_arena firing, 56 s): no clipped samples,
+  peak 22612 of 32767; the level, binned at 100 ms, follows the DS's `SND
+  start` lines (r = 0.81 at the best offset).
 
 ## Map viewer controls
 

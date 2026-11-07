@@ -787,6 +787,15 @@ while a device takes sound (what a PC gets), and `LINKSNDUSED <map> <name>`
 for each sound the map precaches and each sample of the SoundDefs the server
 read. `tools/nds/linktest_sound.py` is a fake device that checks them.
 
+The DS plays these records with `src/platform/nds/sound_nds.c`, from packs made
+by `tools/nds/sndpack.py`; how, where it differs from the PC, and what was
+measured are in `docs/platforms/nds.md`, "Sound packs" and "Sound: what the
+PC client hears". Matching a device's `SND` log (`snd_log=1`) to `LINKSND` by
+seq accounts for every unreliable record: a record replaced on its
+entity's channel before its sample started is what `pick_channel` does on
+the PC too (`snd_main.c:160-167`), e.g. a zombie's `claw_miss` followed in
+the same frame by `zo_attack1` on `CHAN_WEAPON`.
+
 ## On the DS
 
 The DS build (`bulwark_nds.nds`) offers *[Join a game over WiFi]* at the top
