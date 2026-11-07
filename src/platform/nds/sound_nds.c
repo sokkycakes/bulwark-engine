@@ -220,6 +220,7 @@ static struct {
 	bool wsel_open;
 	int cmdrr;           /* volume updates go round */
 	uint32_t laststat;
+	uint32_t statpkt, statpktmax; /* ticks in Snd_Packet, Snd_Event and Snd_ViewEvent: the second's sum, the longest call */
 	uint32_t statframes, statcpu, statcpumax, statreadmax, statcmdmax, statactive, sec[5], statreadsum;
 	uint32_t rnd;
 } S;
@@ -1263,6 +1264,15 @@ static void handle_ambient(const uint8_t *d, int len)
 
 uint16_t Snd_AmbientAck(void) { return S.ambver; }
 
+static void pkt_time(uint32_t t0)
+{
+	uint32_t t = ticks() - t0;
+	Snd_Stats.cpu_ticks += t;
+	S.statpkt += t;
+	if (t > S.statpktmax)
+		S.statpktmax = t;
+}
+
 void Snd_Packet(int type, const uint8_t *d, int len, uint16_t spawncount)
 {
 	uint32_t t0 = ticks();
@@ -1272,7 +1282,7 @@ void Snd_Packet(int type, const uint8_t *d, int len, uint16_t spawncount)
 		handle_sound(d, len);
 	else if (type == 0x92 && len >= 9)
 		handle_ambient(d, len);
-	Snd_Stats.cpu_ticks += ticks() - t0;
+	pkt_time(t0);
 }
 
 /* SENTENCE: u16 ent, u8 atten, u8 n, n x u32 key: words one after another on CHAN_VOICE
@@ -1347,10 +1357,18 @@ static void sentence_frame(void)
 	}
 }
 
+static void snd_event(int type, const uint8_t *d, int len);
 void Snd_Event(int type, const uint8_t *d, int len)
 {
+	uint32_t t0 = ticks();
 	if (!S.ready)
 		return;
+	snd_event(type, d, len);
+	pkt_time(t0);
+}
+
+static void snd_event(int type, const uint8_t *d, int len)
+{
 	if (type == 12) { /* SOUND, reliably: loops, and what stops or replaces one */
 		srec_t r;
 		int base = len - ((len >= 3 && (d[2] & LF_AT)) ? 2 : 0);
@@ -1471,9 +1489,11 @@ static void play_shader(int si, bool view, int depth)
  * option is the shader's index (viewmodel.qc:116-122, RenderableEntity.qc:1088-1146) */
 void Snd_ViewEvent(int code, int opt)
 {
+	uint32_t t0 = ticks();
 	if (!S.ready || (code != 1004 && code != 1008 && code != 5004))
 		return;
 	play_shader(opt, true, 0);
+	pkt_time(t0);
 }
 
 /* --- the frame -------------------------------------------------------------------------------- */
@@ -1815,7 +1835,8 @@ stats:
 		for (int h = 0; h < S_HW; h++)
 			nh += S.hw[h].v >= 0;
 		logf_("SNDSTAT voices=%d hw=%d cache=%u/%u pinned=%u misses=%u loads=%u late=%u quiet=%u stolen=%u dups=%u underrun=%u "
-		      "readms=%u.%02u readsum_ms=%u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u\n",
+		      "readms=%u.%02u readsum_ms=%u creditms=%u.%02u active_us=%u cpu_us avg=%u max=%u reads=%u readkb=%u sec=%u/%u/%u/%u/%u "
+		      "pktavg=%u pktmax=%u\n",
 		      nv, nh, (unsigned)(used_bytes() / 1024), (unsigned)(S.arenasize / 1024), (unsigned)(pinned_bytes() / 1024),
 		      (unsigned)Snd_Stats.missing, (unsigned)Snd_Stats.starts, (unsigned)Snd_Stats.late, (unsigned)Snd_Stats.quiet,
 		      (unsigned)Snd_Stats.stolen, (unsigned)Snd_Stats.dups, (unsigned)Snd_Stats.underrun,
@@ -1827,7 +1848,10 @@ stats:
 		      (unsigned)((uint64_t)S.statcpumax * 1000000 / TICK_FREQ), (unsigned)Snd_Stats.reads,
 		      (unsigned)(Snd_Stats.readbytes / 1024), (unsigned)(S.sec[0] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)),
 		      (unsigned)(S.sec[1] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[2] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)),
-		      (unsigned)(S.sec[3] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[4] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)));
+		      (unsigned)(S.sec[3] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)), (unsigned)(S.sec[4] * 1911 / 1000 / BW_NDS_MAX(S.statframes, 1)),
+		      (unsigned)((uint64_t)S.statpkt * 1000000 / TICK_FREQ / BW_NDS_MAX(S.statframes, 1)),
+		      (unsigned)((uint64_t)S.statpktmax * 1000000 / TICK_FREQ));
+		S.statpkt = S.statpktmax = 0;
 		memset(S.sec, 0, sizeof(S.sec));
 		S.statreadsum = 0;
 		S.laststat = ticks();
