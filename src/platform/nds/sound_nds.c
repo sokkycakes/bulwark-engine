@@ -43,6 +43,7 @@ void *sbrk(ptrdiff_t);
 #define S_SENT 4
 #define S_SENTWORDS 32
 #define S_PRECACHE 512
+#define S_KEPT 16       /* PRECACHE's names the device keeps (first 0xf000), after the map's list */
 #define S_SHADERS 32
 #define S_CMDS 20       /* sound commands a frame (calico's 32 credits) */
 #define S_LATE_MS 150   /* a one-shot not started this long after it came is dropped */
@@ -172,8 +173,12 @@ static struct {
 	uint32_t arenasize;
 	svoice_t *v;
 	skey_t *k;
-	uint32_t *precache;
-	int nprecache, precache_done, preload_next;
+	/* the precache list: pkey by the server's index (S_PRECACHE on: the kept names), each
+	 * looked up once (plook goes through them), and pord, what was found, smallest first
+	 * (u64: bytes << 16 | index), which the preload reads from pnext on */
+	uint32_t *pkey;
+	uint64_t *pord;
+	int npk, plook, npord, pnext;
 	uint32_t preload_bytes;
 	int nblk, nkeys, khand;
 	uint8_t vst[S_VOICES]; /* each voice's V_ state, apart: the frame's passes read only these for free ones */
@@ -971,6 +976,48 @@ static void voice_start(int vi)
 
 /* --- records ---------------------------------------------------------------------------------- */
 
+/* the precache list's found names in size order: one in (it goes before any it is smaller
+ * than; the preload starts again there), one out */
+static void pord_remove(int idx)
+{
+	for (int i = 0; i < S.npord; i++)
+		if ((int)(S.pord[i] & 0xffff) == idx) {
+			memmove(&S.pord[i], &S.pord[i + 1], sizeof(S.pord[0]) * (size_t)(S.npord - i - 1));
+			S.npord--;
+			if (S.pnext > i)
+				S.pnext--;
+			return;
+		}
+}
+
+static void pord_insert(int idx, uint32_t bytes)
+{
+	uint64_t e = (uint64_t)bytes << 16 | (uint32_t)idx;
+	int lo = 0, hi;
+	pord_remove(idx);
+	if (S.npord >= S_PRECACHE + S_KEPT)
+		return;
+	for (hi = S.npord; lo < hi;) {
+		int mid = (lo + hi) / 2;
+		if (S.pord[mid] < e)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	memmove(&S.pord[lo + 1], &S.pord[lo], sizeof(S.pord[0]) * (size_t)(S.npord - lo));
+	S.pord[lo] = e;
+	S.npord++;
+	S.pnext = BW_NDS_MIN(S.pnext, lo);
+}
+
+static void precache_reset(void)
+{
+	if (S.pkey)
+		memset(S.pkey, 0, sizeof(uint32_t) * (S_PRECACHE + S_KEPT));
+	S.npk = S.plook = S.npord = S.pnext = 0;
+	S.preload_bytes = 0;
+}
+
 /* a SOUND record (docs/spec/link.md): u16 seq, u8 lflags, u8 sflags, u16 ent, u8 chan, u32 key,
  * u8 vol, u8 atten, u8 pitch, s16 org[3], then s16 at with lflags AT. base is its length
  * without at (20; 22 from a server that pads) */
@@ -1239,14 +1286,21 @@ void Snd_Event(int type, const uint8_t *d, int len)
 		int n = BW_NDS_CLAMP(len - 1, 0, 63);
 		memcpy(name, d + 1, (size_t)n), name[n] = 0;
 		logf_("SNDMUSIC op=%d %s (not played: no music streams on the DS yet)\n", len ? d[0] : -1, name);
-	} else if (type == 15 && len >= 3 && S.precache) { /* PRECACHE: u16 first, u8 n, keys */
+	} else if (type == 15 && len >= 3 && S.pkey) { /* PRECACHE: u16 first, u8 n, keys */
 		int first = (int)rd16(d), n = d[2];
-		for (int i = 0; i < n && 3 + i * 4 + 4 <= len; i++)
-			if (first + i < S_PRECACHE) {
-				S.precache[first + i] = rd32(d + 3 + i * 4);
-				S.nprecache = BW_NDS_MAX(S.nprecache, first + i + 1);
-			}
-		S.precache_done = 0, S.preload_next = 0;
+		/* the kept names (first 0xf000) go after the map's list */
+		int base = first >= 0xf000 ? S_PRECACHE + (first - 0xf000) : first, lim = first >= 0xf000 ? S_PRECACHE + S_KEPT : S_PRECACHE;
+		for (int i = 0; i < n && 3 + i * 4 + 4 <= len && base + i < lim; i++) {
+			uint32_t key = rd32(d + 3 + i * 4);
+			int idx = base + i;
+			if (S.pkey[idx] == key)
+				continue;
+			if (S.pkey[idx])
+				pord_remove(idx); /* (a slot that changes: sounds precached after the map's are new ones) */
+			S.pkey[idx] = key;
+			S.npk = BW_NDS_MAX(S.npk, idx + 1);
+			S.plook = BW_NDS_MIN(S.plook, idx);
+		}
 	}
 }
 
@@ -1338,29 +1392,6 @@ void Snd_ViewEvent(int code, int opt)
 
 /* --- the frame -------------------------------------------------------------------------------- */
 
-static int cmp_u64(const void *a, const void *b)
-{
-	uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
-	return x < y ? -1 : x > y;
-}
-
-/* once the list is looked up: smallest first (missing ones last) */
-static void preload_sort(void)
-{
-	uint64_t *t = malloc(sizeof(uint64_t) * (size_t)S.nprecache);
-	S.preload_next = 0;
-	if (!t)
-		return;
-	for (int i = 0; i < S.nprecache; i++) {
-		int ki = key_find(S.precache[i]);
-		uint32_t size = ki >= 0 && S.k[ki].state == K_FOUND ? S.k[ki].bytes : 0xffffffffu;
-		t[i] = (uint64_t)size << 32 | S.precache[i];
-	}
-	qsort(t, (size_t)S.nprecache, sizeof(t[0]), cmp_u64);
-	for (int i = 0; i < S.nprecache; i++)
-		S.precache[i] = (uint32_t)t[i];
-	free(t);
-}
 
 static void loader(void)
 {
@@ -1427,31 +1458,37 @@ static void loader(void)
 			while (ki >= 0 && !key_complete(ki) && BUDGET_LEFT() && load_step(ki, true, true))
 				reads++;
 		}
-	/* 4: the map's precache list: looked up, then sorted smallest first and read into free room, up to 75% */
-	while (S.precache && S.precache_done < S.nprecache && BUDGET_LEFT()) {
-		int ki = key_get(S.precache[S.precache_done]);
+	/* 4: the precache list: each name looked up, what is found kept in size order, and read
+	 * smallest first into free room, up to 75% */
+	while (S.pkey && S.plook < S.npk && BUDGET_LEFT()) {
+		int ki;
+		if (!S.pkey[S.plook]) {
+			S.plook++;
+			continue;
+		}
+		ki = key_get(S.pkey[S.plook]);
 		if (ki >= 0 && S.k[ki].state == K_PENDING) {
 			if (key_lookup_step(ki))
 				reads++;
 			continue;
 		}
-		S.precache_done++;
-		if (S.precache_done == S.nprecache)
-			preload_sort();
+		if (ki >= 0 && S.k[ki].state == K_FOUND)
+			pord_insert(S.plook, S.k[ki].bytes);
+		S.plook++;
 	}
-	while (S.precache && S.precache_done >= S.nprecache && S.preload_next < S.nprecache && BUDGET_LEFT()) {
-		int ki = key_find(S.precache[S.preload_next]);
+	while (S.pkey && S.pnext < S.npord && BUDGET_LEFT()) {
+		int idx = (int)(S.pord[S.pnext] & 0xffff), ki = key_find(S.pkey[idx]);
 		if (ki < 0 || S.k[ki].state != K_FOUND || S.k[ki].fmt == FMT_STREAM || S.k[ki].bytes > S.arenasize / 2 ||
 		    (S.k[ki].block >= 0 && key_complete(ki))) {
-			S.preload_next++;
+			S.pnext++;
 			continue;
 		}
 		if (S.preload_bytes + S.k[ki].bytes > S.arenasize / 4 * 3) {
-			S.preload_next = S.nprecache; /* (smallest first: none after fits) */
+			S.pnext = S.npord; /* (smallest first: none after fits) */
 			break;
 		}
 		if (!load_step(ki, false, false)) {
-			S.preload_next = S.nprecache; /* no free room left */
+			S.pnext = S.npord; /* no free room left */
 			break;
 		}
 		reads++;
@@ -1459,7 +1496,7 @@ static void loader(void)
 			reads++;
 		if (key_complete(ki)) {
 			S.preload_bytes += S.k[ki].bytes;
-			S.preload_next++;
+			S.pnext++;
 		}
 	}
 #undef BUDGET_LEFT
@@ -1484,7 +1521,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		S.vtop--;
 	/* nothing playing, coming or due: only the stats */
 	{
-		bool idle = S.precache_done >= S.nprecache && S.preload_next >= S.nprecache;
+		bool idle = S.plook >= S.npk && S.pnext >= S.npord;
 		for (int i = 0; i < S.vtop && idle; i++)
 			idle = S.vst[i] == V_FREE;
 		for (int h = 0; h < S_HW && idle; h++)
@@ -1740,8 +1777,7 @@ static void stop_all(void)
 void Snd_MapChange(void)
 {
 	stop_all();
-	if (S.precache)
-		S.nprecache = S.precache_done = 0, S.preload_bytes = 0;
+	precache_reset();
 	S.nshader = 0;
 }
 
@@ -1752,10 +1788,11 @@ void Snd_MapUnload(void)
 	free(S.arena), S.arena = NULL, S.arenasize = 0;
 	free(S.v), S.v = NULL;
 	free(S.k), S.k = NULL;
-	free(S.precache), S.precache = NULL;
+	free(S.pkey), S.pkey = NULL;
+	free(S.pord), S.pord = NULL;
 	free(H), H = NULL;
 	S.nblk = 0;
-	S.nprecache = S.precache_done = 0, S.preload_bytes = 0;
+	precache_reset();
 	close_packs();
 }
 
@@ -1780,7 +1817,8 @@ void Snd_MapLoaded(void)
 	}
 	S.v = calloc(S_VOICES, sizeof(svoice_t));
 	S.k = calloc(S_KEYS, sizeof(skey_t));
-	S.precache = calloc(S_PRECACHE, sizeof(uint32_t));
+	S.pkey = calloc(S_PRECACHE + S_KEPT, sizeof(uint32_t));
+	S.pord = calloc(S_PRECACHE + S_KEPT, sizeof(uint64_t));
 	H = calloc(1, sizeof(*H));
 	/* the cache, leaving room for the models still to load (they come after the map) */
 	want = (uint32_t)S.cachekb * 1024;
@@ -1789,7 +1827,7 @@ void Snd_MapLoaded(void)
 		want = avail > (64 + 384) * 1024 ? avail - 384 * 1024 : 0;
 	want &= ~1023u;
 	S.arena = want ? memalign(32, want) : NULL;
-	if (!S.v || !S.k || !S.precache || !H || !S.arena) {
+	if (!S.v || !S.k || !S.pkey || !S.pord || !H || !S.arena) {
 		logf_("SNDSTAT no memory for sound (free %u KB)\n", (unsigned)(avail / 1024));
 		Snd_MapUnload();
 		return;
