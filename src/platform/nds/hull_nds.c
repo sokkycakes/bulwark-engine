@@ -81,6 +81,8 @@ typedef struct {
 	hullbrush_t b;
 	float amin[3], amax[3]; /* absmin/absmax as SV_LinkEdict makes them: origin + bounds -+ 1 */
 	int32_t ib[6];          /* the same in 1/8 units, rounded outward, for Hull_Focus */
+	bool turned;            /* angles not all 0: */
+	float axis[3][3];       /* forward, left, up (sv_world.c brush_frame) */
 } sbrush_t;
 typedef struct {
 	hullbox_t b;
@@ -1085,15 +1087,48 @@ static int32_t fx8_up(float v)
 	return v < -1e9f ? -1000000000 : v > 1e9f ? 1000000000 : (int32_t)v;
 }
 
-/* a brush at origin: its absmin/absmax, and the same in 1/8 units */
-static void place_brush(sbrush_t *s, const float origin[3])
+/* sv_world.c brush_frame (:120-131) with common.c AngleVectors (:320-341), in the same float
+ * operations: sinf and cosf are glibc's (pmove_nds.c's port), as on the server */
+static void brush_axes(const float *ang, float axis[3][3])
 {
-	float mins[3], maxs[3];
+	const float d2r = (float)(3.14159265358979323846 / 180.0);
+	float sy, cy, sp, cp, sr, cr;
+	PM_SinCos(ang[1] * d2r, &sy, &cy);
+	PM_SinCos(ang[0] * d2r, &sp, &cp);
+	PM_SinCos(ang[2] * d2r, &sr, &cr);
+	axis[0][0] = cp * cy;
+	axis[0][1] = cp * sy;
+	axis[0][2] = -sp;
+	axis[1][0] = -(-sr * sp * cy + cr * sy); /* left: the negated right */
+	axis[1][1] = -(-sr * sp * sy - cr * cy);
+	axis[1][2] = -(-sr * cp);
+	axis[2][0] = cr * sp * cy + sr * sy;
+	axis[2][1] = cr * sp * sy - sr * cy;
+	axis[2][2] = cr * cp;
+}
+
+/* a brush at origin and angles: its absmin/absmax (SV_LinkEdict, sv_world.c:50-75: a turned
+ * SOLID_BSP one reaches its farthest corner's distance every way), and the same in 1/8 units */
+static void place_brush(sbrush_t *s, const float origin[3], const float angles[3])
+{
+	float mins[3], maxs[3], radius = 0;
 	memcpy(s->b.origin, origin, sizeof(s->b.origin));
+	memcpy(s->b.angles, angles, sizeof(s->b.angles));
 	Hull_ModelBounds(s->b.model, mins, maxs);
+	s->turned = fx_nonzero(angles[0]) || fx_nonzero(angles[1]) || fx_nonzero(angles[2]);
+	if (s->turned) {
+		brush_axes(angles, s->axis);
+		if (s->b.solid == PM_SOLID_BSP) {
+			for (int k = 0; k < 3; k++) {
+				float c = fabsf(mins[k]) > fabsf(maxs[k]) ? fabsf(mins[k]) : fabsf(maxs[k]);
+				radius += c * c;
+			}
+			radius = sqrtf(radius);
+		}
+	}
 	for (int k = 0; k < 3; k++) {
-		s->amin[k] = origin[k] + mins[k] - 1;
-		s->amax[k] = origin[k] + maxs[k] + 1;
+		s->amin[k] = origin[k] + (fx_gt(radius, 0) ? -radius : mins[k]) - 1;
+		s->amax[k] = origin[k] + (fx_gt(radius, 0) ? radius : maxs[k]) + 1;
 		s->ib[k] = fx8_down(s->amin[k]);
 		s->ib[3 + k] = fx8_up(s->amax[k]);
 	}
@@ -1112,9 +1147,9 @@ void Hull_SetBrushes(const hullbrush_t *b, int n)
 	for (int i = 0; i < n; i++) {
 		const hullbrush_t *o = &brushes[i].b;
 		if (i >= numbrushes || o->edict != b[i].edict || o->model != b[i].model || o->solid != b[i].solid ||
-		    o->skin != b[i].skin || !same3(o->origin, b[i].origin)) {
+		    o->skin != b[i].skin || !same3(o->origin, b[i].origin) || !same3(o->angles, b[i].angles)) {
 			brushes[i].b = b[i];
-			place_brush(&brushes[i], b[i].origin);
+			place_brush(&brushes[i], b[i].origin, b[i].angles);
 			scene_gen++;
 		}
 	}
@@ -1124,14 +1159,32 @@ void Hull_SetBrushes(const hullbrush_t *b, int n)
 	unfocus();
 }
 
-void Hull_PlaceBrush(int i, const float origin[3])
+void Hull_PlaceBrush(int i, const float origin[3], const float angles[3])
 {
 	if (i < 0 || i >= numbrushes)
 		return;
-	if (!same3(brushes[i].b.origin, origin)) {
-		place_brush(&brushes[i], origin);
+	if (!same3(brushes[i].b.origin, origin) || !same3(brushes[i].b.angles, angles)) {
+		place_brush(&brushes[i], origin, angles);
 		scene_gen++;
 	}
+	unfocus();
+}
+
+void Hull_BrushBox(int i, const float absmin[3], const float absmax[3])
+{
+	sbrush_t *s;
+	if (i < 0 || i >= numbrushes)
+		return;
+	s = &brushes[i];
+	if (same3(s->amin, absmin) && same3(s->amax, absmax))
+		return;
+	for (int k = 0; k < 3; k++) {
+		s->amin[k] = absmin[k];
+		s->amax[k] = absmax[k];
+		s->ib[k] = fx8_down(s->amin[k]);
+		s->ib[3 + k] = fx8_up(s->amax[k]);
+	}
+	scene_gen++;
 	unfocus();
 }
 
@@ -1352,7 +1405,25 @@ static void move_brush(const sbrush_t *s, const float *start, const float *mins,
 	if (skinbits && !(skinbits & mask) && solid != 22)
 		return;
 	/* the Q1 trace never reads the mask, so emask (sv_world.c:431-437) changes nothing */
-	Hull_TraceModel(s->b.model, s->b.origin, start, mins, maxs, end, &bt);
+	if (s->turned) {
+		/* sv_world.c trace_brush_entity (:157-176): start and end into the model's frame
+		 * (frame_to_local), the hit's normal back into the world (frame_dir_to_world) */
+		static const float zero[3] = {0, 0, 0};
+		float ls[3], le[3], n[3], d[3], e[3];
+		for (int k = 0; k < 3; k++)
+			d[k] = start[k] - s->b.origin[k], e[k] = end[k] - s->b.origin[k];
+		for (int k = 0; k < 3; k++) {
+			ls[k] = d[0] * s->axis[k][0] + d[1] * s->axis[k][1] + d[2] * s->axis[k][2];
+			le[k] = e[0] * s->axis[k][0] + e[1] * s->axis[k][1] + e[2] * s->axis[k][2];
+		}
+		Hull_TraceModel(s->b.model, zero, ls, mins, maxs, le, &bt);
+		for (int k = 0; k < 3; k++)
+			n[k] = bt.normal[0] * s->axis[0][k] + bt.normal[1] * s->axis[1][k] + bt.normal[2] * s->axis[2][k];
+		memcpy(bt.normal, n, sizeof(n));
+		for (int k = 0; k < 3; k++)
+			bt.endpos[k] = start[k] + (end[k] - start[k]) * bt.fraction;
+	} else
+		Hull_TraceModel(s->b.model, s->b.origin, start, mins, maxs, end, &bt);
 	contents = skinbits ? skinbits : bt.hit ? PM_CB_SOLID : 0;
 	if (solid == 22 && bt.startsolid) {
 		tr->startsolid = true;

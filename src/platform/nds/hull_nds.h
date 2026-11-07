@@ -59,10 +59,19 @@ void Hull_TraceModel(int model, const float origin[3], const float start[3], con
 
 /* the scene the predicted player moves in, set by link_nds.c from BRUSHINFO and PSTATE.
  * Both lists sorted by edict (the caller sorts); copied */
-typedef struct { uint16_t edict, model; uint8_t solid; int8_t skin; float origin[3]; } hullbrush_t;
+typedef struct {
+	uint16_t edict, model;
+	uint8_t solid;
+	int8_t skin;
+	float origin[3];
+	float angles[3]; /* turned, it is traced in its own frame (sv_world.c brush_frame) */
+} hullbrush_t;
 typedef struct { uint16_t edict; float mins[3], maxs[3]; uint8_t solid; } hullbox_t; /* absolute */
 void Hull_SetBrushes(const hullbrush_t *b, int n);
-void Hull_PlaceBrush(int i, const float origin[3]); /* entry i of the last Hull_SetBrushes list, moved */
+void Hull_PlaceBrush(int i, const float origin[3], const float angles[3]); /* entry i of the last Hull_SetBrushes list, moved */
+/* a turned entry's absmin/absmax as the server last linked it (BRUSHINFO, PSTATE): it culls
+ * the brush there, not its turned bounds (a train turned along its path keeps its spawn box) */
+void Hull_BrushBox(int i, const float absmin[3], const float absmax[3]);
 void Hull_SetBoxes(const hullbox_t *b, int n);
 /* the boxes that overlap a player box at org: PM_FOCUS_DROPSTUCK keeps them (until the next Hull_SetBoxes) */
 void Hull_PinBoxes(const float org[3], const float mins[3], const float maxs[3]);

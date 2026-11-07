@@ -70,6 +70,9 @@ typedef struct {
 	uint8_t solid;
 	int8_t skin;
 	float origin[3];
+	float angles[3]; /* "brushang": turned, traced in its own frame (sv_world.c brush_frame) */
+	bool hasabs;     /* "brushabs": a turned one's absmin/absmax as the server last linked it */
+	float amin[3], amax[3];
 } brush_t;
 
 typedef struct {
@@ -500,13 +503,60 @@ static double now_us(void)
 	return ts.tv_sec * 1e6 + ts.tv_nsec / 1e3;
 }
 
+static bool turned(const brush_t *b) { return b->angles[0] != 0 || b->angles[1] != 0 || b->angles[2] != 0; }
+
+/* SV_LinkEdict (sv_world.c:50-75): a turned SOLID_BSP model reaches its farthest corner every way */
 static void brush_box(const brush_t *b, float *amin, float *amax)
 {
 	const hmodel_t *m = &map.models[b->model < map.nummodels ? b->model : 0];
-	for (int k = 0; k < 3; k++) {
-		amin[k] = b->origin[k] + m->mins[k] - 1;
-		amax[k] = b->origin[k] + m->maxs[k] + 1;
+	float radius = 0;
+	if (turned(b) && b->hasabs) {
+		memcpy(amin, b->amin, sizeof(b->amin));
+		memcpy(amax, b->amax, sizeof(b->amax));
+		return;
 	}
+	if (turned(b) && b->solid == PM_SOLID_BSP) {
+		for (int k = 0; k < 3; k++) {
+			float c = fabsf(m->mins[k]) > fabsf(m->maxs[k]) ? fabsf(m->mins[k]) : fabsf(m->maxs[k]);
+			radius += c * c;
+		}
+		radius = sqrtf(radius);
+	}
+	for (int k = 0; k < 3; k++) {
+		amin[k] = b->origin[k] + (radius > 0 ? -radius : m->mins[k]) - 1;
+		amax[k] = b->origin[k] + (radius > 0 ? radius : m->maxs[k]) + 1;
+	}
+}
+
+/* sv_world.c trace_brush_entity (:157-176) with common.c AngleVectors, as the server has them */
+static void trace_brush(const brush_t *b, const float *start, const float *mins, const float *maxs, const float *end,
+                        htrace_t *bt)
+{
+	static const float zero[3] = {0, 0, 0};
+	const float d2r = (float)(3.14159265358979323846 / 180.0);
+	float axis[3][3], ls[3], le[3], n[3], d[3], e[3], sy, cy, sp, cp, sr, cr;
+	if (!turned(b)) {
+		trace_model(b->model, b->origin, start, mins, maxs, end, bt);
+		return;
+	}
+	sy = sinf(b->angles[1] * d2r), cy = cosf(b->angles[1] * d2r);
+	sp = sinf(b->angles[0] * d2r), cp = cosf(b->angles[0] * d2r);
+	sr = sinf(b->angles[2] * d2r), cr = cosf(b->angles[2] * d2r);
+	axis[0][0] = cp * cy, axis[0][1] = cp * sy, axis[0][2] = -sp;
+	axis[1][0] = -(-sr * sp * cy + cr * sy), axis[1][1] = -(-sr * sp * sy - cr * cy), axis[1][2] = -(-sr * cp);
+	axis[2][0] = cr * sp * cy + sr * sy, axis[2][1] = cr * sp * sy - sr * cy, axis[2][2] = cr * cp;
+	for (int k = 0; k < 3; k++)
+		d[k] = start[k] - b->origin[k], e[k] = end[k] - b->origin[k];
+	for (int k = 0; k < 3; k++) {
+		ls[k] = d[0] * axis[k][0] + d[1] * axis[k][1] + d[2] * axis[k][2];
+		le[k] = e[0] * axis[k][0] + e[1] * axis[k][1] + e[2] * axis[k][2];
+	}
+	trace_model(b->model, zero, ls, mins, maxs, le, bt);
+	for (int k = 0; k < 3; k++)
+		n[k] = bt->normal[0] * axis[0][k] + bt->normal[1] * axis[1][k] + bt->normal[2] * axis[2][k];
+	memcpy(bt->normal, n, sizeof(n));
+	for (int k = 0; k < 3; k++)
+		bt->endpos[k] = start[k] + (end[k] - start[k]) * bt->fraction;
 }
 
 static void own_move_core(const float *start, const float *mins, const float *maxs, const float *end, int type,
@@ -557,7 +607,7 @@ static void own_move_core(const float *start, const float *mins, const float *ma
 			skinbits = skin_bits(b->skin);
 			if (skinbits && !(skinbits & (uint32_t)mask) && b->solid != 22)
 				continue;
-			trace_model(b->model, b->origin, start, mins, maxs, end, &bt);
+			trace_brush(b, start, mins, maxs, end, &bt);
 			if (skinbits)
 				bt.contents = skinbits;
 			if (b->solid == 22 && bt.startsolid) {
@@ -729,6 +779,7 @@ static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
 			hb[i].solid = b[i].solid;
 			hb[i].skin = b[i].skin;
 			memcpy(hb[i].origin, b[i].origin, sizeof(hb[i].origin));
+			memcpy(hb[i].angles, b[i].angles, sizeof(hb[i].angles));
 		}
 		for (int i = 0; i < nx && i < MAX_BOXES; i++) {
 			hx[i].edict = x[i].edict;
@@ -737,6 +788,9 @@ static void set_scene(const brush_t *b, int nb, const box_t *x, int nx)
 			hx[i].solid = x[i].solid;
 		}
 		Hull_SetBrushes(hb, nb < MAX_BRUSHES ? nb : MAX_BRUSHES);
+		for (int i = 0; i < nb && i < MAX_BRUSHES; i++)
+			if (b[i].hasabs && turned(&b[i]))
+				Hull_BrushBox(i, b[i].amin, b[i].amax);
 		Hull_SetBoxes(hx, nx < MAX_BOXES ? nx : MAX_BOXES);
 	}
 #endif
@@ -877,6 +931,8 @@ static int read_log(const char *path, int slot)
 				b->model = (uint16_t)m;
 				b->solid = (uint8_t)so;
 				b->skin = (int8_t)sk;
+				memset(b->angles, 0, sizeof(b->angles));
+				b->hasabs = false;
 			}
 			numbrushpool += nbrushlist;
 			curbrushes = brushlist;
@@ -905,6 +961,38 @@ static int read_log(const char *path, int slot)
 			curbrushes = numbrushpool;
 			ncurbrushes = nbrushlist;
 			numbrushpool += nbrushlist;
+		} else if (!strcmp(kind, "brushang") || !strcmp(kind, "brushabs")) {
+			/* this command's turned brushes (after brushpos): a copy of the current list with
+			 * their angles (brushang: the rest 0), then their absmin/absmax (brushabs) */
+			bool ang = kind[5] == 'a' && kind[6] == 'n';
+			long n, e;
+			float a[3], c[3];
+			if (curbrushes < 0 || !ti(&p, &n))
+				continue;
+			brushpool = grow(brushpool, &capbrushpool, numbrushpool + ncurbrushes, sizeof(brush_t));
+			memcpy(&brushpool[numbrushpool], &brushpool[curbrushes], sizeof(brush_t) * (size_t)ncurbrushes);
+			if (ang)
+				for (int i = 0; i < ncurbrushes; i++) {
+					memset(brushpool[numbrushpool + i].angles, 0, sizeof(a));
+					brushpool[numbrushpool + i].hasabs = false;
+				}
+			for (int i = 0; i < n; i++) {
+				int at;
+				if (!ti(&p, &e) || !tv(&p, a) || (!ang && !tv(&p, c)))
+					break;
+				at = find_brush(numbrushpool, ncurbrushes, (int)e);
+				if (at < 0)
+					continue;
+				if (ang)
+					memcpy(brushpool[at].angles, a, sizeof(a));
+				else {
+					memcpy(brushpool[at].amin, a, sizeof(a));
+					memcpy(brushpool[at].amax, c, sizeof(c));
+					brushpool[at].hasabs = true;
+				}
+			}
+			curbrushes = numbrushpool;
+			numbrushpool += ncurbrushes;
 		} else if (!strcmp(kind, "boxes")) {
 			long n, e, so;
 			if (!ti(&p, &n))
