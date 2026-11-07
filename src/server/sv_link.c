@@ -160,7 +160,9 @@ typedef struct {
 	double wicheck, wisent;
 	uint16_t wilogver;                      /* the version sv_link_log printed */
 	bool wicap;                             /* its INPUT carried 'W': it takes WEAPONINFO */
-	uint8_t wisends;                        /* sends of this version so far */
+	uint8_t wisends;                        /* sends of this version with an INPUT since the one before */
+	bool wiheard;                           /* an INPUT with 'W' came since the last send (a device
+	                                         * loading its map sends none: those don't count) */
 	int32_t wiclass;                        /* the weapon's classname (a QC string) */
 } link_t;
 
@@ -745,9 +747,10 @@ static int ent_studio(int e)
 
 /* frame1time as sent (u16, 1/100 s): Nuclide only sets it back when the sequence
  * changes (SurfacePropEntity.qc), so a monster idling for long would pass 655 s and
- * stop there. A looping sequence repeats every Studio_SeqDuration: taken modulo the
- * most whole laps under 600 s it poses the same, and comes round to 0 once in that
- * while; a sequence that doesn't loop holds its last frame long before */
+ * stop there. The PC poses a looping sequence at frame floor(t * fps) % numframes
+ * (skel.c Skel_SampleRelative, fps 10 when the model has none): taken modulo the most whole
+ * laps of numframes / fps under 600 s it poses the same, and comes round to 0 once in
+ * that while; a sequence that doesn't loop holds its last frame long before */
 static float ent_seqtime(int e, float t)
 {
 	int mi = (int)QC_EFloat(sv.vm, e, F.modelindex), seq = F.frame >= 0 ? (int)QC_EFloat(sv.vm, e, F.frame) : 0;
@@ -755,7 +758,8 @@ static float ent_seqtime(int e, float t)
 	const studio_model_t *m;
 	float dur, period;
 	if (t < 600 || !ent_studio(e) || !name || !(m = Studio_Cached(name)) || seq < 0 || seq >= m->numseqs ||
-	    !(m->seqs[seq].flags & STUDIO_LOOPING) || (dur = Studio_SeqDuration(m, seq)) <= 0 || dur > 600)
+	    !(m->seqs[seq].flags & STUDIO_LOOPING) ||
+	    (dur = (float)BW_MAX(1, m->seqs[seq].numframes) / (m->seqs[seq].fps > 0 ? m->seqs[seq].fps : 10)) > 600)
 		return t;
 	period = dur * floorf(600 / dur);
 	return fmodf(t, period);
@@ -1359,7 +1363,7 @@ static void send_brushinfo(link_t *l, double now)
 #define WI_MAX_EV 32    /* muzzle flash events sent, all sequences */
 #define WI_RESEND 0.25  /* WEAPONINFO again this soon while the device has not acknowledged it */
 #define WI_CHECK 1.0    /* and the decl read again this often */
-#define WI_BACKOFF 8    /* after this many unacknowledged sends, WI_SLOW apart (a device that can't parse it) */
+#define WI_BACKOFF 8    /* after this many sends answered by INPUT without the ack, WI_SLOW apart (a device that can't parse it) */
 #define WI_SLOW 2.0
 #define WI_MAX_ACTS 32  /* an activity's list as sent: GetSubDefAct picks among all of it, so a
                          * device that can hold fewer leaves the weapon to the server */
@@ -1760,8 +1764,9 @@ static void send_winfo(link_t *l, double now)
 	p_bytes(&p, l->wibody, l->wilen);
 	send_to(&l->from, &p);
 	l->wisent = now;
-	if (l->wisends < 255)
+	if (l->wiheard && l->wisends < 255)
 		l->wisends++;
+	l->wiheard = false;
 }
 
 /* the weapon state Weapon.qc and Physics_InputPostMove keep: the player's and its weapon's */
@@ -2194,7 +2199,7 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		l->varsack = rd16(d + 40), l->brushack = rd16(d + 42);
 		/* after the commands: 'W', the WEAPONINFO version the device has, for which edict */
 		if (len >= 44 + 14 * count + 5 && t[0] == 'W') {
-			l->wicap = true; /* it takes WEAPONINFO (version 0: has none yet) */
+			l->wicap = l->wiheard = true; /* it takes WEAPONINFO (version 0: has none yet) */
 			if (rd16(t + 3) == l->wiedict)
 				l->wiack = (uint16_t)rd16(t + 1);
 		}
