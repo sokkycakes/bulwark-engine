@@ -257,6 +257,9 @@ state. The DS does the same in C:
   Half-Life map, and `hlmap.py --hul-only e0m1.bsp e0m1.hul` makes one for
   a Quake or Nuclide map (the DS can also take those from the map's own
   clip hulls). Point traces use the drawing tree the DS already holds.
+  A `.hul` is refused ("bad .hul") unless every index is in range and each
+  node's children come after it (as BSP compilers write clipnodes), so a
+  damaged one can't send a trace round a loop.
 - A command is made every refresh (16 or 17 ms, so two a frame at 30 fps).
   The PC's are 14 ms; 33 ms ones jump 2.5 units lower (39.6 against 42.0
   on `coop_arena`, `tools/nds/pmtest -resample`), 17 ms ones 0.4 lower. The
@@ -291,9 +294,11 @@ state. The DS does the same in C:
   the first line shows prediction is on). The commands still go out, and
   the server runs each once.
 
-What the DS can't predict, the PC can't either: touches (pushes, teleports,
-conveyors), a lift carrying the player, monsters knocking it back or
+What the DS can't predict, the PC can't either: teleports, a push with a
+target, a lift or train carrying the player, monsters knocking it back or
 moving into it. The next state corrects it, 30 times a second.
+`trigger_push` and `func_conveyor` are predicted (see "Prediction over the
+Half-Life campaign" below).
 
 ### Measured, in melonDS 1.1 (not hardware)
 
@@ -1410,22 +1415,46 @@ The maps that were worst:
 | c2a3a | 83.8 % | 98.9 % | 0.015 / 1.79 u |
 | c1a2b | 88.9 % | 99.1 % | 0.011 / 2.58 u |
 
+A second run of four of these maps on a quiet host (same ROM and server,
+one run each) came out close: c2a3e 100 %, c1a1b 99.7 %, c2a2f 96.9 %,
+c2a4e 99.2 %, lowest free during c2a4e's load 260 KB again. One spot can
+move by a few percent between runs (c2a2f's lift: 337 of 358 in two runs,
+359 of 360 in a third).
+
 What is left (observed, causes inferred unless it says otherwise):
 
 - c1a2: 72 % of only 134 commands compared in 36 s. The server falls behind
   on this map (1036 entities, a few PSTATEs a second) on the shared host, as
   before. This is the rig or the server, not the DS port.
-- c1a0e's far node (71 %, max 16 u) had 13 to 22 NPC boxes near the
-  player. c1a1c's spawn (95 %, max 31 u) has a moving box (edict 2) and
-  three brushes the game rolls (810-812) within 150 u. The DS has each of
-  them where the last PSTATE put it, as the PC client does. pmtest is exact
-  on both logs.
+- c1a0e's far node (71 %, max 16 u): the bot walked onto a moving brush
+  and rode it. The server's log has edict 1007 as the ground entity for
+  those commands, and the player moving +x at 100 u/s between commands
+  (1.39 u a 1/72 s frame) with no NPC box within 64 u, so this is the
+  riding case below, not the boxes (Measured from the server's
+  `sv_link_log`; at `58a5bba` the bot did not board it). c1a1c's spawn
+  (95 %, max 31 u) has a moving box (edict 2) and three brushes the game
+  rolls (810-812) within 150 u. The DS has each of them where the last
+  PSTATE put it, as the PC client does. pmtest is exact on both logs.
 - Riding a moving train or lift is not predicted: c2a2g's tracktrain was
   91 % within, max 12 u. The PC client does not predict it either
   (`pmove_custom.qc:66-69` leaves the ground entity's velocity out), so the
   DS shows what the PC shows: each PSTATE corrects it.
-- A `TP_ONCE` push is predicted again by each replay until the server's
-  next BRUSHINFO drops the spent trigger.
+- A `TP_ONCE` push (`trigger_push.qc:392-397` makes the trigger
+  `SOLID_NOT` once it pushed) used to be run again on every command that
+  still overlapped it, until the server's next BRUSHINFO dropped it (up to
+  a quarter of a second, 20000 u/s more each time on c2a5f). `hull_nds.c`
+  now notes the command each one ran in (`pmtrace_if.fired`) and leaves it
+  out of the commands after that; a replay from the server's state forgets
+  the ones that ran after the acked command, so they run again where the
+  server will. Tested with pmtest (Measured, host): on a c2a5f log where
+  the bot is pushed by `debris_locker_push` and `blocked_door_push`, with
+  the touch line that drops the spent trigger moved 8 commands later (as
+  the DS gets it), step mode went from 1759 to 1767 of 1767 exact and
+  chain mode from 1706 to 1767 within (max error 24.1 u to 0); the
+  unedited logs, and step mode on the 103 campaign logs, are unchanged. In melonDS the
+  first push after `sv trigger` turns the trigger on is still one wrong
+  command (about 300 u, one snap) before and after: the player is already
+  inside when it turns on, and the DS learns of it a BRUSHINFO later.
 - c5a1's lift spot ran with prediction off: the server had moved the player.
 - Single slow seconds right after a load or a teleport (c0a0d 8 fps, c1a3
   5, c2a4e 14). The median was still 30 at every spot.
