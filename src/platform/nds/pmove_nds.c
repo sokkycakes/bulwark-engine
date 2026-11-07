@@ -108,33 +108,159 @@ static float qmax(float a, float b)
 	return fx_gt(a, b) ? a : b;
 }
 
+/* --- sinf and cosf as the server's C library computes them ------------- */
+
+/* The server runs on x86-64 glibc, whose sinf and cosf (since 2.28; 2.39:
+ * sysdeps/ieee754/flt-32/s_sinf.c, s_cosf.c, s_sincosf.h, sincosf_poly.h,
+ * s_sincosf_data.c) are Arm's optimized-routines code: math/sinf.c, cosf.c,
+ * sincosf.h, sincosf_data.c, Copyright (c) 2018-2024 Arm Limited, MIT
+ * licence. That code is ported here, operation for operation in double:
+ * the DS's soft double (libgcc) rounds every operation as x86's SSE2 does,
+ * so this gives glibc's bits. newlib's sinf/cosf gave another last bit for
+ * 13022 of the 65536 yaws a command can carry. glibc's FMA build (picked on
+ * CPUs with FMA and AVX2) contracts the multiply-adds; on every angle a
+ * command can carry, and on 20 million other arguments, both builds gave
+ * the same bits as this (pmtest -selftest checks the angles against the
+ * host's own sinf/cosf). */
+typedef struct {
+	double sign[4];          /* sign of sine in quadrants 0..3 */
+	double hpi_inv;          /* 2 / PI * 2^24 (x86 has no TOINT_INTRINSICS) */
+	double hpi;              /* PI / 2 */
+	double c0, c1, c2, c3, c4; /* cosine polynomial */
+	double s1, s2, s3;       /* sine polynomial */
+} sincos_t;
+
+/* sincosf_data.c: the cosine polynomial is negated in the 2nd entry */
+static const sincos_t sincosf_table[2] = {
+	{{1.0, -1.0, -1.0, 1.0}, 0x1.45F306DC9C883p+23, 0x1.921FB54442D18p0, 0x1p0, -0x1.ffffffd0c621cp-2,
+	 0x1.55553e1068f19p-5, -0x1.6c087e89a359dp-10, 0x1.99343027bf8c3p-16, -0x1.555545995a603p-3,
+	 0x1.1107605230bc4p-7, -0x1.994eb3774cf24p-13},
+	{{1.0, -1.0, -1.0, 1.0}, 0x1.45F306DC9C883p+23, 0x1.921FB54442D18p0, -0x1p0, 0x1.ffffffd0c621cp-2,
+	 -0x1.55553e1068f19p-5, 0x1.6c087e89a359dp-10, -0x1.99343027bf8c3p-16, -0x1.555545995a603p-3,
+	 0x1.1107605230bc4p-7, -0x1.994eb3774cf24p-13},
+};
+
+/* 4/PI to 192 bits, 8 new bits an entry (sincosf_data.c) */
+static const uint32_t inv_pio4[24] = {
+	0xa2, 0xa2f9, 0xa2f983, 0xa2f9836e, 0xf9836e4e, 0x836e4e44, 0x6e4e4415, 0x4e441529,
+	0x441529fc, 0x1529fc27, 0x29fc2757, 0xfc2757d1, 0x2757d1f5, 0x57d1f534, 0xd1f534dd, 0xf534ddc0,
+	0x34ddc0db, 0xddc0db62, 0xc0db6295, 0xdb629599, 0x6295993c, 0x95993c43, 0x993c4390, 0x3c439041,
+};
+
+/* abstop12 (sincosf.h) */
+static inline uint32_t abstop12(float x)
+{
+	return (fx_bits(x) >> 20) & 0x7ff;
+}
+
+/* sinf_poly (sincosf.h): the sine polynomial for even n, the cosine one for odd */
+static float sinf_poly(double x, double x2, const sincos_t *p, int n)
+{
+	double x3, x4, x6, x7, s, c, c1, c2, s1;
+	if ((n & 1) == 0) {
+		x3 = x * x2;
+		s1 = p->s2 + x2 * p->s3;
+		x7 = x3 * x2;
+		s = x + x3 * p->s1;
+		return (float)(s + x7 * s1);
+	}
+	x4 = x2 * x2;
+	c2 = p->c3 + x2 * p->c4;
+	c1 = p->c0 + x2 * p->c1;
+	x6 = x4 * x2;
+	c = c1 + x4 * p->c2;
+	return (float)(c + x6 * c2);
+}
+
+/* reduce_fast (sincosf.h), !TOINT_INTRINSICS */
+static double reduce_fast(double x, const sincos_t *p, int *np)
+{
+	double r = x * p->hpi_inv;
+	int n = ((int32_t)r + 0x800000) >> 24;
+	*np = n;
+	return x - n * p->hpi;
+}
+
+/* reduce_large (sincosf.h): |x| >= 120 */
+static double reduce_large(uint32_t xi, int *np)
+{
+	const uint32_t *arr = &inv_pio4[(xi >> 26) & 15];
+	int shift = (xi >> 23) & 7;
+	uint64_t n, res0, res1, res2;
+	xi = (xi & 0xffffff) | 0x800000;
+	xi <<= shift;
+	res0 = xi * arr[0];
+	res1 = (uint64_t)xi * arr[4];
+	res2 = (uint64_t)xi * arr[8];
+	res0 = (res2 >> 32) | (res0 << 32);
+	res0 += res1;
+	n = (res0 + (1ULL << 61)) >> 62;
+	res0 -= n << 62;
+	*np = (int)n;
+	return (double)(int64_t)res0 * 0x1.921FB54442D18p-62;
+}
+
+/* sinf(y) and cosf(y) (sinf.c, cosf.c), both from one reduction */
+static void glibc_sincosf(float y, float *sinp, float *cosp)
+{
+	double x = y, s;
+	int n;
+	const sincos_t *p = &sincosf_table[0];
+	if (abstop12(y) < abstop12(0x1.921FB6p-1f)) { /* pio4f */
+		if (abstop12(y) < abstop12(0x1p-12f)) {
+			*sinp = y;
+			*cosp = 1.0f;
+			return;
+		}
+		s = x * x;
+		*sinp = sinf_poly(x, s, p, 0);
+		*cosp = sinf_poly(x, s, p, 1);
+	} else if (abstop12(y) < abstop12(120.0f)) {
+		x = reduce_fast(x, p, &n);
+		s = p->sign[n & 3];
+		if (n & 2)
+			p = &sincosf_table[1];
+		*sinp = sinf_poly(x * s, x * x, p, n);
+		*cosp = sinf_poly(x * s, x * x, p, n ^ 1);
+	} else if (abstop12(y) < abstop12(INFINITY)) {
+		uint32_t xi = fx_bits(y);
+		int sign = xi >> 31;
+		x = reduce_large(xi, &n);
+		s = p->sign[(n + sign) & 3];
+		if ((n + sign) & 2)
+			p = &sincosf_table[1];
+		*sinp = sinf_poly(x * s, x * x, p, n);
+		*cosp = sinf_poly(x * s, x * x, p, n ^ 1);
+	} else {
+		/* __math_invalidf: (y - y) / (y - y), x86's default NaN, or y's own */
+		*sinp = *cosp = fx_nan(y) ? fx_float(fx_bits(y) | 0x00400000u) : fx_float(0xffc00000u);
+	}
+}
+
+/* exported for pmtest -selftest */
+void PM_SinCos(float a, float *s, float *c) { glibc_sincosf(a, s, c); }
+
 /* sinf and cosf of the last few angles, by bit pattern, so the same angle
- * is never worked out twice in a command: exact, it returns what sinf and
- * cosf returned for those bits. 0 is answered without a call. */
+ * is never worked out twice: it returns what they returned for those bits */
 static struct {
 	uint32_t bits;
+	bool valid;
 	float s, c;
 } trig[4];
 static int trig_next;
 
 static void pm_sincos(float a, float *s, float *c)
 {
-	uint32_t bits;
-	memcpy(&bits, &a, 4);
-	if (!bits) {
-		*s = 0.0f;
-		*c = 1.0f;
-		return;
-	}
+	uint32_t bits = fx_bits(a);
 	for (int i = 0; i < 4; i++)
-		if (trig[i].bits == bits) {
+		if (trig[i].valid && trig[i].bits == bits) {
 			*s = trig[i].s;
 			*c = trig[i].c;
 			return;
 		}
-	*s = sinf(a);
-	*c = cosf(a);
+	glibc_sincosf(a, s, c);
 	trig[trig_next].bits = bits;
+	trig[trig_next].valid = true;
 	trig[trig_next].s = *s;
 	trig[trig_next].c = *c;
 	trig_next = (trig_next + 1) & 3;

@@ -126,5 +126,7 @@ void PM_CmdAngles(const pmcmd_t *c, float out[3]);  /* -pitch * (360.0f / 65536.
 /* one command: SV_RunClientCommand's v_angle = input_angles, then ncPlayer::Physics_Run
  * (player_pmove.qc:750-818) on s; input_timelength = (float)c->msec / 1000.0f */
 void PM_Run(pmstate_t *s, const pmcmd_t *c, const pmvars_t *v, const pmtrace_if *t);
+/* sinf(a) and cosf(a) as the server's C library (x86-64 glibc) gives them */
+void PM_SinCos(float a, float *s, float *c);
 
 #endif

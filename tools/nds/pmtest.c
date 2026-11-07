@@ -7,6 +7,7 @@
  *   (add -DPMTEST_HULL_NDS src/platform/nds/hull_nds.c to trace through the
  *   DS's own hull code instead of the copy of the server's below)
  *
+ *   pmtest -selftest
  *   pmtest <map.bsp> <ded.log> [-slot n] [-tol 0.05] [-chain] [-resample ms]
  *          [-bench] [-nofocus] [-dshull0] [-v] [-dump file [-fuzz n]]
  *
@@ -28,6 +29,11 @@
  *   -ownhull      with -DPMTEST_HULL_NDS: trace through the server's copy below
  *   -cmphull      with -DPMTEST_HULL_NDS: run both on every trace and count
  *                 the ones that differ in any bit
+ *   pmtest -selftest   checks PM_SinCos against this C library's sinf/cosf on
+ *                 every angle a command can carry (yaw and pitch, both
+ *                 constants pmove_nds.c turns them into radians with), and
+ *                 fexact_nds.h's fx_sqrt against sqrtf on all 2^32 floats;
+ *                 meaningful on x86-64 glibc, the server's
  *   -dump file    writes every result of the step and -chain runs, and of n
  *                 made-up variants of each step (-fuzz n, default 8: moved,
  *                 pushed, turned, other keys), as raw bits: two builds of the
@@ -48,6 +54,7 @@
 #include <time.h>
 
 #include "pmove_nds.h"
+#include "fexact_nds.h"
 #ifdef PMTEST_HULL_NDS
 #include "hull_nds.h"
 #endif
@@ -1401,12 +1408,42 @@ static long file_read(void *ctx, const char *path, long ofs, long len, void *dst
 }
 #endif
 
+/* -selftest: the exact replacements against the host's own functions */
+static int selftest(void)
+{
+	const float d2r = (float)(3.14159265358979323846 / 180.0), k = 0x1.1df45cp-6f;
+	long bad = 0, n = 0;
+	uint32_t u = 0;
+	for (int c = 0; c < 2; c++)
+		for (int i = -32768; i <= 32768; i++) {
+			float a = i * (360.0f / 65536.0f), x = a * (c ? k : d2r), s, co;
+			PM_SinCos(x, &s, &co);
+			n++;
+			if (fx_bits(s) != fx_bits(sinf(x)) || fx_bits(co) != fx_bits(cosf(x))) {
+				if (bad++ < 5)
+					printf("SELFTEST sincos %a: %a %a, sinf/cosf %a %a\n", x, s, co, sinf(x), cosf(x));
+			}
+		}
+	printf("PMTEST selftest sincos angles=%ld differ=%ld\n", n, bad);
+	n = bad;
+	bad = 0;
+	do {
+		float x = fx_float(u);
+		if (fx_bits(fx_sqrt(x)) != fx_bits(sqrtf(x)) && bad++ < 5)
+			printf("SELFTEST sqrt %08x: %08x, sqrtf %08x\n", u, fx_bits(fx_sqrt(x)), fx_bits(sqrtf(x)));
+	} while (++u);
+	printf("PMTEST selftest sqrt floats=4294967296 differ=%ld\n", bad);
+	return n || bad;
+}
+
 int main(int argc, char **argv)
 {
 	const char *mappath = NULL, *logpath = NULL, *emit = NULL, *dumppath = NULL;
 	int slot = 0, resample_ms = 0, status = 0, nfuzz = 8;
 	float tol = 0.05f;
 	bool chain = false, dobench = false;
+	if (argc == 2 && !strcmp(argv[1], "-selftest"))
+		return selftest();
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-slot") && i + 1 < argc)
 			slot = atoi(argv[++i]);
