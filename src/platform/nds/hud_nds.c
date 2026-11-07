@@ -351,19 +351,36 @@ static void set_crosshair(int w, int h, uint16_t rgb, const uint8_t *mask)
 	BG_PALETTE[HC_XHAIR] = rgb;
 }
 
+/* a HUDINFO is read whole into this before any of it is taken: one cut short (or older
+ * than ours) changes nothing and is not acknowledged, so the server sends it again */
+static struct {
+	char keys[HK_COUNT][96];
+	char herohud[256];
+	hplayer_t pl[MAX_PLAYERS];
+	struct {
+		uint16_t ent;
+		int16_t health, max;
+		char name[NAMELEN];
+	} npc[MAX_NPC];
+	int numnpc;
+	char obit[8][4][NAMELEN];
+} hin;
+
 void Hud_Packet(const uint8_t *d, int len)
 {
-	int pos = 7, n;
-	char key[96], s[4][NAMELEN];
+	int pos = 7, n, xw = 0, xh = 0, xat = 0, nobit, fresh;
+	uint16_t ver;
+	uint8_t seq;
+	char key[96];
 	if (len < 8)
 		return;
-	if ((uint16_t)(d[4] | d[5] << 8) == hud.version && hud.have)
+	ver = (uint16_t)(d[4] | d[5] << 8);
+	/* versions go up (skipping 0); one reordered behind ours is old */
+	if (hud.have && (int16_t)(ver - hud.version) <= 0)
 		return;
-	hud.version = (uint16_t)(d[4] | d[5] << 8);
-	hud.self = d[6];
 	for (int k = 0; k < HK_COUNT; k++)
-		hud.keys[k][0] = 0;
-	hud.herohud[0] = 0;
+		hin.keys[k][0] = 0;
+	hin.herohud[0] = 0;
 	n = d[pos++];
 	for (int i = 0; i < n; i++) {
 		int id, at;
@@ -374,11 +391,11 @@ void Hud_Packet(const uint8_t *d, int len)
 		if (!rd_str(d, len, &pos, key, sizeof(key)))
 			return;
 		if (id == HK_HEROHUD)
-			copy_n(hud.herohud, sizeof(hud.herohud), d + at + 1, d[at]);
+			copy_n(hin.herohud, sizeof(hin.herohud), d + at + 1, d[at]);
 		if (id < HK_COUNT)
-			memcpy(hud.keys[id], key, sizeof(key));
+			memcpy(hin.keys[id], key, sizeof(key));
 	}
-	memset(hud.pl, 0, sizeof(hud.pl));
+	memset(hin.pl, 0, sizeof(hin.pl));
 	if (pos >= len)
 		return;
 	n = d[pos++];
@@ -395,56 +412,69 @@ void Hud_Packet(const uint8_t *d, int len)
 			return;
 		p.used = true;
 		if (slot < MAX_PLAYERS)
-			hud.pl[slot] = p;
+			hin.pl[slot] = p;
 	}
 	if (pos >= len)
 		return;
 	n = d[pos++];
-	hud.numnpc = 0;
+	hin.numnpc = 0;
 	for (int i = 0; i < n; i++) {
 		if (pos + 6 > len)
 			return;
-		if (hud.numnpc < MAX_NPC) {
-			hud.npc[hud.numnpc].ent = (uint16_t)(d[pos] | d[pos + 1] << 8);
-			hud.npc[hud.numnpc].health = (int16_t)(d[pos + 2] | d[pos + 3] << 8);
-			hud.npc[hud.numnpc].max = (int16_t)(d[pos + 4] | d[pos + 5] << 8);
+		if (hin.numnpc < MAX_NPC) {
+			hin.npc[hin.numnpc].ent = (uint16_t)(d[pos] | d[pos + 1] << 8);
+			hin.npc[hin.numnpc].health = (int16_t)(d[pos + 2] | d[pos + 3] << 8);
+			hin.npc[hin.numnpc].max = (int16_t)(d[pos + 4] | d[pos + 5] << 8);
 		}
 		pos += 6;
-		if (!rd_str(d, len, &pos, hud.numnpc < MAX_NPC ? hud.npc[hud.numnpc].name : key, NAMELEN))
+		if (!rd_str(d, len, &pos, hin.numnpc < MAX_NPC ? hin.npc[hin.numnpc].name : key, NAMELEN))
 			return;
-		if (hud.numnpc < MAX_NPC)
-			hud.numnpc++;
+		if (hin.numnpc < MAX_NPC)
+			hin.numnpc++;
 	}
 	if (pos + 2 > len)
 		return;
-	{
-		int w = d[pos], h = d[pos + 1];
-		pos += 2;
-		if (w && h) {
-			int bytes = (w * h + 7) / 8;
-			if (pos + 2 + bytes > len || w > 32 || h > 32)
+	xw = d[pos], xh = d[pos + 1];
+	pos += 2;
+	if (xw && xh) {
+		if (pos + 2 + (xw * xh + 7) / 8 > len || xw > 32 || xh > 32)
+			return;
+		xat = pos;
+		pos += 2 + (xw * xh + 7) / 8;
+	}
+	/* the newest obituaries */
+	if (pos + 2 > len)
+		return;
+	seq = d[pos], nobit = d[pos + 1];
+	pos += 2;
+	if (nobit > 8)
+		return;
+	for (int i = 0; i < nobit; i++)
+		for (int k = 0; k < 4; k++)
+			if (!rd_str(d, len, &pos, hin.obit[i][k], NAMELEN))
 				return;
-			set_crosshair(w, h, (uint16_t)(d[pos] | d[pos + 1] << 8), d + pos + 2);
-			pos += 2 + bytes;
-		} else
-			hud.xw = hud.xh = 0;
-	}
-	/* the newest obituaries: the ones already there at the first HUDINFO aren't news */
-	if (pos + 2 > len)
-		return;
-	{
-		uint8_t seq = d[pos];
-		int count = d[pos + 1], fresh = (uint8_t)(seq - hud.obitseq);
-		pos += 2;
-		for (int i = 0; i < count; i++) {
-			for (int k = 0; k < 4; k++)
-				if (!rd_str(d, len, &pos, s[k], NAMELEN))
-					return;
-			if (hud.obitinit && i >= count - fresh)
-				obituary(s[0], s[1], s[2], s[3]);
-		}
-		hud.obitseq = seq, hud.obitinit = true;
-	}
+
+	/* all of it read: take it */
+	hud.version = ver;
+	hud.self = d[6];
+	memcpy(hud.keys, hin.keys, sizeof(hud.keys));
+	memcpy(hud.herohud, hin.herohud, sizeof(hud.herohud));
+	memcpy(hud.pl, hin.pl, sizeof(hud.pl));
+	memcpy(hud.npc, hin.npc, sizeof(hud.npc));
+	hud.numnpc = hin.numnpc;
+	if (xat)
+		set_crosshair(xw, xh, (uint16_t)(d[xat] | d[xat + 1] << 8), d + xat + 2);
+	else
+		hud.xw = hud.xh = 0;
+	/* the ones already there at the first HUDINFO aren't news; only a seq that went
+	 * forward brings new ones */
+	fresh = (int8_t)(seq - hud.obitseq) > 0 ? (uint8_t)(seq - hud.obitseq) : 0;
+	if (hud.obitinit)
+		for (int i = BW_NDS_MAX(nobit - fresh, 0); i < nobit; i++)
+			obituary(hin.obit[i][0], hin.obit[i][1], hin.obit[i][2], hin.obit[i][3]);
+	if (!hud.obitinit || fresh)
+		hud.obitseq = seq;
+	hud.obitinit = true;
 	hud.have = true;
 }
 
