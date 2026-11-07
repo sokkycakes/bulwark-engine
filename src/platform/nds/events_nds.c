@@ -867,8 +867,10 @@ static void band_flush(void)
 void Events_Commit2D(void)
 {
 	band_flush();
+	/* by halfwords: palette RAM takes no byte writes, which memcpy may make */
 	for (int g = 0; g < G_COUNT; g++)
-		memcpy(BG_PALETTE + (g + 1) * 16 + 1, stagepal[g], sizeof(stagepal[g]));
+		for (int k = 0; k < 5; k++)
+			BG_PALETTE[(g + 1) * 16 + 1 + k] = stagepal[g][k];
 	/* the text layers over the 3D view, the HUD and the backdrop */
 	REG_BLDCNT = stagebld ? BLEND_ALPHA | BLEND_SRC_BG2 | BLEND_SRC_BG3 | BLEND_DST_BG0 | BLEND_DST_BG1 | BLEND_DST_BACKDROP
 	                      : BLEND_NONE;
