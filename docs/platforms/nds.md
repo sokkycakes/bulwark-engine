@@ -754,8 +754,10 @@ into VRAM pixel by pixel took 5 to 11 ms and dropped frames).
 
 Where it differs from the PC:
 
-- The PC's text fades to nothing; on the DS the letters darken into their
-  black outline and then go (the layer is opaque).
+- The PC's text fades to nothing. On the DS, when every text group up has
+  the same alpha (to 1/16) the layers blend at that alpha (`REG_BLDALPHA`)
+  and look as the PC's; otherwise each group's letters darken into their
+  black outline and then go.
 - The fade's modulate style and the damage tint multiply the scene on the
   PC; the DS can only blend toward a colour: the modulate fade dims, the
   tint blends toward a dark red at the same strength (0.25 at the hit).
@@ -764,9 +766,18 @@ Where it differs from the PC:
   (from the source; not compared on a PC).
 - The damage arrows are trapezoids in an orange-red, not Valve's
   `640_pain` sprite; pickups are words, not the HUD sprite's icons.
-- game_text's highlight pass (effects 1 and 2's second colour) is not
-  drawn; env_message shows the title's name with `GameMessage_Setup`'s
-  defaults (the DS has no titles.txt).
+- game_text is on BG3, behind the HUD, as `CSQC_Update2D` draws it before
+  `HUD_Draw`; its second pass (effects 1 and 2, `text.qc
+  GameText_DrawMessage`) is drawn in colour 2 over the first. env_message
+  and worldspawn's `chaptertitle` are resolved in the game's titles.txt on
+  the server (`text.qc GameText_ParseString`, `titles.qc`) and sent as
+  game_text; `startdark` sends `fade.qc`'s fade from black.
+- Colour codes are kept: `^0`-`^9` take the engine's `qcolors`
+  (`src/render/r_draw.c`), `^xRGB` the nearest of those ten (a palette bank
+  has no room for more), `^d` the text's own colour; links and styles are
+  skipped. Valve's `\y \r \g \b \w \d` become `^3 ^1 ^2 ^4 ^7 ^8`.
+- The pickup flash (`cl_cmds.c BonusFlash_f`, sent for an item def with
+  `pickupFlash 1`) is the engine's gold at 50/255, gone at 100/255 a second.
 - Shakes and fades, unreliable on the PC, come reliably: a lost one comes
   0.2 s late instead of not at all.
 - Prints start under the frame-rate lines (row 24) rather than at the PC's
@@ -779,6 +790,9 @@ Where it differs from the PC:
 - Prints at the top left lie over the objective panel, and the chat field
   over the vitals' top (observed); the PC places them the same way, at its
   own scale.
+- Not drawn yet: the HUD's damage-type icons (`valve/src/hud/hud.qc
+  HLHUD_DamageNotifyDraw`), and pickup notices for ammo and weapons (only
+  battery, health kit and long jump have words).
 
 ### Measured: events, in melonDS 1.1 (not hardware)
 
@@ -850,6 +864,42 @@ tint, fade, shake, game_text, chat, the centerprint over the down box, and
 the crosshair with the HUD worktree's synthetic sprite: no Valve sprite
 sheets are in the rig, so the PC draws no crosshair there either) are kept
 out of the repository: they show Valve's data.
+
+### After the third review's fixes, measured in melonDS 1.1 (not hardware)
+
+What changed: `EVENT` sends only new records (the window again when the
+oldest waited 0.2 s) and folds "Respawn in N seconds" repeats into one
+`CENTERAGAIN`; `HUDINFO` stays under its body limit and is taken whole or
+not at all; the HUD's and the text's per-frame work is limited by time
+(2.5 ms and 2 ms, checked between runs of tiles and between batches of two
+rows of cells, at least one a frame); the glyph drawing runs in ITCM as ARM
+code; text tiles and palettes go to VRAM right after the wait for the blank.
+
+Text layers: BG2 (tiles in VRAM D, map base 13, in front of the HUD) for
+prints, chat, centerprints, the feed and pickups; BG3 (tiles in VRAM D after
+BG2's, map base 14, priority 1, behind the HUD) for game_text. Both
+use bank D, so the viewer's two-pass mode (which takes D for textures) and
+event text cannot run together; a link session has no two passes.
+
+Same runs as above (`rig/make_meas_src.py` builds of d53e009 and its
+`bulwark-ded`), one each, observed. The arena run adds a chat flood of 10
+lines, two game_text channels with effect 1, and dies.
+
+| Run | fps, median (worst second) | CPU a frame, median (worst second) | `Hud_Frame` worst frame | Text redraw worst frame | States within 0.5 units | RAM peak / lowest free | `EVENT` / `HUDINFO` |
+|---|---|---|---|---|---|---|---|
+| `coop_arena`, 40 firing, damage and death | 30 (30) | 7.3 ms (13.4) | 4.9 ms (8.3 before) | 4.7 ms (15.0 before the time limit) | 1029 of 1036 | 443 KB / 2.84 MB | 65 / 168 B/s (185 / 321 before) |
+| the same, 150 ms | 30 (30) | 7.4 ms (10.5) | 3.4 ms | 4.7 ms | 581 of 583 | 438 KB / 2.84 MB | 90 / 165 B/s |
+| `c2a4e`, standing | 30 (1 while the models load) | 13.6 ms | 3.6 ms | 1.4 ms | – | 1.90 MB / 160 KB | – |
+| `c1a0`, standing | 30 (30) | 11.0 ms (11.7) | 3.9 ms | 1.5 ms | – | 983 KB / 1.53 MB | – |
+| `e0m1`, walking (62c2ce3's parent build) | 30 (30) | 4.5 ms (6.5) | 1.9 ms | 2.6 ms | 851 of 851 | 629 KB / 1.72 MB | 5 B/s / – |
+
+The text redraw's worst frames are on the death screen, with the chat
+flood over the respawn countdown: one batch can take more than the 2 ms
+(at least one is drawn a frame), and those frames take 3 to 7 ms in all, so
+no second dropped. The lowest free RAM on c2a4e went from 192 to 160 KB
+(the second text band and `HUDINFO`'s staging copy, about 22 KB of bss).
+In the arena run all 117 records were acknowledged, none dropped, no
+stops; c1a0's chapter title (`C0A1TITLE`) came from titles.txt.
 
 ## Map viewer controls
 
