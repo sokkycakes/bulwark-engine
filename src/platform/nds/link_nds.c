@@ -802,33 +802,11 @@ static void hud_diag(const char *l1, const char *l2)
 }
 
 /* for events_nds.c: its text goes on this layer too */
-int LinkHud_Text(int x, int y, int scale, int col, const char *s) { return topgfx ? hud_text(x, y, scale, col, s) : 0; }
+const uint8_t *LinkHud_Glyph(int c, int *w, int *adv) { return hud_glyph(c, w, adv); }
 int LinkHud_Width(const char *s, int scale) { return hud_width(s, scale); }
 int LinkHud_Height(void) { return hudh; }
-
-/* rows of cells cleared, word by word (VRAM takes no byte writes), and back to bank 0 */
-void LinkHud_Clear(int row0, int rows)
-{
-	uint16_t *map;
-	if (!topgfx)
-		return;
-	dmaFillWords(0, topgfx + row0 * 32 * 16, (uint32_t)rows * 32 * 32);
-	map = bgGetMapPtr(1);
-	for (int i = row0 * 32; i < (row0 + rows) * 32 && i < TOP_TILES; i++)
-		map[i] = (uint16_t)i;
-}
-
-/* the palette bank of the cells a box covers */
-void LinkHud_Bank(int x, int y, int w, int h, int bank)
-{
-	uint16_t *map;
-	if (!topgfx)
-		return;
-	map = bgGetMapPtr(1);
-	for (int cy = BW_NDS_MAX(y, 0) >> 3; cy <= BW_NDS_MIN(y + h - 1, 191) >> 3; cy++)
-		for (int cx = BW_NDS_MAX(x, 0) >> 3; cx <= BW_NDS_MIN(x + w - 1, 255) >> 3; cx++)
-			map[cy * 32 + cx] = (uint16_t)((cy * 32 + cx) | bank << 12);
-}
+uint16_t *LinkHud_Tiles(void) { return topgfx; }
+uint16_t *LinkHud_Map(void) { return topgfx ? bgGetMapPtr(1) : NULL; }
 
 static void top_init(void)
 {

@@ -17,11 +17,11 @@
 #include "nds.h"
 
 /* link_nds.c's HUD layer, for the text */
-int LinkHud_Text(int x, int y, int scale, int col, const char *s); /* returns its width */
+const uint8_t *LinkHud_Glyph(int c, int *w, int *adv); /* a glyph's rows (bit 0 the left pixel) */
 int LinkHud_Width(const char *s, int scale);
-int LinkHud_Height(void);                                          /* the font's rows */
-void LinkHud_Clear(int row0, int rows);                            /* whole rows of 8 pixels */
-void LinkHud_Bank(int x, int y, int w, int h, int bank);           /* the palette bank of the cells there */
+int LinkHud_Height(void);                              /* the font's rows */
+uint16_t *LinkHud_Tiles(void);                         /* its tiles (cell i is tile i, 4 bits a pixel), NULL when off */
+uint16_t *LinkHud_Map(void);
 
 void Events_Reset(void);
 /* an EVENT packet after the type byte (from the session on) */
@@ -41,6 +41,7 @@ void Events_Draw2D(void);
 typedef struct {
 	uint32_t taken, gaps;
 	uint16_t redraws;
+	uint32_t lastdraw_ticks; /* the last redraw's time, tickGetCount() */
 	uint8_t shaking, fading, damage, texts;
 } evstats_t;
 extern evstats_t Events_Stats;
