@@ -92,41 +92,54 @@ static void pad_axis(int slot, int axis, int16_t raw)
 		int key = axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? K_GP_LTRIGGER : K_GP_RTRIGGER;
 		/* a little hysteresis so a resting finger doesn't chatter */
 		if (!*held && v > 0.5f)
-			*held = true, IN_KeyEvent(key, true, 0);
+			*held = true, IN_DeviceKeyEvent(slot + 1, key, true, 0);
 		else if (*held && v < 0.4f)
-			*held = false, IN_KeyEvent(key, false, 0);
+			*held = false, IN_DeviceKeyEvent(slot + 1, key, false, 0);
 	}
 	IN_JoyAxis(slot, axis, v);
 }
 
-/* "joy_virtual" attaches a pretend controller and "joy_virtual_set axis|button
- * n value" moves it, for trying controller handling without hardware */
-static SDL_Joystick *virtual_pad;
+/* "joy_virtual [count]" attaches pretend controllers (up to four, for split
+ * screen) and "joy_virtual_set [pad] axis|button n value" moves one, for
+ * trying controller handling without hardware */
+static SDL_Joystick *virtual_pads[MAX_PADS];
 
 static void JoyVirtual_f(int argc, const char **argv)
 {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
-	int index;
-	if (virtual_pad)
-		return;
-	index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
-	                                  SDL_CONTROLLER_BUTTON_MAX, 0);
-	if (index < 0 || !(virtual_pad = SDL_JoystickOpen(index)))
-		Con_Printf("joy_virtual: %s\n", SDL_GetError());
+	int want = argc > 1 ? BW_CLAMP(atoi(argv[1]), 1, MAX_PADS) : 1;
+	for (int i = 0; i < want; i++) {
+		int index;
+		if (virtual_pads[i])
+			continue;
+		index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
+		                                  SDL_CONTROLLER_BUTTON_MAX, 0);
+		if (index < 0 || !(virtual_pads[i] = SDL_JoystickOpen(index))) {
+			Con_Printf("joy_virtual: %s\n", SDL_GetError());
+			return;
+		}
+	}
 #endif
 }
 
 static void JoyVirtualSet_f(int argc, const char **argv)
 {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
-	if (!virtual_pad || argc < 4) {
-		Con_Printf("joy_virtual_set axis|button <n> <value>: after joy_virtual\n");
+	int pad = 0;
+	SDL_Joystick *j;
+	if (argc == 5) {
+		pad = atoi(argv[1]);
+		argv++, argc--;
+	}
+	j = pad >= 0 && pad < MAX_PADS ? virtual_pads[pad] : NULL;
+	if (!j || argc < 4) {
+		Con_Printf("joy_virtual_set [pad] axis|button <n> <value>: after joy_virtual\n");
 		return;
 	}
 	if (!strcmp(argv[1], "axis"))
-		SDL_JoystickSetVirtualAxis(virtual_pad, atoi(argv[2]), (Sint16)BW_MAX(-32768, BW_MIN(32767, atof(argv[3]) * 32767)));
+		SDL_JoystickSetVirtualAxis(j, atoi(argv[2]), (Sint16)BW_MAX(-32768, BW_MIN(32767, atof(argv[3]) * 32767)));
 	else
-		SDL_JoystickSetVirtualButton(virtual_pad, atoi(argv[2]), (Uint8)atoi(argv[3]));
+		SDL_JoystickSetVirtualButton(j, atoi(argv[2]), (Uint8)atoi(argv[3]));
 #endif
 }
 
@@ -502,7 +515,7 @@ bool VID_PumpEvents(void)
 		case SDL_CONTROLLERBUTTONUP: {
 			int k = pad_button(ev.cbutton.button);
 			if (k && pad_for_id(ev.cbutton.which) >= 0)
-				IN_KeyEvent(k, ev.type == SDL_CONTROLLERBUTTONDOWN, 0);
+				IN_DeviceKeyEvent(pad_for_id(ev.cbutton.which) + 1, k, ev.type == SDL_CONTROLLERBUTTONDOWN, 0);
 			break;
 		}
 		case SDL_CONTROLLERAXISMOTION: {

@@ -25,7 +25,7 @@
 serverstatic_t svs;
 
 static cvar_t *sv_maxclients, *sv_timeout, *sv_unlag, *sv_maxunlag, *sv_minupdaterate, *sv_maxupdaterate;
-static cvar_t *sv_port, *hostname, *sv_maxrate, *sv_chatfilter;
+static cvar_t *sv_port, *hostname, *sv_maxrate, *sv_chatfilter, *sv_maxseats;
 
 /* the buffers QC's Write* builtins target */
 static strbuf_t msg_entity_buf; /* MSG_ENTITY, inside SendEntity */
@@ -51,6 +51,56 @@ client_t *SV_ClientForEdict(int e)
 
 static int client_slot(const client_t *c) { return (int)(c - svs.clients); }
 
+/* --- split screen seats --------------------------------------------------- */
+
+static bool is_seat(const client_t *c) { return c->parent != 0; }
+/* the client that owns the connection c's messages travel on */
+static client_t *conn_of(client_t *c) { return c->parent ? &svs.clients[c->parent - 1] : c; }
+/* a connection that gets one copy of what goes to everyone: not a bot, not
+ * a seat (its connection gets it already) */
+static bool gets_broadcasts(const client_t *c) { return !c->bot && !c->parent; }
+
+/* the seat of connection 'conn' numbered n, or NULL */
+static client_t *seat_client(client_t *conn, int n)
+{
+	if (n == 0)
+		return conn;
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *o = &svs.clients[i];
+		if (o->state != CS_FREE && o->parent == client_slot(conn) + 1 && o->seat == n)
+			return o;
+	}
+	return NULL;
+}
+
+/* conn and its seats in seat order; returns how many */
+static int connection_seats(client_t *conn, client_t *out[SV_MAX_SEATS])
+{
+	int n = 0;
+	for (int k = 0; k < SV_MAX_SEATS; k++) {
+		client_t *s = seat_client(conn, k);
+		if (s)
+			out[n++] = s;
+	}
+	return n;
+}
+
+/* a reliable message for seat c, through its connection, behind svc_seat */
+static void seat_reliable(client_t *c, const void *data, size_t len)
+{
+	client_t *conn = conn_of(c);
+	uint8_t *tmp;
+	if (conn->state == CS_FREE)
+		return;
+	SV_MVDReliable(c, data, len); /* a recording sees each seat as a player */
+	tmp = Mem_Alloc(len + 2);
+	tmp[0] = svc_seat;
+	tmp[1] = (uint8_t)c->seat;
+	memcpy(tmp + 2, data, len);
+	Netchan_WriteReliable(&conn->chan, tmp, len + 2);
+	Mem_Free(tmp);
+}
+
 static void sb_write(strbuf_t *sb, const msg_t *m) { SB_Append(sb, (const char *)m->data, m->cursize); }
 
 /* while set, reliable messages go here (each as uint32 length + bytes)
@@ -71,8 +121,12 @@ static void flush_qcrel(client_t *c)
 		uint8_t *tmp = Mem_Alloc(m.cursize + c->qcrel.len);
 		memcpy(tmp, m.data, m.cursize);
 		memcpy(tmp + m.cursize, c->qcrel.data, c->qcrel.len);
-		SV_MVDReliable(c, tmp, m.cursize + c->qcrel.len);
-		Netchan_WriteReliable(&c->chan, tmp, m.cursize + c->qcrel.len);
+		if (is_seat(c))
+			seat_reliable(c, tmp, m.cursize + c->qcrel.len);
+		else {
+			SV_MVDReliable(c, tmp, m.cursize + c->qcrel.len);
+			Netchan_WriteReliable(&c->chan, tmp, m.cursize + c->qcrel.len);
+		}
 		Mem_Free(tmp);
 	}
 done:
@@ -90,6 +144,10 @@ static void client_reliable(client_t *c, const msg_t *m)
 	if (c->state == CS_FREE || c->bot)
 		return;
 	flush_qcrel(c);
+	if (is_seat(c)) {
+		seat_reliable(c, m->data, m->cursize);
+		return;
+	}
 	SV_MVDReliable(c, m->data, m->cursize);
 	Netchan_WriteReliable(&c->chan, m->data, m->cursize);
 }
@@ -100,7 +158,7 @@ static void broadcast_reliable(const msg_t *m, bool spawned_only)
 {
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state == CS_FREE || (spawned_only && c->state != CS_SPAWNED))
+		if (c->state == CS_FREE || (spawned_only && c->state != CS_SPAWNED) || is_seat(c))
 			continue;
 		client_reliable(c, m);
 	}
@@ -147,7 +205,7 @@ void SV_StuffText(client_t *c, const char *text)
 void SV_BroadcastPrint(int level, const char *text)
 {
 	for (int i = 0; i < svs.maxclients; i++)
-		if (svs.clients[i].state == CS_SPAWNED)
+		if (svs.clients[i].state == CS_SPAWNED && !is_seat(&svs.clients[i]))
 			client_print(&svs.clients[i], level, text);
 	Con_Print(text);
 }
@@ -314,12 +372,13 @@ static void snap_add(snaprec_t *s, uint32_t ent, uint32_t flags, bool remove, bo
 	s->num++;
 }
 
-/* what the client's acks say about our earlier packets */
-static void process_acks(client_t *c)
+/* what the client's acks say about our earlier packets; 'ch' is the netchan
+ * they came on, which for a seat is its connection's */
+static void process_seat_acks(client_t *c, const netchan_t *ch)
 {
-	for (int i = 0; i < c->chan.numacked; i++) {
-		snaprec_t *s = &c->snaps[c->chan.acked[i] % SNAP_HISTORY];
-		if (s->seq != c->chan.acked[i])
+	for (int i = 0; i < ch->numacked; i++) {
+		snaprec_t *s = &c->snaps[ch->acked[i] % SNAP_HISTORY];
+		if (s->seq != ch->acked[i])
 			continue;
 		for (int r = 0; r < s->num; r++) {
 			sentrec_t *rec = &s->recs[r];
@@ -330,9 +389,9 @@ static void process_acks(client_t *c)
 		}
 		s->num = 0;
 	}
-	for (int i = 0; i < c->chan.numlost; i++) {
-		snaprec_t *s = &c->snaps[c->chan.lost[i] % SNAP_HISTORY];
-		if (s->seq != c->chan.lost[i])
+	for (int i = 0; i < ch->numlost; i++) {
+		snaprec_t *s = &c->snaps[ch->lost[i] % SNAP_HISTORY];
+		if (s->seq != ch->lost[i])
 			continue;
 		for (int r = 0; r < s->num; r++) {
 			sentrec_t *rec = &s->recs[r];
@@ -348,6 +407,14 @@ static void process_acks(client_t *c)
 		}
 		s->num = 0;
 	}
+}
+
+static void process_acks(client_t *c)
+{
+	client_t *seats[SV_MAX_SEATS];
+	int n = connection_seats(c, seats);
+	for (int k = 0; k < n; k++)
+		process_seat_acks(seats[k], &c->chan);
 	c->chan.numacked = c->chan.numlost = 0;
 }
 
@@ -394,6 +461,33 @@ static bool call_sendentity(int e, int client_edict, uint32_t flags)
 	return ok;
 }
 
+/* Split screen: the seats of the connection being written, so that each
+ * entity goes in only one seat's section of a packet. Nuclide's player sends
+ * its owner fields nobody else gets, and the client game decides once, as an
+ * entity is created, whether it is the local player; so a seat's own player
+ * and what it owns always go in that seat's section, and anything else stays
+ * in the section of the first seat that took it. */
+static client_t *snap_seats[SV_MAX_SEATS];
+static int snap_numseats;
+
+static bool claimed_by_other_seat(const client_t *c, int e)
+{
+	qcvm_t *vm = sv.vm;
+	int owner = F.owner >= 0 ? QC_EInt(vm, e, F.owner) : 0;
+	if (e == c->edict || (owner && owner == c->edict))
+		return false;
+	for (int k = 0; k < snap_numseats; k++) {
+		const client_t *o = snap_seats[k];
+		if (o == c)
+			continue;
+		if (e == o->edict || (owner && owner == o->edict))
+			return true;
+		if (e < o->estate_count && (o->estate[e] & ES_KNOWN))
+			return true;
+	}
+	return false;
+}
+
 /* Writes entity e's update, if it has one. Returns false when it doesn't
  * fit in 'budget' bytes. Calling it again in the same packet writes
  * nothing, since the first call cleared what was pending. */
@@ -403,6 +497,8 @@ static bool write_entity(client_t *c, msg_t *m, size_t budget, snaprec_t *rec, i
 	uint8_t *st = &c->estate[e];
 	bool alive = !vm->edicts[e].free && F.sendentity >= 0 && QC_EInt(vm, e, F.sendentity);
 	size_t before = m->cursize;
+	if (alive && snap_numseats > 1 && claimed_by_other_seat(c, e))
+		alive = false; /* another seat of this connection has it */
 	uint32_t flags = c->pending[e];
 	bool create;
 
@@ -476,13 +572,42 @@ static void write_entities(client_t *c, msg_t *m, size_t budget, snaprec_t *rec)
 	MSG_WriteVarUInt(m, 0);
 }
 
+/* one seat's entity section of a packet, up to 'limit' bytes into it */
+static void write_section(client_t *c, msg_t *m, size_t limit, uint32_t seq)
+{
+	snaprec_t *rec = &c->snaps[seq % SNAP_HISTORY];
+	rec->seq = seq;
+	rec->num = 0;
+	if (c->state != CS_SPAWNED)
+		return;
+	MSG_WriteByte(m, svc_snapshot);
+	MSG_WriteLong(m, sv.frames);
+	MSG_WriteDouble(m, sv.time);
+	MSG_WriteLong(m, (int32_t)c->lastcmd);
+	write_entities(c, m, limit, rec);
+}
+
+/* a seat's unreliable extras, if they fit in what is left before 'limit' */
+static void write_datagram(client_t *c, msg_t *m, size_t limit)
+{
+	if (!c->datagram.len)
+		return;
+	if (m->cursize + c->datagram.len + 32 <= limit) {
+		MSG_WriteData(m, c->datagram.data, c->datagram.len);
+		c->datagram.len = 0;
+	} else if (c->datagram.len > NET_MAX_PACKET - 48 - 32) {
+		Con_DPrintf("dropped %d bytes of unreliable messages for %s\n", (int)c->datagram.len, c->name);
+		c->datagram.len = 0;
+	}
+}
+
 static void send_snapshot(client_t *c)
 {
 	uint8_t buf[NET_MAX_PACKET];
 	msg_t m;
-	snaprec_t *rec;
 	uint32_t seq = c->chan.outseq + 1; /* the sequence Netchan_Transmit will use */
 	size_t budget = NET_MAX_PACKET - 48;
+	int n;
 	/* leave room for the reliable fragments this packet will carry; ones
 	 * in flight and not yet due for a resend take none */
 	budget -= Netchan_ReliableBytesDue(&c->chan);
@@ -494,39 +619,38 @@ static void send_snapshot(client_t *c)
 	 * a reliable fragment leaves too little room they wait for the next
 	 * packet; only a backlog that no packet could carry is dropped. */
 	{
-		size_t sent = 0;
-		if (c->datagram.len) {
-			size_t room = budget > 32 ? budget - 32 : 0;
-			if (c->datagram.len <= room) {
-				MSG_WriteData(&m, c->datagram.data, c->datagram.len);
-				sent = c->datagram.len;
-				c->datagram.len = 0;
-			} else if (c->datagram.len > NET_MAX_PACKET - 48 - 32) {
-				Con_DPrintf("dropped %d bytes of unreliable messages for %s\n", (int)c->datagram.len, c->name);
-				c->datagram.len = 0;
-			}
-		}
-		SV_MVDSnapshot(c, (const uint8_t *)c->datagram.data, sent);
+		size_t before = m.cursize;
+		write_datagram(c, &m, budget);
+		SV_MVDSnapshot(c, m.data + before, m.cursize - before);
 	}
 	if (c->voicegram.len && m.cursize + c->voicegram.len < budget * 3 / 4)
 		MSG_WriteData(&m, c->voicegram.data, c->voicegram.len);
 	c->voicegram.len = 0;
 
-	rec = &c->snaps[seq % SNAP_HISTORY];
-	rec->seq = seq;
-	rec->num = 0;
-
-	if (c->state == CS_SPAWNED) {
-		MSG_WriteByte(&m, svc_snapshot);
-		MSG_WriteLong(&m, sv.frames);
-		MSG_WriteDouble(&m, sv.time);
-		MSG_WriteLong(&m, (int32_t)c->lastcmd);
-		write_entities(c, &m, budget, rec);
+	/* the connection's own section, then each seat's behind svc_seat, the
+	 * room shared out evenly (what one leaves goes to the next) */
+	n = connection_seats(c, snap_seats);
+	snap_numseats = n;
+	for (int k = 0; k < n; k++) {
+		client_t *s = snap_seats[k];
+		size_t share = m.cursize < budget ? (budget - m.cursize) / (size_t)(n - k) : 0;
+		if (k) {
+			MSG_WriteByte(&m, svc_seat);
+			MSG_WriteByte(&m, s->seat);
+			{
+				size_t before = m.cursize;
+				write_datagram(s, &m, m.cursize + share / 4);
+				SV_MVDSnapshot(s, m.data + before, m.cursize - before);
+			}
+		}
+		write_section(s, &m, m.cursize + share, seq);
 	}
+	snap_numseats = 0;
 	if (m.overflowed) {
 		Con_DPrintf("snapshot for %s overflowed\n", c->name);
 		m.cursize = 0;
-		rec->num = 0;
+		for (int k = 0; k < n; k++)
+			snap_seats[k]->snaps[seq % SNAP_HISTORY].num = 0;
 	}
 	Netchan_Transmit(&c->chan, m.data, m.cursize);
 }
@@ -556,6 +680,17 @@ void SV_ShadowReset(client_t *shadow) { reset_entity_state(shadow); }
 void SV_ShadowFree(client_t *shadow) { free_client_state(shadow); }
 
 static void send_serverdata(client_t *c);
+
+/* svc_seatinfo to connection 'conn': seat n is player slot s, or gone (NULL) */
+static void send_seatinfo(client_t *conn, int n, client_t *s)
+{
+	LOCALMSG(p, 16);
+	MSG_WriteByte(&p, svc_seatinfo);
+	MSG_WriteByte(&p, n);
+	MSG_WriteByte(&p, s ? client_slot(s) : 255);
+	MSG_WriteVarUInt(&p, s ? (uint32_t)s->edict : 0);
+	client_reliable(conn, &p);
+}
 
 /* the signon a client would get now, from serverdata to signon 1 */
 void SV_CaptureSignon(client_t *c, strbuf_t *out)
@@ -597,6 +732,12 @@ static void send_serverdata(client_t *c)
 	MSG_WriteString(&m, sv.serverinfo);
 	client_reliable(c, &m);
 	Mem_Free(big);
+	/* the client keeps its seats over a map change, so say again who they are */
+	for (int k = 1; k < SV_MAX_SEATS; k++) {
+		client_t *s = seat_client(c, k);
+		if (s)
+			send_seatinfo(c, k, s);
+	}
 
 	{
 		LOCALMSG(p, 600);
@@ -763,7 +904,15 @@ void SV_DropClient(client_t *c, const char *reason)
 		if (QC_FindFunction(vm, "ClientDisconnect"))
 			QC_ExecuteByName(vm, "ClientDisconnect");
 	}
-	if (!c->bot) {
+	if (!is_seat(c)) {
+		/* a connection's seats go with it */
+		for (int i = 0; i < svs.maxclients; i++)
+			if (svs.clients[i].state != CS_FREE && svs.clients[i].parent == client_slot(c) + 1)
+				SV_DropClient(&svs.clients[i], reason);
+	} else if (conn_of(c)->state != CS_FREE) {
+		send_seatinfo(conn_of(c), c->seat, NULL);
+	}
+	if (!c->bot && !is_seat(c)) {
 		/* tell the client a few times, it is unreliable */
 		LOCALMSG(m, 256);
 		MSG_WriteByte(&m, svc_disconnect);
@@ -784,6 +933,7 @@ void SV_DropClient(client_t *c, const char *reason)
 	c->state = CS_FREE;
 	c->bot = false;
 	c->have_parms = false;
+	c->parent = c->seat = 0;
 	broadcast_playerinfo(c, "", "");
 }
 
@@ -826,6 +976,10 @@ void SV_ClientsMapChanged(void)
 			continue;
 		}
 		reset_entity_state(c);
+		if (is_seat(c)) {
+			c->state = CS_CONNECTED; /* spawns when its connection says begin */
+			continue;
+		}
 		send_serverdata(c);
 	}
 }
@@ -1186,6 +1340,75 @@ static void parse_move(client_t *c, msg_t *m)
 			run_usercmd(c, &cmds[i]);
 }
 
+/* seat_join <n> "<userinfo>" [guest] and seat_leave <n>, from a connection:
+ * another local player starts or stops playing on it */
+static void seat_command(client_t *conn, int argc, const char **argv)
+{
+	int n = argc > 1 ? atoi(argv[1]) : 0;
+	client_t *s;
+	char tmp[64];
+	if (!strcmp(argv[0], "seat_leave")) {
+		s = n > 0 ? seat_client(conn, n) : NULL;
+		if (s)
+			SV_DropClient(s, "left the game");
+		return;
+	}
+	if (argc < 3 || n < 1 || n >= SV_MAX_SEATS)
+		return;
+	if (n >= sv_maxseats->ivalue) {
+		client_print(conn, 2, va("This server allows %d player%s per screen.\n", BW_MAX(1, sv_maxseats->ivalue),
+		                         sv_maxseats->ivalue > 1 ? "s" : ""));
+		send_seatinfo(conn, n, NULL);
+		return;
+	}
+	if ((s = seat_client(conn, n))) {
+		send_seatinfo(conn, n, s); /* a repeat: the answer was lost or is late */
+		return;
+	}
+	s = NULL;
+	for (int i = 0; !s && i < svs.maxclients; i++)
+		if (svs.clients[i].state == CS_FREE)
+			s = &svs.clients[i];
+	if (!s) {
+		client_print(conn, 2, "The server is full.\n");
+		send_seatinfo(conn, n, NULL);
+		return;
+	}
+	memset(s, 0, sizeof(*s));
+	s->edict = client_slot(s) + 1;
+	s->parent = client_slot(conn) + 1;
+	s->seat = n;
+	s->chan.remote = conn->chan.remote; /* for status and bans; never sent on */
+	Str_Copy(s->userinfo, argv[2], sizeof(s->userinfo));
+	SV_InfoGet(s->userinfo, "name", s->name, sizeof(s->name));
+	if (!s->name[0]) {
+		snprintf(s->name, sizeof(s->name), "%s (%d)", conn->name, n);
+		SV_InfoSet(s->userinfo, sizeof(s->userinfo), "name", s->name);
+	}
+	/* what the server says about the player, not the client */
+	SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*seat", va("%d", n));
+	SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*parent", va("%d", client_slot(conn)));
+	if (argc > 3 && !strcmp(argv[3], "guest")) {
+		SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*guest", "1");
+		SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*sponsor", va("%d", client_slot(conn)));
+	} else {
+		SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*guest", "");
+		SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*sponsor", "");
+	}
+	SV_InfoSet(s->userinfo, sizeof(s->userinfo), "*link", "");
+	s->updaterate = conn->updaterate;
+	s->interp = (float)atof(SV_InfoGet(s->userinfo, "cl_interp", tmp, sizeof(tmp)));
+	s->connect_time = host_time;
+	s->state = CS_CONNECTED;
+	Con_Printf("%s joined on %s's screen\n", s->name, conn->name);
+	SV_AdminConnected(s);
+	broadcast_playerinfo(s, "", s->userinfo);
+	reset_entity_state(s);
+	send_seatinfo(conn, n, s);
+	if (conn->state == CS_SPAWNED)
+		spawn_client(s);
+}
+
 static void execute_clientcommand(client_t *c, const char *s);
 
 static void parse_stringcmd(client_t *c, const char *s)
@@ -1209,7 +1432,17 @@ static void parse_stringcmd(client_t *c, const char *s)
 			} else {
 				spawn_client(c);
 			}
+			for (int k = 1; k < SV_MAX_SEATS; k++) {
+				client_t *st = seat_client(c, k);
+				if (st && st->state == CS_CONNECTED)
+					spawn_client(st);
+			}
 		}
+		goto done;
+	}
+	if (!strcmp(t->argv[0], "seat_join") || !strcmp(t->argv[0], "seat_leave")) {
+		if (!is_seat(c))
+			seat_command(c, t->argc, t->argv);
 		goto done;
 	}
 	/* "fullupdate": everything from serverdata on again, without a
@@ -1288,7 +1521,7 @@ static void execute_clientcommand(client_t *c, const char *s)
 		char text[1024];
 		snprintf(text, sizeof(text), "%s: %s\n", c->name, Cmd_Args());
 		for (int i = 0; i < svs.maxclients; i++)
-			if (svs.clients[i].state == CS_SPAWNED)
+			if (svs.clients[i].state == CS_SPAWNED && !is_seat(&svs.clients[i]))
 				client_print(&svs.clients[i], 3, text);
 		Con_Print(text);
 	} else if (!strcmp(t->argv[0], "kill")) {
@@ -1374,13 +1607,25 @@ static void parse_event(client_t *c, msg_t *m)
 	QC_Execute(vm, f);
 }
 
-static void parse_client_message(client_t *c, msg_t *m)
+static void parse_client_message(client_t *conn, msg_t *m)
 {
+	client_t *c = conn; /* the seat the messages are from, clc_seat changes it */
 	while (!m->badread && MSG_Remaining(m)) {
 		int cmd = MSG_ReadByte(m);
-		if (c->state == CS_FREE)
+		if (c->state == CS_FREE || conn->state == CS_FREE)
 			return;
 		switch (cmd) {
+		case clc_seat: {
+			int n = MSG_ReadByte(m);
+			client_t *s = is_seat(conn) ? NULL : seat_client(conn, n);
+			if (!s) {
+				/* a seat that just left: the rest of the message was its */
+				Con_DPrintf("%s: message for seat %d, which isn't playing\n", conn->name, n);
+				return;
+			}
+			c = s;
+			break;
+		}
 		case clc_nop:
 			break;
 		case clc_disconnect:
@@ -1428,7 +1673,7 @@ void SV_ReadPackets(void)
 		qport = Netchan_PeekQPort(buf, len);
 		for (int i = 0; i < svs.maxclients; i++) {
 			client_t *o = &svs.clients[i];
-			if (o->state == CS_FREE || o->bot || !NET_CompareBaseAdr(&o->chan.remote, &from) || o->chan.qport != qport)
+			if (o->state == CS_FREE || o->bot || is_seat(o) || !NET_CompareBaseAdr(&o->chan.remote, &from) || o->chan.qport != qport)
 				continue;
 			if (o->chan.remote.port != from.port) /* NAT rebinding */
 				o->chan.remote.port = from.port;
@@ -1519,7 +1764,7 @@ void SV_ClientsAfterPhysics(void)
 		MSG_WriteVarUInt(&h, (uint32_t)msg_broadcast.len);
 		for (int i = 0; i < svs.maxclients; i++) {
 			client_t *c = &svs.clients[i];
-			if (c->state != CS_SPAWNED || c->bot)
+			if (c->state != CS_SPAWNED || !gets_broadcasts(c))
 				continue;
 			sb_write(&c->datagram, &h);
 			SB_Append(&c->datagram, msg_broadcast.data, msg_broadcast.len);
@@ -1538,7 +1783,7 @@ void SV_SendClientMessages(void)
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		float rate;
-		if (c->state == CS_FREE || c->bot)
+		if (c->state == CS_FREE || c->bot || is_seat(c))
 			continue;
 		if (now - c->chan.last_received > sv_timeout->value && c->chan.remote.type != NA_LOOPBACK) {
 			SV_DropClient(c, "timed out");
@@ -1564,6 +1809,20 @@ void SV_SendClientMessages(void)
 			set_playerkey(c, "ping", ping, true);
 		}
 		SV_UpdateStats(c);
+		for (int k = 1; k < SV_MAX_SEATS; k++) {
+			client_t *s = seat_client(c, k);
+			if (!s)
+				continue;
+			s->chan.rtt = c->chan.rtt;
+			flush_qcrel(s);
+			if (now - s->last_ping_update > 2.0) {
+				char ping[16];
+				s->last_ping_update = now;
+				snprintf(ping, sizeof(ping), "%d", (int)(c->chan.rtt * 1000));
+				set_playerkey(s, "ping", ping, true);
+			}
+			SV_UpdateStats(s);
+		}
 		send_snapshot(c);
 	}
 }
@@ -1598,7 +1857,7 @@ static void write_bytes(qcvm_t *vm, const void *data, size_t len)
 	strbuf_t *sb;
 	if (to == 2) {
 		for (int i = 0; i < svs.maxclients; i++)
-			if (svs.clients[i].state != CS_FREE && !svs.clients[i].bot)
+			if (svs.clients[i].state != CS_FREE && gets_broadcasts(&svs.clients[i]))
 				SB_Append(&svs.clients[i].qcrel, data, len);
 		return;
 	}
@@ -1650,16 +1909,29 @@ static void bi_WriteUnterminatedString(qcvm_t *vm)
 }
 
 /* whether a client's view may see a point */
-static bool client_sees(const client_t *c, const float *org)
+static bool player_sees(const client_t *c, const float *org)
 {
 	float view[3];
 	const qcval_t *f;
-	if (!sv.world || !sv.world->vis)
-		return true;
 	f = QC_EdictFields(sv.vm, c->edict);
 	for (int k = 0; k < 3; k++)
 		view[k] = f[F.origin + k].f + (F.view_ofs >= 0 ? f[F.view_ofs + k].f : 0);
 	return BSP_CheckPVS(sv.world, view, org);
+}
+
+/* whether the point may be visible to the client, or to any player on its
+ * screen when it has split screen seats */
+static bool client_sees(client_t *c, const float *org)
+{
+	client_t *seats[SV_MAX_SEATS];
+	int n;
+	if (!sv.world || !sv.world->vis)
+		return true;
+	n = connection_seats(c, seats);
+	for (int k = 0; k < n; k++)
+		if (seats[k]->state == CS_SPAWNED && player_sees(seats[k], org))
+			return true;
+	return false;
 }
 
 static void bi_multicast(qcvm_t *vm)
@@ -1679,7 +1951,7 @@ static void bi_multicast(qcvm_t *vm)
 		client_t *c = &svs.clients[i];
 		if (c->state != CS_SPAWNED || c->bot)
 			continue;
-		if (one && c->edict != target)
+		if (one ? c->edict != target : is_seat(c))
 			continue;
 		if (sv_chat_only && c != sv_chat_only)
 			continue;
@@ -1946,7 +2218,7 @@ static void bi_pointparticles(qcvm_t *vm)
 	MSG_WriteFloat(&m, vm->argc > 3 ? QC_PFLOAT(vm, 3) : 1);
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state == CS_SPAWNED && !c->bot && client_sees(c, org))
+		if (c->state == CS_SPAWNED && gets_broadcasts(c) && client_sees(c, org))
 			sb_write(&c->datagram, &m);
 	}
 }
@@ -1965,7 +2237,7 @@ static void bi_te_customflash(qcvm_t *vm)
 		MSG_WriteFloat(&m, col[i]);
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state == CS_SPAWNED && !c->bot && client_sees(c, org))
+		if (c->state == CS_SPAWNED && gets_broadcasts(c) && client_sees(c, org))
 			sb_write(&c->datagram, &m);
 	}
 }
@@ -1984,7 +2256,7 @@ static void bi_trailparticles(qcvm_t *vm)
 		MSG_WriteCoord(&m, end[i]);
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state == CS_SPAWNED && !c->bot && (client_sees(c, start) || client_sees(c, end)))
+		if (c->state == CS_SPAWNED && gets_broadcasts(c) && (client_sees(c, start) || client_sees(c, end)))
 			sb_write(&c->datagram, &m);
 	}
 }
@@ -2004,7 +2276,7 @@ static void write_sound(int e, int chan, int idx, float vol, float atten, float 
 		MSG_WriteCoord(&m, org[i]);
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state == CS_SPAWNED && !c->bot)
+		if (c->state == CS_SPAWNED && gets_broadcasts(c))
 			sb_write(&c->datagram, &m);
 	}
 }
@@ -2135,6 +2407,7 @@ void SV_InitClients(void)
 	sv_maxunlag = Cvar_Get("sv_maxunlag", "0.5", 0, "Longest rewind for lag compensation, seconds");
 	sv_minupdaterate = Cvar_Get("sv_minupdaterate", "10", 0, "Lowest snapshot rate a client may ask for");
 	sv_maxupdaterate = Cvar_Get("sv_maxupdaterate", "100", 0, "Highest snapshot rate a client may ask for");
+	sv_maxseats = Cvar_Get("sv_maxseats", "4", CVAR_SERVERINFO, "Players one client may bring on one screen (split screen), 1 for none");
 	sv_maxrate = Cvar_Get("sv_maxrate", "0", 0, "Upper bound on client rate in bytes per second, 0 for none");
 	sv_chatfilter = Cvar_Get("sv_chatfilter", "0", 0, "Replace the words in filter.txt in players' chat");
 	sv_port = Cvar_Get("sv_port", "27500", 0, "UDP port for incoming connections");

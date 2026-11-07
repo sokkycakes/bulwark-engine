@@ -21,8 +21,16 @@ static cvar_t *cl_movespeedkey, *sensitivity, *m_pitch, *m_yaw, *m_filter, *cl_r
 static cvar_t *in_lastdevice;
 static cvar_t *joy_enable, *joy_deadzone, *joy_curve, *joy_yawspeed, *joy_pitchspeed, *joy_invert, *joy_movescale;
 
-/* the newest value of each controller axis */
-static float joyaxis[6];
+/* the newest value of each controller axis, per split screen seat */
+static float joyaxis_s[MAX_SEATS][6];
+
+/* the seat console commands act for: p1..p4 and +p1..-p4 set it while their
+ * command runs, and a split screen player's controller runs its bindings
+ * through them (docs/spec/splitscreen.md) */
+int in_cmdseat;
+
+/* "rotate" turns in progress, per seat */
+static float rotate_left_s[MAX_SEATS], rotate_rate_s[MAX_SEATS];
 
 /* --- key names ------------------------------------------------------------ */
 
@@ -205,8 +213,8 @@ enum {
 	B_JUMP, B_ATTACK, B_ATTACK2, B_USE, B_RELOAD, B_DUCK, B_SPRINT, B_PRONE, B_BUTTON3, B_BUTTON4, B_BUTTON5,
 	B_BUTTON6, B_BUTTON7, B_BUTTON8, B_STRAFE, B_KLOOK, B_ROLLLEFT, B_ROLLRIGHT, B_COUNT
 };
-static kbutton_t buttons[B_COUNT];
-static int pending_impulse;
+static kbutton_t buttons_s[MAX_SEATS][B_COUNT];
+static int pending_impulse_s[MAX_SEATS];
 
 static void key_down(kbutton_t *b, int argc, const char **argv)
 {
@@ -244,8 +252,8 @@ static void key_up(kbutton_t *b, int argc, const char **argv)
 }
 
 #define BUTTON_CMDS(name, idx)                                                                                         \
-	static void name##_down(int argc, const char **argv) { key_down(&buttons[idx], argc, argv); }                       \
-	static void name##_up(int argc, const char **argv) { key_up(&buttons[idx], argc, argv); }
+	static void name##_down(int argc, const char **argv) { key_down(&buttons_s[in_cmdseat][idx], argc, argv); }         \
+	static void name##_up(int argc, const char **argv) { key_up(&buttons_s[in_cmdseat][idx], argc, argv); }
 
 BUTTON_CMDS(forward, B_FORWARD)
 BUTTON_CMDS(back, B_BACK)
@@ -284,23 +292,23 @@ static void mlook_f(int argc, const char **argv) {}
 
 /* +button0 .. +button19 by number: 0 and 2 are attack and jump, 3-8 the
  * buttons above, 1 is bit 8 (256) and 9-19 the bits after it */
-static kbutton_t numbered[20];
+static kbutton_t numbered_s[MAX_SEATS][20];
 static void numbered_button(int argc, const char **argv)
 {
 	int n = atoi(argv[0] + 7);
 	if (n < 0 || n >= 20)
 		return;
 	if (argv[0][0] == '+')
-		key_down(&numbered[n], argc, argv);
+		key_down(&numbered_s[in_cmdseat][n], argc, argv);
 	else
-		key_up(&numbered[n], argc, argv);
+		key_up(&numbered_s[in_cmdseat][n], argc, argv);
 }
 
 static uint32_t numbered_bits(void)
 {
 	uint32_t bits = 0;
 	for (int n = 0; n < 20; n++) {
-		kbutton_t *b = &numbered[n];
+		kbutton_t *b = &numbered_s[cl.seat][n];
 		if (!b->active && !b->impulse_down)
 			continue;
 		if (n == 0)
@@ -320,7 +328,7 @@ static uint32_t numbered_bits(void)
 static void Impulse_f(int argc, const char **argv)
 {
 	if (argc > 1)
-		pending_impulse = atoi(argv[1]);
+		pending_impulse_s[in_cmdseat] = atoi(argv[1]);
 }
 
 /* the pitch limit, which 6dof lifts (and lets the view roll instead) */
@@ -354,11 +362,18 @@ static void last_device(int pad)
 		Cvar_SetDirect(in_lastdevice, pad ? "1" : "0");
 }
 
+static void seat_key_event(int dev, int seat, int key, bool down);
+
 void IN_KeyEvent(int key, bool down, int unicode)
 {
 	const char *b;
 	if (key < 0 || key >= K_MAX)
 		return;
+	if (cl.state == ca_active && !(key >= K_JOY1 && key <= K_GP_RTRIGGER) && CL_SeatForDevice(0) > 0 &&
+	    key != '`' && key != '~' && !Con_IsActive()) {
+		seat_key_event(0, CL_SeatForDevice(0), key, down); /* seat_device gave the keyboard to a guest */
+		return;
+	}
 	if (down)
 		last_device(key >= K_JOY1 && key <= K_GP_RTRIGGER);
 	if (down && keydown[key] && key != K_BACKSPACE && !Con_IsActive() && bindings[key] && bindings[key][0] == '+')
@@ -445,6 +460,91 @@ void IN_KeyEvent(int key, bool down, int unicode)
 	}
 }
 
+/* --- split screen players' devices ------------------------------------------ */
+
+#define IN_DEVICES (MAX_SEATS + 1) /* the keyboard and mouse, then each controller */
+static bool devkeydown[IN_DEVICES][K_MAX];
+static char *devheld[IN_DEVICES][K_MAX];
+
+/* a key of a device that belongs to split screen seat 'seat' (not the
+ * first player): only the game and that player's bindings see it */
+static void seat_key_event(int dev, int seat, int key, bool down)
+{
+	const char *b;
+	char cmd[1100];
+	if (down && devkeydown[dev][key] && bindings[key] && bindings[key][0] == '+')
+		return; /* repeat */
+	devkeydown[dev][key] = down;
+	if (!down) {
+		if (devheld[dev][key]) {
+			snprintf(cmd, sizeof(cmd), "p%d -%s %d\n", seat + 1, devheld[dev][key] + 1, key);
+			Cbuf_AddText(cmd);
+			Mem_Free(devheld[dev][key]);
+			devheld[dev][key] = NULL;
+		}
+		return;
+	}
+	if (Con_IsActive() || EM_Active() || ED_Active())
+		return; /* the console and the engine's menus are the first player's */
+	CL_SetSeat(seat);
+	if (CSQC_InputEvent(0, (float)key, 0, dev)) {
+		CL_SetSeat(0);
+		return;
+	}
+	CL_SetSeat(0);
+	b = Key_GetBinding(key);
+	if (!*b)
+		return;
+	if (b[0] == '+') {
+		Mem_Free(devheld[dev][key]);
+		devheld[dev][key] = Mem_Strdup(b);
+		snprintf(cmd, sizeof(cmd), "p%d %s %d\n", seat + 1, b, key);
+	} else
+		snprintf(cmd, sizeof(cmd), "p%d %s\n", seat + 1, b);
+	Cbuf_AddTextAtLevel(cmd, bindlevel[key]);
+}
+
+/* a controller button: device is the controller's slot + 1. The first
+ * player's go through the normal path; a split screen player's to their
+ * seat; one nobody has can join with Start, and otherwise only drives the
+ * menus outside a game */
+void IN_DeviceKeyEvent(int device, int key, bool down, int unicode)
+{
+	int seat = CL_SeatForDevice(device);
+	if (key < 0 || key >= K_MAX || device < 0 || device >= IN_DEVICES)
+		return;
+	if (seat < 0 && down)
+		CL_SeatDevicePressed(device, key);
+	seat = CL_SeatForDevice(device);
+	if (seat < 0 && down && cl.state == ca_active)
+		return;
+	if (seat > 0 && cl.state == ca_active) {
+		seat_key_event(device, seat, key, down);
+		return;
+	}
+	if (seat > 0 && !down && devheld[device][key]) {
+		seat_key_event(device, seat, key, down);
+		return;
+	}
+	IN_KeyEvent(key, down, unicode);
+}
+
+/* a split screen player left or lost a controller: nothing stays held */
+void IN_ReleaseSeat(int seat)
+{
+	if (seat < 1 || seat >= MAX_SEATS)
+		return;
+	for (int d = 0; d < IN_DEVICES; d++)
+		for (int k = 0; k < K_MAX; k++)
+			if (devheld[d][k] && (cl_seats[seat].device & (1u << d)))
+				seat_key_event(d, seat, k, false);
+	memset(buttons_s[seat], 0, sizeof(buttons_s[seat]));
+	memset(numbered_s[seat], 0, sizeof(numbered_s[seat]));
+	memset(joyaxis_s[seat], 0, sizeof(joyaxis_s[seat]));
+	pending_impulse_s[seat] = 0;
+	rotate_left_s[seat] = 0;
+}
+
 void IN_MouseMove(float dx, float dy)
 {
 	static float olddx, olddy;
@@ -467,10 +567,18 @@ void IN_MouseMove(float dx, float dy)
 	}
 	olddx = dx;
 	olddy = dy;
-	cl.viewangles[1] -= m_yaw->value * mx * sensitivity->value;
-	cl.viewangles[0] += m_pitch->value * my * sensitivity->value;
-	clamp_pitch();
-	cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
+	{
+		/* the view of whoever has the keyboard and mouse */
+		int seat = CL_SeatForDevice(0);
+		if (seat < 0)
+			return;
+		CL_SetSeat(seat);
+		cl.viewangles[1] -= m_yaw->value * mx * sensitivity->value;
+		cl.viewangles[0] += m_pitch->value * my * sensitivity->value;
+		clamp_pitch();
+		cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
+		CL_SetSeat(0);
+	}
 }
 
 /* --- controllers ------------------------------------------------------------ */
@@ -499,14 +607,24 @@ static void stick_nav(int axis, float value)
 
 void IN_JoyAxis(int dev, int axis, float value)
 {
+	int seat = CL_SeatForDevice(dev + 1);
 	if (axis < 0 || axis >= 6)
 		return;
+	/* a controller nobody has moves nothing in the game, and the menus
+	 * only out of it */
+	if (seat < 0 && cl.state == ca_active)
+		return;
+	if (seat < 0)
+		seat = 0;
 	/* IE_JOYAXIS is only a report: Nuclide returns true for every event
 	 * type it doesn't handle, so its answer can't mean "taken" */
-	if (!Con_IsActive())
+	if (!Con_IsActive()) {
+		CL_SetSeat(seat);
 		CSQC_InputEvent(6, (float)axis, value, dev);
-	joyaxis[axis] = value;
-	if (axis <= 1)
+		CL_SetSeat(0);
+	}
+	joyaxis_s[seat][axis] = value;
+	if (axis <= 1 && seat == 0)
 		stick_nav(axis, value);
 }
 
@@ -534,7 +652,13 @@ void IN_ControllerAdded(int dev)
 
 void IN_ControllerRemoved(int dev)
 {
-	memset(joyaxis, 0, sizeof(joyaxis));
+	int seat = CL_SeatForDevice(dev + 1);
+	if (seat > 0) {
+		/* the guest keeps the seat: the same controller slot picks it up again */
+		IN_ReleaseSeat(seat);
+		return;
+	}
+	memset(joyaxis_s[0], 0, sizeof(joyaxis_s[0]));
 	IN_ReleaseAll();
 }
 
@@ -553,7 +677,8 @@ static float stick(float v)
 /* --- commands ------------------------------------------------------------- */
 
 /* rotate <degrees> [seconds]: turn the view, at once or over a time */
-static float rotate_left, rotate_rate;
+#define rotate_left rotate_left_s[cl.seat]
+#define rotate_rate rotate_rate_s[cl.seat]
 
 static void Rotate_f(int argc, const char **argv)
 {
@@ -563,17 +688,22 @@ static void Rotate_f(int argc, const char **argv)
 		return;
 	}
 	secs = argc > 2 ? (float)atof(argv[2]) : 0;
+	CL_SetSeat(in_cmdseat);
 	if (secs <= 0) {
 		cl.viewangles[1] += (float)atof(argv[1]);
 		rotate_left = 0;
+		CL_SetSeat(0);
 		return;
 	}
 	rotate_left = (float)atof(argv[1]);
 	rotate_rate = fabsf(rotate_left) / secs;
+	CL_SetSeat(0);
 }
 
 static void fill_command(usercmd_t *u, double now)
 {
+	kbutton_t *buttons = buttons_s[cl.seat];
+	float *joyaxis = joyaxis_s[cl.seat];
 	float speed = (cl_run->ivalue ^ buttons[B_SPEED].active) ? 1.0f : cl_movespeedkey->value;
 	float dt = (float)cl.frametime;
 	float joy_move[2];
@@ -603,7 +733,7 @@ static void fill_command(usercmd_t *u, double now)
 	/* controller sticks: right one turns, left one moves */
 	if (joy_enable->ivalue && !Con_IsActive() && !UI_WantsInput()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
-		if (lx || ly || rx || ry)
+		if ((lx || ly || rx || ry) && cl.seat == 0)
 			last_device(1);
 		cl.viewangles[1] -= dt * joy_yawspeed->value * rx;
 		cl.viewangles[0] += dt * joy_pitchspeed->value * ry * (joy_invert->ivalue ? -1 : 1);
@@ -646,7 +776,7 @@ static void fill_command(usercmd_t *u, double now)
 		bits |= 128;
 	bits |= numbered_bits();
 	u->buttons = bits;
-	u->impulse = (uint8_t)pending_impulse;
+	u->impulse = (uint8_t)pending_impulse_s[cl.seat];
 	u->sequence = cl.clientcommandframe;
 	u->msec = (float)BW_MIN(now - cl.cmd_start, 0.25);
 	u->clienttime = cl.realtime;
@@ -673,11 +803,11 @@ void CL_BuildCommand(double now)
 	CL_DemoUsercmd(u);
 	cl.clientcommandframe++;
 	cl.cmd_start = now;
-	pending_impulse = 0;
+	pending_impulse_s[cl.seat] = 0;
 	for (int i = 0; i < B_COUNT; i++)
-		buttons[i].impulse_down = false;
+		buttons_s[cl.seat][i].impulse_down = false;
 	for (int i = 0; i < 20; i++)
-		numbered[i].impulse_down = false;
+		numbered_s[cl.seat][i].impulse_down = false;
 	memset(&cl.cmds[cl.clientcommandframe % CL_CMD_BACKUP], 0, sizeof(usercmd_t));
 }
 
@@ -694,12 +824,12 @@ bool CL_GetInputState(uint32_t seq, usercmd_t *out)
  * others' have no one to go to. */
 static void Seat_f(int argc, const char **argv)
 {
-	int seat = argv[0][2] - '1';
-	if (seat != 0) {
-		Con_DPrintf("%s: there is only one player view (seat 1)\n", argv[0]);
+	int seat = argv[0][2] - '1', old = in_cmdseat;
+	if (seat < 0 || seat >= MAX_SEATS || argc < 2)
 		return;
-	}
+	in_cmdseat = seat;
 	Cmd_ExecuteString(va("%c%s", argv[0][0], Cmd_Args()));
+	in_cmdseat = old;
 }
 
 void IN_Init(void)

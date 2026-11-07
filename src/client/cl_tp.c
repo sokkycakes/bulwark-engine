@@ -815,8 +815,10 @@ static void Inventory_f(int argc, const char **argv)
 	CL_SendStringCmd(args_from(argc, argv, 0));
 }
 
-/* p <seat> <command>, p1..p4 <command>: a command for one seat. Bulwark has
- * one player per client, so seat 1 runs it and the others say so. */
+/* p <seat> <command>, p1..p4 <command>: a command for one split screen
+ * player (seats count from 1 here). The command runs between two
+ * _seatcontext commands, so its aliases and the commands it sends to the
+ * server or the client game are that player's (in_cmdseat). */
 static void Seat_f(int argc, const char **argv)
 {
 	int seat, first = 1;
@@ -836,15 +838,25 @@ static void Seat_f(int argc, const char **argv)
 		}
 	}
 	line = args_from(argc, argv, first);
-	if (seat > 1) {
-		Con_Printf("seat %d isn't playing (one player per client)\n", seat);
+	if (seat < 1 || seat > MAX_SEATS) {
+		Con_Printf("there are seats 1 to %d\n", MAX_SEATS);
 		return;
 	}
-	Cbuf_InsertText(va("%s\n", line));
+	if (seat > 1 && !CL_SeatPlaying(seat - 1) && cl.state == ca_active) {
+		Con_DPrintf("seat %d isn't playing\n", seat);
+		return;
+	}
+	Cbuf_InsertText(va("_seatcontext %d\n%s\n_seatcontext %d\n", seat - 1, line, in_cmdseat));
 }
 
-/* +p/-p: the next commands are for the next seat (splitscreen); with one
- * seat, nothing changes */
+static void SeatContext_f(int argc, const char **argv)
+{
+	int k = argc > 1 ? atoi(argv[1]) : 0;
+	in_cmdseat = k >= 0 && k < MAX_SEATS ? k : 0;
+}
+
+/* +p/-p: the next commands are for the next seat (FTE's splitscreen
+ * toggle); seats are chosen with p1..p4 here, so it does nothing */
 static void SeatToggle_f(int argc, const char **argv) { (void)argc, (void)argv; }
 
 void TP_Init(void)
@@ -897,6 +909,7 @@ void TP_Init(void)
 	Cmd_AddD("p2", Seat_f, "p2 <command>: run a command for seat 2");
 	Cmd_AddD("p3", Seat_f, "p3 <command>: run a command for seat 3");
 	Cmd_AddD("p4", Seat_f, "p4 <command>: run a command for seat 4");
+	Cmd_AddD("_seatcontext", SeatContext_f, NULL);
 	Cmd_AddD("+p", SeatToggle_f, "Following input is for the next seat");
 	Cmd_AddD("-p", SeatToggle_f, NULL);
 }

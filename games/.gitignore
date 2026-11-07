@@ -1,0 +1,5 @@
+# symlinks made by link-nuclide.sh
+/src
+/valve
+/base
+*.lno

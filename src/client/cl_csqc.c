@@ -238,7 +238,7 @@ static void set_frame_globals(qcvm_t *vm)
 	/* no seats until the player is in the game: Nuclide's View_Init, run
 	 * from CSQC_RendererRestart during loading, sets up the seats at or
 	 * above numclientseats, so it relies on this being 0 then */
-	QC_SetGFloat(vm, CS.numclientseats, cl.state == ca_active ? 1 : 0);
+	QC_SetGFloat(vm, CS.numclientseats, (float)CL_NumSeats());
 	QC_SetGInt(vm, G.world, 0);
 }
 
@@ -539,7 +539,12 @@ void CSQC_ParseEntities(msg_t *m)
 		}
 		if (v & 1) {
 			bool isnew;
-			int ent = csqc_ent_for(e, false, &isnew);
+			int ent;
+			/* split screen: each entity comes in one seat's part; a removal
+			 * from another (the entity moved on to this seat's) is stale */
+			if (cl.ents[e].csqc_ent && cl.ents[e].seat != cl.seat)
+				continue;
+			ent = csqc_ent_for(e, false, &isnew);
 			if (ent) {
 				QC_SetGInt(vm, G.self, ent);
 				if (CS.Ent_Remove)
@@ -564,6 +569,12 @@ void CSQC_ParseEntities(msg_t *m)
 			sub.cursize = len;
 			m->readpos += len;
 			ent = csqc_ent_for(e, true, &isnew);
+			if (cl.ents[e].seat != cl.seat) {
+				/* now this seat's: set up again as it sees it (its own
+				 * player is predicted, others' aren't) */
+				cl.ents[e].seat = cl.seat;
+				isnew = true;
+			}
 			set_frame_globals(vm);
 			QC_SetGInt(vm, G.self, ent);
 			vm->globals[OFS_PARM(0)].f = isnew ? 1 : 0;
@@ -642,6 +653,7 @@ void CSQC_Frame(int width, int height)
 	static double last;
 	if (!vm || !CS.UpdateView || cl.state != ca_active)
 		return;
+	CL_SetSeat(0);
 	set_frame_globals(vm);
 	csqc_physics(vm);
 	set_frame_globals(vm);
@@ -657,7 +669,26 @@ void CSQC_Frame(int width, int height)
 	 * written to it change the camera only. The game turns the player
 	 * through setproperty(VF_CL_VIEWANGLES) or input_angles instead. */
 	QC_Execute(vm, CS.UpdateView);
+	CL_SetSeat(0); /* the game picks each seat's view with VF_ACTIVESEAT */
 	QC_CollectGarbage(vm, false);
+}
+
+/* setproperty(VF_ACTIVESEAT): the game turns to another local player. What
+ * the client game reads as "the player" follows: its entity and slot, the
+ * command frames, view_angles and, through cl, the stats and input state. */
+void CSQC_SetActiveSeat(int seat)
+{
+	qcvm_t *vm = cl.csqc;
+	if (seat < 0 || seat >= MAX_SEATS)
+		return;
+	CL_SetSeat(seat);
+	if (!vm)
+		return;
+	QC_SetGFloat(vm, CS.player_localentnum, (float)cl.playerent);
+	QC_SetGFloat(vm, CS.player_localnum, (float)cl.playerslot);
+	QC_SetGFloat(vm, CS.clientcommandframe, (float)cl.clientcommandframe);
+	QC_SetGFloat(vm, CS.servercommandframe, (float)cl.servercommandframe);
+	QC_SetGVec(vm, CS.view_angles, cl.viewangles);
 }
 
 static bool cmd_forced;
@@ -677,11 +708,17 @@ bool CSQC_ConsoleCommand(const char *line)
 	Mem_Free(t);
 	if (!known)
 		return false;
+	/* a split screen player's command (p2 ...) runs as that player */
+	if (in_cmdseat && CL_SeatPlaying(in_cmdseat))
+		CL_SetSeat(in_cmdseat);
 	set_frame_globals(vm);
 	vm->globals[OFS_PARM(0)].i = QC_NewString(vm, line);
 	vm->argc = 1;
-	if (!QC_Execute(vm, CS.ConsoleCommand))
+	if (!QC_Execute(vm, CS.ConsoleCommand)) {
+		CL_SetSeat(0);
 		return true;
+	}
+	CL_SetSeat(0);
 	return vm->globals[OFS_RETURN].f != 0;
 }
 
@@ -1260,7 +1297,25 @@ static void cl_gp_rumbletriggers(qcvm_t *vm)
 }
 static void cl_gp_setledcolor(qcvm_t *vm) { VID_SetControllerLED((int)QC_PFLOAT(vm, 0), QC_PVEC(vm, 1)); }
 
+/* splitscreen_pos(seat), splitscreen_size(seat): where a split screen
+ * player's view goes, as fractions of the screen (docs/spec/splitscreen.md) */
+static void cl_splitscreen_pos(qcvm_t *vm)
+{
+	float r[4], v[3] = {0, 0, 0};
+	CL_SeatRect((int)QC_PFLOAT(vm, 0), r);
+	v[0] = r[0], v[1] = r[1];
+	QC_ReturnVector(vm, v);
+}
+static void cl_splitscreen_size(qcvm_t *vm)
+{
+	float r[4], v[3] = {0, 0, 0};
+	CL_SeatRect((int)QC_PFLOAT(vm, 0), r);
+	v[0] = r[2], v[1] = r[3];
+	QC_ReturnVector(vm, v);
+}
+
 const qc_builtin_t cl_builtins[] = {
+	{"splitscreen_pos", cl_splitscreen_pos}, {"splitscreen_size", cl_splitscreen_size},
 	{"gp_rumble", cl_gp_rumble}, {"gp_rumbletriggers", cl_gp_rumbletriggers}, {"gp_setledcolor", cl_gp_setledcolor},
 	{"readbyte", cl_readbyte}, {"readchar", cl_readchar}, {"readshort", cl_readshort}, {"readlong", cl_readlong},
 	{"readint", cl_readint}, {"readcoord", cl_readcoord}, {"readangle", cl_readangle}, {"readfloat", cl_readfloat},

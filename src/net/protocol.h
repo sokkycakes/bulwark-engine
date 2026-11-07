@@ -34,6 +34,8 @@ enum {
 	svc_voice,        /* byte sender slot, then a clc_voice body */
 	svc_voxel,        /* byte subcommand (VXN_*), see docs/spec/voxel.md */
 	svc_flash,        /* coord x3 origin, float radius, float lifetime, float x3 colour (te_customflash) */
+	svc_seat,         /* byte seat: the rest of this message is for that split screen player */
+	svc_seatinfo,     /* byte seat, byte player slot (255: none), varuint entity */
 	svc_count
 };
 
@@ -48,6 +50,7 @@ enum {
 	clc_userblob,  /* string key, varuint length, bytes */
 	clc_upload,    /* byte op (UL_), then by op: see below */
 	clc_voice,     /* byte codec (VOICE_), byte generation, varuint sequence, byte frames, per frame short length + bytes */
+	clc_seat,      /* byte seat: the rest of this message is from that split screen player */
 	clc_count
 };
 
@@ -83,6 +86,8 @@ enum { PRECACHE_MODEL = 0, PRECACHE_SOUND = 1, PRECACHE_PARTICLE = 2 };
 #define UCMD_IMPULSE 8
 #define UCMD_WEAPON 16
 #define UCMD_CURSOR 32
+
+#define MAX_SEATS 4 /* split screen players on one client */
 
 #define MAX_BACKUP_CMDS 8 /* earlier commands repeated in each clc_move */
 
