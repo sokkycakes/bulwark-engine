@@ -176,6 +176,7 @@ static struct {
 	uint32_t preload_bytes;
 	int nblk, nkeys, khand;
 	uint8_t vst[S_VOICES]; /* each voice's V_ state, apart: the frame's passes read only these for free ones */
+	int vtop;              /* every voice from here on is free: the passes stop here */
 	spack_t pack[S_PACKS];
 	int npacks;
 	int pagenext;
@@ -219,7 +220,7 @@ bool Snd_Enabled(void) { return S.on; }
 static void logf_(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void logf_(const char *fmt, ...)
 {
-	static char line[200]; /* not on the stack: that is DTCM, which melonDS's debug port doesn't read */
+	static char line[384]; /* not on the stack: that is DTCM, which melonDS's debug port doesn't read */
 	va_list ap;
 	if (!S.log)
 		return;
@@ -368,7 +369,7 @@ static bool key_busy(int ki)
 {
 	if (S.k[ki].block >= 0 && H->blk[S.k[ki].block].pins)
 		return true;
-	for (int i = 0; i < S_VOICES; i++)
+	for (int i = 0; i < S.vtop; i++)
 		if (S.vst[i] != V_FREE && S.v[i].ki == ki)
 			return true;
 	return false;
@@ -837,7 +838,7 @@ static int voice_pick(int ent, int chan, bool clientside, int sflags)
 	int best = -1;
 	uint32_t bestpos = 0;
 	if (chan != 0)
-		for (int i = 0; i < S_VOICES; i++) {
+		for (int i = 0; i < S.vtop; i++) {
 			svoice_t *v = &S.v[i];
 			if (S.vst[v - S.v] != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside) {
 				if (sflags & SF_NOREPLACE)
@@ -868,7 +869,7 @@ static void stop_chan(int ent, int chan, bool clientside)
 {
 	if (!chan)
 		return; /* null.wav on CHAN_AUTO only mixes silence */
-	for (int i = 0; i < S_VOICES; i++) {
+	for (int i = 0; i < S.vtop; i++) {
 		svoice_t *v = &S.v[i];
 		if (S.vst[v - S.v] != V_FREE && v->ent == ent && v->chan == chan && !(v->lflags & LF_CLIENTSIDE) == !clientside)
 			voice_free(i, "stop");
@@ -899,6 +900,7 @@ static int voice_new(const srec_t *r, int src)
 		return -1;
 	v = &S.v[vi];
 	memset(v, 0, sizeof(*v));
+	S.vtop = BW_NDS_MAX(S.vtop, vi + 1);
 	S.vst[v - S.v] = (r->lflags & LF_AT) && S.haveclock ? V_DELAY : V_WAIT;
 	v->src = (uint8_t)src, v->lflags = r->lflags, v->sflags = r->sflags, v->chan = r->chan;
 	v->vol = r->vol, v->atten = r->atten, v->pitch = r->pitch;
@@ -1357,7 +1359,7 @@ static void loader(void)
 		bool did = false, loop;
 		if (!BUDGET_LEFT())
 			break;
-		for (int i = 0; i < S_VOICES; i++) {
+		for (int i = 0; i < S.vtop; i++) {
 			svoice_t *v = &S.v[i];
 			if ((S.vst[v - S.v] == V_WAIT || (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0)) && v->ki >= 0 && !key_ready(v->ki) &&
 			    S.k[v->ki].state != K_MISS && v->skip != S.use &&
@@ -1449,10 +1451,12 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	S.selfent = selfent;
 	S.things = things, S.nthings = nthings;
 	S.clock = clock_ms, S.haveclock = have;
+	while (S.vtop > 0 && S.vst[S.vtop - 1] == V_FREE)
+		S.vtop--;
 	/* nothing playing, coming or due: only the stats */
 	{
 		bool idle = S.precache_done >= S.nprecache && S.preload_next >= S.nprecache;
-		for (int i = 0; i < S_VOICES && idle; i++)
+		for (int i = 0; i < S.vtop && idle; i++)
 			idle = S.vst[i] == V_FREE;
 		for (int h = 0; h < S_HW && idle; h++)
 			idle = S.hw[h].v < 0 && !S.hw[h].draining;
@@ -1482,7 +1486,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			continue;
 		if ((c->t_end && (int32_t)(t - c->t_end) >= 0) || (!(active & (1u << h)) && t - c->t_start > ms_ticks(60))) {
 			int vi = c->v;
-				voice_log(&S.v[vi], "end", h, 0, 0, 0);
+			voice_log(&S.v[vi], "end", h, 0, 0, 0);
 			hw_release(h, false);
 			if (S.v[vi].loop) /* (a loop the hardware stopped: silent, as when stolen) */
 				;
@@ -1500,7 +1504,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		}
 	}
 	/* the delayed (AT records: when the drawn clock passes them) */
-	for (int i = 0; i < S_VOICES; i++) {
+	for (int i = 0; i < S.vtop; i++) {
 		svoice_t *v = &S.v[i];
 		if (S.vst[v - S.v] != V_DELAY)
 			continue;
@@ -1518,7 +1522,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	t = ticks();
 	/* waiting voices whose sample is in start; one-shots too late, or whose sample isn't anywhere, go */
 	t = ticks();
-	for (int i = 0; i < S_VOICES; i++) {
+	for (int i = 0; i < S.vtop; i++) {
 		svoice_t *v = &S.v[i];
 		if (S.vst[v - S.v] != V_WAIT)
 			continue;
@@ -1554,12 +1558,12 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 	S.sec[2] += ticks() - t;
 	t = ticks();
 	/* gains; loops without a channel take one if they are louder than one held */
-	for (int i = 0; i < S_VOICES; i++)
+	for (int i = 0; i < S.vtop; i++)
 		if (S.vst[i] == V_PLAY)
 			voice_gain(&S.v[i]);
 	for (;;) {
 		int best = -1;
-		for (int i = 0; i < S_VOICES; i++) {
+		for (int i = 0; i < S.vtop; i++) {
 			svoice_t *v = &S.v[i];
 			if (S.vst[v - S.v] == V_PLAY && v->loop && v->hw < 0 && v->loud && key_ready(v->ki) &&
 			    (best < 0 || v->loud > S.v[best].loud))
@@ -1689,9 +1693,9 @@ static void stop_all(void)
 		S.hw[h].v = -1;
 		hw_unpin(h);
 	}
-	if (S.v)
-		for (int i = 0; i < S_VOICES; i++)
-			S.vst[i] = V_FREE;
+	for (int i = 0; i < S_VOICES; i++)
+		S.vst[i] = V_FREE;
+	S.vtop = 0;
 	if (H)
 		memset(H->sent, 0, sizeof(H->sent));
 	S.namb = 0, S.ambver = 0;
