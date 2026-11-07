@@ -264,6 +264,7 @@ typedef struct {
 	int sndprec;                            /* sound precache entries sent in EVENT 15 */
 	bool sndkept;                           /* and the always-kept names */
 	uint32_t sndmade, snddrop, sndrep2, sndnorep, sndrel, sndpkts, sndbytes, sndoff; /* link_stats */
+	uint32_t sndovertaken, sndsameframe;    /* unreliable records a reliable one, or a later one the same frame, replaced */
 	uint32_t sndbypath[8];
 	lamb_t amb[SND_MAXAMB];                 /* AMBIENT: the set now */
 	int namb;
@@ -3948,6 +3949,30 @@ static int loop_find(const link_t *l, int ent, int chan, bool cs)
 	return -1;
 }
 
+/* unreliable records on (ent, chan, clientside) still to go, in the queue and the repeats, are
+ * dropped: the record made after them replaces them on the device's channel. A reliable one
+ * (EVENT 12) arrives before the next SOUND packet, so a one-shot sent after it would replace
+ * the loop the PC hears (the PC gets both in order and the later wins) */
+static int snd_unqueue(link_t *l, int ent, int chan, bool cs)
+{
+	int n = 0, k = 0;
+	if (chan == 0)
+		return 0;
+	for (int i = 0; i < l->sndn; i++)
+		if (l->sndq[i].ent == ent && l->sndq[i].chan == chan && !(l->sndq[i].lflags & SL_CLIENTSIDE) == !cs)
+			n++;
+		else
+			l->sndq[k++] = l->sndq[i];
+	l->sndn = k, k = 0;
+	for (int i = 0; i < l->sndrepn; i++)
+		if (l->sndrep[i].ent == ent && l->sndrep[i].chan == chan && !(l->sndrep[i].lflags & SL_CLIENTSIDE) == !cs)
+			n++;
+		else
+			l->sndrep[k++] = l->sndrep[i];
+	l->sndrepn = k;
+	return n;
+}
+
 static void loop_remove(link_t *l, int i)
 {
 	memmove(&l->loops[i], &l->loops[i + 1], (size_t)(l->nloops - i - 1) * sizeof(l->loops[0]));
@@ -4020,6 +4045,7 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 	if (rel) {
 		uint8_t b[24];
 		int n = snd_bytes(b, &r, 0);
+		l->sndovertaken += (uint32_t)snd_unqueue(l, r.ent, r.chan, cs);
 		l->sndrel++;
 		ev_put(l, LE_SOUND, b, n);
 		return;
@@ -5433,6 +5459,8 @@ static void SV_LinkStats_f(int argc, const char **argv)
 			           l->sndmade, l->sndbypath[0], l->sndbypath[1], l->sndbypath[2], l->sndbypath[3], l->sndbypath[4],
 			           l->sndbypath[5], l->sndbypath[6], l->sndbypath[7], l->sndrel, l->snddrop, l->sndrep2, l->sndnorep,
 			           l->sndpkts, l->sndbytes, l->nloops);
+			Con_Printf("  sound: %u overtaken by a reliable record, %u replaced the same frame\n", l->sndovertaken,
+			           l->sndsameframe);
 			Con_Printf("  ambient: version %u acked %u, %d entries, %u packets, %u bytes\n", l->ambver, l->amback, l->namb,
 			           l->ambpkts, l->ambbytes);
 		}
