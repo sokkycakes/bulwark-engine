@@ -39,6 +39,6 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 const uint8_t *Hud_Glyph(int c, int *w, int *adv); /* a glyph's rows (bit 0 the left pixel) */
 int Hud_TextWidth(const char *s, int scale);
 int Hud_FontHeight(void);
-uint16_t *Hud_TextTiles(void);
-uint16_t *Hud_TextMap(void);
+uint16_t *Hud_TextTiles(int layer); /* the event text's layers: 0 BG2 (in front of the HUD), 1 BG3 (behind) */
+uint16_t *Hud_TextMap(int layer);
 #endif

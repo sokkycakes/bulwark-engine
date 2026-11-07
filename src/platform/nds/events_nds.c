@@ -3,10 +3,12 @@
  * names the client code it follows.
  *
  * Times run on the link's clock in seconds, and each part steps by the frame's
- * time as the QC steps by clframetime. Text is drawn into its layer (BG2) only when
- * what shows changes; each text group has its own palette bank, so its fading is a
- * palette write a frame. The PC's text fades to nothing; here the letters darken
- * to their black outline and then go (the layer is opaque). */
+ * time as the QC steps by clframetime. Text is drawn into its layers (BG2 in front of
+ * the HUD, BG3 behind it for game_text) only when what shows changes; each text group
+ * has its own palette bank, so its fading is a palette write a frame. The PC's text
+ * fades to nothing: when every group up is as strong as the others, the layers blend
+ * over what is under them at that alpha (REG_BLDALPHA, one for the whole screen);
+ * when they differ, the letters darken to their black outline instead. */
 #include <math.h>
 #include <nds.h>
 #include <stdio.h>
@@ -560,8 +562,11 @@ void Events_Draw3D(const ndscam_t *view)
 #define LINE_H (Hud_FontHeight() + 2)
 #define MAX_LINES 12
 
-static uint32_t band[BAND_ROWS * 32 * 8];
-static uint8_t bandbank[BAND_ROWS][32];
+/* two layers: 0 BG2 (prints, chat, centerprint, feed, pickups), 1 BG3 (game_text) */
+static uint32_t bands[2][BAND_ROWS * 32 * 8];
+static uint8_t bandbanks[2][BAND_ROWS][32];
+static uint32_t (*band) = bands[0];
+static uint8_t (*bandbank)[32] = bandbanks[0];
 static uint32_t cliprows; /* the rows of cells being drawn now */
 static uint32_t grouprows; /* the rows a group's lines take (measuring) */
 static bool measuring;
@@ -672,16 +677,23 @@ static int char_count(float fadein, float timer, const char *msg)
 	return !fadein || n > len ? len : (int)n;
 }
 
-/* GameText_DrawMessage's first pass: how strong the text is now (0: not shown), and its letters */
-static float gtext_alpha(const gtext_t *t, int *chars)
+/* GameText_DrawMessage (src/client/text.qc): how strong a pass is now (0: not shown), and
+ * its letters. The first pass runs fx behind the channel's clock in colour 1; the
+ * second (any effect but 0) on the clock itself in colour 2, drawn over the first */
+static float gtext_alpha(const gtext_t *t, int highlight, int *chars)
 {
-	float timer = t->time - t->fx, a = 0, mtime, btime;
+	float timer = highlight ? t->time : t->time - t->fx, a = 0, mtime, btime;
 	int len = (int)strlen(t->msg);
 	*chars = t->effect == 2 ? char_count(t->fadein, timer, t->msg) : len;
 	if (timer < 0)
 		timer = 0;
-	mtime = t->fadein + t->hold + t->fadeout;
-	btime = t->fadein + t->hold;
+	if (highlight) {
+		btime = t->fadein * len;
+		mtime = btime + t->fadeout;
+	} else {
+		mtime = t->fadein + t->hold + t->fadeout;
+		btime = t->fadein + t->hold;
+	}
 	if (t->effect == 2) {
 		mtime = len * t->fadein + t->hold;
 		btime = mtime + t->fadeout;
@@ -700,7 +712,7 @@ static float gtext_alpha(const gtext_t *t, int *chars)
 /* GameText_DrawString: x -1 centres, 0.5 and over right-aligns; y -1 is the middle */
 static char lines_a[MAX_LINES][TEXT_LEN], lines_b[MAX_LINES][TEXT_LEN]; /* off the DTCM stack */
 
-static void draw_gtext(const gtext_t *t, int chars, int bank)
+static void draw_gtext(const gtext_t *t, int chars, int col, int bank)
 {
 	char s[TEXT_LEN], (*lines)[TEXT_LEN] = lines_b;
 	int n, y0;
@@ -722,7 +734,7 @@ static void draw_gtext(const gtext_t *t, int chars, int bank)
 			if (t->x >= 0.5f)
 				x -= w;
 		}
-		emit(BW_NDS_CLAMP(x, 1, 255 - w), y0 + LINE_H * i, 2, bank, lines[i]);
+		emit(BW_NDS_CLAMP(x, 1, 255 - w), y0 + LINE_H * i, col, bank, lines[i]);
 	}
 }
 
@@ -734,21 +746,39 @@ static uint32_t hash(uint32_t h, const void *p, int n)
 	return h;
 }
 
-static uint32_t flushrows;            /* rows drawn in RAM, not on the layer yet */
-static uint16_t stagepal[G_COUNT][4]; /* the groups' palette banks (entries 1-4), to write */
+static uint16_t stagepal[G_COUNT][5]; /* the groups' palette banks (entries 1-5), to write */
+static uint16_t stagebld;              /* REG_BLDALPHA, 0: no blending */
 
-static void set_bank(int g, const uint8_t *rgb8, float a)
+static uint16_t rgb_of(float r, float g, float b)
 {
-	uint16_t *pal = stagepal[g]; /* the bank's entries 1-4 */
-	a = a < 0 ? 0 : a > 1 ? 1 : a;
-	pal[0] = RGB15(0, 0, 0);
-	pal[1] = RGB15((int)(rgb8[0] * a) >> 3, (int)(rgb8[1] * a) >> 3, (int)(rgb8[2] * a) >> 3);
-	pal[2] = RGB15((int)(0x33 * a) >> 3, (int)(0x96 * a) >> 3, (int)(0xd4 * a) >> 3); /* the feed's attacker, #3396d4 */
-	pal[3] = RGB15((int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3, (int)(0x9a * a) >> 3); /* the feed's weapon (disabled text) */
+	int c[3] = {(int)r >> 3, (int)g >> 3, (int)b >> 3};
+	for (int k = 0; k < 3; k++)
+		c[k] = c[k] < 0 ? 0 : c[k] > 31 ? 31 : c[k];
+	return RGB15(c[0], c[1], c[2]);
 }
 
-/* one group's lines, measured or drawn */
-static void layout(int g, const int *chars)
+/* a group's colours at alpha a, over a layer blended at alpha e (1: not blended). Entry 5
+ * is the second pass of game_text (colour 2 at a2) over the first (colour 1 at a) */
+static void set_bank(int g, const uint8_t *rgb8, float a, const uint8_t *rgb2, float a2, float e)
+{
+	uint16_t *pal = stagepal[g]; /* the bank's entries 1-5 */
+	a = a < 0 ? 0 : a > 1 ? 1 : a;
+	a2 = a2 < 0 ? 0 : a2 > 1 ? 1 : a2;
+	a /= e, a2 /= e; /* blended, the layer's alpha does the rest */
+	pal[0] = RGB15(0, 0, 0);
+	pal[1] = rgb_of(rgb8[0] * a, rgb8[1] * a, rgb8[2] * a);
+	pal[2] = rgb_of(0x33 * a, 0x96 * a, 0xd4 * a); /* the feed's attacker, #3396d4 */
+	pal[3] = rgb_of(0x9a * a, 0x9a * a, 0x9a * a); /* the feed's weapon (disabled text) */
+	pal[4] = rgb2 ? rgb_of(rgb2[0] * a2 + rgb8[0] * a * (1 - a2 * e), rgb2[1] * a2 + rgb8[1] * a * (1 - a2 * e),
+	                       rgb2[2] * a2 + rgb8[2] * a * (1 - a2 * e))
+	              : 0;
+}
+
+static int glayer(int g) { return g >= G_TEXT0 && g <= G_QUEUE; }
+
+/* one group's lines, measured or drawn; chars[c] and chars2[c] are game_text channel c's
+ * letters in its two passes, -1 for a pass not shown */
+static void layout(int g, const int *chars, const int *chars2)
 {
 	char (*lines)[TEXT_LEN] = lines_a;
 	int n, y;
@@ -759,9 +789,12 @@ static void layout(int g, const int *chars)
 			for (int j = 0; j < n; j++, y += LINE_H)
 				emit(PCY(16), y, 2, G_PRINT + 1, lines[j]);
 		}
-	} else if (g >= G_TEXT0 && g <= G_QUEUE) { /* game_text */
+	} else if (g >= G_TEXT0 && g <= G_QUEUE) { /* game_text: the first pass, the second over it */
 		int c = g - G_TEXT0;
-		draw_gtext(c < 5 ? &tx.text[c] : &tx.queue[0], chars[c], g + 1);
+		if (chars[c] >= 0)
+			draw_gtext(c < 5 ? &tx.text[c] : &tx.queue[0], chars[c], 2, g + 1);
+		if (chars2[c] >= 0)
+			draw_gtext(c < 5 ? &tx.text[c] : &tx.queue[0], chars2[c], 5, g + 1);
 	} else if (g == G_CHAT) { /* a field from [16, h/2 - 80], half the HUD wide and tall, its lines at the bottom */
 		n = split_lines(tx.chatfinal, 128, lines);
 		y = clampy(BW_NDS_MIN(96 - PCY(80) + 96, BAND_Y1) - n * LINE_H, n);
@@ -802,20 +835,25 @@ static void layout(int g, const int *chars)
 	}
 }
 
-/* the rows of cells in flushrows, to the layer */
+/* the rows of cells in flushrows, to the layers */
+static uint32_t flushrowsl[2];
+
 static void band_flush(void)
 {
-	uint32_t *tiles = (uint32_t *)Hud_TextTiles();
-	uint16_t *map = Hud_TextMap();
-	if (!tiles || !map)
-		return;
-	for (int r = 0; r < BAND_ROWS; r++) {
-		if (!(flushrows & 1u << r))
+	for (int l = 0; l < 2; l++) {
+		uint32_t *tiles = (uint32_t *)Hud_TextTiles(l);
+		uint16_t *map = Hud_TextMap(l);
+		if (!tiles || !map)
 			continue;
-		for (int k = 0; k < 32 * 8; k++)
-			tiles[(BAND_ROW0 + r) * 32 * 8 + k] = band[r * 32 * 8 + k];
-		for (int c = 0; c < 32; c++)
-			map[(BAND_ROW0 + r) * 32 + c] = (uint16_t)(((BAND_ROW0 + r) * 32 + c) | bandbank[r][c] << 12);
+		for (int r = 0; r < BAND_ROWS; r++) {
+			if (!(flushrowsl[l] & 1u << r))
+				continue;
+			for (int k = 0; k < 32 * 8; k++)
+				tiles[(BAND_ROW0 + r) * 32 * 8 + k] = bands[l][r * 32 * 8 + k];
+			for (int c = 0; c < 32; c++)
+				map[(BAND_ROW0 + r) * 32 + c] = (uint16_t)(((BAND_ROW0 + r) * 32 + c) | bandbanks[l][r][c] << 12);
+		}
+		flushrowsl[l] = 0;
 	}
 }
 
@@ -824,16 +862,19 @@ static void band_flush(void)
 void Events_Commit2D(void)
 {
 	band_flush();
-	flushrows = 0;
 	for (int g = 0; g < G_COUNT; g++)
 		memcpy(BG_PALETTE + (g + 1) * 16 + 1, stagepal[g], sizeof(stagepal[g]));
+	/* the text layers over the 3D view, the HUD and the backdrop */
+	REG_BLDCNT = stagebld ? BLEND_ALPHA | BLEND_SRC_BG2 | BLEND_SRC_BG3 | BLEND_DST_BG0 | BLEND_DST_BG1 | BLEND_DST_BACKDROP
+	                      : BLEND_NONE;
+	REG_BLDALPHA = stagebld;
 }
 
 void Events_Draw2D(void)
 {
 	uint32_t sig[G_COUNT];
-	float alpha[G_COUNT];
-	int chars[6] = {0};
+	float alpha[G_COUNT], alpha2[6] = {0}, lo = 2, hi = 0, e = 1;
+	int chars[6], chars2[6];
 	bool redraw = false;
 	static const uint8_t white[3] = {255, 255, 255}, orange[3] = {255, 136, 0}; /* ^xF80 */
 
@@ -880,13 +921,22 @@ void Events_Draw2D(void)
 		sig[G_CHAT] = hash(2166136261u, tx.chatfinal, (int)strlen(tx.chatfinal)) | 1;
 	for (int c = 0; c < 6; c++) {
 		gtext_t *t = c < 5 ? &tx.text[c] : &tx.queue[0];
-		float a = 0;
-		if (t->msg[0] && (c < 5 || tx.queued > 0))
-			a = gtext_alpha(t, &chars[c]);
-		alpha[G_TEXT0 + c] = a;
-		if (a > 0) {
+		float a = 0, a2 = 0;
+		chars[c] = chars2[c] = -1;
+		if (t->msg[0] && (c < 5 || tx.queued > 0)) {
+			a = gtext_alpha(t, 0, &chars[c]);
+			if (t->effect != 0) /* effect 0 has no highlight */
+				a2 = gtext_alpha(t, 1, &chars2[c]);
+		}
+		if (a <= 0)
+			chars[c] = -1;
+		if (a2 <= 0)
+			chars2[c] = -1;
+		alpha[G_TEXT0 + c] = a, alpha2[c] = a2;
+		if (a > 0 || a2 > 0) {
 			sig[G_TEXT0 + c] = hash(2166136261u, t, (int)offsetof(gtext_t, time));
-			sig[G_TEXT0 + c] = hash(sig[G_TEXT0 + c], &chars[c], 4) | 1;
+			sig[G_TEXT0 + c] = hash(sig[G_TEXT0 + c], &chars[c], 4);
+			sig[G_TEXT0 + c] = hash(sig[G_TEXT0 + c], &chars2[c], 4) | 1;
 		}
 	}
 	alpha[G_FEED] = 1;
@@ -903,7 +953,7 @@ void Events_Draw2D(void)
 
 	if (redraw) {
 		static uint32_t rows[G_COUNT]; /* the rows each group's lines took when last drawn */
-		uint32_t now_rows[G_COUNT], dirty = 0;
+		uint32_t now_rows[G_COUNT], dirty[2] = {0, 0};
 		uint64_t t0 = tickGetCount();
 		Events_Stats.redraws++;
 		measuring = true;
@@ -916,35 +966,57 @@ void Events_Draw2D(void)
 			}
 			grouprows = 0;
 			if (sig[g])
-				layout(g, chars);
+				layout(g, chars, chars2);
 			now_rows[g] = grouprows;
-			if (sig[g] != tx.sig[g] || now_rows[g] != rows[g])
-				dirty |= rows[g] | now_rows[g];
+			dirty[glayer(g)] |= rows[g] | now_rows[g];
 		}
 		measuring = false;
-		cliprows = dirty;
-		for (int r = 0; r < BAND_ROWS; r++)
-			if (dirty & 1u << r) {
-				memset(&band[r * 32 * 8], 0, 32 * 8 * 4);
-				memset(bandbank[r], 0, 32);
-			}
-		for (int g = 0; g < G_COUNT; g++)
-			if (sig[g] && now_rows[g] & dirty)
-				layout(g, chars);
-		flushrows |= dirty;
+		for (int l = 0; l < 2; l++)
+			for (int r = 0; r < BAND_ROWS; r++)
+				if (dirty[l] & 1u << r) {
+					memset(&bands[l][r * 32 * 8], 0, 32 * 8 * 4);
+					memset(bandbanks[l][r], 0, 32);
+				}
+		for (int g = 0; g < G_COUNT; g++) {
+			int l = glayer(g);
+			if (!sig[g] || !(now_rows[g] & dirty[l]))
+				continue;
+			band = bands[l], bandbank = bandbanks[l], cliprows = dirty[l];
+			layout(g, chars, chars2);
+		}
+		band = bands[0], bandbank = bandbanks[0];
+		flushrowsl[0] |= dirty[0], flushrowsl[1] |= dirty[1];
 		memcpy(rows, now_rows, sizeof(rows));
 		memcpy(tx.sig, sig, sizeof(sig));
 		Events_Stats.lastdraw_ticks = (uint32_t)(tickGetCount() - t0);
 	}
+	/* every group up as strong as the others: the layers blend at that alpha (to 1/16),
+	 * and the colours stay whole; otherwise each group's colours darken by its own */
 	for (int g = 0; g < G_COUNT; g++) {
-		const uint8_t *rgb = white;
+		float a[2] = {alpha[g], glayer(g) ? alpha2[g - G_TEXT0] : 0};
+		if (!sig[g])
+			continue;
+		for (int k = 0; k < 2; k++)
+			if (a[k] > 0)
+				lo = a[k] < lo ? a[k] : lo, hi = a[k] > hi ? a[k] : hi;
+	}
+	stagebld = 0;
+	if (hi > 0 && hi < 1 && hi - lo < 1.0f / 16) {
+		int eva = (int)(hi * 16 + 0.5f);
+		eva = eva < 1 ? 1 : eva > 16 ? 16 : eva;
+		e = eva / 16.0f;
+		stagebld = (uint16_t)(eva | (16 - eva) << 8);
+	}
+	for (int g = 0; g < G_COUNT; g++) {
+		const uint8_t *rgb = white, *rgb2 = NULL;
+		float a2 = 0;
 		if (g == G_CENTER)
 			rgb = orange;
-		else if (g >= G_TEXT0 && g < G_TEXT0 + 5)
-			rgb = tx.text[g - G_TEXT0].c1;
-		else if (g == G_QUEUE)
-			rgb = tx.queue[0].c1;
-		set_bank(g, rgb, alpha[g]);
+		else if (g >= G_TEXT0 && g <= G_QUEUE) {
+			const gtext_t *t = g < G_QUEUE ? &tx.text[g - G_TEXT0] : &tx.queue[0];
+			rgb = t->c1, rgb2 = t->c2, a2 = alpha2[g - G_TEXT0];
+		}
+		set_bank(g, rgb, alpha[g], rgb2, a2, e);
 	}
 	/* HLHUD_ItemNotify_Draw: 0.5 a second off the notice's 2.5 */
 	for (int i = 0; i < 3; i++)

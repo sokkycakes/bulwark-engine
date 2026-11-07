@@ -41,7 +41,8 @@ enum {
 #define PY(v) ((v) * 192 / 900) /* Panorama layout units (900 tall) to rows */
 
 static uint16_t *topgfx;
-static uint16_t *textgfx, *textmap; /* the event text's layer (BG2, events_nds.c) */
+static uint16_t *textgfx[2], *textmap[2]; /* the event text's layers (BG2, BG3: events_nds.c) */
+#define TEXT_TILES TOP_TILES
 static uint8_t *hudfont; /* the .dsf, or NULL for the built-in font */
 static int hudh = 8;     /* its rows */
 
@@ -1603,23 +1604,28 @@ void Hud_Init(void)
 	BG_PALETTE[HC_TROUGH] = RGB15(24, 24, 24);  /* #f3f3f3 .. #bdbdbd */
 	BG_PALETTE[HC_FILL] = RGB15(4, 11, 21);     /* #2063b4, #15539e */
 	BG_PALETTE[HC_XHAIR] = RGB15(0, 31, 0);
-	/* The event text (events_nds.c) has its own layer, BG2, so neither redraws the
-	 * other's tiles: its tiles in bank D (kept from textures for the viewer's two
-	 * passes, which a link session doesn't use), its map after BG1's. In front of
-	 * the HUD, as entry.qc CSQC_Update2D draws Chat_Draw, Print_Draw and
-	 * Print_DrawCenterprint after HUD_Draw (game_text, drawn before it there,
-	 * shares the layer and so is in front too) */
+	/* The event text (events_nds.c) has its own layers, so neither it nor the HUD redraws
+	 * the other's tiles: their tiles in bank D (kept from textures for the viewer's two
+	 * passes, which a link session doesn't use; 24 KB of the 32 KB from 0x06020000 and
+	 * from 0x06028000), their maps after BG1's.
+	 * entry.qc CSQC_Update2D draws GameText_Draw before Nameplates_Draw and HUD_Draw
+	 * (src/client/entry.qc:254-266), and Chat_Draw, Print_Draw and Print_DrawCenterprint
+	 * after: game_text and env_message go on BG3, behind the HUD (the same priority as
+	 * BG1, which wins as the lower number), the rest on BG2, in front of it */
 	vramSetBankD(VRAM_D_MAIN_BG_0x06020000);
-	bg2 = bgInit(2, BgType_Text4bpp, BgSize_T_256x256, 13, 8);
-	textgfx = bgGetGfxPtr(bg2);
-	textmap = bgGetMapPtr(bg2);
-	for (int i = 0; i < 32 * 32; i++)
-		textmap[i] = (uint16_t)(i < TOP_TILES ? i : 0);
-	dmaFillHalfWords(0, textgfx, TOP_TILES * 32);
+	for (int l = 0; l < 2; l++) {
+		bg2 = bgInit(l ? 3 : 2, BgType_Text4bpp, BgSize_T_256x256, 13 + l, 8 + l * 2);
+		textgfx[l] = bgGetGfxPtr(bg2);
+		textmap[l] = bgGetMapPtr(bg2);
+		for (int i = 0; i < 32 * 32; i++)
+			textmap[l][i] = (uint16_t)(i < TEXT_TILES ? i : 0);
+		dmaFillHalfWords(0, textgfx[l], TEXT_TILES * 32);
+		bgSetPriority(bg2, l ? 1 : 0);
+	}
 	bgSetPriority(0, 2);
 	bgSetPriority(bg, 1);
-	bgSetPriority(bg2, 0);
-	REG_DISPCNT |= DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE;
+	REG_BLDCNT = 0;
+	REG_DISPCNT |= DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE | DISPLAY_BG3_ACTIVE;
 	hud_load_font();
 	memset(&hud, 0, sizeof(hud));
 	hud.self = -1;
@@ -1632,12 +1638,13 @@ void Hud_Init(void)
 
 void Hud_Done(void)
 {
-	REG_DISPCNT &= ~(DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE);
+	REG_DISPCNT &= ~(DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE | DISPLAY_BG3_ACTIVE);
+	REG_BLDCNT = 0;
 	bgSetPriority(0, 0);
 	vramSetBankF(VRAM_F_LCD);
 	vramSetBankG(VRAM_G_LCD);
 	vramSetBankD(VRAM_D_LCD); /* back as Mp_Init leaves it */
-	topgfx = textgfx = textmap = NULL;
+	topgfx = textgfx[0] = textgfx[1] = textmap[0] = textmap[1] = NULL;
 	free(hudfont);
 	hudfont = NULL;
 }
@@ -1646,5 +1653,5 @@ void Hud_Done(void)
 const uint8_t *Hud_Glyph(int c, int *w, int *adv) { return hud_glyph(c, w, adv); }
 int Hud_TextWidth(const char *s, int scale) { return text_width(s, (int)strlen(s), scale); }
 int Hud_FontHeight(void) { return hudh; }
-uint16_t *Hud_TextTiles(void) { return textgfx; }
-uint16_t *Hud_TextMap(void) { return textmap; }
+uint16_t *Hud_TextTiles(int layer) { return textgfx[layer & 1]; }
+uint16_t *Hud_TextMap(int layer) { return textmap[layer & 1]; }
