@@ -2963,7 +2963,7 @@ static void send_fx(link_t *l)
  * records the device draws as the PC's client does. Records go in order, each once,
  * and again until the device says it has them (docs/spec/link.md, EVENT) */
 enum { RAW_GAME = 1, RAW_PRINT, RAW_CENTER };
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN, LE_FLASH };
 /* Nuclide's src/common/c_events.h */
 enum { EVN_PICKUP = 7, EVN_DAMAGE = 8, EVN_HITNOTIFY = 9, EVN_ANGLE = 10, EVN_SHAKE = 15, EVN_HUDHINT = 16, EVN_FADE = 17,
        EVN_TEXT = 18, EVN_TEXT_STRING = 19, EVN_MESSAGE = 20, EVN_OBITUARY = 25, EVN_CHAT = 28, EVN_CHAT_TEAM = 29 };
@@ -3091,7 +3091,7 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 	l->evlen[l->evnext % EV_RING] = (uint8_t)(len + 2);
 	l->evstamp[l->evnext % EV_RING] = -1e9;
 	if (sv_link_log->ivalue) {
-		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again", "cagain"};
+		static const char *names[] = {"?", "print", "center", "shake", "fade", "damage", "text", "feed", "pickup", "again", "cagain", "flash"};
 		char show[64] = "";
 		int off = type == LE_PRINT ? 1 : type == LE_TEXT ? 32 : type == LE_FEED ? 1 : (type == LE_CENTER || type == LE_PICKUP) ? 0 : -1;
 		if (off >= 0 && len > off)
@@ -3099,7 +3099,7 @@ static void ev_put(link_t *l, int type, const uint8_t *d, int len)
 		if (type == LE_DAMAGE && len >= 8)
 			snprintf(show, sizeof(show), " at %d %d %d take %d", (int16_t)rd16(d), (int16_t)rd16(d + 2), (int16_t)rd16(d + 4),
 			         (int16_t)rd16(d + 6));
-		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 11 ? type : 0], len, show);
+		Con_Printf("LINKEV %s %u %s %d bytes%s\n", l->client->name, l->evnext, names[type < 12 ? type : 0], len, show);
 	}
 	l->evnext++;
 	l->evcount++;
@@ -3522,8 +3522,14 @@ static int ev_game(link_t *l, int ev, const uint8_t *d, int n)
 		if (n < 4)
 			return -1;
 		cls = ev_itemclass((int32_t)rd32(d));
-		if (cls[0])
+		if (cls[0]) {
+			char flash[8];
 			ev_put(l, LE_PICKUP, (const uint8_t *)cls, (int)BW_MIN(strlen(cls), (size_t)EV_REC - 2));
+			/* EV_Pickup (src/client/event.qc:210): the def's pickupFlash 1 runs "bf" */
+			def_key(cls, "pickupFlash", flash, sizeof(flash));
+			if (!strcmp(flash, "1"))
+				ev_put(l, LE_FLASH, NULL, 0);
+		}
 		return 4;
 	}
 	case EVN_CHAT:

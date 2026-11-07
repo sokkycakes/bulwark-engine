@@ -667,6 +667,7 @@ draw; titles.txt escapes become what `Titles_ParseFunString` makes of them
 | 8 | PICKUP | `EV_PICKUP` | the item's class (`EntityDef_NameFromNetID`) |
 | 9 | TEXTAGAIN | a TEXT on channel 0-4 the same as that channel's last | u8 channel: show it again from its start |
 | 10 | CENTERAGAIN | a `centerprint` the same as the last (the co-op rules send "Respawn in N seconds" every frame while down); while one has not gone out yet, more make none | nothing: the centerprint's 3 s start again |
+| 11 | FLASH | `EV_PICKUP` of an item whose entityDef has `pickupFlash 1` (EV_Pickup's `bf`) | nothing: the engine's gold pickup flash |
 
 A device that also sends `'H'` gets no FEED records: the obituaries and
 `coop_feed` reach it in `HUDINFO`, whose feed it draws.

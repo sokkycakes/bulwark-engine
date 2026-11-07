@@ -17,7 +17,7 @@
 
 #include "events_nds.h"
 
-enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN };
+enum { LE_PRINT = 1, LE_CENTER, LE_SHAKE, LE_FADE, LE_DAMAGE, LE_TEXT, LE_FEED, LE_PICKUP, LE_TEXTAGAIN, LE_CENTERAGAIN, LE_FLASH };
 #define PRINT_CHAT 3
 
 evstats_t Events_Stats;
@@ -115,6 +115,10 @@ static void fade_update(void)
 static struct {
 	float alpha, pos[3];
 } dm;
+
+/* the engine's "bf" (src/client/cl_cmds.c BonusFlash_f): gold (215, 186, 69) at 50/255,
+ * losing 100/255 a second (src/render/r_overlay.c draw_screen_tints) */
+static float flash;
 #define CG_DAMAGEFILL 0.25f /* valve/src/hud/hud.h autocvar_cg_damageFill */
 
 /* --- text ------------------------------------------------------------------------------ */
@@ -285,6 +289,9 @@ static void take(int type, const uint8_t *d, int len)
 			tx.centertime = now + 3;
 		}
 		break;
+	case LE_FLASH:
+		flash = 50 / 255.0f;
+		break;
 	case LE_SHAKE: /* EV_Shake: duration, amplitude, frequency */
 		if (len >= 12)
 			shake_start(rdf(d + 4), rdf(d + 8), rdf(d));
@@ -336,6 +343,7 @@ void Events_Reset(void)
 	memset(&dm, 0, sizeof(dm));
 	memset(&tx, 0, sizeof(tx));
 	tx.printlines = tx.chatlines = -1;
+	flash = 0;
 	memset(&Events_Stats, 0, sizeof(Events_Stats));
 	/* translucent polygons blend only with this on (the fade, the damage feedback, and
 	 * link_nds.c's impact effects, whose alphas were drawn solid before) */
@@ -355,6 +363,7 @@ void Events_MapChange(void)
 	memset(&tx, 0, sizeof(tx));
 	tx.printlines = tx.chatlines = -1;
 	memcpy(tx.sig, sig, sizeof(sig));
+	flash = 0;
 }
 
 uint16_t Events_Ack(void) { return have; }
@@ -481,7 +490,7 @@ void Events_Draw3D(const ndscam_t *view)
 {
 	/* down or dead: HUD_Draw skips Jtf_DrawFeedback (coop/src/hud/jtf.qc:536-540), so the
 	 * arrows and tint neither show nor fade until the player is up again */
-	bool feedback = dm.alpha > 0 && !Hud_Down(), any = fd.active || feedback;
+	bool feedback = dm.alpha > 0 && !Hud_Down(), any = fd.active || feedback || flash > 0;
 	if (!any)
 		return;
 	glBindTexture(GL_TEXTURE_2D, 0);
@@ -498,6 +507,14 @@ void Events_Draw3D(const ndscam_t *view)
 	 * colour at one alpha: toward (col ? 31 : 0) at a, so the dimmed channels dim as on the
 	 * PC and the others keep their light (the brightening can't be done; a white modulate
 	 * shows nothing) */
+	if (flash > 0) {
+		if (alpha5(flash)) {
+			glPolyFmt(POLY_ALPHA(alpha5(flash)) | POLY_CULL_NONE | POLY_ID(60));
+			glColor(RGB15(215 >> 3, 186 >> 3, 69 >> 3));
+			rect(0, 0, 256, 192);
+		}
+		flash -= 100 / 255.0f * ftime;
+	}
 	if (fd.active) {
 		float a = fd.alpha * fd.maxa;
 		uint16_t rgb = RGB15((int)(fd.col[0] * 31), (int)(fd.col[1] * 31), (int)(fd.col[2] * 31));
