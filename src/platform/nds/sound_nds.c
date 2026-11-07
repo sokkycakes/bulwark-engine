@@ -685,6 +685,17 @@ static void voice_log(const svoice_t *v, const char *what, int hw, int vol, int 
 		      srcname[v->src], v->seq, (unsigned)v->key, v->ent, v->chan, hw, vol, pan, (unsigned)late);
 }
 
+/* every voice that ends goes through here: its AMBIENT entry lets go of it, so that the entry
+ * never holds a voice index another sound has since been given */
+static void voice_gone(int vi)
+{
+	svoice_t *v = &S.v[vi];
+	if (v->amb >= 0 && v->amb < S.namb && H->amb[v->amb].voice == vi)
+		H->amb[v->amb].voice = -1;
+	v->amb = -1;
+	S.vst[vi] = V_FREE;
+}
+
 static void voice_free(int vi, const char *why)
 {
 	svoice_t *v = &S.v[vi];
@@ -694,9 +705,7 @@ static void voice_free(int vi, const char *why)
 		voice_log(v, why, v->hw, 0, 0, 0);
 	if (v->hw >= 0)
 		hw_release(v->hw, true);
-	if (v->amb >= 0 && v->amb < S.namb && H->amb[v->amb].voice == vi)
-		H->amb[v->amb].voice = -1;
-	S.vst[v - S.v] = V_FREE;
+	voice_gone(vi);
 }
 
 static int sample_timer(const skey_t *k, int pitch)
@@ -775,9 +784,7 @@ static int hw_pick(int32_t loud)
 			hw_release(q, true);
 		} else {
 			hw_release(q, true);
-			S.vst[v - S.v] = V_FREE;
-			if (v->amb >= 0 && v->amb < S.namb && H->amb[v->amb].voice == vi)
-				H->amb[v->amb].voice = -1;
+			voice_gone(vi);
 		}
 		/* free now for the new voice: the stop was queued before the start */
 		hw_unpin(q);
@@ -924,7 +931,7 @@ static int voice_new(const srec_t *r, int src)
 	v->t_arrive = ticks();
 	v->ki = (int16_t)key_get(r->key);
 	if (v->ki < 0) {
-		S.vst[v - S.v] = V_FREE;
+		voice_gone(vi);
 		return -1;
 	}
 	return vi;
@@ -946,7 +953,7 @@ static void voice_start(int vi)
 		if (!v->loop) { /* inaudible from the start (gain under the cull) */
 			voice_log(v, "silent", -1, 0, 0, late);
 			Snd_Stats.quiet++;
-			S.vst[v - S.v] = V_FREE;
+			voice_gone(vi);
 		}
 		return;
 	}
@@ -954,7 +961,7 @@ static void voice_start(int vi)
 		if (!v->loop) {
 			Snd_Stats.quiet++;
 			voice_log(v, "quiet", -1, 0, 0, late);
-			S.vst[v - S.v] = V_FREE;
+			voice_gone(vi);
 		}
 		return;
 	}
@@ -1510,7 +1517,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 			if (S.v[vi].loop) /* (a loop the hardware stopped: silent, as when stolen) */
 				;
 			else
-				S.vst[vi] = V_FREE;
+				voice_gone(vi);
 		} else if (!S.v[c->v].loop && c->blk >= 0 && !S.v[c->v].underrun && H->blk[c->blk].loaded < S.k[S.v[c->v].ki].bytes) {
 			/* still loading: played past what is in? (REG_DIV: a 64-bit '/' is a slow library call) */
 			svoice_t *v = &S.v[c->v];
@@ -1549,7 +1556,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		if (S.k[v->ki].state == K_MISS) {
 			Snd_Stats.missing++;
 			voice_log(v, "missing", -1, 0, 0, 0);
-			S.vst[v - S.v] = V_FREE;
+			voice_gone(i);
 			continue;
 		}
 		if (key_ready(v->ki))
@@ -1558,7 +1565,7 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		         t - v->t_arrive > ms_ticks(S_LATE_MS)) {
 			Snd_Stats.late++;
 			voice_log(v, "late", -1, 0, 0, ticks_ms(t - v->t_arrive));
-			S.vst[v - S.v] = V_FREE;
+			voice_gone(i);
 		}
 	}
 	/* ambient_generic sample switches whose new sample is in */
@@ -1646,6 +1653,11 @@ stats:
 	S.statframes++, S.statcpu += t, S.statcpumax = BW_NDS_MAX(S.statcpumax, t);
 	if (ticks() - S.laststat > TICK_FREQ) {
 		int nv = 0, nh = 0;
+		/* (a check: an AMBIENT entry's voice is busy and is that entry's) */
+		for (int i = 0; i < S.namb && S.log; i++)
+			if (H->amb[i].voice >= 0 && (S.vst[H->amb[i].voice] == V_FREE || S.v[H->amb[i].voice].amb != i))
+				logf_("SNDBUG amb %d voice %d state %d amb %d\n", i, H->amb[i].voice, S.vst[H->amb[i].voice],
+				      S.v[H->amb[i].voice].amb);
 		for (int i = 0; i < S_VOICES; i++)
 			nv += S.vst[i] != V_FREE;
 		for (int h = 0; h < S_HW; h++)
