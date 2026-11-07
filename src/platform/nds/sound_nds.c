@@ -722,7 +722,8 @@ static void voice_free(int vi, const char *why)
 static int sample_timer(const skey_t *k, int pitch)
 {
 	uint32_t hz = (uint32_t)k->rate * (uint32_t)(pitch ? pitch : 100) / 100;
-	return (int)soundTimerFromHz(hz ? hz : 1);
+	/* the timer is 16 bits: SOUND_CLOCK / 65535 is 256 Hz (below, it wraps to a high pitch) */
+	return (int)soundTimerFromHz(hz < 256 ? 256 : hz);
 }
 
 static void hw_unpin(int h);
