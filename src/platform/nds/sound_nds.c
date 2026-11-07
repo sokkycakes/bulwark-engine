@@ -62,6 +62,7 @@ void *sbrk(ptrdiff_t);
 #define LF_AT 2
 #define LF_STOP 4
 #define LF_CLIENTSIDE 8
+#define LF_KNOWN 0x0f /* the bits a record may have: the rest are dropped */
 #define VIEW_ENT 0xffff /* the view model: follows the camera */
 
 enum { K_FREE, K_PENDING, K_FOUND, K_MISS };
@@ -104,13 +105,14 @@ typedef struct {
 	int16_t ki;
 	int8_t hw;
 	bool loop, underrun;
+	bool ownclock;       /* V_DELAY until t_due (ticks), not the drawn clock: a SoundDef's start delay */
 	int8_t amb;          /* its AMBIENT entry, -1 none */
 	uint8_t thing;       /* where its entity was in the things list last frame (a hint) */
 	int32_t org[3];      /* 1/8 units */
 	uint32_t vol_q16, f_q8;
 	sndgain_t g;
 	int32_t loud;
-	uint32_t t_arrive, t_start;
+	uint32_t t_arrive, t_start, t_due;
 	uint32_t skip; /* the loader passed it over this frame (S.use) */
 } svoice_t;
 
@@ -1027,7 +1029,7 @@ static void precache_reset(void)
  * without at (20; 22 from a server that pads) */
 static void parse_rec(const uint8_t *d, srec_t *r)
 {
-	r->seq = (uint16_t)rd16(d), r->lflags = d[2], r->sflags = d[3], r->ent = (uint16_t)rd16(d + 4), r->chan = d[6];
+	r->seq = (uint16_t)rd16(d), r->lflags = d[2] & LF_KNOWN, r->sflags = d[3], r->ent = (uint16_t)rd16(d + 4), r->chan = d[6];
 	r->key = rd32(d + 7), r->vol = d[11], r->atten = d[12], r->pitch = d[13];
 	for (int c = 0; c < 3; c++)
 		r->org[c] = (int16_t)rd16(d + 14 + c * 2);
@@ -1378,8 +1380,8 @@ static void play_shader(int si, bool view, int depth)
 	if ((vi = voice_new(&r, SRC_VM)) >= 0 && s->offset_ms < 0) {
 		/* a negative offset delays the start (snd_main.c:204); a positive one would skip in: not done */
 		S.vst[vi] = V_DELAY;
-		S.v[vi].at = (uint16_t)(ticks_ms(ticks()) - (uint32_t)s->offset_ms);
-		S.v[vi].lflags |= 0x80; /* its at is on our own ms clock */
+		S.v[vi].ownclock = true;
+		S.v[vi].t_due = ticks() + ms_ticks((uint32_t)BW_NDS_MIN(-s->offset_ms, 2000));
 	}
 	if (s->dist != 0xff)
 		play_shader(s->dist, false, depth + 1);
@@ -1592,8 +1594,8 @@ void Snd_Frame(const ndscam_t *cam, int selfent, const sndthing_t *things, int n
 		svoice_t *v = &S.v[i];
 		if (S.vst[v - S.v] != V_DELAY)
 			continue;
-		if (v->lflags & 0x80 ? (int16_t)((uint16_t)ticks_ms(t) - v->at) >= 0
-		                     : !S.haveclock || (int16_t)((uint16_t)S.clock - v->at) >= 0 || t - v->t_arrive > ms_ticks(2000))
+		if (v->ownclock ? (int32_t)(t - v->t_due) >= 0
+		                : !S.haveclock || (int16_t)((uint16_t)S.clock - v->at) >= 0 || t - v->t_arrive > ms_ticks(2000))
 			S.vst[v - S.v] = V_WAIT, v->t_arrive = t;
 	}
 	S.sec[0] += ticks() - t0;
