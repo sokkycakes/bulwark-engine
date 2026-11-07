@@ -127,6 +127,7 @@ static struct {
 
 enum { G_CENTER, G_PRINT, G_CHAT, G_TEXT0, G_QUEUE = G_TEXT0 + 5, G_FEED, G_PICK0, G_COUNT = G_PICK0 + 3 };
 #define TEXT_LEN 200
+#define TEXTQUEUE_MAX 6 /* src/client/text.h: GameMessage_Setup keeps at most 5 */
 
 typedef struct {
 	char msg[TEXT_LEN];
@@ -150,7 +151,7 @@ static struct {
 	float centeralpha, centertime;
 	/* game_text channels 0-4, and channel 0's queue for env_message */
 	gtext_t text[5];
-	gtext_t queue[4];
+	gtext_t queue[TEXTQUEUE_MAX - 1];
 	int queued;
 	/* the kill feed: five lines, six seconds each, newest on top (coop panorama hud.js) */
 	struct {
@@ -213,8 +214,8 @@ static void take_text(const uint8_t *d, int len)
 	if (len < 32)
 		return;
 	if (chan == 0xff) { /* GameMessage_Setup channel 0: the queue */
-		if (tx.queued >= 4) {
-			memmove(&tx.queue[0], &tx.queue[1], sizeof(gtext_t) * 3);
+		if (tx.queued + 1 >= TEXTQUEUE_MAX) { /* text.qc GameMessage_Setup: the oldest goes */
+			memmove(&tx.queue[0], &tx.queue[1], sizeof(gtext_t) * (TEXTQUEUE_MAX - 2));
 			tx.queued--;
 		}
 		t = &tx.queue[tx.queued++];
@@ -816,7 +817,7 @@ void Events_Draw2D(void)
 			tx.feeds--, i--;
 		}
 	if (tx.queued > 0 && !tx.queue[0].msg[0]) { /* GameText_QueueNext */
-		memmove(&tx.queue[0], &tx.queue[1], sizeof(gtext_t) * 3);
+		memmove(&tx.queue[0], &tx.queue[1], sizeof(gtext_t) * (TEXTQUEUE_MAX - 2));
 		tx.queued--;
 	}
 
