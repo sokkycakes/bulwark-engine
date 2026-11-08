@@ -23,6 +23,7 @@ games on the PC.
 | `sv_link_timeout` | `10` | seconds without input before a link player is dropped (after a map change it gets 60 more, while the device loads the map, but never more than 60 s of silence in all) |
 | `sv_link_log` | `0` | `1`: print every command a link v2 player runs, with its state before and after, as `LINKPM` lines (see "The movement log") |
 | `sv_link_lag` | `0` | milliseconds each link packet is held, each way, before it is handled or sent: tests a device at a given round trip |
+| `sv_link_autoaim` | `5` | degrees: a link player's shots bend toward a monster this far from the crosshair, `0` for none (see "Autoaim") |
 
 A link player takes a normal client slot and edict. The game sees it as a
 real player: `clienttype` is `CLIENTTYPE_REAL`, `ClientConnect` and
@@ -105,7 +106,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x82 | WELCOME | u32 session, u8 playernum, u16 spawncount, char map[64], u8 linkver (2 from a v2 server) |
 | 0x83 | REFUSE | char reason[64] |
 | 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
-| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags (1 the game turned us, 2 on the ground, 4 crouching), u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15}, then s16 velocity[3] (units a second) |
+| 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags (1 the game turned us, 2 on the ground, 4 crouching), u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15}, then s16 velocity[3] (units a second), then `'A'`, u8 cone (tenths of a degree, 0 off), u16 target (edict, 0 none), s16 point[3] (units) (see "Autoaim") |
 | 0x86 | KICK | u32 session, char reason[64] |
 | 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (18), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom), u16 frame1time (1/100 s)}, then u32 time (ms), u8 count, count × {u8 thing, s16 velocity[3] (units a second)} |
 | 0x88 | MODELS | u32 session, u16 spawncount, u8 count, count × {u16 model, u8 len, char name[len]} |
@@ -213,6 +214,51 @@ a volley of pellets.
 
 A device ignores an `ENTS` older than the last one it used.
 
+### Autoaim
+
+A link player aims with a stylus or buttons, so, as Half-Life did for players
+on a pad, its shots bend toward a monster near the crosshair. Before each of
+its commands runs, the server looks along the command's angles from the
+player's eye (`origin + view_ofs`):
+
+- Nothing happens while `sv_link_autoaim` is 0 or the device's `INPUT` says
+  `'A'` without bit 0, or when the straight line (2048 units) already meets
+  a monster (`takedamage` 2), a friend in the way or a player.
+- Otherwise the target is the monster nearest the crosshair whose middle
+  (`(absmin + absmax) / 2`) is within `sv_link_autoaim` degrees of it (1.25
+  times that for the target of the command before, so it doesn't flicker at
+  the edge), at most 2048 units away, with nothing between (a `MOVE_NORMAL`
+  line from the eye, at most 4 tried): `takedamage` 2 (Nuclide's
+  `ncSurfacePropEntity::EnableAimAssist`, every monster), `health` above 0,
+  not a player, and not a friend: Nuclide's `m_iAlliance` (the def's `team`)
+  not 0 (`MAL_FRIEND`) or 4 (`MAL_NEUTRAL`).
+- The shot goes to the target's middle. Nuclide's weapons fire from the
+  right hand's XR input (`ncWeapon::FiredWeaponAttack`: `m_xrInputRight`'s
+  `GetOrigin` and `GetAngles`, handed to each hitscan or projectile of the
+  fireInfo), which without XR is the eye turned by `input_right_angles`
+  (taken while `input_right_status` has `XR_STATUS_ANG`). For a link player
+  the server sets those two for the command: the turn from the angles of the
+  command before (Nuclide's XR space holds them: `Physics_Run` sets it after
+  the movement) to the target, or none, and clears them afterwards, so no
+  other player's command sees them (the engine sets them for nobody else).
+- The player's view, `v_angle` and the command's angles stay as the device
+  sent them: the movement and the device's prediction don't change. Melee
+  and thrown attacks (`v_angle`, `GetViewAngle`) don't bend, as in
+  Half-Life.
+
+With `developer 1` the server logs `link: <name> fires with autoaim on edict
+<n> (<classname>), <d> degrees off the crosshair` when a link player starts
+firing or its target changes while firing.
+
+`VIEW`'s `'A'` carries the cone and what the last command's shots bend
+toward. The DS draws its crosshair on that target, as Half-Life moved its
+crosshair onto the autoaim target: at the middle of the target as the DS
+draws it (`ENTS`), or at `point` when it is not among the things, while it
+is in front within 1.5 times the cone; otherwise in the middle of the screen.
+Its own tracers already go to the target, since they go to the server's
+impacts (`FX`). An old device reads `VIEW` only up to the velocity and sends
+no `'A'`: it gets autoaim, with its crosshair in the middle.
+
 `link_teleport x y z [yaw] [name]` (with `sv_cheats 1`) puts every link
 player, or the one named, at a point, for testing a map's triggers and
 level changes. `link_god [0|1]` (with `sv_cheats 1`) makes the link players
@@ -283,7 +329,8 @@ After the 32 bytes of the v1 fields (all present):
 | then | u8, u16 | optional, after `'W'` when that is there: `'H'`, the HUDINFO version the device has (0 none yet); a device that sends it draws the HUD and takes HUDINFO |
 | then | u8, u16 | optional (after `'W'` and `'H'` when they are there, or at 32 without commands): `'E'`, the last EVENT record the device has taken in order (0 none); a device that sends it takes EVENT |
 | then | u8, u16, u8 | optional, after `'E'`: `'S'`, the AMBIENT version the device has (0 none), caps (bit 0: it plays sound); a device that sends it with bit 0 takes SOUND, AMBIENT, EVENT records 12-15 and WEAPONINFO's sound events |
-| then | u8, u8 | optional, last, after `'S'`: `'L'`, the count of the device's last-weapon presses (the PC's `weaplast`, Q), mod 256. Each change after the first one heard switches the player to `m_lastWeapon` while they still own it, as the next command's `input_cursor_entitynumber` (the PC's client sends its weapon choice the same way), or else sends impulse 12 (the previous weapon, `GetLastWeapon`'s own fallback) |
+| then | u8, u8 | optional, after `'S'`: `'L'`, the count of the device's last-weapon presses (the PC's `weaplast`, Q), mod 256. Each change after the first one heard switches the player to `m_lastWeapon` while they still own it, as the next command's `input_cursor_entitynumber` (the PC's client sends its weapon choice the same way), or else sends impulse 12 (the previous weapon, `GetLastWeapon`'s own fallback) |
+| then | u8, u8 | optional, last, after `'L'`: `'A'`, flags: bit 0 the device's autoaim is on (`autoaim=` in the DS's `link.txt`). Without it the device is taken to want autoaim (see "Autoaim") |
 
 A command: u8 `msec` (1..100), s16 `pitch` (65536 a turn, up positive),
 s16 `yaw`, s16 `move[3]` (forward, side, up, in the game's

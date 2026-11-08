@@ -1552,12 +1552,13 @@ static void part_tid(uint32_t t)
 	meter(x + 3, y + 9, w - 6, frac, low ? HC_RED : HC_GREEN);
 }
 
-/* the weapon's crosshair sprite, at the centre (Cross_GetPos), not while down */
-static void part_cross(void)
+/* the weapon's crosshair sprite, at the centre (Cross_GetPos) or on the target the
+ * server's autoaim bends our shots toward (link_nds.c aim_crosshair), not while down */
+static void part_cross(const hudin_t *in)
 {
 	if (!hud.xw || down_now())
 		return;
-	w_xhair(128 - hud.xw / 2, 96 - hud.xh / 2);
+	w_xhair(in->xhx - hud.xw / 2, in->xhy - hud.xh / 2);
 }
 
 /* the most time the HUD takes in a frame, building its panels and drawing tiles (a tile
@@ -1663,7 +1664,7 @@ void Hud_Frame(const ndscam_t *view, const hudent_t *ents, int nents, const hudi
 		case W_PLATES: part_plates(view, ents, nents, t); break;
 		case W_PROMPT: part_prompt(in, view); break;
 		case W_TID: part_tid(t); break;
-		case W_CROSS: part_cross(); break;
+		case W_CROSS: part_cross(in); break;
 		}
 		sig = fnv(w->buf, w->len);
 		if (sig != w->sig) {

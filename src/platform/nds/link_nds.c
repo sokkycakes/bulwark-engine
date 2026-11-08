@@ -15,6 +15,7 @@
  * cmdvb=2 (a movement command every 2 refreshes instead of every one, for testing)
  * botwalk=1 (walks, strafes, jumps and crouches by itself in a fixed pattern, for testing)
  * vm_forward=0 vm_right=-2.5 vm_up=-2.4 (map units: where view models other than Half-Life's sit)
+ * autoaim=0 (shots go where the crosshair is: the server's autoaim is off for this DS)
  *
  * The bottom screen is a touch pad, as in Metroid Prime Hunters: drag in the
  * middle to aim, double-tap to jump, and buttons below for the last weapon
@@ -85,6 +86,7 @@ typedef struct {
 	int sens;     /* aim speed, percent: 100 turns 120 degrees across the screen */
 	int interp;   /* interp=: ms other entities are drawn behind the server's newest, 0 as sent */
 	float vm[3];  /* vm_forward= vm_right= vm_up=: where view models other than Half-Life's sit, map units */
+	bool noaim;   /* autoaim=0 */
 } linkcfg_t;
 
 /* Counter-Strike Online's view models sit higher and further right than Half-Life's: on the
@@ -246,6 +248,9 @@ static struct {
 	bool haveview;
 	float pvel[3];        /* the player's velocity, units a second (VIEW) */
 	bool onground, crouch; /* VIEW flags 2 and 4 */
+	uint8_t aimcone;      /* VIEW's 'A': the server's autoaim cone, tenths of a degree (0 off) */
+	uint16_t aimtgt;      /* what our shots bend toward, 0 none */
+	int16_t aimpt[3];     /* its point, map units */
 	marker_t markers[MAX_MARKERS];
 	int nummarkers;
 	int health;
@@ -480,6 +485,8 @@ static void read_config(void)
 				cfg.cmdvb = BW_NDS_CLAMP(atoi(v), 1, 2);
 			else if (!strcmp(line, "botwalk"))
 				cfg.botwalk = atoi(v) != 0;
+			else if (!strcmp(line, "autoaim"))
+				cfg.noaim = atoi(v) == 0;
 			else if (!strcmp(line, "interp"))
 				cfg.interp = BW_NDS_CLAMP(atoi(v), 0, 500);
 			else if (!strcmp(line, "vm_forward") || !strcmp(line, "vm_right") || !strcmp(line, "vm_up"))
@@ -1294,6 +1301,14 @@ static void handle_view(const uint8_t *d, int len, ndscam_t *cam)
 	else /* an older server: from the last two views */
 		for (int k = 0; k < 3; k++)
 			link.pvel[k] = link.vel[k] * 7.5f;
+	/* then 'A': the autoaim cone and what the shots bend toward (an older server: none) */
+	link.aimcone = 0, link.aimtgt = 0;
+	if (26 + count * 9 + 6 + 10 <= len && d[26 + count * 9 + 6] == 'A') {
+		const uint8_t *a = d + 26 + count * 9 + 6;
+		link.aimcone = a[1], link.aimtgt = (uint16_t)rd16(a + 2);
+		for (int k = 0; k < 3; k++)
+			link.aimpt[k] = (int16_t)rd16(a + 4 + k * 2);
+	}
 }
 
 /* bullet impacts (docs/spec/link.md, FX): a puff where each hit, and for a
@@ -2084,6 +2099,8 @@ static void send_input(const ndscam_t *cam, uint32_t held, int buttons, bool tog
 	p_u8(&p, 'S'), p_u16(&p, Snd_AmbientAck()), p_u8(&p, Snd_Enabled() ? 1 : 0);
 	/* how often WPN was pressed: the server switches to the last weapon on each change */
 	p_u8(&p, 'L'), p_u8(&p, lastweapon);
+	/* our autoaim= (bit 0 on): the server bends our shots toward a monster near the crosshair */
+	p_u8(&p, 'A'), p_u8(&p, cfg.noaim ? 0 : 1);
 	send_to(&link.to, &p);
 }
 
@@ -2999,6 +3016,45 @@ static void weapon_punch(ndscam_t *view)
 /* the linked loop; returns why it ended */
 /* the top screen's HUD, once a frame (hud_nds.c), from the camera drawn and the
  * entities where they were drawn */
+/* where the crosshair goes (screen pixels): on the monster the server bends our shots
+ * toward, as Half-Life's moved onto its autoaim target, while it is in front of us within
+ * the cone and a half (the server's choice is from our last command, up to a round trip
+ * old); its middle where we draw it now, or the server's point when it is not among the
+ * things. Otherwise the middle of the screen */
+static void aim_crosshair(const ndscam_t *view, int *x, int *y)
+{
+	float pt[3], d[3], f[3], dist, sy, cy, sp, cp;
+	*x = 128, *y = 96;
+	if (!link.aimtgt || !link.aimcone || cfg.noaim)
+		return;
+	for (int k = 0; k < 3; k++)
+		pt[k] = link.aimpt[k];
+	for (int i = 0; i < link.numthings; i++) {
+		const thing_t *th = &link.things[i];
+		if (th->ent == link.aimtgt) {
+			if (th->kind != 1) /* dead now (4), or no longer a monster */
+				return;
+			pt[0] = th->dorg[0], pt[1] = th->dorg[1], pt[2] = th->dorg[2] + th->height * 0.5f;
+			break;
+		}
+	}
+	sy = sinLerp(view->yaw) / 4096.0f, cy = cosLerp(view->yaw) / 4096.0f;
+	sp = sinLerp(view->pitch) / 4096.0f, cp = cosLerp(view->pitch) / 4096.0f;
+	f[0] = cy * cp, f[1] = sy * cp, f[2] = sp;
+	for (int k = 0; k < 3; k++)
+		d[k] = pt[k] - view->org[k] / 8.0f;
+	dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	if (dist < 1 || (d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / dist < cosf(link.aimcone * 0.15f * (float)M_PI / 180))
+		return;
+	{
+		/* the camera's right and up, as hud_nds.c projects */
+		float fw = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+		float r = sy * d[0] - cy * d[1], u = (-cy * sp) * d[0] + (-sy * sp) * d[1] + cp * d[2];
+		*x = BW_NDS_CLAMP(128 + (int)(r / fw * 137.1f), 8, 248);
+		*y = BW_NDS_CLAMP(96 - (int)(u / fw * 137.1f), 8, 184);
+	}
+}
+
 static void hud_frame(const ndscam_t *view)
 {
 	int n = 0;
@@ -3017,6 +3073,7 @@ static void hud_frame(const ndscam_t *view)
 	hudin.firekey = cfg.lefty ? "R" : "A";
 	hudin.diag1 = huddiag[0], hudin.diag2 = huddiag[1];
 	hudin.srvms = eclock.now, hudin.srvclock = eclock.have;
+	aim_crosshair(view, &hudin.xhx, &hudin.xhy);
 	Hud_Frame(view, hudents, n, &hudin);
 	if (!pad.gamepage)
 		Hud_Sub(sub, &hudin, C_BAR & 0x7FFF, pad_tab, pad.hudforce), pad.hudforce = false;

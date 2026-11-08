@@ -25,6 +25,7 @@ typedef struct {
 	const char *diag1, *diag2;    /* the diagnostics line and the map's load error, "" none */
 	uint32_t srvms;               /* the server's clock (ENTS time) as the link runs it */
 	bool srvclock;                /* srvms runs (an ENTS came) */
+	int xhx, xhy;                 /* where the crosshair's middle goes: 128 96, or on the autoaim target */
 } hudin_t;
 
 void Hud_Init(void);  /* BG1 on the top screen, and the font */

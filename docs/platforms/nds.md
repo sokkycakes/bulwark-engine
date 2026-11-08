@@ -75,6 +75,7 @@ fps=30              optional: cap at 30 fps (every frame takes two refreshes), f
 predict=0           optional: show where the server says you are, without prediction (below)
 cmdvb=2             optional: one movement command every 2 refreshes instead of every one, for testing
 botwalk=1           optional: walk, strafe, jump and crouch by itself in a fixed 12 s pattern, for testing
+autoaim=0           optional: no autoaim (shots go where the crosshair is; on by default, below)
 interp=80           optional: ms other entities are drawn behind the server, 0 for as sent ("Other entities", below)
 lerpframes=0        optional: models step from baked frame to frame instead of blending
 volume=0.7          optional: sound volume, 0 to 1 (the PC's default)
@@ -101,6 +102,12 @@ Hunters:
   or the engine's name, health, map and player list); **PAD**, in the same
   place, swaps back. Touches on the game's screen go to the game.
 - Drag in the middle (rows 32-143) to aim. A double tap jumps.
+- Autoaim, as Half-Life's on a pad: shots bend toward a monster within 5
+  degrees of the crosshair (the server's `sv_link_autoaim`; friends and
+  players are left alone, and so is anything behind a wall), and the
+  crosshair moves onto it while it is in front within 1.5 times the cone
+  (`VIEW`'s `'A'`, `docs/spec/link.md` "Autoaim"). The view itself never
+  moves. `autoaim=0` in `link.txt` turns it off for this DS.
 - The top screen shows health and Barrier (the game's armour) in big
   numbers at the bottom left. Its first line, right-justified at the top,
   shows frames a second, the slowest second's rate, polygons, and models
@@ -781,7 +788,7 @@ itself (health, the clip and reserve):
 | the use prompt with its key, or a callout with a leader line on the item | y 510, or at the item |
 | the target ID card (the ray against the box grown by 4, then a trace) | y 558 |
 | nameplates over teammates and friendly NPCs in sight (875 units, the range where their alpha is over half) | over each |
-| the weapon's crosshair sprite, scaled by 192/480 as the PC's 480-line HUD | centre, hidden while down |
+| the weapon's crosshair sprite, scaled by 192/480 as the PC's 480-line HUD | centre, or on the autoaim target (`VIEW`'s `'A'`), hidden while down |
 
 Every frame each part writes a list of fills, lines and text runs; the
 lists are compared op by op with the last frame's, and only the 8 × 8

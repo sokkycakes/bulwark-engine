@@ -196,6 +196,12 @@ typedef struct {
 	int lastseq_w;                /* the count of the device's weaplast presses ('L'), -1 none yet */
 	int selent;                   /* a weapon to switch to with the next command (0 none): the
 	                               * PC's client sends it as input_cursor_entitynumber */
+	bool aimoff;                  /* its INPUT's 'A' says autoaim=0 (docs/spec/link.md, "Autoaim") */
+	int aimtgt;                   /* the entity the last command's shots bent toward, 0 none */
+	float aimpt[3];               /* the point they bent toward */
+	float aimbase[3];             /* the angles of the last command run: Nuclide's XR space holds them */
+	int aimbased;                 /* the spawncount + 1 aimbase is from, 0 none */
+	bool aimfire;                 /* the last command held an attack button */
 	int vmseq;                    /* the view model's sequence when last looked at */
 	float vmtime;                 /* and how long it had played */
 	uint8_t vmplays, vmsent;      /* sequences started (the same one again counts), and as last sent */
@@ -323,7 +329,7 @@ typedef struct {
 static link_t links[MAX_LINKS];
 static int sock = -1;
 static int boundport;
-static cvar_t *sv_link_port, *sv_link_max, *sv_link_timeout, *sv_link_log, *sv_link_lag;
+static cvar_t *sv_link_port, *sv_link_max, *sv_link_timeout, *sv_link_log, *sv_link_lag, *sv_link_autoaim;
 
 /* --- packets ---------------------------------------------------------------------------- */
 
@@ -640,6 +646,10 @@ static void handle_input(link_t *l, const uint8_t *d, int len)
 					if (l->lastseq_w >= 0 && d[t + 1] != l->lastseq_w && c->state == CS_SPAWNED)
 						weap_last(l);
 					l->lastseq_w = d[t + 1];
+					t += 2;
+					/* then 'A': flags, bit 0 the device's autoaim= (on unless it says otherwise) */
+					if (len >= t + 2 && d[t] == 'A')
+						l->aimoff = !(d[t + 1] & 1);
 				}
 			}
 		}
@@ -837,6 +847,9 @@ static float efloat(int e, const char *name);
 static int active_weapon(int e);
 static void raise_fix(link_t *l, float p, float y);
 
+static float aim_cone(const link_t *l);
+static bool ent_live(int e);
+
 static void send_view(link_t *l)
 {
 	pkt_t p;
@@ -902,6 +915,13 @@ static void send_view(link_t *l)
 		for (int k = 0; k < 3; k++)
 			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(vofs >= 0 ? QC_EdictFields(sv.vm, e)[vofs + k].f : 0, -32768, 32767));
 	}
+	/* then 'A': the autoaim cone (tenths of a degree, 0 off) and what the last command's
+	 * shots bent toward (edict, 0 none, and the point in units): the device's crosshair goes there */
+	p_u8(&p, 'A');
+	p_u8(&p, (uint8_t)BW_CLAMP(lrintf(aim_cone(l) * 10), 0, 255));
+	p_u16(&p, (uint16_t)(ent_live(l->aimtgt) ? l->aimtgt : 0));
+	for (int k = 0; k < 3; k++)
+		p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(lrintf(l->aimpt[k]), -32768, 32767));
 	send_to(&l->from, &p);
 }
 
@@ -2627,6 +2647,196 @@ static void log_wstate(link_t *l, int e, const char *what, float land, strbuf_t 
 	log_flush(sb);
 }
 
+/* --- autoaim (docs/spec/link.md, "Autoaim") ---
+ * A link player aims with a stylus or buttons, so its shots bend toward the monster nearest
+ * the crosshair within sv_link_autoaim degrees, when nothing hides it, as Half-Life's did for
+ * pad players. Only the shot bends: the player's view, v_angle and the command's angles (which
+ * the movement and the device's prediction read) stay as sent.
+ *
+ * Nuclide's weapons fire from the right hand's XR input (ncWeapon::FiredWeaponAttack:
+ * m_xrInputRight's GetOrigin and GetAngles, which _ProjectileAttack hands to each hitscan or
+ * projectile), and without XR that hand is the XR space (the eye, turned as the last command
+ * run looked, player_pmove.qc Physics_Run) turned by input_right_angles, which the hand takes
+ * while input_right_status has XR_STATUS_ANG. The engine sets nothing there for anyone else,
+ * so the hand stays at the eye and the shot goes where the player looks. For a link player
+ * each command runs with that turn: none, or the one from the last command's angles to the
+ * target. Melee and thrown attacks (v_angle, GetViewAngle) don't bend, as in Half-Life. */
+#define AIM_RANGE 2048.0f /* units: no help further away */
+#define AIM_KEEP 1.25f    /* a locked target stays locked out to this much of the cone */
+#define AIM_TRIES 4       /* candidates traced for line of sight, nearest the crosshair first */
+#define XR_STATUS_ANG 2u  /* Nuclide's src/shared/input/XRInput.h */
+
+static struct {
+	qcvm_t *vm;
+	int spawncount;
+	int rstatus, rangles; /* input_right_status (a __uint64) and input_right_angles, -1 if the game lacks them */
+	int takedamage;
+	qfld_t alliance;      /* Nuclide's m_iAlliance (the def's "team"): 0 MAL_FRIEND, 4 MAL_NEUTRAL */
+} aimf;
+
+static void aim_fields(void)
+{
+	if (aimf.vm == sv.vm && aimf.spawncount == svs.spawncount)
+		return;
+	aimf.vm = sv.vm, aimf.spawncount = svs.spawncount;
+	aimf.rstatus = QC_GlobalOfs(sv.vm, "input_right_status");
+	aimf.rangles = QC_GlobalOfs(sv.vm, "input_right_angles");
+	aimf.takedamage = QC_FieldOfs(sv.vm, "takedamage");
+	aimf.alliance = qfld("m_iAlliance");
+}
+
+static float aim_cone(const link_t *l)
+{
+	return l->aimoff ? 0 : BW_CLAMP(sv_link_autoaim->value, 0, 30);
+}
+
+/* the monster the shot should bend toward from eye along angles (QC's, pitch down
+ * positive), its point in pt; 0 for none: autoaim off, the crosshair already on a
+ * monster, a friend or a player, or nothing in the cone that can be seen */
+static int aim_pick(link_t *l, const float *eye, const float *angles, float *pt)
+{
+	static const float zero[3] = {0, 0, 0};
+	float fwd[3], end[3], cone = aim_cone(l), mincos;
+	struct {
+		int e;
+		float cos, pt[3];
+	} cand[AIM_TRIES];
+	int n = 0, self = l->client->edict;
+	svtrace_t tr;
+	if (cone <= 0 || aimf.takedamage < 0 || F.absmin < 0 || F.absmax < 0)
+		return 0;
+	AngleVectors(angles, fwd, NULL, NULL);
+	for (int k = 0; k < 3; k++)
+		end[k] = eye[k] + fwd[k] * AIM_RANGE;
+	SV_Move(eye, zero, zero, end, MOVE_NORMAL, self, &tr);
+	if (tr.ent > 0 && ent_live(tr.ent) && (tr.ent <= svs.maxclients || QC_EFloat(sv.vm, tr.ent, aimf.takedamage) == 2))
+		return 0; /* on a monster already, or a friend or another player is in the way */
+	mincos = cosf(cone * AIM_KEEP * (float)M_PI / 180);
+	for (int e = svs.maxclients + 1; e < sv.vm->num_edicts; e++) {
+		const float *mn, *mx;
+		float d[3], dist, c, lim;
+		int slot;
+		if (sv.vm->edicts[e].free || QC_EFloat(sv.vm, e, aimf.takedamage) != 2 /* DAMAGE_AIM */ ||
+		    QC_EFloat(sv.vm, e, F.health) <= 0)
+			continue;
+		if (aimf.alliance.ofs >= 0) {
+			int team = (int)qnum(e, aimf.alliance);
+			if (team == 0 || team == 4) /* MAL_FRIEND, MAL_NEUTRAL: Half-Life's didn't aim at friends either */
+				continue;
+		}
+		mn = fvec(e, F.absmin), mx = fvec(e, F.absmax);
+		for (int k = 0; k < 3; k++)
+			d[k] = (mn[k] + mx[k]) * 0.5f - eye[k];
+		dist = VectorLength(d);
+		if (dist < 1 || dist > AIM_RANGE)
+			continue;
+		c = DotProduct(d, fwd) / dist;
+		lim = e == l->aimtgt ? mincos : cosf(cone * (float)M_PI / 180);
+		if (c < lim)
+			continue;
+		/* kept nearest the crosshair first */
+		slot = n < AIM_TRIES ? n++ : AIM_TRIES;
+		while (slot > 0 && cand[slot - 1].cos < c) {
+			if (slot < AIM_TRIES)
+				cand[slot] = cand[slot - 1];
+			slot--;
+		}
+		if (slot < AIM_TRIES) {
+			cand[slot].e = e, cand[slot].cos = c;
+			for (int k = 0; k < 3; k++)
+				cand[slot].pt[k] = eye[k] + d[k];
+		}
+	}
+	for (int i = 0; i < n; i++) {
+		SV_Move(eye, zero, zero, cand[i].pt, MOVE_NORMAL, self, &tr);
+		if (tr.fraction >= 1 || tr.ent == cand[i].e) {
+			VectorCopy(cand[i].pt, pt);
+			return cand[i].e;
+		}
+	}
+	return 0;
+}
+
+/* input_right_angles that turn the XR space (from base, the angles of the last command
+ * run) so that its forward is dir: the shortest turn, as Nuclide composes it
+ * (NSXRSpace::RoomToWorldAngles: makevectors of these, rotatevectorsbyvectors by the
+ * space's axes, so the hand's forward is this turn applied to the space's forward) */
+static void aim_turn(const float *base, const float *dir, float *out)
+{
+	float f[3], k[3], s, c, ax[3][3];
+	AngleVectors(base, f, NULL, NULL);
+	CrossProduct(f, dir, k);
+	s = VectorLength(k), c = DotProduct(f, dir);
+	out[0] = out[1] = out[2] = 0;
+	if (s < 1e-6f)
+		return;
+	for (int i = 0; i < 3; i++)
+		k[i] /= s;
+	/* the turn applied to the unit axes x, y (left) and z (Rodrigues) */
+	for (int a = 0; a < 3; a++) {
+		float v[3] = {a == 0, a == 1, a == 2}, kv[3], kd = k[a];
+		CrossProduct(k, v, kv);
+		for (int i = 0; i < 3; i++)
+			ax[a][i] = v[i] * c + kv[i] * s + k[i] * kd * (1 - c);
+	}
+	/* AngleVectors: forward (cp cy, cp sy, -sp); right (the opposite of left) z -sr cp; up z cr cp */
+	out[0] = atan2f(-ax[0][2], sqrtf(ax[0][0] * ax[0][0] + ax[0][1] * ax[0][1])) * (180 / (float)M_PI);
+	out[1] = atan2f(ax[0][1], ax[0][0]) * (180 / (float)M_PI);
+	out[2] = atan2f(ax[1][2], ax[2][2]) * (180 / (float)M_PI);
+}
+
+/* before a link player's command runs: what its shots bend toward, and the hand's turn */
+static void aim_before(link_t *l, const usercmd_t *u)
+{
+	int e = l->client->edict, tgt;
+	const float *org = fvec(e, F.origin), *ofs = fvec(e, F.view_ofs);
+	float eye[3], pt[3], turn[3] = {0, 0, 0};
+	bool fire = (u->buttons & (0x01 | 0x20)) != 0; /* INPUT_PRIMARY, INPUT_SECONDARY */
+	aim_fields();
+	for (int k = 0; k < 3; k++)
+		eye[k] = pt[k] = org[k] + ofs[k];
+	tgt = aim_pick(l, eye, u->angles, pt);
+	if (tgt) {
+		float dir[3];
+		for (int k = 0; k < 3; k++)
+			dir[k] = pt[k] - eye[k];
+		VectorNormalize(dir);
+		aim_turn(l->aimbased == svs.spawncount + 1 ? l->aimbase : l->client->lastucmd.angles, dir, turn);
+		VectorCopy(pt, l->aimpt);
+	}
+	if (fire && (tgt != l->aimtgt || !l->aimfire) && (tgt || l->aimtgt)) {
+		float d[3], fwd[3];
+		AngleVectors(u->angles, fwd, NULL, NULL);
+		for (int k = 0; k < 3; k++)
+			d[k] = pt[k] - eye[k];
+		if (tgt)
+			Con_DPrintf("link: %s fires with autoaim on edict %d (%s), %.1f degrees off the crosshair\n", l->client->name, tgt,
+			            QC_GetString(sv.vm, QC_EInt(sv.vm, tgt, F.classname)),
+			            acosf(BW_CLAMP(DotProduct(d, fwd) / VectorLength(d), -1, 1)) * (180 / (float)M_PI));
+		else
+			Con_DPrintf("link: %s fires with no autoaim target\n", l->client->name);
+	}
+	l->aimtgt = tgt, l->aimfire = fire;
+	if (aimf.rstatus >= 0 && aimf.rangles >= 0) {
+		sv.vm->globals[aimf.rstatus].u = XR_STATUS_ANG; /* none for no target: the hand turns back to the eye */
+		sv.vm->globals[aimf.rstatus + 1].u = 0;
+		QC_SetGVec(sv.vm, aimf.rangles, turn);
+	}
+}
+
+/* after it: nobody else's command (a PC player's) sees the turn */
+static void aim_after(link_t *l, const usercmd_t *u)
+{
+	static const float zero[3] = {0, 0, 0};
+	VectorCopy(u->angles, l->aimbase);
+	l->aimbased = svs.spawncount + 1;
+	if (aimf.rstatus >= 0 && aimf.rangles >= 0) {
+		sv.vm->globals[aimf.rstatus].u = 0;
+		sv.vm->globals[aimf.rstatus + 1].u = 0;
+		QC_SetGVec(sv.vm, aimf.rangles, zero);
+	}
+}
+
 /* --- v2 INPUT: the device's commands, each run once --- */
 
 static void hud_heard(link_t *l, uint16_t ack);
@@ -2710,11 +2920,14 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 			float *va = &QC_EdictFields(sv.vm, c->edict)[F.v_angle].f;
 			va[0] = u.angles[0], va[1] = u.angles[1], va[2] = 0;
 		}
+		aim_before(l, &u);
 		SV_RunUsercmd(c, &u);
 		if (!l->used || l->client != c) {
+			aim_after(l, &u);
 			SB_Free(&sb);
 			return; /* the game dropped the player */
 		}
+		aim_after(l, &u);
 		if (c->lastucmd.msec < u.msec)
 			l->clipped++;
 		watch_viewmodel(l); /* each command can start a sequence: a frame can run several */
@@ -5834,4 +6047,6 @@ void SV_LinkInit(void)
 	sv_link_timeout = Cvar_Get("sv_link_timeout", "10", 0, "Seconds without input before a link player is dropped");
 	sv_link_log = Cvar_Get("sv_link_log", "0", 0, "1: print every command a link v2 player runs, with its state (LINKPM lines)");
 	sv_link_lag = Cvar_Get("sv_link_lag", "0", 0, "Milliseconds each link packet is held, each way, to test latency");
+	sv_link_autoaim = Cvar_Get("sv_link_autoaim", "5", 0,
+	                           "Link players' shots bend toward a monster this many degrees off the crosshair, 0 for none");
 }
