@@ -108,7 +108,7 @@ Angles use 65536 per turn, and positive pitch looks up.
 | 0x84 | SCREEN | u32 session, u16 version, then draw commands until the end of the packet |
 | 0x85 | VIEW | u32 session, u16 seq, s32 origin[3] (1/8 units), s16 pitch, s16 yaw, s16 health, u8 flags (1 the game turned us, 2 on the ground, 4 crouching), u8 count, then count × {s16 org[3] (units), u8 kind, u16 rgb15}, then s16 velocity[3] (units a second), then `'A'`, u8 cone (tenths of a degree, 0 off), u16 target (edict, 0 none), s16 point[3] (units) (see "Autoaim") |
 | 0x86 | KICK | u32 session, char reason[64] |
-| 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (18), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom), u16 frame1time (1/100 s)}, then u32 time (ms), u8 count, count × {u8 thing, s16 velocity[3] (units a second)} |
+| 0x87 | ENTS | u32 session, u16 seq, u16 nummodels, u8 shown[(nummodels + 7) / 8], u8 moved, moved × {u16 model, s16 origin[3] (1/4 units), s16 angles[3]}, u8 things, u8 thing_size (19), things × {s16 org[3] (units, the bottom middle), u8 yaw (256 a turn), u8 half_width, u8 height, u8 kind, u16 entnum, u16 model, u8 frame (the sequence), u8 lift (how far the model's origin sits above the bottom), u16 frame1time (1/100 s), u8 alpha (255 opaque)}, then u32 time (ms), u8 count, count × {u8 thing, s16 velocity[3] (units a second)} |
 | 0x88 | MODELS | u32 session, u16 spawncount, u8 count, count × {u16 model, u8 len, char name[len]} |
 | 0x89 | STATS | u32 session, s16 health, s16 armour, s16 score, u8 len, char weapon[len], u16 viewmodel, u8 sequence, u8 plays |
 | 0x8A | FX | u32 session, u8 count, count × {u8 flags, s32 hit[3] (1/8 units), s32 eye[3] (1/8 units)} |
@@ -156,10 +156,16 @@ entities itself:
 - `things` are the nearest other entities with a model (at most 48 within
   2048 units), including the other players. Kind 1 is a monster
   (`FL_MONSTER`), 2 something solid, 3 something not solid, 4 a dead
-  monster. `thing_size` lets a later version add fields. `model` is the
+  monster or a body (`SOLID_CORPSE`). `thing_size` lets a later version add fields. `model` is the
   entity's model index when it is a studio model (`.mdl`), or 1000 plus the
   slot for a player, whose model is `models/player/<m>/<m>.mdl` from their
-  `model` userinfo (or `models/player.mdl`); 0 for none. A device that has
+  `model` userinfo (or `models/player.mdl`); 0 for none. A player's body
+  (Nuclide's body queue: not a client, `SOLID_CORPSE`, no `FL_MONSTER`)
+  whose model is no studio model (the co-op heroes' `.md2`s) is sent as
+  its player's, 1000 plus the slot: the player who was dead within 160
+  units when it appeared (else the nearest with its model), kept while it
+  lies there. Its `frame` is the death sequence of `models/player.mdl` the
+  game gave it. A device that has
   a DS copy of that model (tools/nds/hlmdl.py) draws it playing `frame`'s
   sequence, and otherwise a box. `frame1time` is how long that sequence
   has played (the game's `frame1time`, which the PC client draws the
@@ -173,6 +179,10 @@ entities itself:
   of the other players among `things` (at most 8, by their place in the
   list), which the PC's client game moves them on by between updates
   (Nuclide's `cg_extrapolateClients`, on by default).
+- `alpha` is how opaque the PC draws the thing: Nuclide's render amount
+  (`ncRenderableEntity::m_renderAmount`, 0 to 255) when its render mode is
+  one that uses it (1, 2, 4 or 5), else 255. The co-op game fades bodies
+  out by it before it hides them.
 - A device that reads only 16 bytes of a thing (`thing_size` says how far
   to step) and stops after the things sees the packet as before.
 

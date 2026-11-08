@@ -75,6 +75,7 @@ typedef struct {
 	int frame; /* -1: animate from phase */
 	int light;
 	int32_t dist;
+	uint8_t alpha; /* 255 opaque; less: fading out (a body), drawn translucent */
 } ent_t;
 
 static mdl_t mdls[MAX_MDLS];
@@ -614,6 +615,7 @@ static void add_ent(int mdl, const float *org, float angle, int phase)
 	e->phase = phase;
 	e->frame = -1, e->blend = 0;
 	e->light = World_LightAt(e->org);
+	e->alpha = 255;
 }
 
 /* classnames to models, for the shapes Quake's own progs give them */
@@ -734,10 +736,21 @@ static void clip_frames(const mdl_t *m, int clip, uint32_t ms, int *frame, int *
 	*frame2 = m->clips[clip].first + next;
 }
 
+/* a death the model has a clip for (GoldSrc's ACT_DIESIMPLE to ACT_DIEVIOLENT), -1 for none */
+static int death_clip(const mdl_t *m, int clip)
+{
+	if (m->clips[clip].act >= 36 && m->clips[clip].act <= 39)
+		return clip;
+	for (int c = 0; c < m->numclips; c++)
+		if (m->clips[c].act >= 36 && m->clips[c].act <= 39)
+			return c;
+	return -1;
+}
+
 /* speed: map units a second the thing is moving at, to walk or run a model
  * the server only has standing (players animate on their own machines);
  * ms: how long its sequence has played */
-int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, int speed, int light)
+int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, int speed, int light, int alpha, bool dead)
 {
 	const mdl_t *m;
 	ent_t *e;
@@ -751,13 +764,18 @@ int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, i
 	for (int c = 0; c < 3; c++)
 		e->org[c] = (int16_t)BW_NDS_CLAMP(o[c], -4000, 4000);
 	e->yaw = yaw, e->phase = 0, e->frame = -1, e->blend = 0;
+	e->alpha = (uint8_t)BW_NDS_CLAMP(alpha, 0, 255);
 	/* the floor's light takes a walk through the leaf's faces: the caller keeps it */
 	e->light = light >= 0 ? light : World_LightAt(e->org);
 	if (!m->numclips)
 		return e->light;
 	if (seq >= 0 && seq < m->numseqs)
 		clip = m->seqclip[seq];
-	if (m->clips[clip].act == 1 || clip == 0) { /* standing while moving: walk or run */
+	if (dead) { /* a body lies down: a death the model has no clip for (player.mdl's
+	             * headshot, spin and gutshot deaths) gets one it has */
+		int c = death_clip(m, clip);
+		clip = c >= 0 ? c : clip;
+	} else if (m->clips[clip].act == 1 || clip == 0) { /* standing while moving: walk or run */
 		int c = speed > 200 ? clip_for(m, 4) : speed > 40 ? clip_for(m, 3) : -1;
 		if (c < 0 && speed > 40)
 			c = clip_for(m, speed > 200 ? 3 : 4);
@@ -918,6 +936,14 @@ int Ents_Costs(int32_t *dist2, int *polys, int max, int *viewpolys)
 static void draw_ent(const ent_t *e)
 {
 	const mdl_t *m = &mdls[e->mdl];
+	if (e->alpha < 255) {
+		/* fading: translucent, with a polygon ID other than the effects' (56 to 59
+		 * are free) so its own polygons don't blend over each other; alpha 0
+		 * would be wireframe */
+		if (e->alpha < 8)
+			return;
+		glPolyFmt(POLY_ALPHA(e->alpha >> 3) | POLY_CULL_BACK | POLY_ID(56 + (int)(e - ents) % 4));
+	}
 	glPushMatrix();
 	glTranslatef32(e->org[0] * 8, e->org[1] * 8, e->org[2] * 8);
 	glRotateZi(e->yaw);
@@ -927,6 +953,8 @@ static void draw_ent(const ent_t *e)
 	else
 		draw_mdl(m, ticks / 6 + e->phase, 0, 0, e->light);
 	glPopMatrix(1);
+	if (e->alpha < 255)
+		glPolyFmt(POLY_ALPHA(31) | POLY_CULL_BACK);
 }
 
 /* flicker < 0: the nearest models that fit MAX_ENT_POLYS, the rest left out.

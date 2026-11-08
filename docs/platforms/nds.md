@@ -210,7 +210,17 @@ The server names each model index in `MODELS` (docs/spec/link.md). The DS
 loads a named model the first time it sees it, one a frame, plays the
 clip for the sequence the server says, and walks or runs a model the server
 only has standing (other players) from how fast it moves. Things with no DS
-copy of their model stay boxes.
+copy of their model stay boxes: a monster's orange, something solid yellow,
+something not solid blue-grey, and a body (kind 4) a flat, dull brown one.
+
+A player's body is drawn with the model the DS draws that player with (the
+server sends it as theirs when the body's own model is no studio model, as
+the co-op heroes' `.md2`s), lying down: a body whose sequence has no clip
+on the DS (player.mdl's headshot, spin and gutshot deaths) plays a death
+clip the model has. When the game fades a body out (render amount in a
+render mode that uses it, as the co-op game's corpses), `ENTS` carries how
+opaque it is and the DS draws it translucent (polygon IDs 56 to 59), so it
+goes when it goes on the PC.
 
 The weapon in hand is drawn too, from its view model (`v_*.mdl`), baked
 with `-view`:

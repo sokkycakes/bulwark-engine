@@ -120,6 +120,7 @@ typedef struct {
 	uint8_t seq, lift;   /* the sequence it plays; its origin above the bottom */
 	int8_t anim;         /* its slot in anim[], -1 for none */
 	uint16_t f1t;        /* the time into seq (frame1time), 1/100 s; F1T_NONE: not sent */
+	uint8_t alpha;       /* how opaque the PC draws it, 255 opaque (a body fading out) */
 	/* as drawn this frame (lerp_things): where, which way (32768 a turn), the
 	 * sequence, how long it has played, and how fast it goes (units a second) */
 	int16_t dorg[3];
@@ -1628,12 +1629,15 @@ static void handle_ents(const uint8_t *d, int len)
 			t->yaw = d[pos + 6], t->half = d[pos + 7], t->height = d[pos + 8], t->kind = d[pos + 9];
 			t->ent = t->model = 0, t->seq = t->lift = 0;
 			t->f1t = F1T_NONE;
+			t->alpha = 255;
 			if (size >= 16) {
 				t->ent = (uint16_t)rd16(d + pos + 10), t->model = (uint16_t)rd16(d + pos + 12);
 				t->seq = d[pos + 14], t->lift = d[pos + 15];
 			}
 			if (size >= 18)
 				t->f1t = (uint16_t)rd16(d + pos + 16);
+			if (size >= 19)
+				t->alpha = d[pos + 18];
 			t->anim = -1;
 			if (t->ent && anim) {
 				/* a new sequence starts its clip again; speed from how far it went since the last packet (20 a second) */
@@ -1912,11 +1916,11 @@ static void add_studio_things(const ndscam_t *cam)
 					light = a->light;
 			}
 			if (light < 0) {
-				light = Ents_AddLinked(mdl, org, t->dyaw, t->dseq, t->dms, t->speed, -1);
+				light = Ents_AddLinked(mdl, org, t->dyaw, t->dseq, t->dms, t->speed, -1, t->alpha, t->kind == 4);
 				if (t->anim >= 0)
 					anim[t->anim].light = (int8_t)light, memcpy(anim[t->anim].lightat, org, sizeof(org));
 			} else
-				Ents_AddLinked(mdl, org, t->dyaw, t->dseq, t->dms, t->speed, light);
+				Ents_AddLinked(mdl, org, t->dyaw, t->dseq, t->dms, t->speed, light, t->alpha, t->kind == 4);
 		}
 	}
 }
@@ -1929,14 +1933,15 @@ static bool has_model(const thing_t *t)
 /* everything else the server sends: boxes, turned to face the way the thing does */
 static void draw_things(void)
 {
-	static const uint16_t colours[] = {RGB15(20, 20, 20), RGB15(28, 12, 8), RGB15(28, 26, 8), RGB15(16, 18, 22), RGB15(12, 4, 4)};
+	/* a player, a monster, something solid, something not solid, a body (flat, dull) */
+	static const uint16_t colours[] = {RGB15(20, 20, 20), RGB15(28, 12, 8), RGB15(28, 26, 8), RGB15(16, 18, 22), RGB15(11, 9, 7)};
 	glBindTexture(GL_TEXTURE_2D, 0);
 	for (int i = 0; i < link.numthings; i++) {
 		const thing_t *t = &link.things[i];
 		int16_t mins[3], maxs[3];
 		int32_t h;
-		if (has_model(t) || t->half > 128)
-			continue; /* drawn as itself, or too big to be anything but in the way */
+		if (has_model(t) || t->half > 128 || t->alpha < 8)
+			continue; /* drawn as itself, too big to be anything but in the way, or faded out */
 		h = t->half * 8;
 		int32_t z = t->kind == 4 ? 4 * 8 : t->height * 8;
 		int32_t c4[4][2];
@@ -1956,6 +1961,8 @@ static void draw_things(void)
 		{
 			int32_t z0 = t->dorg[2] * 8, z1 = z0 + z;
 			uint16_t col = colours[t->kind < 5 ? t->kind : 0];
+			if (t->alpha < 255)
+				glPolyFmt(POLY_ALPHA(t->alpha >> 3) | POLY_CULL_NONE | POLY_ID(63));
 			glBegin(GL_QUADS);
 			for (int k = 0; k < 4; k++) {
 				int n = (k + 1) & 3;
@@ -1971,6 +1978,8 @@ static void draw_things(void)
 			for (int k = 0; k < 4; k++)
 				glVertex3v16(c4[k][0], c4[k][1], z1);
 			glEnd();
+			if (t->alpha < 255)
+				glPolyFmt(POLY_ALPHA(31) | POLY_CULL_NONE);
 		}
 	}
 	glColor(RGB15(31, 31, 31));

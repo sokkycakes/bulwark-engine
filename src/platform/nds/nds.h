@@ -96,7 +96,9 @@ void Ents_Free(void);
 int Ents_Model(const char *path);
 void Ents_Clear(void);
 void Ents_Counts(int *loaded, int *failed);
-int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, int speed, int light); /* light -1: look it up; returns it */
+/* light -1: look it up; returns it. alpha 0-255 (255 opaque); dead: a body,
+ * which plays a death clip of the model's when seq maps to none */
+int Ents_AddLinked(int mdl, const int16_t *org, int yaw, int seq, uint32_t ms, int speed, int light, int alpha, bool dead);
 void Ents_SetViewModel(int mdl, int seq, uint32_t ms, int light); /* the weapon in hand, -1 for none; light -1: a default */
 void Ents_SetTime(uint32_t ms);
 extern bool Ents_LerpFrames;

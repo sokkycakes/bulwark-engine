@@ -45,7 +45,7 @@ enum { FX_OWN = 1, FX_SHOT = 2 }; /* our own shot; shot by someone (tracer from 
 #define LOAD_GRACE 60.0 /* seconds a device may take to load a map it was sent to */
 #define ENTS_MAXMODELS 1024 /* brush models the presence bits cover */
 #define ENTS_MAXTHINGS 48
-#define THING_SIZE 18 /* bytes a thing in ENTS */
+#define THING_SIZE 19 /* bytes a thing in ENTS */
 #define ENTS_MAXVEL 8  /* things whose velocity ENTS carries: the players */
 /* what follows the things: u32 time, u8 count, count x {u8 thing, s16 velocity[3]} */
 #define ENTS_TRAILER (4 + 1 + ENTS_MAXVEL * 7)
@@ -1062,6 +1062,81 @@ static void send_models(link_t *l)
 	send_to(&l->from, &p);
 }
 
+/* A player's body (Nuclide's body queue, bodyque.qc) is an entity of its own
+ * with the player's model and a death sequence of player.mdl's, SOLID_CORPSE.
+ * When that model is no studio model (the co-op heroes' .md2s), the device
+ * draws a player by the model their userinfo names (LINK_PLAYERMODEL + slot),
+ * so a body is sent as its player's too: the player who died where it
+ * appeared, remembered while it lies there. */
+#define MAX_BODIES 64
+static struct {
+	int e, mi, spawncount;
+	int slot;
+	float org[3];
+} bodies[MAX_BODIES];
+
+static bool is_body(int e)
+{
+	return e > svs.maxclients && QC_EFloat(sv.vm, e, F.solid) == SOLID_CORPSE &&
+	       !((int)QC_EFloat(sv.vm, e, F.flags) & FL_MONSTER);
+}
+
+static int body_slot(int e)
+{
+	const float *o = &QC_EdictFields(sv.vm, e)[F.origin].f;
+	int mi = (int)QC_EFloat(sv.vm, e, F.modelindex), freeb = -1, best = -1;
+	float bestd = 0;
+	for (int b = 0; b < MAX_BODIES; b++) {
+		/* gone, made into something else, or moved off at once (the queue took it for another body) */
+		if (bodies[b].e && (bodies[b].spawncount != svs.spawncount || sv.vm->edicts[bodies[b].e].free ||
+		                    !is_body(bodies[b].e) || (int)QC_EFloat(sv.vm, bodies[b].e, F.modelindex) != bodies[b].mi))
+			bodies[b].e = 0;
+		if (bodies[b].e == e) {
+			const float *bo = bodies[b].org;
+			if (fabsf(o[0] - bo[0]) + fabsf(o[1] - bo[1]) + fabsf(o[2] - bo[2]) < 128) {
+				memcpy(bodies[b].org, o, sizeof(bodies[b].org));
+				return bodies[b].slot;
+			}
+			bodies[b].e = 0;
+		}
+		if (!bodies[b].e && freeb < 0)
+			freeb = b;
+	}
+	/* new: the nearest player who is dead (the body appears where they died), else
+	 * the nearest with this model */
+	for (int pass = 0; pass < 2 && best < 0; pass++)
+		for (int c = 0; c < svs.maxclients && c < 32; c++) {
+			const float *po;
+			float d = 0;
+			if (!client_spawned(c + 1) || (pass == 0 ? QC_EFloat(sv.vm, c + 1, F.health) > 0
+			                                        : (int)QC_EFloat(sv.vm, c + 1, F.modelindex) != mi))
+				continue;
+			po = &QC_EdictFields(sv.vm, c + 1)[F.origin].f;
+			for (int k = 0; k < 3; k++)
+				d += (po[k] - o[k]) * (po[k] - o[k]);
+			if (pass == 0 && d > 160 * 160)
+				continue;
+			if (best < 0 || d < bestd)
+				best = c, bestd = d;
+		}
+	if (best >= 0 && freeb >= 0) {
+		bodies[freeb].e = e, bodies[freeb].mi = mi, bodies[freeb].spawncount = svs.spawncount;
+		bodies[freeb].slot = best;
+		memcpy(bodies[freeb].org, o, sizeof(bodies[freeb].org));
+	}
+	return best;
+}
+
+/* how opaque the PC draws it, 0 to 255: Nuclide's render amount, in a render
+ * mode that uses it (Coop_CorpseThink fades a body out with mode 2) */
+static int ent_alpha(int e, int modeofs, int amtofs)
+{
+	int mode = modeofs >= 0 ? (int)QC_EdictFields(sv.vm, e)[modeofs].f : 0;
+	if (amtofs < 0 || mode < 1 || mode > 5 || mode == 3)
+		return 255;
+	return BW_CLAMP((int)QC_EdictFields(sv.vm, e)[amtofs].f, 0, 255);
+}
+
 static void send_ents(link_t *l)
 {
 	static uint8_t present[ENTS_MAXMODELS / 8];
@@ -1070,6 +1145,8 @@ static void send_ents(link_t *l)
 	int self = l->client->edict, nummodels = 0, nthings = 0, countpos, count = 0, nvel = 0;
 	const float *me = &QC_EdictFields(sv.vm, self)[F.origin].f;
 	int f1t = QC_FieldOfs(sv.vm, "frame1time"), vofs = QC_FieldOfs(sv.vm, "velocity");
+	int rmode = QC_FieldOfs(sv.vm, "ncRenderableEntity::__mm_renderMode");
+	int ramt = QC_FieldOfs(sv.vm, "ncRenderableEntity::__mm_renderAmount");
 	uint8_t velthing[ENTS_MAXVEL];
 	if (F.origin < 0 || F.modelindex < 0 || !sv.world)
 		return;
@@ -1137,8 +1214,13 @@ static void send_ents(link_t *l)
 			half = BW_MAX(BW_MAX(-mn[0], mx[0]), BW_MAX(-mn[1], mx[1]));
 			bottom = mn[2], top = mx[2];
 		}
-		if (QC_EFloat(sv.vm, e, F.health) <= 0 && (flags & FL_MONSTER))
-			kind = 4; /* dead */
+		int studio = ent_studio(e);
+		if ((QC_EFloat(sv.vm, e, F.health) <= 0 && (flags & FL_MONSTER)) || QC_EFloat(sv.vm, e, F.solid) == SOLID_CORPSE)
+			kind = 4; /* dead: a monster, or a body */
+		if (!studio && is_body(e)) {
+			int slot = body_slot(e);
+			studio = slot >= 0 ? LINK_PLAYERMODEL + slot : 0;
+		}
 		for (int c = 0; c < 3; c++)
 			p_u16(&p, (uint16_t)(int16_t)BW_CLAMP(o[c] + (c == 2 ? bottom : 0), -32768, 32767));
 		p_u8(&p, (unsigned)((int)(yaw * 256 / 360) & 255));
@@ -1148,12 +1230,13 @@ static void send_ents(link_t *l)
 		/* which studio model it is and the sequence it plays, for a device
 		 * that has the model; the entity number keeps its animation going */
 		p_u16(&p, (unsigned)e);
-		p_u16(&p, (unsigned)ent_studio(e));
+		p_u16(&p, (unsigned)studio);
 		p_u8(&p, F.frame >= 0 ? (unsigned)BW_CLAMP((int)QC_EFloat(sv.vm, e, F.frame), 0, 255) : 0);
 		p_u8(&p, (unsigned)BW_CLAMP(-bottom, 0, 255)); /* the origin, above the bottom */
 		/* the time into that sequence (the game's frame1time, which the PC
 		 * draws the model at), 1/100 s; 0xffff when the game has none */
 		p_u16(&p, f1t < 0 ? 0xffffu : (unsigned)BW_CLAMP((int)lrintf(ent_seqtime(e, QC_EdictFields(sv.vm, e)[f1t].f) * 100), 0, 0xfffe));
+		p_u8(&p, (unsigned)ent_alpha(e, rmode, ramt));
 		if (e <= svs.maxclients && nvel < ENTS_MAXVEL && vofs >= 0)
 			velthing[nvel++] = (uint8_t)count;
 		count++;
