@@ -546,6 +546,7 @@ held and the matching `-` command when it's let go.
 | `in` | in <seconds> <command>: run a command later |
 | `in_bind` | in_bind <device> <key> [command]: bind for one input device |
 | `in_deviceids` | List the input devices |
+| `in_paddefaults` | Bind the controller buttons to the default layout (the game's pad_defaults.cfg or the engine's) |
 | `in_restart` | Reopen the game controllers |
 | `inc` | inc <cvar> [amount]: add to a cvar, 1 by default |
 | `incrementvar` | incrementvar <cvar> <min> <max> <delta>: step a cvar, wrapping |
@@ -624,7 +625,8 @@ held and the matching `-` command when it's let go.
 | `menu_demo` | Open the engine's Demos menu |
 | `menu_download` | Open the engine's Packages and updates menu |
 | `menu_fps` | Open the engine's Performance presets menu |
-| `menu_keys` | Open the engine's Keys menu |
+| `menu_keys` | Open the engine's Keys menu (the game's kb_act.lst / bindlist.lst actions) |
+| `menu_controller` | Open the engine's Controller menu (stick tuning, vibration, the button layout) |
 | `menu_lighting` | Open the engine's Lighting menu |
 | `menu_load` | Open the engine's Load a game menu |
 | `menu_loadgame` | Open the engine's Load a game menu |
@@ -731,6 +733,7 @@ held and the matching `-` command when it's let go.
 | `+p4` / `-p4` | +pN <button>: press a button for split screen player N |
 | `p4` | p4 <command>: run a command for seat 4 |
 | `packet` | packet <destination> <contents>: send a connectionless packet (\n for a line break) |
+| `pad_defaults_ifunbound` | Bind the controller buttons to the default layout, only when none of them is bound (a game's quake.rc runs it after config.cfg) |
 | `pause` | Pause or unpause the game |
 | `pin_add` | pin_add <author> <message>: a message shown to players as they join |
 | `pin_delete` | pin_delete <number\|all>: remove pinned messages |
