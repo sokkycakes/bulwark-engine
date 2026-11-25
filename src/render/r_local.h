@@ -325,6 +325,7 @@ typedef struct {
 	float nearclip, farclip;
 	bool drawworld;
 	bool perspective;
+	bool drawcrosshair; /* VF_DRAWCROSSHAIR: renderscene ends with the crosshair */
 	int viewentity;
 	float cl_viewangles[3];
 	rentity_t ents[R_MAX_ENTITIES];

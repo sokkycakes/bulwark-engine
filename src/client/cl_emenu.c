@@ -31,7 +31,7 @@ extern float in_mouse_x, in_mouse_y;
 
 typedef enum { IT_TEXT, IT_COMMAND, IT_CHECK, IT_SLIDER, IT_COMBO, IT_EDIT, IT_BIND, IT_PIC, IT_BOX } itemtype_t;
 
-typedef struct {
+typedef struct item_s {
 	itemtype_t type;
 	char *label;
 	char *cvar;     /* check, slider, combo, edit */
@@ -43,6 +43,10 @@ typedef struct {
 	char **captions, **values;
 	float x, y, w, h; /* script menus: where; boxes: size in characters */
 	bool placed, big, header;
+	bool swatch;    /* draws a box of the colour its cvar holds */
+	int rows;       /* rows tall on an engine page; 0 is 1 */
+	void (*changed)(const char *value); /* after the menu sets the value */
+	void (*draw)(const struct item_s *it, float x, float y, float w, float h, float size); /* draws the value part */
 	float rx, ry, rw, rh; /* where it was last drawn, for the mouse */
 } item_t;
 
@@ -258,11 +262,166 @@ bool EM_Active(void) { return depth > 0; }
 
 /* --- values ------------------------------------------------------------------------------ */
 
-/* "@resolution" stands for vid_width and vid_height together */
+/* --- colours ------------------------------------------------------------------------------
+ * Player colours (topcolor, bottomcolor) are FTE's 24-bit "0xRRGGBB"; old
+ * configs may hold a Quake palette row, 0-13. Colours such as crosshaircolor
+ * are "R G B" in 0-255. A colour row edits one through virtual cvars:
+ * "@hex:<cvar>" is the colour as 0xRRGGBB (presets and typed values), and
+ * "@hue:", "@sat:" and "@val:" are its hue (0-360), saturation and
+ * brightness (0-100). Each is written back in the cvar's own format. */
+
+/* the middle of each of Quake's 14 player colour rows */
+static const unsigned int quake_rows[14] = {0x8b8b8b, 0x8f6f37, 0x8f8fd7, 0x6b6b0f, 0xc72323, 0xaf8f23, 0xd78f6b,
+                                            0xcf87bf, 0xaf5fa3, 0xbfa787, 0x77af8f, 0xefe33b, 0x3f5fe3, 0xef8f0f};
+
+static bool rgb_format(const char *cvar) { return !strcmp(cvar, "crosshaircolor"); }
+
+/* parses a colour as typed or stored: 0xRRGGBB, #RRGGBB, RRGGBB, "R G B" or a palette row */
+static bool parse_color(const char *s, unsigned int *out)
+{
+	unsigned int r, g, b, x;
+	char tail;
+	while (*s == ' ')
+		s++;
+	if ((sscanf(s, "0x%x%c", &x, &tail) == 1 || sscanf(s, "0X%x%c", &x, &tail) == 1 || sscanf(s, "#%x%c", &x, &tail) == 1)) {
+		*out = x & 0xffffff;
+		return true;
+	}
+	if (sscanf(s, "%u %u %u", &r, &g, &b) == 3) {
+		*out = (BW_MIN(r, 255u) << 16) | (BW_MIN(g, 255u) << 8) | BW_MIN(b, 255u);
+		return true;
+	}
+	if (strlen(s) == 6 && strspn(s, "0123456789abcdefABCDEF") == 6 && sscanf(s, "%x", &x) == 1) {
+		*out = x;
+		return true;
+	}
+	if (sscanf(s, "%u%c", &x, &tail) == 1) {
+		*out = x < 14 ? quake_rows[x] : x & 0xffffff;
+		return true;
+	}
+	return false;
+}
+
+static unsigned int cvar_color(const char *cvar)
+{
+	unsigned int c = 0xffffff;
+	cvar_t *v = Cvar_Find(cvar);
+	if (v)
+		parse_color(v->string, &c);
+	return c;
+}
+
+static void color_rgbf(unsigned int c, float *rgb)
+{
+	rgb[0] = ((c >> 16) & 255) / 255.0f;
+	rgb[1] = ((c >> 8) & 255) / 255.0f;
+	rgb[2] = (c & 255) / 255.0f;
+}
+
+static void rgb_to_hsv(unsigned int c, float *h, float *s, float *v)
+{
+	float rgb[3], mx, mn, d;
+	color_rgbf(c, rgb);
+	mx = BW_MAX(rgb[0], BW_MAX(rgb[1], rgb[2]));
+	mn = BW_MIN(rgb[0], BW_MIN(rgb[1], rgb[2]));
+	d = mx - mn;
+	*v = mx * 100;
+	*s = mx > 0 ? d / mx * 100 : 0;
+	if (d <= 0)
+		*h = 0;
+	else if (mx == rgb[0])
+		*h = 60 * fmodf((rgb[1] - rgb[2]) / d + 6, 6);
+	else if (mx == rgb[1])
+		*h = 60 * ((rgb[2] - rgb[0]) / d + 2);
+	else
+		*h = 60 * ((rgb[0] - rgb[1]) / d + 4);
+}
+
+static unsigned int hsv_to_rgb(float h, float s, float v)
+{
+	float c, x, m, r = 0, g = 0, b = 0;
+	h = fmodf(BW_MAX(h, 0.0f), 360);
+	s = BW_MAX(0.0f, BW_MIN(s, 100.0f)) / 100;
+	v = BW_MAX(0.0f, BW_MIN(v, 100.0f)) / 100;
+	c = v * s;
+	x = c * (1 - fabsf(fmodf(h / 60, 2) - 1));
+	m = v - c;
+	switch ((int)(h / 60)) {
+	case 0: r = c, g = x; break;
+	case 1: r = x, g = c; break;
+	case 2: g = c, b = x; break;
+	case 3: g = x, b = c; break;
+	case 4: r = x, b = c; break;
+	default: r = c, b = x; break;
+	}
+	return ((unsigned int)lroundf((r + m) * 255) << 16) | ((unsigned int)lroundf((g + m) * 255) << 8) |
+	       (unsigned int)lroundf((b + m) * 255);
+}
+
+/* the hue, saturation and value last set through the menu, per cvar: grey and
+ * black have no hue of their own, so without this the hue slider would jump
+ * back to red whenever saturation or brightness reached 0 */
+static struct {
+	char cvar[32];
+	unsigned int color;
+	float h, s, v;
+} hsv_memory[4];
+
+static void color_hsv(const char *cvar, float *h, float *s, float *v)
+{
+	unsigned int c = cvar_color(cvar);
+	for (int i = 0; i < 4; i++)
+		if (!strcmp(hsv_memory[i].cvar, cvar) && hsv_memory[i].color == c) {
+			*h = hsv_memory[i].h, *s = hsv_memory[i].s, *v = hsv_memory[i].v;
+			return;
+		}
+	rgb_to_hsv(c, h, s, v);
+}
+
+static void set_color(const char *cvar, unsigned int c);
+
+static void set_color_hsv(const char *cvar, float h, float s, float v)
+{
+	int slot = 0;
+	unsigned int c = hsv_to_rgb(h, s, v);
+	for (int i = 0; i < 4; i++)
+		if (!strcmp(hsv_memory[i].cvar, cvar) || !hsv_memory[i].cvar[0]) {
+			slot = i;
+			break;
+		}
+	Str_Copy(hsv_memory[slot].cvar, cvar, sizeof(hsv_memory[slot].cvar));
+	hsv_memory[slot].color = c, hsv_memory[slot].h = h, hsv_memory[slot].s = s, hsv_memory[slot].v = v;
+	set_color(cvar, c);
+}
+
+static void set_value(const char *cvar, const char *value);
+
+static void set_color(const char *cvar, unsigned int c)
+{
+	char buf[32];
+	if (rgb_format(cvar))
+		snprintf(buf, sizeof(buf), "%u %u %u", (c >> 16) & 255, (c >> 8) & 255, c & 255);
+	else
+		snprintf(buf, sizeof(buf), "0x%06x", c & 0xffffff);
+	set_value(cvar, buf);
+}
+
+/* "@resolution" stands for vid_width and vid_height together; "@hex:",
+ * "@hue:", "@sat:" and "@val:" for a colour cvar, as above */
 static const char *get_value(const char *cvar, char *buf, size_t size)
 {
 	if (!strcmp(cvar, "@resolution")) {
 		snprintf(buf, size, "%dx%d", (int)Cvar_Value("vid_width"), (int)Cvar_Value("vid_height"));
+		return buf;
+	}
+	if (!strncmp(cvar, "@hex:", 5)) {
+		snprintf(buf, size, "0x%06x", cvar_color(cvar + 5));
+		return buf;
+	}
+	if (!strncmp(cvar, "@hue:", 5) || !strncmp(cvar, "@sat:", 5) || !strncmp(cvar, "@val:", 5)) {
+		float h, s, v;
+		color_hsv(cvar + 5, &h, &s, &v);
+		snprintf(buf, size, "%d", (int)lroundf(cvar[1] == 'h' ? h : cvar[1] == 's' ? s : v));
 		return buf;
 	}
 	cvar_t *v = Cvar_Find(cvar);
@@ -279,10 +438,37 @@ static void set_value(const char *cvar, const char *value)
 		}
 		return;
 	}
-	if (Cvar_Find(cvar))
+	if (!strncmp(cvar, "@hex:", 5)) {
+		unsigned int c;
+		if (parse_color(value, &c))
+			set_color(cvar + 5, c);
+		return;
+	}
+	if (!strncmp(cvar, "@hue:", 5) || !strncmp(cvar, "@sat:", 5) || !strncmp(cvar, "@val:", 5)) {
+		float hsv[3], f = (float)atof(value);
+		color_hsv(cvar + 5, &hsv[0], &hsv[1], &hsv[2]);
+		hsv[cvar[1] == 'h' ? 0 : cvar[1] == 's' ? 1 : 2] = f;
+		set_color_hsv(cvar + 5, hsv[0], hsv[1], hsv[2]);
+		return;
+	}
+	cvar_t *v = Cvar_Find(cvar);
+	if (v) {
 		Cvar_Set(cvar, value);
-	else
-		Cbuf_AddText(va("set \"%s\" \"%s\"\n", cvar, value));
+		/* a game's own setting (made by "set" in its default configs) is the
+		 * player's once the menu changes it, and is saved like FTE's seta */
+		if ((v->flags & CVAR_USERCREATED) && !(v->flags & (CVAR_ARCHIVE | CVAR_NOSAVE))) {
+			v->flags |= CVAR_ARCHIVE;
+			cfg_modified++;
+		}
+	} else
+		Cbuf_AddText(va("seta \"%s\" \"%s\"\n", cvar, value));
+}
+
+static void set_item_value(item_t *it, const char *value)
+{
+	set_value(it->cvar, value);
+	if (it->changed)
+		it->changed(value);
 }
 
 static int combo_index(const item_t *it)
@@ -335,7 +521,7 @@ static void activate(page_t *p, item_t *it, int dir)
 			v ^= it->bitmask;
 		else
 			v = !v;
-		set_value(it->cvar, va("%d", v));
+		set_item_value(it, va("%d", v));
 		break;
 	}
 	case IT_SLIDER: {
@@ -346,7 +532,7 @@ static void activate(page_t *p, item_t *it, int dir)
 			v = lo; /* enter wraps round */
 		v = BW_MAX(lo, BW_MIN(v, hi));
 		snprintf(buf, sizeof(buf), "%g", roundf(v / it->step) * it->step);
-		set_value(it->cvar, buf);
+		set_item_value(it, buf);
 		break;
 	}
 	case IT_COMBO: {
@@ -354,7 +540,7 @@ static void activate(page_t *p, item_t *it, int dir)
 			break;
 		int i = combo_index(it);
 		i = i < 0 ? 0 : (i + (dir < 0 ? it->numopts - 1 : 1)) % it->numopts;
-		set_value(it->cvar, it->values[i]);
+		set_item_value(it, it->values[i]);
 		break;
 	}
 	case IT_EDIT:
@@ -378,7 +564,7 @@ static void finish_edit(page_t *p, item_t *it)
 {
 	editing = false;
 	if (it->cvar)
-		set_value(it->cvar, editbuf);
+		set_item_value(it, editbuf);
 	else {
 		Mem_Free(it->value);
 		it->value = Mem_Strdup(editbuf);
@@ -435,11 +621,30 @@ static void draw_slider(const item_t *it, float x, float y, float w, float size,
 	R_Text(x + w + size, y, buf, size, sel ? c_sel : c_text, 1);
 }
 
+/* a framed box of a colour */
+static void draw_swatch(float x, float y, float w, float h, unsigned int color)
+{
+	float rgb[3];
+	color_rgbf(color, rgb);
+	R_Rect(x, y, w, h, c_dim, 1);
+	R_Rect(x + 1, y + 1, w - 2, h - 2, rgb, 1);
+}
+
 /* the value part of a row, from x */
 static void draw_value(const item_t *it, float x, float y, float w, float size, bool sel)
 {
 	char buf[256];
 	const float *col = sel ? c_sel : c_text;
+	if (it->draw) {
+		it->draw(it, x, y, w, size * 1.5f * BW_MAX(it->rows, 1) - size * 0.5f, size);
+		return;
+	}
+	if (it->swatch && it->cvar) {
+		const char *c = !strncmp(it->cvar, "@", 1) && strchr(it->cvar, ':') ? strchr(it->cvar, ':') + 1 : it->cvar;
+		draw_swatch(x, y - 1, size * 2.5f, size + 2, cvar_color(c));
+		x += size * 3;
+		w -= size * 3;
+	}
 	if (it->type == IT_SLIDER) {
 		draw_slider(it, x, y, BW_MIN(w * 0.6f, size * 14), size, sel);
 		return;
@@ -518,15 +723,18 @@ static void draw_page(page_t *p, int sw, int sh)
 	if (p->cursor >= p->scroll + visible)
 		p->scroll = p->cursor - visible + 1;
 	p->scroll = BW_MAX(0, BW_MIN(p->scroll, p->numitems - visible));
-	float y = py + size * 4, valx = px + pw * 0.5f;
+	float y = py + size * 4, valx = px + pw * 0.5f, bottom = py + ph - size * 2.5f;
 	for (int i = 0; i < p->numitems; i++)
 		p->items[i].rw = 0;
-	for (int i = p->scroll; i < p->numitems && i < p->scroll + visible; i++, y += row) {
+	for (int i = p->scroll; i < p->numitems && i < p->scroll + visible; y += row * BW_MAX(p->items[i].rows, 1), i++) {
 		item_t *it = &p->items[i];
 		bool sel = i == p->cursor && selectable(it);
-		it->rx = px + 4, it->ry = y - 2, it->rw = pw - 8, it->rh = row;
+		float rh = row * BW_MAX(it->rows, 1);
+		if (y + rh > bottom && i > p->scroll)
+			break; /* tall rows leave less room */
+		it->rx = px + 4, it->ry = y - 2, it->rw = pw - 8, it->rh = rh;
 		if (sel)
-			R_Rect(px + 4, y - 2, pw - 8, row, c_bar, 0.5f);
+			R_Rect(px + 4, y - 2, pw - 8, rh, c_bar, 0.5f);
 		if (it->header && !strchr(it->label, '\t')) {
 			R_Text(px + size, y, it->label, size, c_head, 1);
 			continue;
@@ -545,7 +753,7 @@ static void draw_page(page_t *p, int sw, int sh)
 			}
 		} else
 			R_Text(px + size * 1.5f, y, it->label, size, col, 1);
-		if (it->type != IT_TEXT && it->type != IT_COMMAND)
+		if ((it->type != IT_TEXT && it->type != IT_COMMAND) || it->draw)
 			draw_value(it, valx, y, px + pw - valx - 12, size, sel);
 	}
 	if (p->scroll > 0)
@@ -849,13 +1057,171 @@ static void pg_newmulti(page_t *p)
 	add_cmd(p, "Start", "@startserver");
 }
 
+/* --- player setup: name, model, colours and spray ------------------------------------------- */
+
+/* a colour cvar's rows: the value (typed, with a swatch), presets, then hue,
+ * saturation and brightness */
+static void color_rows(page_t *p, const char *cvar)
+{
+	item_t *it = add_edit(p, "Colour", va("@hex:%s", cvar));
+	it->swatch = true;
+	it = add_combo(p, "Preset", va("@hex:%s", cvar), "Red", "0xff2020", "Orange", "0xff8000", "Yellow", "0xffe000",
+	               "Green", "0x20d020", "Teal", "0x00c0b0", "Blue", "0x2060ff", "Purple", "0x9040ff", "Pink", "0xff40c0",
+	               "White", "0xffffff", "Grey", "0x909090", "Black", "0x000000", NULL);
+	it->swatch = true;
+	add_slider(p, "Hue", va("@hue:%s", cvar), 0, 350, 10);
+	add_slider(p, "Saturation", va("@sat:%s", cvar), 0, 100, 5);
+	add_slider(p, "Brightness", va("@val:%s", cvar), 0, 100, 5);
+}
+
+/* the tint the game draws a colour as: scaled to full brightness, then mixed
+ * with white by cg_playerColorTint (see the game's Player_ColorTint) */
+static unsigned int hero_tint(unsigned int c)
+{
+	float rgb[3], peak, k = BW_MAX(0.0f, BW_MIN(Cvar_Value("cg_playerColorTint"), 1.0f));
+	unsigned int out = 0;
+	color_rgbf(c, rgb);
+	peak = BW_MAX(rgb[0], BW_MAX(rgb[1], rgb[2]));
+	for (int i = 0; i < 3; i++) {
+		float f = peak > 0 ? 1 + (rgb[i] / peak - 1) * k : 1;
+		out = (out << 8) | (unsigned int)lroundf(f * 255);
+	}
+	return out;
+}
+
+static void draw_color_preview(const item_t *it, float x, float y, float w, float h, float size)
+{
+	float bw = size * 5;
+	h -= size * 1.2f; /* room for the captions */
+	draw_swatch(x, y, bw, h, cvar_color("topcolor"));
+	draw_swatch(x + bw + size, y, bw, h, cvar_color("bottomcolor"));
+	draw_swatch(x + (bw + size) * 2.5f, y, bw, h, hero_tint(cvar_color("topcolor")));
+	draw_swatch(x + (bw + size) * 3.5f, y, bw, h, hero_tint(cvar_color("bottomcolor")));
+	R_Text(x, y + h + 2, "Upper", size * 0.8f, c_dim, 1);
+	R_Text(x + bw + size, y + h + 2, "Lower", size * 0.8f, c_dim, 1);
+	R_Text(x + (bw + size) * 2.5f, y + h + 2, "As the game tints them", size * 0.8f, c_dim, 1);
+}
+
+static void draw_spray_preview(const item_t *it, float x, float y, float w, float h, float size)
+{
+	const char *spray = Cvar_String("_cl_playerspray");
+	R_Rect(x, y, h, h, c_dim, 0.35f);
+	if (!spray[0] || !R_Picture(x + 2, y + 2, h - 4, h - 4, spray, 1))
+		R_Text(x + 4, y + h * 0.5f - size * 0.5f, "no preview", size * 0.8f, c_dim, 1);
+}
+
+static void list_player_model(const char *name, const char *searchpath, void *ctx)
+{
+	item_t *it = ctx;
+	char dir[64], file[80];
+	/* models/player/<name>/<name>.mdl */
+	if (sscanf(name, "models/player/%63[^/]/%79s", dir, file) != 2 || Str_ICmp(file, va("%s.mdl", dir)))
+		return;
+	for (int i = 0; i < it->numopts; i++)
+		if (!Str_ICmp(it->values[i], dir))
+			return;
+	add_option(it, dir, dir);
+}
+
+#define SPRAY_MAX_BYTES 7680 /* leaves room for the other user info keys */
+
+static void list_spray(const char *name, const char *searchpath, void *ctx)
+{
+	/* only what R_Picture (and so the game's spray decal) can decode: no .webp */
+	static const char *const exts[] = {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
+	item_t *it = ctx;
+	const char *dot = strrchr(name, '.');
+	size_t size = 0;
+	bool image = false;
+	for (size_t i = 0; dot && i < BW_ARRAY_COUNT(exts); i++)
+		image |= !Str_ICmp(dot, exts[i]);
+	if (!image)
+		return;
+	for (int i = 0; i < it->numopts; i++)
+		if (!Str_ICmp(it->values[i], name))
+			return;
+	void *d = FS_LoadFile(name, &size);
+	Mem_Free(d);
+	/* the blob counts towards the server's user info limit: FTE's default
+	 * sv_userinfo_bytelimit is 8192 bytes for every key together, so a
+	 * larger image would be refused there and nobody would see the spray */
+	if (size > SPRAY_MAX_BYTES)
+		return;
+	add_option(it, name + 6, name); /* past "logos/" */
+}
+
+static void model_changed(const char *value) { Cbuf_AddText(va("setinfo model \"%s\"\n", value)); }
+
+/* the spray goes to the server as the "spray" user info blob, as Nuclide's
+ * own menus send it: bmp images are monochrome (spraytype 1) */
+static void spray_changed(const char *value)
+{
+	const char *dot = strrchr(value, '.');
+	Cbuf_AddText(va("setinfoblob spray \"%s\"\nsetinfo spraytype %d\n", value, dot && !Str_ICmp(dot, ".bmp") ? 1 : 0));
+	/* spraycolor is a user info key: setinfo keeps those as CVAR_USERINFO
+	 * cvars, which is also what the game's getlocaluserinfo reads */
+	const cvar_t *sc = Cvar_Find("spraycolor");
+	if (!sc || !(sc->flags & CVAR_USERINFO) || !sc->string[0])
+		Cbuf_AddText("setinfo spraycolor \"1 1 1\"\n");
+}
+
 static void pg_setup(page_t *p)
 {
+	item_t *it;
+	/* cg_heroModel, not _cl_playermodel: older Stiletto builds archived
+	 * _cl_playermodel as alice2 in every config */
+	Cvar_Get("cg_heroModel", "", CVAR_ARCHIVE, "The player model choice (models/player/<name>/), sent as the model user info key");
+	Cvar_Get("_cl_playerspray", "", CVAR_ARCHIVE, "The spray image (under logos/), sent as the spray user info blob");
+	Cvar_Get("cg_playerColorTint", "0.5", CVAR_ARCHIVE, "How strongly the game tints heroes with player colours, 0-1");
 	add_edit(p, "Name", "name");
 	add_edit(p, "Team", "team");
-	add_slider(p, "Shirt colour", "topcolor", 0, 13, 1);
-	add_slider(p, "Pants colour", "bottomcolor", 0, 13, 1);
+	it = add_combo(p, "Model", "cg_heroModel", "Each hero's own", "", NULL);
+	FS_List("models/player/*/*.mdl", true, list_player_model, it);
+	it->changed = model_changed;
+	add_header(p, "Upper colour: tints the hero (team modes use the team's)");
+	color_rows(p, "topcolor");
+	add_header(p, "Lower colour: tints what they carry");
+	color_rows(p, "bottomcolor");
+	add_slider(p, "Tint strength", "cg_playerColorTint", 0, 1, 0.1f);
+	it = add_text(p, "Preview");
+	it->draw = draw_color_preview;
+	it->rows = 3;
+	add_header(p, "Spray (impulse 201): png/jpg/tga/bmp, 7.5 KB at most");
+	it = add_combo(p, "Image", "_cl_playerspray", NULL);
+	FS_List("logos/*", true, list_spray, it);
+	it->changed = spray_changed;
+	if (!it->numopts)
+		add_text(p, "No images in logos/");
+	it = add_text(p, "Spray preview");
+	it->draw = draw_spray_preview;
+	it->rows = 4;
 	add_combo(p, "Connection", "rate", "Modem", "5000", "ISDN", "10000", "DSL", "25000", "Fast", "50000", "LAN", "100000", NULL);
+	Str_Copy(p->footer, "Left/Right change. Colours take 0xRRGGBB, #RRGGBB or R G B", sizeof(p->footer));
+}
+
+/* --- crosshair, weapon view and HUD: the game's display settings ---------------------------- */
+
+static void pg_view(page_t *p)
+{
+	add_header(p, "Crosshair");
+	add_combo(p, "Shape", "crosshair", "Off", "0", "Plus", "1", "Open plus", "2", "Dot", "3", "Open plus and dot", "4",
+	          "Ring", "5", "Corners", "6", NULL);
+	add_slider(p, "Size", "crosshairsize", 2, 32, 1);
+	add_slider(p, "Opacity", "crosshairalpha", 0, 1, 0.05f);
+	color_rows(p, "crosshaircolor");
+	/* the game registers cg_viewmodelFov, Flip, Offset and Pass too, but its
+	 * client never reads them (Flip is switched off in its source): the
+	 * weapon's field of view is the engine's r_viewmodel_fov */
+	add_header(p, "Weapon view");
+	add_slider(p, "Weapon field of view", "r_viewmodel_fov", 50, 120, 5);
+	add_slider(p, "Weapon size", "cg_viewmodelScale", 0.5f, 2, 0.1f);
+	add_slider(p, "Weapon bob and sway", "cg_viewmodelMotionScale", 0, 2, 0.1f);
+	add_combo(p, "Weapon lag", "cg_viewmodelLag", "Off", "0", "On", "1", "Smooth", "2", NULL);
+	add_header(p, "HUD and screen");
+	add_combo(p, "HUD shape", "cg_hudAspect", "Fill the screen", "0", "4:3", "1.34", "16:10", "1.6", "16:9", "1.78", NULL);
+	add_check(p, "Shake the view when hurt", "cg_damageShake");
+	add_slider(p, "Player colour tint", "cg_playerColorTint", 0, 1, 0.1f);
+	add_cmd(p, "Player setup (name, model, colours, spray)", "menu_setup");
 }
 
 static void pg_network(page_t *p)
@@ -870,6 +1236,8 @@ static void pg_network(page_t *p)
 
 static void pg_options(page_t *p)
 {
+	add_cmd(p, "Player setup", "menu_setup");
+	add_cmd(p, "Crosshair, weapon view and HUD", "menu_view");
 	add_cmd(p, "Keys", "menu_keys");
 	add_cmd(p, "Video", "menu_video");
 	add_cmd(p, "Rendering", "menu_render");
@@ -889,7 +1257,8 @@ static void pg_options(page_t *p)
 	add_cmd(p, "Controller...", "menu_controller");
 	add_header(p, "Screen");
 	add_slider(p, "Field of view", "fov", 70, 130, 5);
-	add_combo(p, "Crosshair", "crosshair", "Off", "0", "1", "1", "2", "2", "3", "3", "4", "4", "5", "5", NULL);
+	add_combo(p, "Crosshair", "crosshair", "Off", "0", "Plus", "1", "Open plus", "2", "Dot", "3", "Open plus and dot", "4",
+	          "Ring", "5", "Corners", "6", NULL);
 	add_check(p, "Show the HUD", "cl_drawhud");
 	add_check(p, "Show frames a second", "cl_showfps");
 	add_header(p, "");
@@ -1293,6 +1662,7 @@ static const struct {
 	{"menu_slist", "Servers", pg_servers, 0.5, servers_key},
 	{"menu_newmulti", "Start a server", pg_newmulti, 0, NULL},
 	{"menu_setup", "Player setup", pg_setup, 0, NULL},
+	{"menu_view", "Crosshair, weapon view and HUD", pg_view, 0, NULL},
 	{"menu_network", "Network", pg_network, 0, NULL},
 	{"menu_options", "Options", pg_options, 0, NULL},
 	{"menu_keys", "Keys", pg_keys, 0, NULL},
