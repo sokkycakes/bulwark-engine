@@ -40,14 +40,21 @@ char *bwx_ospath(const char *path, char *out, size_t size);
 FILE *bwx_fopen(const char *path, const char *mode);
 int bwx_remove(const char *path);
 int bwx_rename(const char *from, const char *to);
+#ifndef __cplusplus
 #define fopen(p, m) bwx_fopen(p, m)
 #define remove(p) bwx_remove(p)
 #define rename(a, b) bwx_rename(a, b)
+#else
+/* C++ (PanoramaEngine): std::remove and std::filesystem::rename are other
+ * things, so only fopen is renamed, as a name, so std::fopen follows it
+ * through libc++'s using-declarations */
+#define fopen bwx_fopen
+#endif
 
 /* PDCLib's FILE has no descriptor; fileno hands back the FILE itself as a
  * number, which fstat (sys/stat.h) understands */
 int bwx_fileno(FILE *f);
-#define fileno(f) bwx_fileno(f)
+#define fileno bwx_fileno
 
 #ifndef CLOCK_REALTIME
 #define CLOCK_REALTIME 0
@@ -136,6 +143,22 @@ float bwx_log2f(float x);
 #define llroundf bwx_llroundf
 #define log2 bwx_log2
 #define log2f bwx_log2f
+double bwx_scalbn(double x, int n);
+float bwx_scalbnf(float x, int n);
+double bwx_cbrt(double x);
+double bwx_log1p(double x);
+double bwx_expm1(double x);
+double bwx_asinh(double x);
+double bwx_acosh(double x);
+double bwx_atanh(double x);
+#define scalbn bwx_scalbn
+#define scalbnf bwx_scalbnf
+#define cbrt bwx_cbrt
+#define log1p bwx_log1p
+#define expm1 bwx_expm1
+#define asinh bwx_asinh
+#define acosh bwx_acosh
+#define atanh bwx_atanh
 
 /* the engine's own diagnostic hooks for the Xbox (sys_xbox.c) */
 void XBX_PrintMemory(const char *when);

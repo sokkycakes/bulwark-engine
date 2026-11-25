@@ -11,7 +11,7 @@ namespace
 {
 bool environment_switch_enabled(const char* name)
 {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(NXDK) // nxdk: no _dupenv_s
     char* raw = nullptr;
     std::size_t size = 0;
     if (_dupenv_s(&raw, &size, name) != 0 || raw == nullptr)

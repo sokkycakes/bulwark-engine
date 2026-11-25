@@ -275,7 +275,34 @@ if(BULWARK_UI_PANORAMA)
 	set(PANORAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 	set(PANORAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 	set(PANORAMA_BUILD_PERFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+	if(NXDK)
+		# quickjs-libc is the qjs shell's OS layer (files, timers, workers):
+		# neither PanoramaEngine nor src/script uses it, and nxdk can't host it
+		set(QJS_BUILD_LIBC OFF CACHE BOOL "" FORCE)
+	endif()
 	add_subdirectory(third_party/PanoramaEngine EXCLUDE_FROM_ALL)
+	if(NXDK)
+		# as Lua: nxdk defines _WIN32, but QuickJS's Win32 code wants the
+		# desktop API (threads, module paths, code pages). Its POSIX code
+		# runs on the shims in src/platform/xbox/compat.
+		target_compile_options(qjs PRIVATE -U_WIN32 -w "SHELL:-include sys/time.h")
+		target_compile_definitions(qjs PRIVATE NO_TM_GMTOFF)
+		# nxdk builds C++ without exceptions and has no C++ exception runtime.
+		# Package reading and source cooking report errors by throwing: they
+		# keep exceptions, and a throw stops the console (cxxrt_xbox.c).
+		set_source_files_properties(
+			third_party/PanoramaEngine/src/panorama_package.cpp
+			third_party/PanoramaEngine/src/panorama_source_cooker.cpp
+			third_party/PanoramaEngine/src/panorama_resource_provider.cpp
+			TARGET_DIRECTORY PanoramaEngine
+			PROPERTIES COMPILE_OPTIONS "-fexceptions;-fcxx-exceptions")
+		# nxdk has no dynamic TLS initialisation (___dyn_tls_init). The
+		# engine runs its views on the main thread only and PanoramaEngine
+		# starts no threads, so its per-thread statistics become globals.
+		target_compile_definitions(PanoramaEngine PRIVATE thread_local=)
+		# std::filesystem's library half and the C++ exception entry points
+		target_link_libraries(PanoramaEngine PRIVATE bwxboxcxx)
+	endif()
 	add_library(bwui STATIC
 		src/ui/ui_panorama.cpp
 		src/ui/ui_qc.c)
