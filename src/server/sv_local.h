@@ -268,6 +268,8 @@ void SV_SaveClientSpawned(client_t *c); /* a player entered the game */
 bool SV_SaveTakeRestored(client_t *c);
 
 /* sv_main.c */
+/* set by the dedicated server before SV_Init: rule cvar defaults differ */
+extern bool sv_dedicated;
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);
 void SV_Shutdown(void);

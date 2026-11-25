@@ -24,6 +24,7 @@
 
 serverstatic_t svs;
 
+static cvar_t *sv_playerslots, *sv_maxclients_alias;
 static cvar_t *sv_maxclients, *sv_timeout, *sv_unlag, *sv_maxunlag, *sv_minupdaterate, *sv_maxupdaterate;
 static cvar_t *sv_port, *hostname, *sv_maxrate, *sv_chatfilter, *sv_maxseats;
 
@@ -2403,6 +2404,11 @@ void SV_SyncServerinfoCvars(bool broadcast)
 void SV_InitClients(void)
 {
 	sv_maxclients = Cvar_Get("maxplayers", "8", CVAR_SERVERINFO, "Player slots (takes effect on the next map)");
+	/* the other names games and configs use for the slot count; one value
+	 * (see SV_SetupClientSlots). Nuclide reads sv_playerslots and maxclients
+	 * to tell single player from multiplayer. */
+	sv_playerslots = Cvar_Get("sv_playerslots", sv_maxclients->string, 0, "Player slots, the same as maxplayers");
+	sv_maxclients_alias = Cvar_Get("maxclients", sv_maxclients->string, 0, "Player slots, the same as maxplayers");
 	sv_timeout = Cvar_Get("sv_timeout", "30", 0, "Seconds without packets before a client is dropped");
 	sv_unlag = Cvar_Get("sv_unlag", "1", CVAR_SERVERINFO, "Rewind other players to what a client saw when running its commands");
 	sv_maxunlag = Cvar_Get("sv_maxunlag", "0.5", 0, "Longest rewind for lag compensation, seconds");
@@ -2421,8 +2427,31 @@ void SV_InitClients(void)
 
 /* Called by SV_SpawnServer before the progs runs, so the slot count is fixed
  * for the whole map. Slots are only resized when nobody is connected. */
+/* maxplayers, maxclients and sv_playerslots are one setting under three
+ * names. Whichever was set since the last map wins (sv_playerslots first,
+ * then maxclients, then maxplayers, when several were), and all three are
+ * then given that value, so a game reading any of them sees the real
+ * slot count. */
+static void sync_slot_cvars(void)
+{
+	static int seen[3];
+	cvar_t *names[3] = {sv_playerslots, sv_maxclients_alias, sv_maxclients};
+	cvar_t *from = sv_maxclients;
+	for (int i = 2; i >= 0; i--)
+		if (names[i]->modified != seen[i] && *names[i]->string)
+			from = names[i];
+	char value[16];
+	snprintf(value, sizeof(value), "%d", BW_MAX(1, BW_MIN(255, from->ivalue)));
+	for (int i = 0; i < 3; i++) {
+		if (strcmp(names[i]->string, value))
+			Cvar_SetDirect(names[i], value);
+		seen[i] = names[i]->modified;
+	}
+}
+
 void SV_SetupClientSlots(void)
 {
+	sync_slot_cvars();
 	int want = BW_MAX(1, BW_MIN(255, sv_maxclients->ivalue));
 	bool anyone = false;
 	for (int i = 0; i < svs.maxclients; i++)

@@ -1108,6 +1108,8 @@ static void PrProfile_f(int argc, const char **argv)
 	Mem_Free(list);
 }
 
+bool sv_dedicated;
+
 void SV_Init(void)
 {
 	Cmd_Add("pr_trace", PrTrace_f);
@@ -1124,7 +1126,14 @@ void SV_Init(void)
 	/* the Quake game-rule cvars a server game reads; registered so that
 	 * "timelimit 10" or "deathmatch 1" typed at the console sets them
 	 * instead of being an unknown command passed on to the server */
-	Cvar_Get("deathmatch", "0", 0, "Deathmatch rules for games that read it");
+	/* a dedicated server plays deathmatch unless told otherwise, as FTE's
+	 * does: with 0, a game that picks its rules from these cvars (Nuclide
+	 * with no g_gametype) would start a dedicated "map X" in singleplayer */
+	Cvar_Get("deathmatch", sv_dedicated ? "1" : "0", 0, "Deathmatch rules for games that read it");
+	/* g_gametype names the rules progs for games that have them (Nuclide);
+	 * known from startup, so "g_gametype duel" in an autoexec, a +exec cfg
+	 * or on the command line sets it before the first map */
+	Cvar_Get("g_gametype", "", 0, "Game rules the next map runs (game specific; empty for the game's default)");
 	Cvar_Get("coop", "0", 0, "Co-operative rules for games that read it");
 	Cvar_Get("teamplay", "0", 0, "Team play for games that read it");
 	Cvar_Get("skill", "1", 0, "Difficulty for games that read it");

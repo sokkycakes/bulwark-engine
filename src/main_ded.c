@@ -80,6 +80,7 @@ int main(int argc, char **argv)
 	Live_Init();
 	Live_SetGameProbe(live_in_game);
 	PKG_Init();
+	sv_dedicated = true;
 	SV_Init();
 	QC_InitDebugCommands();
 	Cmd_Add("quit", Quit_f);
