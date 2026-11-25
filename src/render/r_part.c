@@ -1249,8 +1249,10 @@ static void flush(const ptype_t *t)
 	int b;
 	GLenum s, d;
 	material_t *m = batchmat ? batchmat : (t ? t->mat : NULL);
-	if (!batchn || !t || !m || !m->diffuse)
+	if (!batchn || !t || !m || !m->diffuse) {
+		batchn = 0; /* nothing to draw them with: dropped, so put_quad has room */
 		return;
+	}
 	if (batchmat) {
 		s = GL_SRC_ALPHA;
 		d = t->modeladditive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA;

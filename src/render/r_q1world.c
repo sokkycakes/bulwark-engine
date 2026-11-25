@@ -574,6 +574,7 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 			qglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			for (int i = 0; i < q1.numpages; i++) {
 				int ph = page_height(i);
+				r_world.lightmaprows += ph;
 				uint8_t *page = Mem_Alloc((size_t)LM_PAGE * ph * 3);
 				for (int f = 0; f < numfaces; f++) {
 					const q1face_t *qf = &q1.faces[f];
