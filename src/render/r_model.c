@@ -546,7 +546,7 @@ typedef struct iqm_s {
 	void *restmem;        /* rest, before aligning it for SSE loads */
 	float *lastskin;      /* the skinning matrices verts were last skinned with */
 	int lastlo, lasthi;   /* and the vertices that were */
-	uint32_t lastshown;   /* and which meshes those were */
+	uint8_t *lastshown;   /* and which meshes those were, one flag each */
 	/* studio models: numfamilies x numskinref materials, picked by .skin */
 	material_t **famskins;
 	int numfamilies, numskinref;
@@ -1381,6 +1381,7 @@ static void free_model(rmodel_t *m)
 		Mem_Free(q->blendw);
 		Mem_Free(q->restmem);
 		Mem_Free(q->lastskin);
+		Mem_Free(q->lastshown);
 		Mem_Free(q->famskins);
 		Mem_Free(q);
 	}
@@ -1605,12 +1606,12 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	static bonemat_t *bones, *skin;
 	static void *sbmem;
 	static skinbone_t *cols;
-	static int maxbones;
+	static uint8_t *shown;
+	static int maxbones, maxmeshes;
 	skelmodel_t *m = q->skel, *sm;
 	const float(*sb)[12];
 	bool absolute, rigid = true, bymesh = true;
 	int n = m->numjoints, lo = q->numverts, hi = 0, end = 0;
-	uint32_t shown = 0;
 	if (n > maxbones) {
 		maxbones = n;
 		bones = Mem_Realloc(bones, sizeof(bonemat_t) * n);
@@ -1618,6 +1619,10 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 		Mem_Free(sbmem);
 		sbmem = Mem_Alloc(sizeof(skinbone_t) * n + 16);
 		cols = (skinbone_t *)(((uintptr_t)sbmem + 15) & ~(uintptr_t)15);
+	}
+	if (q->nummeshes > maxmeshes) {
+		maxmeshes = q->nummeshes;
+		shown = Mem_Realloc(shown, (size_t)maxmeshes);
 	}
 	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
 		int k = BW_MIN(n, sm->numjoints);
@@ -1637,12 +1642,14 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 		Bone_Multiply(skin[j], bones[j], m->invbind[j]);
 
 	/* the vertices of the meshes that draw, when the meshes say which and
-	 * don't overlap; otherwise all of them */
+	 * don't overlap; otherwise all of them. The set is kept exactly, as a
+	 * pose cache hit with other meshes would leave some unskinned */
+	for (int i = 0; i < q->nummeshes; i++)
+		shown[i] = mesh_shown(q, e, i);
 	for (int i = 0; i < q->nummeshes; i++) {
 		const iqmmesh_t *me = &q->meshes[i];
-		if (!mesh_shown(q, e, i))
+		if (!shown[i])
 			continue;
-		shown = shown * 31 + (uint32_t)i + 1;
 		if (!me->numverts || me->firstvert < end) {
 			bymesh = false;
 			break;
@@ -1656,13 +1663,16 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	if (hi <= lo)
 		return;
 
-	if (q->lastskin && q->lastshown == shown && q->lastlo == lo && q->lasthi == hi &&
+	if (q->lastskin && q->lastlo == lo && q->lasthi == hi && !memcmp(q->lastshown, shown, (size_t)q->nummeshes) &&
 	    !memcmp(q->lastskin, skin, sizeof(bonemat_t) * n))
 		goto upload; /* the same pose again: an outline, a still model */
-	if (!q->lastskin)
+	if (!q->lastskin) {
 		q->lastskin = Mem_Alloc(sizeof(bonemat_t) * n);
+		q->lastshown = Mem_Alloc((size_t)q->nummeshes + 1);
+	}
 	memcpy(q->lastskin, skin, sizeof(bonemat_t) * n);
-	q->lastshown = shown, q->lastlo = lo, q->lasthi = hi;
+	memcpy(q->lastshown, shown, (size_t)q->nummeshes);
+	q->lastlo = lo, q->lasthi = hi;
 
 	/* a bone that only rotates, maybe with a uniform scale s, turns unit
 	 * normals into normals of length s: its rotation over s keeps them unit */
@@ -1690,7 +1700,7 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	} else {
 		/* mesh by mesh, leaving out the sub-models that don't draw */
 		for (int i = 0; i < q->nummeshes; i++)
-			if (mesh_shown(q, e, i))
+			if (shown[i])
 				skin_verts(q, skin, rigid ? cols : NULL, q->meshes[i].firstvert,
 				           q->meshes[i].firstvert + q->meshes[i].numverts);
 	}
@@ -2181,6 +2191,20 @@ size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris)
 		         (size_t)a->numtris * 3 * sizeof(uint16_t) + (size_t)a->numframes * sizeof(aliasframe_t);
 		*verts = a->numverts;
 		*tris = a->numtris;
+	}
+	if (m->iqm) {
+		/* skeletal ones also keep their rest pose and blend weights */
+		const iqm_t *q = m->iqm;
+		bytes += sizeof(*q) + (size_t)q->numverts * sizeof(rvert_t) + (size_t)q->numindexes * sizeof(uint32_t) +
+		         (size_t)q->nummeshes * sizeof(iqmmesh_t);
+		if (q->rest)
+			bytes += (size_t)q->numverts * sizeof(*q->rest);
+		if (q->blendidx)
+			bytes += (size_t)q->numverts * sizeof(*q->blendidx);
+		if (q->blendw)
+			bytes += (size_t)q->numverts * sizeof(*q->blendw);
+		*verts = q->numverts;
+		*tris = q->numindexes / 3;
 	}
 	if (m->type == MOD_BRUSH || (!m->alias && !m->iqm && m->numsurfaces)) {
 		for (int i = 0; i < m->numsurfaces; i++)
