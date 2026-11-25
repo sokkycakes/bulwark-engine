@@ -107,15 +107,23 @@ typedef struct {
 #define QC_FUNC_PROGS(f) ((int)(((uint32_t)(f) >> QC_PROGS_SHIFT) & 0x7f))
 #define QC_FUNC_INDEX(f) ((int)((uint32_t)(f) & QC_INDEX_MASK))
 
+/* statements as the interpreter keeps them. Progs with 32-bit statements
+ * are not run yet (see parse_progs), so low-memory builds keep the file's
+ * 16-bit form and need half the room for the code. */
+#ifdef BW_LOWMEM
+typedef dstatement16_t qcstatement_t;
+#else
+typedef dstatement32_t qcstatement_t;
+#endif
+
 /* the parts of a VM that belong to one progs; the VM's own copies of these
  * fields are those of the progs that is running now */
 typedef struct {
 	char name[64];
-	uint8_t *progsdata;
-	size_t progssize;
+	const uint8_t *image; /* the file image, only while it is being loaded */
 	progs_header_t hdr;
 	bool stmt32;
-	dstatement32_t *statements;
+	qcstatement_t *statements;
 	int numstatements;
 	qcfunc_t *functions;
 	int numfunctions;
@@ -142,13 +150,11 @@ struct qcvm_s {
 	char name[64];
 	void *host;
 
-	uint8_t *progsdata; /* file image, kept for string table and statements */
-	size_t progssize;
 	progs_header_t hdr;
 	bool stmt32;
 
-	/* statements unpacked into 32-bit form */
-	dstatement32_t *statements;
+	/* statements unpacked into qcstatement_t form */
+	qcstatement_t *statements;
 	int numstatements;
 
 	qcfunc_t *functions;
@@ -179,6 +185,8 @@ struct qcvm_s {
 	float quick_reuse_before; /* slots freed before this time can be reused at once (map load) */
 	qcedict_t *edicts;
 	size_t heap_ofs, heap_size;
+	size_t heap_used, heap_peak; /* bytes in use by memalloc blocks, and the most ever */
+	int edicts_peak; /* most entity slots ever in use (num_edicts high-water mark) */
 
 	qcfieldofs_t fofs;
 	qcglobalofs_t gofs;
@@ -243,6 +251,9 @@ struct qcvm_s {
 qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kind,
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize);
 void QC_Free(qcvm_t *vm);
+/* developer report of what a VM used against what it was given, for sizing
+ * BW_*_MAXEDICTS and BW_*_HEAP_MB */
+void QC_PrintMemStats(qcvm_t *vm);
 /* every loaded VM (server, client game, menu) */
 int QC_VMCount(void);
 qcvm_t *QC_VMAt(int i);

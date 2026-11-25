@@ -207,7 +207,7 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 {
 	qcval_t *G = vm->globals;
 	uint32_t count = 0;
-	const dstatement32_t *st;
+	const qcstatement_t *st;
 	qcval_t *a, *b, *c;
 
 	for (;;) {
@@ -698,7 +698,7 @@ static void run(qcvm_t *vm, int s, int entrydepth)
 
 		default:
 			vm->xstatement = s;
-			QC_RunError(vm, "unsupported opcode %u", st->op);
+			QC_RunError(vm, "unsupported opcode %u", (unsigned)st->op);
 		}
 		s++;
 	}

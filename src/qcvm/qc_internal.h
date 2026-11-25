@@ -8,11 +8,18 @@
 #include <stdio.h>
 
 #define QC_MAX_TOKENS 1024
+/* The text of each token is kept in buf, and argv() makes it a string the
+ * first time it is asked for: Nuclide tokenizes whole decl files while a
+ * map loads, when no collection can run, and most tokens are never read. */
 typedef struct qc_tokens_s {
 	int count;
-	string_t argv[QC_MAX_TOKENS];
+	string_t argv[QC_MAX_TOKENS]; /* 0 until argv() asks for the token */
 	int start[QC_MAX_TOKENS];
 	int end[QC_MAX_TOKENS];
+	int text[QC_MAX_TOKENS]; /* offset of the token's text in buf */
+	int len[QC_MAX_TOKENS];
+	char *buf;
+	size_t buflen, bufcap;
 } qc_tokens_t;
 
 #define QC_MAX_FILES 64

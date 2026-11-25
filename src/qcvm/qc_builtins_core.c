@@ -903,14 +903,32 @@ static void bi_sprintf(qcvm_t *vm)
 
 /* --- tokenize -------------------------------------------------------- */
 
-static void tokens_reset(qcvm_t *vm) { vm->extra->tokens.count = 0; }
+static void tokens_reset(qcvm_t *vm)
+{
+	vm->extra->tokens.count = 0;
+	vm->extra->tokens.buflen = 0;
+}
 
 static void token_add(qcvm_t *vm, const char *src, const char *s, size_t n, const char *start, const char *end)
 {
 	qc_tokens_t *t = &vm->extra->tokens;
 	if (t->count >= QC_MAX_TOKENS)
 		return;
-	t->argv[t->count] = QC_NewStringLen(vm, s, n);
+	if (n > 0x3fffffff)
+		n = 0x3fffffff;
+	if (t->buflen + n + 1 > t->bufcap) {
+		size_t cap = t->bufcap ? t->bufcap : 4096;
+		while (cap < t->buflen + n + 1)
+			cap *= 2;
+		t->buf = Mem_Realloc(t->buf, cap);
+		t->bufcap = cap;
+	}
+	memcpy(t->buf + t->buflen, s, n);
+	t->buf[t->buflen + n] = 0;
+	t->text[t->count] = (int)t->buflen;
+	t->len[t->count] = (int)n;
+	t->buflen += n + 1;
+	t->argv[t->count] = 0;
 	t->start[t->count] = (int)(start - src);
 	t->end[t->count] = (int)(end - src);
 	t->count++;
@@ -1043,7 +1061,13 @@ static void bi_argv(qcvm_t *vm)
 {
 	int i = token_index(vm);
 	qc_tokens_t *t = &vm->extra->tokens;
-	vm->globals[OFS_RETURN].i = (i >= 0 && i < t->count) ? t->argv[i] : 0;
+	if (i < 0 || i >= t->count) {
+		vm->globals[OFS_RETURN].i = 0;
+		return;
+	}
+	if (!t->argv[i])
+		t->argv[i] = QC_NewStringLen(vm, t->buf + t->text[i], (size_t)t->len[i]);
+	vm->globals[OFS_RETURN].i = t->argv[i];
 }
 
 static void bi_argv_start_index(qcvm_t *vm)
