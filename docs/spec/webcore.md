@@ -303,9 +303,10 @@ The sections below specify each request.
   engine tries the usual extensions (`.wav`, `.ogg`, ...). [SRC]
 - Samples used: `misc/menu1` (navigate), `misc/menu2` (confirm), `misc/menu3`
   (back or dismiss). [SRC]
-- Rapid repeated navigation MUST NOT restart or interrupt the same sound while it is
-  still playing. If the same sample is already playing on the UI channel, ignore the
-  new request. Different samples MAY overlap or replace each other. [SRC: user preference]
+- Each request starts a new channel, so rapid rollovers overlap: a new sound never
+  restarts, cuts off or drops one that is still playing (FTE's `localsound`
+  behaviour). [SRC: user preference, 2026-11-25; this replaces the earlier rule that
+  ignored a sample already playing]
 - Sounds play whether or not a map is loaded, and are unaffected by `-nosound` only
   as far as normal sound is.
 - Reply: anything. Pages ignore it. `ok` suggested.

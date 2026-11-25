@@ -45,6 +45,7 @@ static struct {
 	bool backdrop;    /* we started the title's background map */
 	int music_track;  /* -1 menu_boot, then 1, 2, ... */
 	bool music_on;
+	bool music_warned; /* said once that the stem has no tracks */
 	int frames;
 } wc = {.prevstate = ca_disconnected, .music_track = -1};
 
@@ -160,26 +161,49 @@ static int open_page(const char *url, int flags)
 
 /* --- menu music ---------------------------------------------------------------------- */
 
+/* webcore_menu_music is the playlist's stem, as in FTE's webcore plugin:
+ * "music/menu" plays music/menu_boot, then music/menu1, menu2, ... and round
+ * again. "0" or "" turns it off; "1" (Bulwark's old switch) means the default. */
+static const char *music_stem(void)
+{
+	const char *v = webcore_menu_music->string;
+	if (!*v || !strcmp(v, "0"))
+		return NULL;
+	if (!strcmp(v, "1"))
+		return "music/menu";
+	return v;
+}
+
 static void music_next(void)
 {
-	char name[64];
+	char name[160];
+	const char *stem = music_stem();
+	if (!stem)
+		return;
 	if (wc.music_track < 0) {
 		wc.music_track = 0;
-		if (S_PlayMusic("music/menu_boot", false))
+		snprintf(name, sizeof(name), "%s_boot", stem);
+		if (S_PlayMusic(name, false))
 			return;
 	}
-	snprintf(name, sizeof(name), "music/menu%d", ++wc.music_track);
+	snprintf(name, sizeof(name), "%s%d", stem, ++wc.music_track);
 	if (S_PlayMusic(name, false))
 		return;
 	/* past the last track: around again */
 	wc.music_track = -1;
-	if (!S_PlayMusic("music/menu_boot", false))
-		S_PlayMusic("music/menu1", false);
+	snprintf(name, sizeof(name), "%s_boot", stem);
+	if (!S_PlayMusic(name, false)) {
+		snprintf(name, sizeof(name), "%s1", stem);
+		if (!S_PlayMusic(name, false) && !wc.music_warned) {
+			wc.music_warned = true;
+			Con_Printf("webcore: no menu music under \"%s\" (expected %s_boot, %s1, ...)\n", stem, stem, stem);
+		}
+	}
 }
 
 static void music_frame(void)
 {
-	bool want = wc.plugin && webcore_menu_music->ivalue && !in_game() &&
+	bool want = wc.plugin && music_stem() && !in_game() &&
 	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE || wc.route == ROUTE_SERVERS ||
 	             EM_Active() || idle());
 	if (want && !S_MusicPlaying()) {
@@ -607,9 +631,10 @@ static void q_localsound(const char *sample, strbuf_t *out)
 		snprintf(name, sizeof(name), "%s%s", sample, exts[i]);
 		snprintf(path, sizeof(path), "sound/%s", name);
 		if (strchr(sample, '.') ? i == 0 : (i > 0 && FS_FileExists(path))) {
-			/* a quick run of the same sound doesn't restart it */
-			if (!S_LocalSoundPlaying(name))
-				S_LocalSound(name);
+			/* each one gets its own channel, so a quick run of rollovers
+			 * overlaps instead of cutting off or dropping the last one,
+			 * the way FTE's localsound plays them */
+			S_LocalSound(name);
 			break;
 		}
 	}
@@ -862,7 +887,8 @@ void WC_Init(void)
 	webcore_menu_enabled = Cvar_Get("webcore_menu_enabled", "1", 0, "0 keeps the HTML menus from opening");
 	webcore_pause_url = Cvar_Get("webcore_pause_url", "fte://data/web/pause-menu/index.html", 0,
 	                             "The in-game pause page of the HTML menus");
-	webcore_menu_music = Cvar_Get("webcore_menu_music", "1", CVAR_ARCHIVE, "Play the menu music under the title");
+	webcore_menu_music = Cvar_Get("webcore_menu_music", "music/menu", CVAR_ARCHIVE,
+	                              "The title music playlist: <stem>_boot, then <stem>1, <stem>2, ... (0 or empty: off)");
 	forceqmenu = Cvar_Get("forceqmenu", "0", 0, "1 skips the menu module (menu.dat)");
 	/* FTE's player model settings, which Stiletto's autoexec sets */
 	Cvar_Get("headmodel", "", CVAR_ARCHIVE | CVAR_USERINFO, "Head model (userinfo)");
