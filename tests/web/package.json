@@ -1,0 +1,12 @@
+{
+  "name": "bulwark-web-tests",
+  "private": true,
+  "description": "Browser tests for Bulwark's web export (tests/web/README.md)",
+  "type": "module",
+  "scripts": {
+    "test": "node webtest.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "24.43.1"
+  }
+}

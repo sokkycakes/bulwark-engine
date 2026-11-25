@@ -4,16 +4,42 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #define X(ret, name, args) PFN_##name q##name;
 BW_GL_FUNCS(X)
 #undef X
+
+#ifdef __EMSCRIPTEN__
+/* WebGL 2 (OpenGL ES 3.0) has glDepthRangef in place of glDepthRange, and no
+ * glDrawElementsBaseVertex (loaded, but only the 3DS's GL draws with it) */
+#include <GLES3/gl3.h>
+static void BWGLAPI web_glDepthRange(double n, double f) { glDepthRangef((float)n, (float)f); }
+static void BWGLAPI web_glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *ofs, GLint base)
+{
+	if (!base)
+		glDrawElements(mode, count, type, ofs);
+}
+static void *(*web_getproc)(const char *name);
+static void *web_proc(const char *name)
+{
+	if (!strcmp(name, "glDepthRange"))
+		return (void *)web_glDepthRange;
+	if (!strcmp(name, "glDrawElementsBaseVertex"))
+		return (void *)web_glDrawElementsBaseVertex;
+	return web_getproc(name);
+}
+#endif
 
 void(BWGLAPI *qglFramebufferTexture2D_opt)(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l);
 
 int GL_LoadFunctions(void *(*getproc)(const char *name))
 {
 	int missing = 0;
+#ifdef __EMSCRIPTEN__
+	web_getproc = getproc;
+	getproc = web_proc;
+#endif
 #define X(ret, name, args)                                                                                     \
 	q##name = (PFN_##name)getproc(#name);                                                                      \
 	if (!q##name) {                                                                                            \
@@ -24,6 +50,26 @@ int GL_LoadFunctions(void *(*getproc)(const char *name))
 #undef X
 	qglFramebufferTexture2D_opt = (void(BWGLAPI *)(GLenum, GLenum, GLenum, GLuint, GLint))getproc("glFramebufferTexture2D");
 	return missing == 0;
+}
+
+void GL_ReadRGB(int x, int y, int w, int h, void *px)
+{
+#ifdef __EMSCRIPTEN__
+	/* OpenGL ES promises RGBA only: read that, then pack it down in place */
+	uint8_t *rgba = Mem_Alloc((size_t)w * h * 4);
+	uint8_t *out = px;
+	qglPixelStorei(GL_PACK_ALIGNMENT, 4);
+	qglReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+	for (size_t i = 0, n = (size_t)w * h; i < n; i++) {
+		out[i * 3] = rgba[i * 4];
+		out[i * 3 + 1] = rgba[i * 4 + 1];
+		out[i * 3 + 2] = rgba[i * 4 + 2];
+	}
+	Mem_Free(rgba);
+#else
+	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
+	qglReadPixels(x, y, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
+#endif
 }
 
 /* --- state cache ----------------------------------------------------------- */
@@ -132,7 +178,11 @@ void GL_DeleteTextures(int n, const GLuint *tex)
 
 glprog_t r_progs[PROG_COUNT];
 
+#ifdef __EMSCRIPTEN__
+static const char *glsl_header = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n";
+#else
 static const char *glsl_header = "#version 330 core\n";
+#endif
 
 static const char *vs_2d =
 	"layout(location=0) in vec3 a_pos;\n"

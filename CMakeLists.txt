@@ -5,6 +5,14 @@ project(bulwark C CXX)
 # (-DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake or NDS.cmake); see
 # docs/platforms/3ds.md and nds.md. They leave out what those systems can't host:
 # dynamic plugins, PanoramaEngine and QuickJS, the host tools and tests.
+# The browser build uses Emscripten (emcmake cmake ..., or tools/web/build.sh);
+# see docs/platforms/web.md. Like the consoles it leaves out the host tools
+# and tests, and it links its plugins in, having no dynamic linker.
+if(EMSCRIPTEN)
+	set(BULWARK_WEB ON)
+else()
+	set(BULWARK_WEB OFF)
+endif()
 if(NINTENDO_3DS OR NINTENDO_DS)
 	set(BULWARK_CONSOLE ON)
 	set(CMAKE_DL_LIBS "") # no dynamic linker (src/common/sys_dl.h)
@@ -99,7 +107,7 @@ add_library(bwqcvm STATIC
 	src/qcvm/qc_modelevents.c)
 target_link_libraries(bwqcvm PUBLIC bwcommon)
 
-if(NOT BULWARK_CONSOLE)
+if(NOT BULWARK_CONSOLE AND NOT BULWARK_WEB)
 	add_executable(qcrun tools/qcrun.c)
 	target_link_libraries(qcrun bwqcvm)
 endif()
@@ -167,7 +175,7 @@ if(BULWARK_SCRIPT_JS)
 	target_link_libraries(bwserver PRIVATE qjs)
 endif()
 
-if(NOT BULWARK_CONSOLE)
+if(NOT BULWARK_CONSOLE AND NOT BULWARK_WEB)
 	add_executable(bulwark-ded src/main_ded.c)
 	target_link_libraries(bulwark-ded bwserver)
 
@@ -223,7 +231,14 @@ if(NOT BULWARK_CONSOLE)
 endif()
 
 # game client with a listen server
-if(NOT BULWARK_CONSOLE)
+if(BULWARK_WEB)
+	# Emscripten's own SDL2 (its ports), over the browser's canvas, Web Audio
+	# and Gamepad API
+	set(SDL2_FOUND ON)
+	set(SDL2_INCLUDE_DIRS "")
+	set(SDL2_LIBRARIES "-sUSE_SDL=2")
+	add_compile_options(-sUSE_SDL=2)
+elseif(NOT BULWARK_CONSOLE)
 	find_package(SDL2 QUIET)
 endif()
 if(NOT SDL2_FOUND AND NOT BULWARK_CONSOLE)
@@ -324,6 +339,20 @@ if(NINTENDO_3DS)
 		DESCRIPTION "Bulwark engine"
 		AUTHOR "sokky")
 	ctr_create_3dsx(bulwark SMDH bulwark.smdh)
+elseif(BULWARK_WEB)
+	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c src/platform/web/sys_web.c)
+	target_link_libraries(bulwark bwclient ${SDL2_LIBRARIES})
+	# the page around it is tools/web/shell; tools/web/export.py puts the two
+	# and a game's files together into a folder any web server can host
+	target_link_options(bulwark PRIVATE
+		-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sGL_ENABLE_GET_PROC_ADDRESS=1
+		-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB -sSTACK_SIZE=8MB
+		-sFORCE_FILESYSTEM=1 -lidbfs.js -sFETCH=1
+		-sEXIT_RUNTIME=0 -sINVOKE_RUN=0
+		-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain,ccall,cwrap,UTF8ToString,stringToNewUTF8,addRunDependency,removeRunDependency
+		-sEXPORTED_FUNCTIONS=_main,_malloc,_free
+		-sENVIRONMENT=web,node)
+	set_target_properties(bulwark PROPERTIES SUFFIX ".js")
 elseif(SDL2_FOUND)
 	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c)
 	target_include_directories(bulwark PRIVATE ${SDL2_INCLUDE_DIRS})
@@ -335,8 +364,20 @@ else()
 endif()
 
 # Source file formats (VTF, VMT, MDL) as a plugin, loaded at startup from
-# next to the engine. Consoles can't load plugins.
-if(NOT BULWARK_CONSOLE)
+# next to the engine. Consoles can't load plugins; the browser links it in.
+if(BULWARK_WEB)
+	add_library(bwplug_source STATIC
+		plugins/source/plugin.c
+		plugins/source/vtf.c
+		plugins/source/vmt.c
+		plugins/source/mdl.c
+		plugins/source/mdlskel.c)
+	# its entry point and its globals get names of their own inside the engine
+	target_compile_definitions(bwplug_source PRIVATE bwplug_init=bwplug_source_init api=bwplug_source_api)
+	target_compile_definitions(bwcommon PRIVATE BW_LINKED_PLUGIN_SOURCE)
+	target_link_libraries(bulwark bwplug_source)
+endif()
+if(NOT BULWARK_CONSOLE AND NOT BULWARK_WEB)
 add_library(bwplug_source MODULE
 	plugins/source/plugin.c
 	plugins/source/vtf.c
@@ -352,7 +393,15 @@ endif()
 # GDI-compatible TrueType rasterizer (docs/spec/gdi-text.md). Optional: only
 # built when FreeType is installed. With it, the renderer draws TrueType
 # fonts through it (src/render/r_gdifont.c); without it, stb_truetype as before.
-if(NOT BULWARK_CONSOLE)
+if(BULWARK_WEB)
+	# Emscripten's FreeType port
+	if(NOT TARGET Freetype::Freetype)
+		add_library(Freetype::Freetype INTERFACE IMPORTED)
+		set_target_properties(Freetype::Freetype PROPERTIES INTERFACE_COMPILE_OPTIONS "-sUSE_FREETYPE=1"
+		                      INTERFACE_LINK_OPTIONS "-sUSE_FREETYPE=1")
+	endif()
+	set(FREETYPE_FOUND ON)
+elseif(NOT BULWARK_CONSOLE)
 	find_package(Freetype QUIET)
 endif()
 if(FREETYPE_FOUND)
@@ -364,10 +413,12 @@ if(FREETYPE_FOUND)
 		target_link_libraries(bwui PRIVATE bwgdifont)
 		target_compile_definitions(bwui PRIVATE BW_HAVE_GDIFONT)
 	endif()
-	add_executable(gdidump tools/gdidump/gdidump.c)
-	target_link_libraries(gdidump bwgdifont)
-	add_executable(gdifonttest tests/gdifont/gdifonttest.c)
-	target_link_libraries(gdifonttest bwgdifont)
-	add_test(NAME gdifont COMMAND gdifonttest)
-	add_test(NAME fontreload COMMAND ${CMAKE_SOURCE_DIR}/tests/fonts/run_font_tests.sh $<TARGET_FILE:bulwark>)
+	if(NOT BULWARK_WEB)
+		add_executable(gdidump tools/gdidump/gdidump.c)
+		target_link_libraries(gdidump bwgdifont)
+		add_executable(gdifonttest tests/gdifont/gdifonttest.c)
+		target_link_libraries(gdifonttest bwgdifont)
+		add_test(NAME gdifont COMMAND gdifonttest)
+		add_test(NAME fontreload COMMAND ${CMAKE_SOURCE_DIR}/tests/fonts/run_font_tests.sh $<TARGET_FILE:bulwark>)
+	endif()
 endif()

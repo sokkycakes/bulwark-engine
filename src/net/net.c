@@ -357,6 +357,12 @@ static void send_now(netsrc_t src, const void *data, size_t len, const netadr_t 
 	bool v4 = sock_v4[src];
 	if (to->sock && to->sock <= numextras[src])
 		fd = extras[src][to->sock - 1].fd, v4 = extras[src][to->sock - 1].v4;
+#ifdef __EMSCRIPTEN__
+	/* each address a page sends to is a WebSocket connection: a broadcast
+	 * would only be a failed one */
+	if (to->type == NA_IP4 && to->ip[0] == 255 && to->ip[1] == 255 && to->ip[2] == 255 && to->ip[3] == 255)
+		return;
+#endif
 	if (v4) {
 		struct sockaddr_in sa4;
 		if (to->type != NA_IP4)

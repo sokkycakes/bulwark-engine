@@ -31,8 +31,12 @@ static cvar_t *sv_public, *sv_master[NUM_MASTERS], *sv_port_tcp, *sv_port_natpmp
 static double next_heartbeat;
 
 /* used when sv_public is on and no sv_master is set */
+#ifdef __EMSCRIPTEN__
+static const char *const default_masters[] = {NULL}; /* see cl_master.c */
+#else
 static const char *const default_masters[] = {"master.frag-net.com:27950", "dpmaster.deathmask.net:27950",
                                               "dpmaster.tchr.no:27950", NULL};
+#endif
 
 /* --- answering queries ---------------------------------------------------- */
 
