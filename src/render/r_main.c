@@ -541,12 +541,21 @@ static void r_drawtextfield(qcvm_t *vm)
 	int align = (int)QC_PFLOAT(vm, 2);
 	const char *text = QC_PSTR(vm, 3);
 	static const float white[3] = {1, 1, 1};
-	static char lines[MAX_LINES][1024];
+	/* the lines packed end to end: each character of the text lands in one
+	 * line at most, so the text's length and a terminator per line is enough */
+	static char *lines;
+	static size_t linescap;
+	int lineofs[MAX_LINES];
+	size_t used = 0, need = strlen(text) + MAX_LINES + 1;
 	float sx, sy, y, lineh;
 	int nlines = 0, shown;
 	size_t n = 0;
 	const char *p = text, *lastspace = NULL;
 	char line[1024];
+	if (need > linescap) {
+		linescap = need;
+		lines = Mem_Realloc(lines, linescap);
+	}
 	text_scale(vm, &sx, &sy);
 	use_drawfont(vm);
 	lineh = sy * R_DrawFontScale(); /* text is drawn at that height */
@@ -568,8 +577,11 @@ static void r_drawtextfield(qcvm_t *vm)
 		}
 		if (flush) {
 			line[n] = 0;
-			if (nlines < MAX_LINES)
-				memcpy(lines[nlines], line, n + 1);
+			if (nlines < MAX_LINES) {
+				lineofs[nlines] = (int)used;
+				memcpy(lines + used, line, n + 1);
+				used += n + 1;
+			}
 			nlines++;
 			n = 0;
 			lastspace = NULL;
@@ -588,13 +600,13 @@ static void r_drawtextfield(qcvm_t *vm)
 	default: y = pos[1] + (size[1] - shown * lineh) / 2; break;
 	}
 	for (int i = 0; i < shown; i++, y += lineh) {
-		float w = R_StringWidth(lines[i], sx, sy, true), x;
+		float w = R_StringWidth(lines + lineofs[i], sx, sy, true), x;
 		switch (align & (1 | 4)) {
 		case 1: x = pos[0]; break;
 		case 4: x = pos[0] + size[0] - w; break;
 		default: x = pos[0] + (size[0] - w) / 2; break;
 		}
-		R_DrawString(x, y, lines[i], sx, sy, white, 1, 0, true);
+		R_DrawString(x, y, lines + lineofs[i], sx, sy, white, 1, 0, true);
 	}
 	QC_ReturnFloat(vm, (float)nlines);
 }

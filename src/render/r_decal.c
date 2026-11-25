@@ -419,7 +419,11 @@ typedef struct {
 	double born, die;
 } decal_t;
 
+#ifdef BW_LOWMEM
+#define MAX_DECALS 1024 /* r_decal_max's default */
+#else
 #define MAX_DECALS 4096
+#endif
 static decal_t decals[MAX_DECALS];
 static int decalhead, numdecals; /* a ring: the oldest goes first */
 

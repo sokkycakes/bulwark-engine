@@ -313,7 +313,11 @@ typedef struct {
 	float color[3];
 } rdlight_t;
 
+#ifdef BW_LOWMEM
+#define R_MAX_ENTITIES 1024 /* as many as the server's and client game's edicts; lqdm1 draws about 50 */
+#else
 #define R_MAX_ENTITIES 4096
+#endif
 #define R_MAX_DLIGHTS 64
 
 typedef struct {

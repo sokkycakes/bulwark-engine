@@ -647,8 +647,11 @@ static void RouteVisualise_f(int argc, const char **argv)
 
 static void draw_lines(const float *xyz, int n, GLenum mode, const float *rgba)
 {
-	static rvert_t v[4096];
-	n = BW_MIN(n, (int)BW_ARRAY_COUNT(v));
+	enum { MAX_LINE_VERTS = 4096 };
+	static rvert_t *v; /* made the first time a debug view draws lines */
+	if (!v)
+		v = Mem_Alloc(sizeof(rvert_t) * MAX_LINE_VERTS);
+	n = BW_MIN(n, MAX_LINE_VERTS);
 	for (int i = 0; i < n; i++) {
 		memset(&v[i], 0, sizeof(v[i]));
 		memcpy(v[i].xyz, xyz + i * 3, sizeof(float) * 3);

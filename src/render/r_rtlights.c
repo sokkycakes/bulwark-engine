@@ -57,10 +57,14 @@ static void defaults(rtlight_t *l)
 
 static rtlight_t *add_light(void)
 {
+	static int maxlights;
 	if (numlights >= MAX_RTLIGHTS)
 		return NULL;
-	if (!lights)
-		lights = Mem_Alloc(sizeof(*lights) * MAX_RTLIGHTS);
+	if (numlights == maxlights) {
+		/* grown as lights come: a map's file usually holds tens, not thousands */
+		maxlights = maxlights ? BW_MIN(maxlights * 2, MAX_RTLIGHTS) : 64;
+		lights = Mem_Realloc(lights, sizeof(*lights) * maxlights);
+	}
 	defaults(&lights[numlights]);
 	return &lights[numlights++];
 }

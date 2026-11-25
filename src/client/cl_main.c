@@ -95,7 +95,15 @@ const char *CL_PlayerKey(int slot, const char *key, char *out, size_t size)
 		snprintf(out, size, "%d", CL_PlayerIgnored(slot) ? 1 : 0);
 		return out;
 	}
-	return info_get(cl.playerinfo[slot], key, out, size);
+	return info_get(cl.playerinfo[slot] ? cl.playerinfo[slot] : "", key, out, size);
+}
+
+/* a slot's info string, made when the server first sets it */
+static char *player_info(int slot)
+{
+	if (!cl.playerinfo[slot])
+		cl.playerinfo[slot] = Mem_Alloc(CL_PLAYERINFO_SIZE);
+	return cl.playerinfo[slot];
 }
 
 const char *CL_ServerKey(const char *key, char *out, size_t size)
@@ -291,7 +299,10 @@ void CL_Disconnect(const char *reason)
 	Host_Loading(NULL, NULL, 0);
 	cl.paused = false;
 	memset(cl.serverinfo, 0, sizeof(cl.serverinfo));
-	memset(cl.playerinfo, 0, sizeof(cl.playerinfo));
+	for (int i = 0; i < CL_MAX_PLAYERS; i++) {
+		Mem_Free(cl.playerinfo[i]);
+		cl.playerinfo[i] = NULL;
+	}
 	Str_Copy(cl.disconnect_reason, reason ? reason : "", sizeof(cl.disconnect_reason));
 }
 
@@ -722,11 +733,11 @@ static void parse_server_message(msg_t *m, bool reliable)
 			char key[256];
 			Str_Copy(key, MSG_ReadString(m), sizeof(key));
 			if (!key[0]) {
-				Str_Copy(cl.playerinfo[slot], MSG_ReadString(m), sizeof(cl.playerinfo[slot]));
+				Str_Copy(player_info(slot), MSG_ReadString(m), CL_PLAYERINFO_SIZE);
 				if (!cl.playerinfo[slot][0])
 					Blob_Clear(cl.playerblobs[slot]); /* the player left */
 			} else
-				info_set(cl.playerinfo[slot], sizeof(cl.playerinfo[slot]), key, MSG_ReadString(m));
+				info_set(player_info(slot), CL_PLAYERINFO_SIZE, key, MSG_ReadString(m));
 			CSQC_PlayerInfoChanged(slot);
 			break;
 		}

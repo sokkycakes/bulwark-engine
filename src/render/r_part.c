@@ -1233,7 +1233,11 @@ static int part_cmp(const void *a, const void *b)
 	return x->t == y->t ? 0 : x->t < y->t ? -1 : 1;
 }
 
+#ifdef BW_LOWMEM
+#define BATCH_QUADS 1024 /* a full batch is drawn and the next begins: only the call count changes */
+#else
 #define BATCH_QUADS 4096
+#endif
 static rvert_t batchv[BATCH_QUADS * 4];
 static uint16_t batchi[BATCH_QUADS * 6];
 static int batchn;

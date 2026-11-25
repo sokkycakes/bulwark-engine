@@ -31,7 +31,11 @@ static cvar_t *con_font, *scr_conheight, *scr_conalpha, *con_textsize;
 
 /* --- batching ----------------------------------------------------------- */
 
+#ifdef BW_LOWMEM
+#define MAX_2D_VERTS 2048 /* flushed when full */
+#else
 #define MAX_2D_VERTS 8192
+#endif
 static rvert_t verts[MAX_2D_VERTS];
 static uint16_t indices[MAX_2D_VERTS / 4 * 6];
 static int numverts;
@@ -225,6 +229,7 @@ typedef struct {
 	image_t *atlas;
 	stbtt_bakedchar chars[FONT_COUNT];
 	float ascent;
+	int aw, ah; /* the atlas's size in pixels */
 } fontsize_t;
 
 typedef struct {
@@ -241,11 +246,21 @@ typedef struct {
 	stbtt_fontinfo info;
 	int requested[MAX_FONT_SIZES];
 	int numrequested;
-	fontsize_t sizes[MAX_FONT_SIZES];
+	fontsize_t *sizes[MAX_FONT_SIZES]; /* allocated as baked: most fonts use one or two */
 	int numsizes;
 } font_t;
 
 static font_t fonts[MAX_FONTS];
+
+static void free_font(font_t *f)
+{
+	Mem_Free(f->ttf);
+	RG_Free(f->gdi);
+	BF_Free(f->bmf);
+	for (int i = 0; i < f->numsizes; i++)
+		Mem_Free(f->sizes[i]);
+	memset(f, 0, sizeof(*f));
+}
 static image_t *bitmapfont;
 static int r_drawfont; /* the font text uses, from the client game's drawfont global */
 
@@ -283,37 +298,53 @@ static fontsize_t *font_size(font_t *f, float height)
 	if (want > 128)
 		want = 128;
 	for (int i = 0; i < f->numsizes; i++) {
-		int d = abs(f->sizes[i].pixelsize - want);
+		int d = abs(f->sizes[i]->pixelsize - want);
 		if (d < bestdiff)
 			bestdiff = d, best = i;
 	}
 	/* bake a new size when none is close enough */
 	if ((best < 0 || bestdiff > 1) && f->numsizes < MAX_FONT_SIZES) {
-		fontsize_t *fs = &f->sizes[f->numsizes];
+		fontsize_t *fs = f->sizes[f->numsizes] = Mem_Alloc(sizeof(fontsize_t));
 		uint8_t *alpha = Mem_Alloc(FONT_ATLAS * FONT_ATLAS);
 		uint8_t *rgba = Mem_Alloc(FONT_ATLAS * FONT_ATLAS * 4);
 		char name[300];
-		int asc, desc, gap;
+		int asc, desc, gap, rows;
 		float scale;
 		fs->pixelsize = want;
-		if (stbtt_BakeFontBitmap(f->ttf, stbtt_GetFontOffsetForIndex(f->ttf, 0), (float)want, alpha, FONT_ATLAS,
-		                         FONT_ATLAS, FONT_FIRST, FONT_COUNT, fs->chars) == 0) {
-			Con_DPrintf("font %s: size %d did not fit\n", f->name, want);
+		fs->aw = fs->ah = FONT_ATLAS;
+#ifdef BW_LOWMEM
+		/* the smallest atlas the glyphs fit, trimmed to the rows they reach
+		 * (a power of two): small text needs a fraction of the full page */
+		for (fs->aw = 128;; fs->aw *= 2) {
+			rows = stbtt_BakeFontBitmap(f->ttf, stbtt_GetFontOffsetForIndex(f->ttf, 0), (float)want, alpha, fs->aw,
+			                            fs->aw, FONT_FIRST, FONT_COUNT, fs->chars);
+			if (rows > 0 || fs->aw >= FONT_ATLAS)
+				break;
 		}
-		for (int i = 0; i < FONT_ATLAS * FONT_ATLAS; i++) {
+		for (fs->ah = 16; rows > 0 && fs->ah < rows && fs->ah < fs->aw; fs->ah *= 2)
+			;
+		if (rows <= 0)
+			fs->ah = fs->aw;
+#else
+		rows = stbtt_BakeFontBitmap(f->ttf, stbtt_GetFontOffsetForIndex(f->ttf, 0), (float)want, alpha, FONT_ATLAS,
+		                            FONT_ATLAS, FONT_FIRST, FONT_COUNT, fs->chars);
+#endif
+		if (rows == 0)
+			Con_DPrintf("font %s: size %d did not fit\n", f->name, want);
+		for (int i = 0; i < fs->aw * fs->ah; i++) {
 			rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
 			rgba[i * 4 + 3] = alpha[i];
 		}
 		snprintf(name, sizeof(name), "$font:%s:%d", f->name, want);
-		fs->atlas = R_ImageFromPixels(name, rgba, FONT_ATLAS, FONT_ATLAS, IMG_NOMIP | IMG_CLAMP);
+		fs->atlas = R_ImageFromPixels(name, rgba, fs->aw, fs->ah, IMG_NOMIP | IMG_CLAMP);
 		stbtt_GetFontVMetrics(&f->info, &asc, &desc, &gap);
 		scale = stbtt_ScaleForPixelHeight(&f->info, (float)want);
 		fs->ascent = asc * scale;
 		Mem_Free(alpha);
 		Mem_Free(rgba);
-		return &f->sizes[f->numsizes++];
+		return f->sizes[f->numsizes++];
 	}
-	return best >= 0 ? &f->sizes[best] : NULL;
+	return best >= 0 ? f->sizes[best] : NULL;
 }
 
 static bool load_ttf(font_t *f, const char *path)
@@ -361,10 +392,7 @@ int R_LoadFont(const char *name, const char *path, const char *sizes, int slot)
 	if (slot <= 0 || slot >= MAX_FONTS)
 		return 0;
 	f = &fonts[slot];
-	Mem_Free(f->ttf);
-	RG_Free(f->gdi);
-	BF_Free(f->bmf);
-	memset(f, 0, sizeof(*f));
+	free_font(f);
 	f->used = true;
 	f->scale = 1;
 	f->fsgen = FS_Generation();
@@ -659,8 +687,8 @@ static float draw_text(float x, float y, const char *text, float sx, float sy, c
 				float base = y + fs->ascent * k;
 				set_state(tex, cur_blend, cur_src, cur_dst, NULL, 0);
 				quad(x + b->xoff * kx, base + b->yoff * k, (b->x1 - b->x0) * kx, (b->y1 - b->y0) * k,
-				     b->x0 / (float)FONT_ATLAS, b->y0 / (float)FONT_ATLAS, b->x1 / (float)FONT_ATLAS,
-				     b->y1 / (float)FONT_ATLAS, color);
+				     b->x0 / (float)fs->aw, b->y0 / (float)fs->ah, b->x1 / (float)fs->aw,
+				     b->y1 / (float)fs->ah, color);
 			} else if (!fs && c > 32 && c < 128) {
 				float s = (c % 16) / 16.0f, t = (c / 16) / 16.0f;
 				/* flushes a full batch (a console page of text is more
@@ -817,12 +845,8 @@ void R_InitDraw(void)
 
 void R_ShutdownDraw(void)
 {
-	for (int i = 0; i < MAX_FONTS; i++) {
-		Mem_Free(fonts[i].ttf);
-		RG_Free(fonts[i].gdi);
-		BF_Free(fonts[i].bmf);
-		memset(&fonts[i], 0, sizeof(fonts[i]));
-	}
+	for (int i = 0; i < MAX_FONTS; i++)
+		free_font(&fonts[i]);
 	bitmapfont = NULL;
 	memset(imagehandles, 0, sizeof(imagehandles));
 	numimagehandles = 1;
@@ -993,7 +1017,7 @@ bool R_FontInfo(int slot, const char **name, bool *truetype, int *sizes, int *nu
 	*truetype = f->ttf != NULL || f->gdi != NULL || f->bmf != NULL;
 	*numsizes = f->numsizes;
 	for (int i = 0; i < f->numsizes; i++)
-		sizes[i] = f->sizes[i].pixelsize;
+		sizes[i] = f->sizes[i]->pixelsize;
 	return true;
 }
 
