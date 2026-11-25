@@ -133,6 +133,8 @@ extern cvar_t *ui_native_stats;    /* 1 prints draw timings every 2 s */
 
 /* seconds, advanced by UI_Frame (scripted runs step it like the host clock) */
 double uin_now(void);
+/* a view of this UIN_KIND_* is open */
+bool uin_kind_open(int kind);
 
 /* fte_query(request) as the pages made it: the reply, valid until the next
  * uin_query. NULL when the call closed v (see uin_screen_t); v may be NULL
@@ -169,6 +171,10 @@ bool uin_loading_draw(float w, float h);
  * UIN_FOOTER_BASELINE (scaled to the screen): spec lists button=label
  * pairs, "A=SELECT B=BACK X=READY"; labels use '_' for spaces */
 void uin_footer(float w, float h, const char *spec);
+/* one button prompt (disc and label) ending at right on the baseline base,
+ * through the current transform, for a dialog's own hints; returns its
+ * left edge */
+float uin_prompt(float right, float base, const char *button, const char *label, float alpha);
 
 /* the modal error dialog over every view: opened by a screen (title after
  * takedisconnect, lobby on an error), it takes keys first until closed */

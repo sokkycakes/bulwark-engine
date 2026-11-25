@@ -212,6 +212,11 @@ static void loading_hook(const char *stage, const char *map, float frac)
 	R_BeginFrame();
 	R_GetSize(&w, &h);
 	MQC_Frame(w, h);
+#ifdef BW_UI_NATIVE
+	/* the native UI draws the loading screen itself (uin_misc.c); this is
+	 * its only chance while the load holds up the main loop */
+	UI_Draw();
+#endif
 	R_EndFrame();
 	loading_drawing = false;
 }
