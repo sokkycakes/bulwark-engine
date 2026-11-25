@@ -30,6 +30,20 @@ source.
 `wait [n]` delays the rest of the buffer by n frames; `defer <seconds>
 <commands>` runs them later.
 
+`;` outside quotes ends a command, except after `//` outside quotes: the
+comment runs to the end of the line, so `// a; b` runs nothing. FTE
+behaves the same (checked: `// x; echo LEAKED` prints nothing on
+fteqw64).
+
+Command names are case-insensitive. A line for a command the client game
+registered goes to `CSQC_ConsoleCommand` as typed, as FTE passes it. A
+progs that compares `argv(0)` exactly (Nuclide's `case "addBot":`) does not
+handle `addbot` that way, and FTE then drops it with no message (checked on
+fteqw64: `addbot` does nothing, `addBot` reaches the server game). When
+the client game answers false and the typed name differs from the
+registered one only in case, Bulwark passes the line again with the name as
+registered, so `addbot` works too.
+
 Quoted text written by sprintf's `%S` uses an escaped form when it holds a
 quote, backslash, tab or line break: `\"line one\nline two"`, with `\n`,
 `\t`, `\r`, `\"` and `\\` inside. Both `tokenize` and the console read the
@@ -60,7 +74,7 @@ with nothing to list, the line shows what it is.
 
 | What | Where | Notes |
 |---|---|---|
-| Config | `config.cfg`, or `configs/<name>.cfg` for `cfg_save <name>` | Same layout as FTE, which writes `fte.cfg` and `configs/<name>.cfg`. `cfg_load <name>` falls back to `<name>.cfg` at the top level. Saved on quit when a setting or bind changed (`cfg_save_auto`). |
+| Config | `bulwark.cfg`, or `configs/<name>.cfg` for `cfg_save <name>` | See "The saved config and FTE" below. `cfg_load <name>` falls back to `<name>.cfg` at the top level. Saved on quit when a setting or bind changed (`cfg_save_auto`). |
 | Startup | `quake.rc` if the game has one, else `default.cfg` or `default_controls.cfg`; then the config and `autoexec.cfg` unless `quake.rc` already runs them | Nuclide games put their defaults in files only `quake.rc` runs (Rad-Therapy's movement cvars are in `default_cvar.cfg`), as FTE runs it. |
 | Bans | `banned_ip.cfg` | `addip`/`banid` lines, run at startup. |
 | Saved games | `saves/<name>.sav` | See below. |
@@ -73,6 +87,43 @@ with nothing to list, the line shows what it is.
 | Terrain | `maps/<name>.hmp`, `maps/<name>/sect_<x>_<y>.bwh`, generated `maps/<name>.bsp`, `maps/<name>.map` | See Terrain below. |
 | Edited files | wherever `edit` opened them, in the writable game directory | |
 | SQL databases | `sqlite/<name>.db` | From the `sqlconnect` builtin. |
+
+### The saved config and FTE
+
+A game folder is often shared with FTEQW. FTE saves `fte.cfg`, and a
+Nuclide `quake.rc` runs `fte.cfg`, then `config.cfg`, then `autoexec.cfg`.
+Bulwark never writes either of FTE's files, because FTE would then run
+cvars it doesn't know, and Bulwark's stale settings would override FTE's
+own on every FTE start. So:
+
+- Bulwark saves `bulwark.cfg`. `cfg_save_name` names another file, but
+  `config` and `fte` (FTE's names) still mean `bulwark`, also when an old
+  config sets `cfg_save_name "config"`. A manifest's `mainconfig` is
+  treated the same way.
+- `exec config.cfg` (the main config's place in a `quake.rc`) runs
+  `bulwark.cfg` instead once that file exists. Before it exists, an older
+  `config.cfg` runs, and the next save moves to `bulwark.cfg`.
+- Bulwark reads `fte.cfg` where the `quake.rc` runs it, so settings made in
+  FTE carry over, and Bulwark's own config, which runs after it, wins.
+- After the first save of `bulwark.cfg`, a `config.cfg` that Bulwark wrote
+  (it starts with `// written by Bulwark`) is renamed to
+  `config.cfg.bulwark-old`, so FTE stops running it. A `config.cfg` that
+  anything else wrote is left alone.
+
+### Start-up order
+
+The startup configs run first: the `quake.rc` chain, the config and
+`autoexec.cfg`. Then the command line's `+commands` run. The menu module
+(`menu.dat`) loads only after the configs, as FTE loads it after
+`quake.rc`. So a config's `set forceqmenu 1` keeps the menu from loading
+at all, and the menu's own start-up commands come after `autoexec.cfg`.
+Nuclide's profile code (`cfg_load "Default.cfg"`) therefore can't override
+what `autoexec.cfg` set. When a `menu_restart` in a config already loaded
+the menu, it isn't loaded a second time.
+
+`fs_game` is the active game directory (`base`), read-only, as on FTE.
+Nuclide finds `<game>_english.txt`, `titles_<game>.txt` and its map list
+filter through it.
 
 ### Saved games
 
@@ -118,6 +169,8 @@ and a 32-bit length followed by that many bytes. The types are 1 (a
 reliable server message), 2 (an unreliable one), 3 (view angles) and 4 (a
 usercmd). Starting `record` during a game asks the server for a
 `fullupdate`, so the demo starts with everything the client needs.
+`record` writes to the user directory when there is one (`-userdir`), and
+`playdemo` looks there first, then in the game folders.
 
 ## Terrain
 
@@ -154,7 +207,9 @@ edit heights by writing section files.
   `maplist`, `path`, `version`, `logfile`, `condump`.
 - **Console and chat:** `clear`, `conclear`, `toggleconsole`, `conclose`,
   `showconsole`, `messagemode`, `messagemode2`, `say`, `say_team`, `echo`,
-  `conecho`, `centerprint`, `cprint`.
+  `conecho`, `centerprint`, `cprint`. The `messagemode` prompt
+  (`say: ...`) is drawn at the top left under the notify lines, in the
+  console's font, where FTE draws it; the game draws its own chat feed.
 - **Screen:** `bf`, `v_cshift`, `fadein`, `fadeout`, `sizeup`,
   `sizedown`, `fog`, `screenshot`, `jpeg`, `screenshot_tga`, plus the
   cvars `cl_showfps`, `cl_showpos`, `net_graph`, `con_drawnotify`.
@@ -265,6 +320,12 @@ of it, and say so when used:
   supported.
 - **`dtls_*`**: Bulwark has no DTLS, so there are no certificates to
   manage.
+- **`host_speeds 1`** prints once a second (not every frame) the average
+  milliseconds a frame spends in the server, client, drawing and sound,
+  each label before its value:
+  `host_speeds: 50 fps, 20.27 ms/frame: server 0.00 client 0.01 gfx 20.24 snd 0.01`.
+  **`gl_clear`** is accepted and does nothing: Bulwark clears the frame
+  anyway.
 - **Plugins** are Bulwark's own (`bwplug_<name>.so` with `bwplug_init`,
   see `src/common/bwplug.h`), not FTE's plugin API. Plugins can add image,
   material and model formats, and every plugin next to the engine loads at

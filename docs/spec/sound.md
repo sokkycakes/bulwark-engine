@@ -51,6 +51,19 @@ and attenuation 0 sounds weren't panned. The cvar was called
 `snd_nominaldistance`, so Nuclide read 0 and every one of its sounds
 played everywhere.
 
+### In the background
+
+While the window lacks focus or is minimised (alt-tab), the whole mix,
+voice chat included, is scaled by `s_inactive`. FTE's name for it is
+`s_inactive`, and `snd_inactive` is another name for the same cvar, as on
+FTE: either name reads and sets one value, so the last one set wins, and
+only `s_inactive` is saved to the config. 1, the default as on FTE (checked: fteqw64 reports
+`s_inactive` "1"), keeps playing. 0 mutes, and a value between lowers the
+sound to that scale. It takes effect at once, with no `snd_restart`.
+`soundinfo` prints whether the window is in the background and the scale.
+The frame rate is capped at `cl_idlefps` (60, FTE's default) at the same
+time.
+
 ## Room effects (`src/sound/snd_dsp.c`)
 
 ### The game's reverb slots

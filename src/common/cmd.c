@@ -520,11 +520,20 @@ void Cbuf_Execute(void)
 	while (cbuf.len && !cbuf_wait) {
 		size_t i, n;
 		int quotes = 0;
+		bool comment = false;
 		for (i = 0; i < cbuf.len; i++) {
 			char ch = cbuf.data[i];
+			if (ch == '\n')
+				break;
+			if (comment)
+				continue;
 			if (ch == '"')
 				quotes ^= 1;
-			if (ch == '\n' || (ch == ';' && !quotes))
+			/* a // comment runs to the end of the line: a ';' inside it
+			 * does not start another command */
+			else if (!quotes && ch == '/' && i + 1 < cbuf.len && cbuf.data[i + 1] == '/')
+				comment = true;
+			else if (ch == ';' && !quotes)
 				break;
 		}
 		n = i < sizeof(line) - 1 ? i : sizeof(line) - 1;
@@ -564,12 +573,16 @@ static void Cmd_Exec_f(int argc, const char **argv)
 		Con_Printf("usage: exec <file>\n");
 		return;
 	}
-	text = FS_LoadFile(argv[1], &len);
+	const char *name = Cfg_ExecName(argv[1]);
+	text = FS_LoadFile(name, &len);
 	if (!text) {
 		Con_Printf("couldn't exec %s\n", argv[1]);
 		return;
 	}
-	Con_DPrintf("execing %s\n", argv[1]);
+	if (name != argv[1])
+		Con_DPrintf("execing %s (Bulwark's %s)\n", name, argv[1]);
+	else
+		Con_DPrintf("execing %s\n", name);
 	Cbuf_InsertText(text);
 	Mem_Free(text);
 }

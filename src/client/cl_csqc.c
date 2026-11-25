@@ -698,13 +698,17 @@ bool CSQC_ConsoleCommand(const char *line)
 	qcvm_t *vm = cl.csqc;
 	cmd_tokens_t *t;
 	bool known = cmd_forced;
+	const char *spelling = NULL; /* the registered name, when it differs in case */
 	if (!vm || !CS.ConsoleCommand)
 		return false;
 	t = Mem_Alloc(sizeof(*t));
 	Cmd_TokenizeInto(t, line);
 	for (int i = 0; t->argc && i < numregistered; i++)
-		if (!Str_ICmp(registered[i], t->argv[0]))
+		if (!Str_ICmp(registered[i], t->argv[0])) {
 			known = true;
+			if (strcmp(registered[i], t->argv[0]))
+				spelling = registered[i];
+		}
 	Mem_Free(t);
 	if (!known)
 		return false;
@@ -712,14 +716,38 @@ bool CSQC_ConsoleCommand(const char *line)
 	if (in_cmdseat && CL_SeatPlaying(in_cmdseat))
 		CL_SetSeat(in_cmdseat);
 	set_frame_globals(vm);
+	/* the line goes in as typed, as FTE passes it */
 	vm->globals[OFS_PARM(0)].i = QC_NewString(vm, line);
 	vm->argc = 1;
 	if (!QC_Execute(vm, CS.ConsoleCommand)) {
 		CL_SetSeat(0);
 		return true;
 	}
+	bool handled = vm->globals[OFS_RETURN].f != 0;
+	/* commands are case-insensitive, but a progs that compares argv(0)
+	 * exactly (Nuclide's switch on "addBot") ignores "addbot": FTE then
+	 * drops the command without a word. Once more with the name as the
+	 * progs registered it, so a lowercase command still reaches the game. */
+	if (!handled && spelling) {
+		const char *p = line;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '"')
+			p++;
+		if (!Str_NICmp(p, spelling, strlen(spelling))) {
+			const char *fixed = va("%.*s%s%s", (int)(p - line), line, spelling, p + strlen(spelling));
+			set_frame_globals(vm);
+			vm->globals[OFS_PARM(0)].i = QC_NewString(vm, fixed);
+			vm->argc = 1;
+			if (!QC_Execute(vm, CS.ConsoleCommand)) {
+				CL_SetSeat(0);
+				return true;
+			}
+			handled = vm->globals[OFS_RETURN].f != 0;
+		}
+	}
 	CL_SetSeat(0);
-	return vm->globals[OFS_RETURN].f != 0;
+	return handled;
 }
 
 bool CSQC_InputEvent(int type, float a, float b, int device)

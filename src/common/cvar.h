@@ -40,6 +40,8 @@ extern int cfg_modified;
 
 cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *description);
 cvar_t *Cvar_Find(const char *name);
+/* makes name another name for target (no-op if name already exists) */
+void Cvar_AddAlias(const char *name, cvar_t *target);
 void Cvar_Set(const char *name, const char *value);
 void Cvar_SetValue(const char *name, float value);
 void Cvar_SetDirect(cvar_t *var, const char *value);

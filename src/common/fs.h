@@ -33,6 +33,8 @@ char *FS_LoadFile(const char *path, size_t *len);
 bool FS_FileExists(const char *path);
 /* name of the search path that provides path, or NULL */
 const char *FS_WhichPath(const char *path);
+/* the OS path of a loose file (user directory first), false when none */
+bool FS_LooseOSPath(const char *path, char *out, size_t outsize);
 /* index of the game directory that provides path (0 is the base game), or
  * -1 if none does */
 int FS_WhichGameDir(const char *path);
