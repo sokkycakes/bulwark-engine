@@ -532,6 +532,7 @@ typedef struct iqm_s {
 	iqmmesh_t *meshes;
 	int nummeshes;
 	GLuint vao, vbo, ebo;
+	GLuint skinvbo; /* skinned models: the posed positions and normals (skinvert_t), streamed each draw */
 	framegroup_t *anims;  /* points into skel when there is one */
 	int numanims;
 	/* skinning: up to four joints per vertex */
@@ -542,6 +543,20 @@ typedef struct iqm_s {
 	material_t **famskins;
 	int numfamilies, numskinref;
 } iqm_t;
+
+/* what skinning changes, apart from the rest of rvert_t, which stays put.
+ * The 3DS backend reads rvert_t's layout alone, so there skinning still
+ * replaces whole vertices. */
+#ifdef __3DS__
+#define SKIN_SPLIT 0
+typedef rvert_t skinvert_t;
+#else
+#define SKIN_SPLIT 1
+typedef struct {
+	float xyz[3];
+	float normal[3];
+} skinvert_t;
+#endif
 
 enum { IQM_POSITION = 0, IQM_TEXCOORD = 1, IQM_NORMAL = 2, IQM_BLENDINDEXES = 4, IQM_BLENDWEIGHTS = 5, IQM_COLOR = 6 };
 enum { IQM_UBYTE = 1, IQM_FLOAT = 7 };
@@ -680,10 +695,27 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 		qglBindVertexArray(q->vao);
 		qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
 		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * num_verts), q->verts,
-		              q->skel ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+		              q->skel && !SKIN_SPLIT ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, q->ebo);
 		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * q->numindexes), q->indices, GL_STATIC_DRAW);
 		R_SetupVertexAttribs();
+		if (q->skel && SKIN_SPLIT) {
+			/* positions and normals from their own buffer, which skinning
+			 * replaces: under half of rvert_t to send each draw. It starts
+			 * with the rest pose. */
+			skinvert_t *rest = Mem_Alloc(sizeof(skinvert_t) * num_verts);
+			for (int i = 0; i < num_verts; i++) {
+				memcpy(rest[i].xyz, q->verts[i].xyz, sizeof(rest[i].xyz));
+				memcpy(rest[i].normal, q->verts[i].normal, sizeof(rest[i].normal));
+			}
+			qglGenBuffers(1, &q->skinvbo);
+			qglBindBuffer(GL_ARRAY_BUFFER, q->skinvbo);
+			qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(skinvert_t) * num_verts), rest, GL_STREAM_DRAW);
+			qglVertexAttribPointer(ATTR_POS, 3, GL_FLOAT, GL_FALSE, sizeof(skinvert_t), (void *)offsetof(skinvert_t, xyz));
+			qglVertexAttribPointer(ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(skinvert_t),
+			                       (void *)offsetof(skinvert_t, normal));
+			Mem_Free(rest);
+		}
 		qglBindVertexArray(0);
 #ifdef BW_LOWMEM
 		/* GL has its own copies; only skinning reads the vertices back */
@@ -1312,6 +1344,8 @@ static void free_model(rmodel_t *m)
 			qglDeleteVertexArrays(1, &q->vao);
 			qglDeleteBuffers(1, &q->vbo);
 			qglDeleteBuffers(1, &q->ebo);
+			if (q->skinvbo)
+				qglDeleteBuffers(1, &q->skinvbo);
 		}
 		Mem_Free(q->verts);
 		Mem_Free(q->indices);
@@ -1459,7 +1493,7 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 {
 	static bonemat_t *bones, *skin;
 	static int maxbones;
-	static rvert_t *out;
+	static skinvert_t *out;
 	static int maxverts;
 	skelmodel_t *m = q->skel, *sm;
 	const float(*sb)[12];
@@ -1472,7 +1506,7 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	}
 	if (q->numverts > maxverts) {
 		maxverts = q->numverts;
-		out = Mem_Realloc(out, sizeof(rvert_t) * maxverts);
+		out = Mem_Realloc(out, sizeof(skinvert_t) * maxverts);
 	}
 	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
 		int k = BW_MIN(n, sm->numjoints);
@@ -1492,10 +1526,12 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 		Bone_Multiply(skin[j], bones[j], m->invbind[j]);
 	for (int i = 0; i < q->numverts; i++) {
 		const rvert_t *v = &q->verts[i];
-		rvert_t *o = &out[i];
+		skinvert_t *o = &out[i];
 		bonemat_t mat;
 		const uint8_t *b = q->blendidx[i];
+#if !SKIN_SPLIT
 		*o = *v;
+#endif
 		if (q->blendw) {
 			const float *w = q->blendw[i];
 			for (int k = 0; k < 12; k++)
@@ -1508,8 +1544,13 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 			o->normal[r] = mat[r * 4] * v->normal[0] + mat[r * 4 + 1] * v->normal[1] + mat[r * 4 + 2] * v->normal[2];
 		VectorNormalize(o->normal);
 	}
+#if SKIN_SPLIT
+	qglBindBuffer(GL_ARRAY_BUFFER, q->skinvbo);
+	qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(skinvert_t) * q->numverts), out, GL_STREAM_DRAW);
+#else
 	qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
 	qglBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(sizeof(rvert_t) * q->numverts), out);
+#endif
 }
 
 /* the pose an animation frame shows at a time into it */

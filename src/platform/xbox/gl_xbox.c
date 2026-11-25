@@ -257,6 +257,7 @@ static void run_deferred(bool all)
 /* this frame's streamed vertices: a ring whose halves alternate by frame */
 static uint8_t *ring;
 static size_t ringused, ringpeak, ringspill; /* the busiest frame's use and what didn't fit (gl_xbox_stats) */
+static size_t st_stream, st_replace, st_index, st_copies; /* what buffer uploads carry (gl_xbox_stats) */
 
 static void *ring_alloc(size_t size)
 {
@@ -276,22 +277,109 @@ static void *ring_alloc(size_t size)
 
 /* --- the command stream ----------------------------------------------------------- */
 
-static uint32_t *pbhead; /* where the stream restarted at the last reset */
-static uint32_t *P;      /* the write position between pb_begin and pb_end */
+/* The stream is a ring: when the write position nears the end, a jump
+ * sends the GPU back to the start, and the CPU writes over a stretch only
+ * once the GPU has read it. Positions are counted in dwords from the
+ * start, across laps, so the CPU can tell how far behind the GPU is. Each
+ * frame ends with pbkit's flip, which waits for the GPU to go idle; once
+ * the GPU reads past that, everything the frame drew is done. The CPU
+ * starts a frame when the one before the last is done, so it works on a
+ * frame while the GPU draws the previous one, and storage two frames old
+ * (the vertex ring's other half, deferred frees) is free. */
+static uint32_t *pbbase, *pbend; /* the stream's storage */
+static uint64_t pblap;           /* the position of pbbase in this lap */
+static uint64_t pbframe;         /* where this frame's commands began (gl_xbox_stats) */
+static uint32_t *P;              /* the write position: pbkit's put pointer once kicked */
+static uint32_t *kicked;         /* where the GPU was last told the stream ends */
+static uint64_t frame_end[2];    /* where the last two frames' commands end */
+static int kicks, gpu_waits;     /* this frame's, for gl_xbox_stats */
+static ULONGLONG sync_ticks;     /* waiting for the GPU (gl_xbox_stats) */
 
-/* room for n more dwords, resetting the stream (it waits for the GPU to
- * catch up) when it would run past the end */
-static void pb_open(size_t n)
+/* Telling the GPU about new commands (pb_end) costs an sfence, a flush of
+ * the write-combine buffers with a busy wait on it, and an MMIO write, so
+ * commands are handed over in batches of this many dwords, and whenever
+ * the CPU is about to wait for the GPU. Between kicks, the commands sit
+ * past pbkit's put pointer, where the GPU doesn't read yet. */
+#define KICK_DWORDS (32768 / 4)
+/* the GPU fetches up to 128 method words ahead of what it executes */
+#define FETCH_AHEAD 512
+/* the DMA get pointer of pbkit's channel (0) */
+#define DMA_GET (*(volatile uint32_t *)(VIDEO_BASE + NV_USER + 0x44))
+
+static void pb_kick(void)
 {
-	P = pb_begin();
-	if ((size_t)(P - pbhead) + n + 4096 > PB_DWORDS) {
+	if (P != kicked) {
 		pb_end(P);
-		pb_reset();
-		P = pbhead = pb_begin();
+		kicked = P;
+		kicks++;
 	}
 }
 
-static void pb_close(void) { pb_end(P); }
+/* after pbkit wrote to the stream itself */
+static void pb_resync(void) { P = kicked = pb_begin(); }
+
+static uint64_t stream_pos(const uint32_t *p) { return pblap + (uint64_t)(p - pbbase); }
+
+/* how far the GPU has read: it is never a whole lap behind the kicked position */
+static uint64_t gpu_pos(void)
+{
+	uint32_t get = ((DMA_GET & 0x03FFFFFF) - ((uint32_t)pbbase & 0x03FFFFFF)) / 4;
+	uint32_t k = (uint32_t)(kicked - pbbase);
+	return stream_pos(kicked) - (k + PB_DWORDS - get) % PB_DWORDS;
+}
+
+/* waits until everything before the position has been done */
+static void wait_done(uint64_t pos)
+{
+	ULONGLONG t0 = 0;
+	pb_kick();
+	while (gpu_pos() < pos + FETCH_AHEAD && pb_busy()) {
+		if (!t0)
+			t0 = KeQueryPerformanceCounter();
+	}
+	if (t0)
+		sync_ticks += KeQueryPerformanceCounter() - t0;
+}
+
+/* waits until the GPU no longer reads what a frame drew with */
+static void gpu_done_with(uint32_t frame)
+{
+	if (frame == framenum)
+		wait_done(stream_pos(P));
+	else if (frame == framenum - 1)
+		wait_done(frame_end[frame & 1]);
+	else
+		return;
+	gpu_waits++;
+}
+
+/* room for n more dwords: past the end, the stream jumps back to the
+ * start; either way, the GPU must have read what the commands go over */
+static void pb_open(size_t n)
+{
+	n += 256; /* pbkit's flip and target commands, written without asking */
+	if (P + n + 1 > pbend) {
+		*P = ((uint32_t)pbbase & 0x0FFFFFFF) | 1; /* jump */
+		P = pbbase;
+		pblap += PB_DWORDS;
+		pb_end(P);
+		kicked = P;
+	}
+	uint64_t end = stream_pos(P) + n;
+	if (end > PB_DWORDS && gpu_pos() + PB_DWORDS < end) {
+		ULONGLONG t0 = KeQueryPerformanceCounter();
+		pb_kick();
+		while (gpu_pos() + PB_DWORDS < end && pb_busy())
+			;
+		sync_ticks += KeQueryPerformanceCounter() - t0;
+	}
+}
+
+static void pb_close(void)
+{
+	if (P - kicked >= KICK_DWORDS)
+		pb_kick();
+}
 
 static inline uint32_t f2u(float f)
 {
@@ -393,6 +481,7 @@ typedef struct {
 	uint8_t *pending; /* level 0 (tw x th RGBA) kept until glGenerateMipmap or the next upload */
 	bool try_dxt;     /* a big picture: compress it from pending unless it gets mipmaps */
 	bool updated;     /* re-specified or sub-updated since it was made: stays 32-bit */
+	uint32_t usedframe; /* the last frame that drew with it */
 } xtex_t;
 
 typedef struct {
@@ -1152,6 +1241,7 @@ static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLin
 	 * compressing each update, and no compressing it from a stale copy */
 	t->try_dxt = false;
 	t->updated = true;
+	gpu_done_with(t->usedframe);
 	if (fmt_dxt(t->fmt) && !t->mipped)
 		decompress_picture(t);
 	if (t->pending && t->tw == t->w && t->th == t->h) {
@@ -1254,6 +1344,12 @@ static xbuf_t *bound_buf(GLenum target) { return get_bufs(target == GL_ELEMENT_A
 /* new storage for a buffer's whole contents */
 static bool respecify(xbuf_t *b, GLenum target, size_t size, bool stream)
 {
+	if (b->element && target == GL_ELEMENT_ARRAY_BUFFER && b->data && size && size <= b->alloc) {
+		/* only the CPU reads indices, at draw time: the old storage can be
+		 * overwritten (streamed indices come every draw) */
+		b->size = size;
+		return true;
+	}
 	release_storage(b);
 	b->data = NULL;
 	b->size = size;
@@ -1264,6 +1360,7 @@ static bool respecify(xbuf_t *b, GLenum target, size_t size, bool stream)
 		return true;
 	if (b->element) {
 		b->data = malloc(size);
+		b->alloc = size;
 	} else if (stream) {
 		b->data = ring_alloc(size);
 		b->ring = true;
@@ -1290,6 +1387,10 @@ static void BWGLAPI xb_glBufferData(GLenum target, GLsizeiptr size, const void *
 		return;
 	if (data && size)
 		memcpy(b->data, data, (size_t)size);
+	if (b->element)
+		st_index += (size_t)size;
+	else if (usage == GL_STREAM_DRAW)
+		st_stream += (size_t)size;
 }
 
 static void BWGLAPI xb_glBufferSubData(GLenum target, GLintptr ofs, GLsizeiptr size, const void *data)
@@ -1302,7 +1403,9 @@ static void BWGLAPI xb_glBufferSubData(GLenum target, GLintptr ofs, GLsizeiptr s
 		if (ofs == 0 && (size_t)size == b->size) {
 			/* all of it replaced (CPU-animated models, every frame): the ring */
 			respecify(b, target, (size_t)size, true);
+			st_replace += (size_t)size;
 		} else {
+			st_copies++;
 			uint8_t *copy = gpu_alloc(b->size);
 			if (copy) {
 				memcpy(copy, b->data, b->size); /* slow (write-combined), but rare */
@@ -1607,6 +1710,7 @@ static void BWGLAPI xb_glPixelStorei(GLenum p, GLint v) { (void)p, (void)v; }
 
 static void BWGLAPI xb_glFinish(void)
 {
+	pb_kick();
 	while (pb_busy())
 		;
 }
@@ -1708,7 +1812,7 @@ static uint32_t tex_filter(const xtex_t *t)
 	return (min << 16) | (mag << 24) | (1u << 13); /* quincunx convolution kernel */
 }
 
-static void bind_unit(int unit, const xtex_t *t)
+static void bind_unit(int unit, xtex_t *t)
 {
 	uint32_t base = (uint32_t)unit * 64;
 	if (!t || !t->data) {
@@ -1722,6 +1826,7 @@ static void bind_unit(int unit, const xtex_t *t)
 	uint32_t address = t->cube ? 0x00030303 : (wrap_mode(t->wraps) | (wrap_mode(t->wrapt) << 8) | (1u << 16));
 	int aniso = gl_xbox_aniso ? BW_CLAMP(gl_xbox_aniso->ivalue, 0, 3) : 0;
 	uint32_t control0 = NV097_SET_TEXTURE_CONTROL0_ENABLE | (0xFFFu << 6) | (t->mipped ? (uint32_t)aniso << 4 : 0);
+	t->usedframe = framenum;
 	reg(NV097_SET_TEXTURE_OFFSET + base, (uint32_t)t->data & 0x03FFFFFF);
 	reg(NV097_SET_TEXTURE_FORMAT + base, format);
 	reg(NV097_SET_TEXTURE_ADDRESS + base, address);
@@ -1729,7 +1834,7 @@ static void bind_unit(int unit, const xtex_t *t)
 	reg(NV097_SET_TEXTURE_FILTER + base, tex_filter(t));
 }
 
-static const xtex_t *tex2d(GLuint id)
+static xtex_t *tex2d(GLuint id)
 {
 	xtex_t *t = get_texs(id);
 	if (t && t->try_dxt) {
@@ -2007,72 +2112,92 @@ static bool set_program(void)
 
 /* --- drawing ---------------------------------------------------------------------------------- */
 
-/* the vertex buffer of the bound arrays, in the one layout the renderer uses */
-static xbuf_t *vertex_source(size_t *base)
-{
-	xvao_t *v = cur_vao();
-	static const size_t offsets[5] = {0, 12, 20, 28, 40};
+/* The renderer's attributes (pos, tc, lightmap tc, normal, colour) and
+ * the NV2A's vertex slots they feed; the fullbright texture (slot 11)
+ * reads a_tc again. Each attribute can come from its own buffer with its
+ * own stride (skinned models stream positions and normals alone); a
+ * disabled one reads rvert_t's layout from the position's buffer. */
+#define NATTRS 5
+static const int attr_slot[NATTRS] = {0, 9, 10, 2, 3};
+
+typedef struct {
 	xbuf_t *b;
+	size_t ofs;
+	uint32_t stride, format;
+} vsrc_t;
+
+/* where each attribute comes from; false if a draw can't read them up to vertex hi */
+static bool vertex_sources(vsrc_t *src, uint32_t hi, bool *ring)
+{
+	static const size_t offsets[NATTRS] = {0, 12, 20, 28, 40};
+	static const uint32_t defformats[NATTRS] = {2 | (3 << 4), 2 | (2 << 4), 2 | (2 << 4), 2 | (3 << 4), 4 | (4 << 4)};
+	xvao_t *v = cur_vao();
 	if (!v->a[0].enabled)
-		return NULL;
-	b = get_bufs(v->a[0].buf);
-	for (int i = 0; i < 5; i++) {
-		if (!v->a[i].enabled)
-			continue; /* a program that doesn't read it; the layout is still rvert_t */
-		if (v->a[i].buf != v->a[0].buf || v->a[i].stride != RVERT_STRIDE || v->a[i].ofs != v->a[0].ofs + offsets[i]) {
-			static bool warned;
-			if (!warned)
-				Con_Printf("^3gl_xbox: a vertex layout other than rvert_t; draws skipped\n");
-			warned = true;
-			return NULL;
+		return false;
+	*ring = false;
+	for (int i = 0; i < NATTRS; i++) {
+		xattr_t *a = &v->a[i];
+		vsrc_t *o = &src[i];
+		size_t bytes;
+		if (a->enabled) {
+			uint32_t type = a->type == GL_FLOAT ? 2 : a->type == GL_UNSIGNED_BYTE ? 4 : 0;
+			if (!type || a->size < 1 || a->size > 4) {
+				static bool warned;
+				if (!warned)
+					Con_Printf("^3gl_xbox: a vertex attribute type other than float or bytes; draws skipped\n");
+				warned = true;
+				return false;
+			}
+			bytes = (size_t)a->size * (type == 2 ? 4 : 1);
+			o->b = get_bufs(a->buf);
+			o->ofs = a->ofs;
+			o->stride = a->stride ? (uint32_t)a->stride : (uint32_t)bytes;
+			o->format = type | ((uint32_t)a->size << 4);
+		} else {
+			/* a program that doesn't read it */
+			o->b = src[0].b;
+			o->ofs = v->a[0].ofs + offsets[i];
+			o->stride = RVERT_STRIDE;
+			o->format = defformats[i];
+			bytes = 4;
 		}
+		o->format |= o->stride << 8;
+		if (!o->b || !o->b->data || o->b->element)
+			return false;
+		if (o->b->ring && o->b->ringframe != framenum)
+			return false; /* streamed in an earlier frame: gone */
+		if (o->ofs + (size_t)hi * o->stride + bytes > o->b->size)
+			return false; /* past the buffer */
+		*ring |= o->b->ring;
 	}
-	if (!b || !b->data || b->element)
-		return NULL;
-	if (b->ring && b->ringframe != framenum)
-		return NULL; /* streamed in an earlier frame: gone */
-	*base = v->a[0].ofs;
-	return b;
+	return true;
 }
 
-static void set_arrays(const uint8_t *verts)
+/* the arrays' formats and where vertex lo of the draw is */
+static void set_arrays(const vsrc_t *src, uint32_t lo)
 {
-	uint32_t a = (uint32_t)verts & 0x03FFFFFF;
-	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 0 * 4, a);       /* position */
-	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 2 * 4, a + 28);  /* normal */
-	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 3 * 4, a + 40);  /* diffuse colour */
-	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 9 * 4, a + 12);  /* texture 0: a_tc */
-	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 10 * 4, a + 20); /* texture 1: lightmap */
-	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 11 * 4, a + 12); /* texture 2: fullbright, a_tc again */
-}
-
-static void set_array_formats(void)
-{
-	for (int i = 0; i < 16; i++) {
-		uint32_t f = 2; /* float, size 0: off */
-		switch (i) {
-		case 0:
-		case 2: f = 2 | (3 << 4) | (RVERT_STRIDE << 8); break;
-		case 3: f = 4 | (4 << 4) | (RVERT_STRIDE << 8); break; /* bytes in GL's RGBA order */
-		case 9:
-		case 10:
-		case 11: f = 2 | (2 << 4) | (RVERT_STRIDE << 8); break;
-		default: break;
-		}
-		reg(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + i * 4, f);
+	uint32_t f[16], addr[NATTRS];
+	for (int i = 0; i < 16; i++)
+		f[i] = 2; /* float, size 0: off */
+	for (int i = 0; i < NATTRS; i++) {
+		f[attr_slot[i]] = src[i].format;
+		addr[i] = (uint32_t)(src[i].b->data + src[i].ofs + (size_t)lo * src[i].stride) & 0x03FFFFFF;
 	}
+	f[11] = src[1].format;
+	regs(NV097_SET_VERTEX_DATA_ARRAY_FORMAT, f, 16);
+	for (int i = 0; i < NATTRS; i++)
+		reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + attr_slot[i] * 4, addr[i]);
+	reg(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 11 * 4, addr[1]);
 }
 
 static int draws_this_frame, tris_this_frame;
 
 static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *idx16, int first)
 {
-	size_t base;
-	xbuf_t *vb;
+	vsrc_t src[NATTRS];
+	bool ring;
 	uint32_t lo = UINT32_MAX, hi = 0;
 	if (mode > GL_TRIANGLE_FAN || count <= 0 || !ready)
-		return;
-	if (!(vb = vertex_source(&base)))
 		return;
 	if (idx32 || idx16) {
 		for (int i = 0; i < count; i++) {
@@ -2082,8 +2207,8 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 	} else {
 		lo = (uint32_t)first, hi = (uint32_t)(first + count - 1);
 	}
-	if (base + (size_t)(hi + 1) * RVERT_STRIDE > vb->size)
-		return; /* past the buffer */
+	if (!vertex_sources(src, hi, &ring))
+		return;
 	bool small = hi - lo <= 0xFFFF;
 
 	pb_open(600 + (size_t)count + (size_t)count / 2047);
@@ -2092,9 +2217,8 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 		pb_close();
 		return;
 	}
-	set_array_formats();
-	set_arrays(vb->data + base + (size_t)lo * RVERT_STRIDE);
-	if (vb->ring)
+	set_arrays(src, lo);
+	if (ring)
 		put1(NV097_BREAK_VERTEX_BUFFER_CACHE, 0);
 
 	put1(NV097_SET_BEGIN_END, mode + 1); /* GL's primitives, one up */
@@ -2136,7 +2260,8 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 	}
 	put1(NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
 	pb_close();
-	vb->usedframe = framenum;
+	for (int i = 0; i < NATTRS; i++)
+		src[i].b->usedframe = framenum;
 	draws_this_frame++;
 	if (mode >= GL_TRIANGLES)
 		tris_this_frame += mode == GL_TRIANGLES ? count / 3 : count - 2;
@@ -2237,6 +2362,7 @@ static void BWGLAPI xb_glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLen
 	int bpp = f == GL_RGBA ? 4 : 3;
 	uint8_t *out = px;
 	(void)t;
+	pb_kick();
 	while (pb_busy())
 		;
 	const uint8_t *fb = (const uint8_t *)pb_back_buffer();
@@ -2330,7 +2456,7 @@ static void after_target(void)
 
 static ULONGLONG stat_start; /* when the frame's work began (the end of the last flip) */
 static struct {
-	int frames, missed, draws, tris;
+	int frames, missed, draws, tris, kicks, waits;
 	double work, wait, worst;
 	size_t pb;
 	DWORD since;
@@ -2350,7 +2476,7 @@ static void frame_stats(ULONGLONG t0, size_t pbused, int missed)
 		if (work > fst.worst)
 			fst.worst = work;
 		fst.missed += missed > 0;
-		fst.draws += draws_this_frame, fst.tris += tris_this_frame;
+		fst.draws += draws_this_frame, fst.tris += tris_this_frame, fst.kicks += kicks, fst.waits += gpu_waits;
 		if (pbused > fst.pb)
 			fst.pb = pbused;
 	}
@@ -2360,12 +2486,18 @@ static void frame_stats(ULONGLONG t0, size_t pbused, int missed)
 		fst.since = now;
 	if (now - fst.since >= 5000 && fst.frames) {
 		double secs = (now - fst.since) / 1000.0;
-		Con_Printf("xbox: %.1f fps, frame work %.1f ms (worst %.1f), wait %.1f ms, %d late, %d draws, %d tris, pb %u of %u KB, "
-		           "ring %u of %u KB (%u KB spilled), GPU %u KB, %u KB free\n",
-		           fst.frames / secs, fst.work / fst.frames, fst.worst, fst.wait / fst.frames, fst.missed, fst.draws / fst.frames,
-		           fst.tris / fst.frames, (unsigned)(fst.pb * 4 / 1024), PB_SIZE >> 10, (unsigned)(ringpeak >> 10),
-		           RING_HALF >> 10, (unsigned)(ringspill >> 10), (unsigned)(gpu_used >> 10),
-		           (unsigned)(XBX_FreeMemory() >> 10));
+		Con_Printf("xbox: %.1f fps, frame work %.1f ms (worst %.1f, GPU sync %.1f), wait %.1f ms, %d late, %d draws, %d tris, "
+		           "%d kicks, pb %u of %u KB, ring %u of %u KB (%u KB spilled), GPU %u KB, %u KB free\n",
+		           fst.frames / secs, fst.work / fst.frames, fst.worst, (double)sync_ticks * ms / fst.frames,
+		           fst.wait / fst.frames, fst.missed, fst.draws / fst.frames, fst.tris / fst.frames, fst.kicks / fst.frames,
+		           (unsigned)(fst.pb * 4 / 1024), PB_SIZE >> 10, (unsigned)(ringpeak >> 10), RING_HALF >> 10,
+		           (unsigned)(ringspill >> 10), (unsigned)(gpu_used >> 10), (unsigned)(XBX_FreeMemory() >> 10));
+		Con_Printf("xbox: a frame streams %u KB draws, %u KB replaced buffers, %u KB indices; %u buffer copies, "
+		           "%d texture update waits\n",
+		           (unsigned)(st_stream / fst.frames >> 10), (unsigned)(st_replace / fst.frames >> 10),
+		           (unsigned)(st_index / fst.frames >> 10), (unsigned)(st_copies / fst.frames), fst.waits);
+		st_stream = st_replace = st_index = st_copies = 0;
+		sync_ticks = 0;
 		memset(&fst, 0, sizeof(fst));
 		ringpeak = ringspill = 0;
 		fst.since = now;
@@ -2378,9 +2510,8 @@ void XBGL_EndFrame(void)
 		return;
 	/* timing for gl_xbox_stats: the frame's work, then the wait for the GPU and the vblank */
 	ULONGLONG t0 = KeQueryPerformanceCounter();
-	uint32_t *cur = pb_begin();
-	pb_end(cur);
-	size_t pbused = (size_t)(cur - pbhead);
+	pb_kick();
+	size_t pbused = (size_t)(stream_pos(P) - pbframe);
 	/* frame pacing: flips land every vid_xbox_swapinterval vblanks */
 	int interval = vid_xbox_swapinterval ? BW_CLAMP(vid_xbox_swapinterval->ivalue, 0, 4) : 2;
 	DWORD now = pb_get_vbl_counter();
@@ -2388,18 +2519,22 @@ void XBGL_EndFrame(void)
 		now = pb_wait_for_vbl();
 	int missed = (int)(now - last_swap) - interval;
 	last_swap = now;
+	pb_open(0);
+	pb_kick();
 	while (pb_finished())
 		; /* every back buffer is waiting to be shown */
+	pb_resync();
+	frame_end[framenum & 1] = stream_pos(P);
 	if (gl_xbox_stats && gl_xbox_stats->ivalue)
 		frame_stats(t0, pbused, missed);
-	pb_reset();
-	pbhead = pb_begin();
-	pb_end(pbhead);
+	/* the frame before this one must be done before the next reuses its storage */
+	wait_done(frame_end[(framenum - 1) & 1]);
+	pbframe = stream_pos(P);
 	framenum++;
 	ringused = 0;
 	run_deferred(false);
 	after_target();
-	draws_this_frame = tris_this_frame = 0;
+	draws_this_frame = tris_this_frame = kicks = gpu_waits = 0;
 }
 
 int XBGL_Width(void) { return fbw; }
@@ -2518,9 +2653,12 @@ bool XBGL_Init(void)
 
 	/* the stream starts here; set what never changes */
 	pb_reset();
-	pbhead = pb_begin();
-	pb_end(pbhead);
+	pbbase = pb_begin();
+	pbend = pbbase + PB_DWORDS;
+	pblap = 0;
 	pb_target_back_buffer();
+	pb_resync();
+	pbframe = stream_pos(P);
 	pb_open(64);
 	put1(NV097_SET_TRANSFORM_PROGRAM_START, 0);
 	float zero4[4] = {0, 0, 0, 0}, one4[4] = {1, 1, 1, 1};
