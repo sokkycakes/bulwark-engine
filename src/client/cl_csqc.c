@@ -855,6 +855,15 @@ static void cl_serverkey(qcvm_t *vm)
 		QC_ReturnString(vm, cl.servername);
 	else if (!strcmp(k, "constate"))
 		QC_ReturnString(vm, cl.state == ca_active ? "active" : cl.state >= ca_loading ? "connected" : "disconnected");
+#ifdef BW_UI_NATIVE
+	/* Nuclide's message of the day is a mouse-only VGUI window whose OK
+	   has no key: a pad can't close it, and it sits over the HUD for the
+	   whole match. With no lines the client game skips it and goes
+	   straight to what OK would do (the team menu in team rules, which
+	   the native picker takes, see uin_hero.c UI_PreCommand). */
+	else if (!strcmp(k, "motdlines"))
+		QC_ReturnInt(vm, 0);
+#endif
 	else {
 		/* a missing key is the null string, as on the server, so that
 		   if (serverkey(k)) is false for it */

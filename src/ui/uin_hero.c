@@ -644,11 +644,15 @@ const uin_screen_t uin_hero_screen = {"hero", hero_open, NULL, hero_key, hero_fr
  * its own selector, which needs a mouse. So, outside the arena, the
  * request opens this picker through the router instead. With an argument
  * ("vgui": the router's own fallback, cl_webcore.c open_arena) or in the
- * arena it goes on to the client game as before. */
+ * arena it goes on to the client game as before. The team menu too:
+ * the client game asks for it when its message of the day closes (which
+ * the native build skips at once, cl_csqc.c cl_serverkey) in team rules
+ * while the player has no team, and the picker offers the teams there. */
 bool UI_PreCommand(int argc, const char **argv)
 {
 	cvar_t *snap;
-	if (argc != 1 || (Str_ICmp(argv[0], "showClassSelectionMenu") && Str_ICmp(argv[0], "showHeroSelectionMenu")))
+	if (argc != 1 || (Str_ICmp(argv[0], "showClassSelectionMenu") && Str_ICmp(argv[0], "showHeroSelectionMenu") &&
+	                  Str_ICmp(argv[0], "showTeamSelectionMenu")))
 		return false;
 	snap = Cvar_Find("webcore_arena_snapshot");
 	if (snap && strstr(snap->string, "\"active\":true"))
