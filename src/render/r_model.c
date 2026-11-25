@@ -1682,6 +1682,33 @@ static void bind_material(const glprog_t *p, material_t *mat, float alpha, bool 
 	(void)alpha;
 }
 
+/* true when a model is out of view: its box, doubled about its centre for
+ * the poses a skeleton can take beyond its rest bounds, is wholly outside
+ * one side of the view volume. Skinning and drawing it would be wasted. */
+static bool model_offscreen(const rmodel_t *m, const float *mvp)
+{
+	float c[3], h[3], p[3], clip[4];
+	int out[5] = {0};
+	if (m->mins[0] > m->maxs[0])
+		return false; /* no bounds */
+	for (int k = 0; k < 3; k++)
+		c[k] = (m->mins[k] + m->maxs[k]) * 0.5f, h[k] = m->maxs[k] - m->mins[k] + 8;
+	for (int i = 0; i < 8; i++) {
+		for (int k = 0; k < 3; k++)
+			p[k] = c[k] + (i & (1 << k) ? h[k] : -h[k]);
+		Mat4_Transform(mvp, p, clip);
+		out[0] += clip[0] < -clip[3];
+		out[1] += clip[0] > clip[3];
+		out[2] += clip[1] < -clip[3];
+		out[3] += clip[1] > clip[3];
+		out[4] += clip[3] <= 0; /* behind the eye */
+	}
+	for (int j = 0; j < 5; j++)
+		if (out[j] == 8)
+			return true;
+	return false;
+}
+
 void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 {
 	rmodel_t *m = e->model;
@@ -1716,6 +1743,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		return;
 	}
 	if ((e->alpha < 1 || (e->renderflags & 8)) != translucentpass)
+		return;
+	if (!viewmodel && model_offscreen(m, mvp))
 		return;
 	if (depthhack)
 		qglDepthRange(0, 0.3);
