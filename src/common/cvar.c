@@ -2,6 +2,7 @@
 #include "cvar.h"
 #include "cmd.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -9,9 +10,22 @@ static cvar_t *cvar_list;
 
 cvar_t *Cvar_First(void) { return cvar_list; }
 
+/* names hash case-blind: the games look cvars up by name every frame
+ * (QC's cvar()), and there are a couple of thousand of them */
+#define CVAR_HASH 1024
+static cvar_t *cvar_hash[CVAR_HASH];
+
+static unsigned cvar_hashname(const char *name)
+{
+	unsigned h = 2166136261u;
+	for (; *name; name++)
+		h = (h ^ (unsigned)tolower((unsigned char)*name)) * 16777619u;
+	return h & (CVAR_HASH - 1);
+}
+
 cvar_t *Cvar_Find(const char *name)
 {
-	for (cvar_t *v = cvar_list; v; v = v->next)
+	for (cvar_t *v = cvar_hash[cvar_hashname(name)]; v; v = v->hnext)
 		if (!Str_ICmp(v->name, name))
 			return v;
 	return NULL;
@@ -66,6 +80,11 @@ cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *
 	v->modified = 0;
 	v->next = cvar_list;
 	cvar_list = v;
+	{
+		unsigned h = cvar_hashname(v->name);
+		v->hnext = cvar_hash[h];
+		cvar_hash[h] = v;
+	}
 	return v;
 }
 

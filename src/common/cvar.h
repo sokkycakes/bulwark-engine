@@ -28,6 +28,7 @@ typedef struct cvar_s {
 	int flags;
 	int modified;
 	struct cvar_s *next;
+	struct cvar_s *hnext; /* Cvar_Find's hash chain */
 } cvar_t;
 
 bool Cvar_MayFlag(cvar_t *v, int flags);
