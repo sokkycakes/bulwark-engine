@@ -264,7 +264,7 @@ static void bind_builtins(qcvm_t *vm, const qc_builtin_t *const *tables)
 static void unpack_defs(qcprogs_t *p, int32_t ofs, int count, bool wide, qcdef_t **out)
 {
 	qcdef_t *defs = Mem_Alloc(sizeof(qcdef_t) * (count ? count : 1));
-	const uint8_t *d = p->progsdata + ofs;
+	const uint8_t *d = p->image + ofs;
 	for (int i = 0; i < count; i++) {
 		if (wide) {
 			defs[i].type = (uint32_t)rd32(d);
@@ -283,7 +283,6 @@ static void unpack_defs(qcprogs_t *p, int32_t ofs, int count, bool wide, qcdef_t
 
 static void free_progs(qcprogs_t *p)
 {
-	Mem_Free(p->progsdata);
 	Mem_Free(p->statements);
 	Mem_Free(p->functions);
 	Mem_Free(p->globaldefs);
@@ -308,18 +307,18 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 		return false;
 	}
 	Str_Copy(p->name, name, sizeof(p->name));
-	p->progsdata = Mem_Alloc(size);
-	memcpy(p->progsdata, data, size);
-	p->progssize = size;
+	/* the caller's file image is only read while loading: everything kept
+	 * afterwards is unpacked from it, so it is never copied */
+	p->image = data;
 	for (int i = 0; i < 14; i++)
-		((int32_t *)h)[i] = rd32(p->progsdata + i * 4);
+		((int32_t *)h)[i] = rd32(p->image + i * 4);
 	if (h->version != PROGS_VERSION_QUAKE && h->version != PROGS_VERSION_EXTENDED) {
 		Con_Printf("%s: unsupported progs version %d\n", name, h->version);
 		return false;
 	}
 	h->entityfields = 0;
 	if (h->version == PROGS_VERSION_EXTENDED && size >= PROGS_HEADER_V6_SIZE + 4)
-		h->entityfields = rd32(p->progsdata + PROGS_HEADER_V6_SIZE);
+		h->entityfields = rd32(p->image + PROGS_HEADER_V6_SIZE);
 
 	stmt_bytes = h->numstatements ? (section_end(h, h->ofs_statements, size) - h->ofs_statements) / h->numstatements : 8;
 	def_bytes = h->numglobaldefs ? (section_end(h, h->ofs_globaldefs, size) - h->ofs_globaldefs) / h->numglobaldefs : 8;
@@ -341,14 +340,20 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	/* string table, NUL terminated defensively */
 	p->stringsize = h->numstrings;
 	p->strings = Mem_Alloc((size_t)h->numstrings + 1);
-	memcpy(p->strings, p->progsdata + h->ofs_strings, (size_t)h->numstrings);
+	memcpy(p->strings, p->image + h->ofs_strings, (size_t)h->numstrings);
 
 	/* statements */
 	p->numstatements = h->numstatements;
-	p->statements = Mem_Alloc(sizeof(dstatement32_t) * (h->numstatements + 1));
+#ifdef BW_LOWMEM
+	if (p->stmt32) {
+		Con_Printf("%s: 32-bit statement progs are not supported yet\n", name);
+		return false;
+	}
+#endif
+	p->statements = Mem_Alloc(sizeof(qcstatement_t) * (h->numstatements + 1));
 	for (int i = 0; i < h->numstatements; i++) {
-		const uint8_t *d = p->progsdata + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
-		dstatement32_t *st = &p->statements[i];
+		const uint8_t *d = p->image + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
+		qcstatement_t *st = &p->statements[i];
 		if (p->stmt32) {
 			st->op = (uint32_t)rd32(d);
 			st->a = (uint32_t)rd32(d + 4);
@@ -371,7 +376,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	p->numfunctions = h->numfunctions;
 	p->functions = Mem_Alloc(sizeof(qcfunc_t) * h->numfunctions);
 	for (int i = 0; i < h->numfunctions; i++) {
-		const uint8_t *d = p->progsdata + h->ofs_functions + (size_t)i * sizeof(dfunction_t);
+		const uint8_t *d = p->image + h->ofs_functions + (size_t)i * sizeof(dfunction_t);
 		qcfunc_t *f = &p->functions[i];
 		f->d.first_statement = rd32(d);
 		f->d.parm_start = rd32(d + 4);
@@ -418,8 +423,6 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 static void activate(qcvm_t *vm, int n)
 {
 	qcprogs_t *p = &vm->progs[n];
-	vm->progsdata = p->progsdata;
-	vm->progssize = p->progssize;
 	vm->hdr = p->hdr;
 	vm->stmt32 = p->stmt32;
 	vm->statements = p->statements;
@@ -604,7 +607,7 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	if (vm->edict_words < 1)
 		vm->edict_words = 1;
 	vm->edict_words_used = vm->edict_words;
-	vm->edict_words += 256;	/* multiprogs rules (Nuclide) add their own fields */
+	vm->edict_words += BW_QC_SPARE_FIELDS;	/* multiprogs rules (Nuclide) add their own fields */
 
 	vm->max_edicts = max_edicts > 0 ? max_edicts : 1;
 	vm->quick_reuse_before = 2;
@@ -623,7 +626,8 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	p->globals = (qcval_t *)vm->mem;
 	p->globals_addr = 0;
 	for (int i = 0; i < p->numglobals; i++)
-		p->globals[i].i = rd32(p->progsdata + p->hdr.ofs_globals + (size_t)i * 4);
+		p->globals[i].i = rd32(p->image + p->hdr.ofs_globals + (size_t)i * 4);
+	p->image = NULL; /* the caller frees it */
 	vm->edicts = Mem_Alloc(sizeof(qcedict_t) * vm->max_edicts);
 	for (int i = 0; i < vm->max_edicts; i++)
 		vm->edicts[i].free = true;
@@ -678,7 +682,8 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	p->globals = (qcval_t *)(vm->mem + addr);
 	memset(p->globals, 0, (size_t)p->globalslots * 4);
 	for (int i = 0; i < p->numglobals; i++)
-		p->globals[i].i = rd32(p->progsdata + p->hdr.ofs_globals + (size_t)i * 4);
+		p->globals[i].i = rd32(p->image + p->hdr.ofs_globals + (size_t)i * 4);
+	p->image = NULL; /* the caller frees it */
 	vm->numprogs++;
 	if (!link_progs(vm, n)) {
 		QC_HeapFree(vm, addr);
@@ -706,10 +711,19 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	return n;
 }
 
+void QC_PrintMemStats(qcvm_t *vm)
+{
+	int peak = BW_MAX(vm->edicts_peak, vm->num_edicts);
+	Con_DPrintf("%s: peak %d of %d entities, heap peak %u of %u KB, %d of %d entity words, %d strings live\n",
+	            vm->name, peak, vm->max_edicts, (unsigned)(vm->heap_peak / 1024), (unsigned)(vm->heap_size / 1024),
+	            vm->edict_words_used, vm->edict_words, QC_LiveStrings());
+}
+
 void QC_Free(qcvm_t *vm)
 {
 	if (!vm)
 		return;
+	QC_PrintMemStats(vm);
 	Mem_Free(vm->watch);
 	for (int i = 0; i < vm_count; i++)
 		if (vm_list[i] == vm) {
@@ -771,6 +785,8 @@ int QC_SpawnEdict(qcvm_t *vm)
 	if (e >= vm->max_edicts)
 		QC_RunError(vm, "no free entities (max_edicts %d)", vm->max_edicts);
 	vm->num_edicts = e + 1;
+	if (vm->num_edicts > vm->edicts_peak)
+		vm->edicts_peak = vm->num_edicts;
 	QC_ClearEdict(vm, e);
 	return e;
 }
@@ -982,6 +998,9 @@ uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes)
 				h->size = (uint32_t)need;
 			}
 			h->used = 1;
+			vm->heap_used += h->size;
+			if (vm->heap_used > vm->heap_peak)
+				vm->heap_peak = vm->heap_used;
 			memset(h + 1, 0, h->size - sizeof(heaphdr_t));
 			return (uint32_t)(vm->heap_ofs + ofs + sizeof(heaphdr_t));
 		}
@@ -1011,6 +1030,7 @@ void QC_HeapFree(qcvm_t *vm, uint32_t addr)
 	if (!h)
 		QC_RunError(vm, "memfree of invalid pointer 0x%x", addr);
 	h->used = 0;
+	vm->heap_used -= h->size;
 	ofs = (uint8_t *)h - (vm->mem + vm->heap_ofs);
 	/* merge with the next block */
 	if (ofs + h->size < vm->heap_size) {

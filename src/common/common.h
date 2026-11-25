@@ -18,19 +18,29 @@ typedef float vec3_t[3];
 #define BW_CLAMP(v, lo, hi) BW_MIN(BW_MAX((v), (lo)), (hi))
 
 /* Memory the QuakeC VMs reserve up front: entity slots and memalloc heap
- * (megabytes). The 3DS has 64-124 MB for everything, so it reserves a
+ * (megabytes), and spare entity words for the fields of progs added later
+ * (addprogs). The 3DS has 64-124 MB for everything, so it reserves a
  * fraction of what desktops do; the server's pr_maxedicts and pr_heapsize
- * cvars default to these. */
+ * cvars default to these.
+ * Low-memory sizes, against what Stiletto uses on lqdm1 (developer 1 prints
+ * a VM's use when it is freed): server 340 entities and 570 KB of heap,
+ * client game 309 entities and 3.1 MB of heap, the menu 19 entities and
+ * 1 KB of heap; hud.dat adds 15 entity words to the client game and the
+ * rules progs none to the server. The menu's heap is BW_MENU_HEAP_KB. */
 #if defined(__3DS__) || defined(__NDS__) || defined(BW_XBOX) || defined(BW_FORCE_LOWMEM)
 #define BW_LOWMEM 1
-#define BW_SV_MAXEDICTS "1024"
-#define BW_SV_HEAP_MB "4"
-#define BW_CSQC_MAXEDICTS 1024
+#define BW_QC_SPARE_FIELDS 64
+#define BW_MENU_HEAP_KB 512
+#define BW_SV_MAXEDICTS "768"
+#define BW_SV_HEAP_MB "2"
+#define BW_CSQC_MAXEDICTS 768
 #define BW_CSQC_HEAP_MB 4
-#define BW_MENU_MAXEDICTS 1024
+#define BW_MENU_MAXEDICTS 256
 #define BW_MENU_HEAP_MB 2
 #define BW_CL_MAXENTS 4096 /* network entity numbers the client game can track */
 #else
+#define BW_QC_SPARE_FIELDS 256
+#define BW_MENU_HEAP_KB (16 * 1024)
 #define BW_SV_MAXEDICTS "4096"
 #define BW_SV_HEAP_MB "32"
 #define BW_CSQC_MAXEDICTS 8192
