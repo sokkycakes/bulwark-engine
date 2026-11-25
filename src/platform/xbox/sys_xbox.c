@@ -85,7 +85,8 @@ void XBX_PrintMemory(const char *when)
 	           (unsigned)(ms.AvailablePages * 4), (unsigned)(ms.TotalPhysicalPages * 4), (unsigned)(ms.PoolPagesCommitted * 4),
 	           (unsigned)(ms.ImagePagesCommitted * 4), (unsigned)(ms.StackPagesCommitted * 4),
 	           (unsigned)(ms.CachePagesCommitted * 4));
-	Con_Printf("  GPU objects %u KB; C heap %u KB\n", (unsigned)(XBGL_GpuMemoryUsed() >> 10), (unsigned)(heap_bytes() >> 10));
+	Con_Printf("  C heap %u KB\n", (unsigned)(heap_bytes() >> 10));
+	XBGL_PrintGpuMemory();
 }
 
 /* a fatal error: say so on the screen, then wait for the console's reset */

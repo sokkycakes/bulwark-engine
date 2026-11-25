@@ -2224,11 +2224,46 @@ static void make_fallback_textures(void)
 				((uint32_t *)(blackcube.data + i * 128))[j] = 0xFF000000u;
 }
 
+/* where the GPU's memory is: textures by size class, the biggest by name, buffers */
+void XBGL_PrintGpuMemory(void)
+{
+	size_t tex = 0, mipped = 0, cube = 0, buf = 0;
+	int ntex = 0, top[8] = {0};
+	for (int i = 1; i < num_texs; i++) {
+		xtex_t *t = &texs[i];
+		if (!t->used || !t->data)
+			continue;
+		ntex++;
+		tex += t->bytes;
+		if (t->mipped)
+			mipped += t->bytes;
+		if (t->cube)
+			cube += t->bytes;
+		for (int k = 0; k < 8; k++)
+			if (!top[k] || t->bytes > texs[top[k]].bytes) {
+				memmove(top + k + 1, top + k, sizeof(int) * (7 - k));
+				top[k] = i;
+				break;
+			}
+	}
+	for (int i = 1; i < num_bufs; i++)
+		if (bufs[i].used && !bufs[i].element && !bufs[i].ring)
+			buf += bufs[i].alloc;
+	Con_Printf("GPU objects: %u KB in %d pool chunks: %d textures %u KB (mipmapped %u KB, cube %u KB), buffers %u KB\n",
+	           (unsigned)(gpu_used >> 10), numchunks, ntex, (unsigned)(tex >> 10), (unsigned)(mipped >> 10),
+	           (unsigned)(cube >> 10), (unsigned)(buf >> 10));
+	for (int k = 0; k < 8 && top[k]; k++) {
+		xtex_t *t = &texs[top[k]];
+		Con_Printf("  texture %d: %dx%d as %dx%d, %d levels, %d bytes/texel%s, %u KB\n", top[k], t->w, t->h, t->tw, t->th,
+		           t->levels, t->bpp, t->cube ? ", cube" : "", (unsigned)(t->bytes >> 10));
+	}
+}
+
 static void meminfo_gpu_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
-	Con_Printf("GPU objects: %u KB in %d pool chunks; last frame %d draws, %d triangles\n", (unsigned)(gpu_used >> 10),
-	           numchunks, draws_this_frame, tris_this_frame);
+	XBGL_PrintGpuMemory();
+	Con_Printf("last frame %d draws, %d triangles\n", draws_this_frame, tris_this_frame);
 }
 
 void XBGL_RegisterCvars(void)

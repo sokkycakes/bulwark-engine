@@ -15,6 +15,7 @@ void XBGL_EndFrame(void); /* presents whatever was drawn since the last call */
 int XBGL_Width(void);
 int XBGL_Height(void);
 size_t XBGL_GpuMemoryUsed(void); /* bytes of contiguous memory the GPU objects hold */
+void XBGL_PrintGpuMemory(void);
 
 /* sys_xbox.c */
 void XBX_PrintMemory(const char *when);

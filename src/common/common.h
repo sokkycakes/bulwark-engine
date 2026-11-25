@@ -21,7 +21,7 @@ typedef float vec3_t[3];
  * (megabytes). The 3DS has 64-124 MB for everything, so it reserves a
  * fraction of what desktops do; the server's pr_maxedicts and pr_heapsize
  * cvars default to these. */
-#if defined(__3DS__) || defined(__NDS__) || defined(BW_XBOX)
+#if defined(__3DS__) || defined(__NDS__) || defined(BW_XBOX) || defined(BW_FORCE_LOWMEM)
 #define BW_LOWMEM 1
 #define BW_SV_MAXEDICTS "1024"
 #define BW_SV_HEAP_MB "4"
