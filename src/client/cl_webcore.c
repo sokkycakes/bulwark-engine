@@ -761,6 +761,24 @@ static void q_lobby_join(const char *target, strbuf_t *out)
 	SB_AppendStr(out, "ok");
 }
 
+/* glyph:<key or command>[ <device>]: the controller prompt for a binding,
+ * as "<image>|<label>" ("{images}/glyphs/steamdeck/south.png|A"), or ""
+ * when no controller binding exists (docs/spec/steam-input.md) */
+static void q_glyph(const char *what, strbuf_t *out)
+{
+	char name[128], path[160], label[64];
+	int dev = -1;
+	const char *sp = strchr(what, ' ');
+	snprintf(name, sizeof(name), "%.*s", sp ? (int)(sp - what) : (int)strlen(what), what);
+	if (sp)
+		dev = atoi(sp + 1);
+	if (IN_PadGlyph && IN_PadGlyph(name, dev, path, sizeof(path), label, sizeof(label))) {
+		SB_AppendStr(out, path);
+		SB_AppendStr(out, "|");
+		SB_AppendStr(out, label);
+	}
+}
+
 static void query(int view, const char *req, strbuf_t *out)
 {
 	(void)view;
@@ -772,6 +790,8 @@ static void query(int view, const char *req, strbuf_t *out)
 		SB_AppendStr(out, VID_SetClipboard(req + 15) ? "ok" : "failed");
 	else if (!strncmp(req, "cvar:", 5))
 		q_cvar(req + 5, out);
+	else if (!strncmp(req, "glyph:", 6))
+		q_glyph(req + 6, out);
 	else if (!strncmp(req, "get_cvar ", 9))
 		q_cvar(req + 9, out);
 	else if (!strcmp(req, "getstats"))

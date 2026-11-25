@@ -507,6 +507,15 @@ var CoopMenu = ( function ()
 	function glyph( key )
 	{
 		key = String( key || "" ).toUpperCase();
+		// a controller key or Steam Input action: the engine knows which
+		// controller is in use (Deck, PlayStation, Switch...) and its prompt
+		if ( PAD_GLYPHS[ key ] || /^(GP_|SI_)/.test( key ) )
+		{
+			var g = "";
+			try { g = String( fte_query( "glyph:" + key ) || "" ).split( "|" )[ 0 ]; } catch ( err ) {}
+			if ( g )
+				return "file://" + g;
+		}
 		if ( PAD_GLYPHS[ key ] )
 			return "file://{images}/xelu/xbox/XboxSeriesX_" + PAD_GLYPHS[ key ] + ".png";
 		var k = KEY_GLYPHS[ key ] || ( /^([A-Z0-9]|F[1-9]|F1[0-2])$/.test( key ) ? key : "" );
