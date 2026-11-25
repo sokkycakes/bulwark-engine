@@ -539,6 +539,9 @@ typedef struct iqm_s {
 	skelmodel_t *skel;
 	uint8_t (*blendidx)[4];
 	float (*blendw)[4];   /* NULL: each vertex follows blendidx[0] alone */
+	/* per joint, the bind position and the farthest vertex it moves from
+	 * there (radius < 0: none), to bound a pose for culling */
+	float (*jointsphere)[4];
 	/* studio models: numfamilies x numskinref materials, picked by .skin */
 	material_t **famskins;
 	int numfamilies, numskinref;
@@ -688,6 +691,26 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 		}
 	if (!num_verts)
 		memset(mod->mins, 0, sizeof(mod->mins)), memset(mod->maxs, 0, sizeof(mod->maxs));
+	if (q->skel && num_verts) {
+		int n = q->skel->numjoints;
+		q->jointsphere = Mem_Alloc(sizeof(*q->jointsphere) * n);
+		for (int j = 0; j < n; j++) {
+			bonemat_t bind;
+			Bone_Invert(bind, q->skel->invbind[j]);
+			q->jointsphere[j][0] = bind[3], q->jointsphere[j][1] = bind[7], q->jointsphere[j][2] = bind[11];
+			q->jointsphere[j][3] = -1;
+		}
+		for (int i = 0; i < num_verts; i++)
+			for (int k = 0; k < (q->blendw ? 4 : 1); k++) {
+				float *js, d[3];
+				if (q->blendidx[i][k] >= n || (q->blendw && !(q->blendw[i][k] > 0)))
+					continue;
+				js = q->jointsphere[q->blendidx[i][k]];
+				for (int c = 0; c < 3; c++)
+					d[c] = q->verts[i].xyz[c] - js[c];
+				js[3] = BW_MAX(js[3], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+			}
+	}
 	if (R_Active() && num_verts) {
 		qglGenVertexArrays(1, &q->vao);
 		qglGenBuffers(1, &q->vbo);
@@ -1354,6 +1377,7 @@ static void free_model(rmodel_t *m)
 			Mem_Free(q->anims);
 		Mem_Free(q->blendidx);
 		Mem_Free(q->blendw);
+		Mem_Free(q->jointsphere);
 		Mem_Free(q->famskins);
 		Mem_Free(q);
 	}
@@ -1486,15 +1510,15 @@ float R_FrameDuration(rmodel_t *m, int frame)
 
 /* --- drawing ---------------------------------------------------------------- */
 
-/* poses a skeletal IQM for e and uploads the skinned vertices: the bones
- * come from the entity's skeleton object when it has one, otherwise from
- * its frame fields */
-static void skin_iqm(iqm_t *q, rentity_t *e)
+/* the skinning matrices of the last pose_iqm */
+static bonemat_t *skin;
+
+/* poses a skeletal IQM for e into skin[]: the bones come from the
+ * entity's skeleton object when it has one, otherwise from its frame fields */
+static void pose_iqm(iqm_t *q, rentity_t *e)
 {
-	static bonemat_t *bones, *skin;
+	static bonemat_t *bones;
 	static int maxbones;
-	static skinvert_t *out;
-	static int maxverts;
 	skelmodel_t *m = q->skel, *sm;
 	const float(*sb)[12];
 	bool absolute;
@@ -1503,10 +1527,6 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 		maxbones = n;
 		bones = Mem_Realloc(bones, sizeof(bonemat_t) * n);
 		skin = Mem_Realloc(skin, sizeof(bonemat_t) * n);
-	}
-	if (q->numverts > maxverts) {
-		maxverts = q->numverts;
-		out = Mem_Realloc(out, sizeof(skinvert_t) * maxverts);
 	}
 	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
 		int k = BW_MIN(n, sm->numjoints);
@@ -1524,6 +1544,39 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	}
 	for (int j = 0; j < n; j++)
 		Bone_Multiply(skin[j], bones[j], m->invbind[j]);
+}
+
+/* the box the vertices of pose_iqm's pose lie in: each vertex is a
+ * weighted mean of where its joints carry it, and each joint keeps its
+ * vertices within its radius, scaled by at most the matrix's norm */
+static void posed_bounds(const iqm_t *q, float *mins, float *maxs)
+{
+	for (int k = 0; k < 3; k++)
+		mins[k] = 1e30f, maxs[k] = -1e30f;
+	for (int j = 0; j < q->skel->numjoints; j++) {
+		const float *js = q->jointsphere[j], *b = skin[j];
+		float c[3], f = 0;
+		if (js[3] < 0)
+			continue;
+		for (int k = 0; k < 12; k++)
+			if ((k & 3) != 3)
+				f += b[k] * b[k];
+		Bone_Transform(b, js, c);
+		f = js[3] * sqrtf(f);
+		for (int k = 0; k < 3; k++)
+			mins[k] = BW_MIN(mins[k], c[k] - f), maxs[k] = BW_MAX(maxs[k], c[k] + f);
+	}
+}
+
+/* uploads the vertices skinned by pose_iqm's matrices */
+static void skin_posed(iqm_t *q)
+{
+	static skinvert_t *out;
+	static int maxverts;
+	if (q->numverts > maxverts) {
+		maxverts = q->numverts;
+		out = Mem_Realloc(out, sizeof(skinvert_t) * maxverts);
+	}
 	for (int i = 0; i < q->numverts; i++) {
 		const rvert_t *v = &q->verts[i];
 		skinvert_t *o = &out[i];
@@ -1551,6 +1604,12 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
 	qglBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(sizeof(rvert_t) * q->numverts), out);
 #endif
+}
+
+static void skin_iqm(iqm_t *q, rentity_t *e)
+{
+	pose_iqm(q, e);
+	skin_posed(q);
 }
 
 /* the pose an animation frame shows at a time into it */
@@ -1682,20 +1741,19 @@ static void bind_material(const glprog_t *p, material_t *mat, float alpha, bool 
 	(void)alpha;
 }
 
-/* true when a model is out of view: its box, doubled about its centre for
- * the poses a skeleton can take beyond its rest bounds, is wholly outside
- * one side of the view volume. Skinning and drawing it would be wasted. */
-static bool model_offscreen(const rmodel_t *m, const float *mvp)
+/* true when a model is out of view: its box (the pose's for a skeletal
+ * one, every frame's for the rest), with a little to spare, is wholly
+ * outside one side of the view volume. Skinning and drawing it would be
+ * wasted. */
+static bool model_offscreen(const float *mins, const float *maxs, const float *mvp)
 {
-	float c[3], h[3], p[3], clip[4];
+	float p[3], clip[4];
 	int out[5] = {0};
-	if (m->mins[0] > m->maxs[0])
+	if (mins[0] > maxs[0])
 		return false; /* no bounds */
-	for (int k = 0; k < 3; k++)
-		c[k] = (m->mins[k] + m->maxs[k]) * 0.5f, h[k] = m->maxs[k] - m->mins[k] + 8;
 	for (int i = 0; i < 8; i++) {
 		for (int k = 0; k < 3; k++)
-			p[k] = c[k] + (i & (1 << k) ? h[k] : -h[k]);
+			p[k] = i & (1 << k) ? maxs[k] + 8 : mins[k] - 8;
 		Mat4_Transform(mvp, p, clip);
 		out[0] += clip[0] < -clip[3];
 		out[1] += clip[0] > clip[3];
@@ -1744,7 +1802,16 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	}
 	if ((e->alpha < 1 || (e->renderflags & 8)) != translucentpass)
 		return;
-	if (!viewmodel && model_offscreen(m, mvp))
+	bool skinned = m->type == MOD_IQM && m->iqm->vao && m->iqm->skel;
+	if (skinned) {
+		pose_iqm(m->iqm, e);
+		if (!viewmodel) {
+			float mins[3], maxs[3];
+			posed_bounds(m->iqm, mins, maxs);
+			if (model_offscreen(mins, maxs, mvp))
+				return;
+		}
+	} else if (!viewmodel && model_offscreen(m->mins, m->maxs, mvp))
 		return;
 	if (depthhack)
 		qglDepthRange(0, 0.3);
@@ -1769,8 +1836,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		R_StreamDraw(GL_TRIANGLES, buf, a->numoutverts, a->indices, a->numtris * 3);
 	} else if (m->type == MOD_IQM && m->iqm->vao) {
 		iqm_t *q = m->iqm;
-		if (q->skel)
-			skin_iqm(q, e);
+		if (skinned)
+			skin_posed(q);
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
