@@ -1,4 +1,5 @@
-// The in-game set view (layout/web/setflow.xml). Everything it shows comes
+// The in-game set view (layout/web/setflow.xml, or setflow-v2.xml with the
+// Deadlock-style hero select). Everything it shows comes
 // from fte_query("getflow"): the arena director's serverinfo keys, this
 // player's slot and Live's state. Choices go back as fte_query("flow:...").
 // With several players on this screen (f.local, Local Play) each one picks
@@ -18,6 +19,28 @@ var SetFlow = ( function ()
 		hero_vagrant: { name: "Vagrant", role: "Knife brawler" }
 	};
 	var HP = { hero_archstiletto: 8 };
+	// the hero select of setflow-v2.xml shows a line, a blurb and the kit
+	// (weapon, melee, tool, guard: from decls/def/heroes/*.def)
+	var KIT = {
+		hero_angel: { line: "Holds the long lane", blurb: "Fights from range with a sniper rifle, and grapples to a new angle when the gap closes.",
+			kit: [ "Sniper rifle", "", "Grapple", "Shield" ] },
+		hero_archstiletto: { line: "The namesake", blurb: "8 HP, twice anyone else. A 2 HP armour buffer soaks hits before a punish lands, and a lunge stands in for the grapple.",
+			kit: [ "Archstiletto", "Blade", "Lunge", "Shield" ] },
+		hero_beaumont: { line: "Fast revolver", blurb: "A fast revolver for quick follow-up shots, with the grapple to reposition between them.",
+			kit: [ "Revolver", "", "Grapple", "Shield" ] },
+		hero_collier: { line: "Revolver duelist", blurb: "A sidearm for the mid range and a melee strike for anyone who gets too close.",
+			kit: [ "Sidearm", "Strike", "Grapple", "Shield" ] },
+		hero_juliet: { line: "Zoner", blurb: "Charges a gun to control space. No grapple: the other player has to come in.",
+			kit: [ "Charge gun", "", "", "Shield" ] },
+		hero_motionblue: { line: "Explosive slug launcher", blurb: "An explosive slug launcher that doubles as movement: blast jumps get Motionblue around.",
+			kit: [ "Slug launcher", "", "Grapple", "Shield" ] },
+		hero_skipstream: { line: "Burst revolver", blurb: "A burst revolver that rewards a steady aim, with the grapple to hold the right range.",
+			kit: [ "Burst revolver", "", "Grapple", "Shield" ] },
+		hero_vagrant: { line: "Knife brawler", blurb: "Always moves at a sprint. A warp knife gets in, the knife finishes up close.",
+			kit: [ "Knife", "Melee", "Warp knife", "Shield" ] }
+	};
+	var KIT_SLOTS = [ "WEAPON", "MELEE", "TOOL", "GUARD" ];
+	var V2 = !!$( "#HeroBlurb" );
 	var VOTE_CMDS = [ "rematch", "rematch_hero", "leave" ];
 	var VOTE_TEXT = [ "", "Rematch", "Rematch - new hero", "Leave" ];
 	var SND_NAV = "misc/menu1", SND_OK = "misc/menu2";
@@ -102,6 +125,16 @@ var SetFlow = ( function ()
 		grid.RemoveAndDeleteChildren();
 		heroIds.forEach( function ( id, i )
 		{
+			if ( V2 )
+			{
+				var t = $.CreatePanel( "Button", grid, "Hero" + i, { class: "tile" } );
+				$.CreatePanel( "Label", t, "", { class: "tile-initial", text: heroName( id ).charAt( 0 ), hittest: "false" } );
+				$.CreatePanel( "Label", t, "", { class: "tile-name", text: heroName( id ), hittest: "false" } );
+				$.CreatePanel( "Label", t, "", { class: "tile-hp", text: ( HP[ id ] || 4 ) + " HP", hittest: "false" } );
+				t.SetPanelEvent( "onactivate", function () { pick( i ); } );
+				t.SetPanelEvent( "onmouseover", function () { moveCursor( i, false ); } );
+				return;
+			}
 			var p = $.CreatePanel( "Button", grid, "Hero" + i, { class: "hero" } );
 			$.CreatePanel( "Label", p, "", { class: "hero-hp", text: ( HP[ id ] || 4 ) + " HP", hittest: "false" } );
 			$.CreatePanel( "Label", p, "", { class: "hero-name", text: heroName( id ), hittest: "false" } );
@@ -125,6 +158,36 @@ var SetFlow = ( function ()
 		var shown = locked || !canPick ? picked : heroIds[ cursor ];
 		$( "#PickName" ).text = heroName( shown ) || "-";
 		$( "#PickRole" ).text = heroRole( shown );
+		if ( V2 )
+			showHero( shown );
+	}
+
+	var shownKey = "";
+	function showHero( id )
+	{
+		if ( id === shownKey )
+			return;
+		shownKey = id;
+		var k = KIT[ id ] || { line: heroRole( id ), blurb: "", kit: [ "", "", "", "" ] };
+		$( "#PickRole" ).text = k.line;
+		$( "#HeroBlurb" ).text = k.blurb;
+		var kit = $( "#Kit" );
+		kit.RemoveAndDeleteChildren();
+		k.kit.forEach( function ( name, i )
+		{
+			var c = $.CreatePanel( "Panel", kit, "", { class: "kit" + ( name ? "" : " none" ), hittest: "false" } );
+			var disc = $.CreatePanel( "Panel", c, "", { class: "kit-disc", hittest: "false" } );
+			$.CreatePanel( "Label", disc, "", { class: "kit-glyph", text: KIT_SLOTS[ i ], hittest: "false" } );
+			var key = $.CreatePanel( "Panel", c, "", { class: "kit-key", hittest: "false" } );
+			$.CreatePanel( "Label", key, "", { text: String( i + 1 ), hittest: "false" } );
+			$.CreatePanel( "Label", c, "", { class: "kit-name", text: name || "none", hittest: "false" } );
+		} );
+		$( "#StageInitial" ).text = heroName( id ).charAt( 0 );
+		$( "#StageName" ).text = heroName( id );
+		var hp = $( "#StageHp" );
+		hp.RemoveAndDeleteChildren();
+		for ( var n = 0; n < ( HP[ id ] || 4 ); n++ )
+			$.CreatePanel( "Panel", hp, "", { class: "hp-pip", hittest: "false" } );
 	}
 
 	function moveCursor( i, snd )
@@ -192,6 +255,9 @@ var SetFlow = ( function ()
 			( st.counterSide === mySide ? "You lost the last game: keep your hero or change it" : "You won the last game: your hero stays" ) :
 			"Blind pick: your opponent sees your hero when you both lock in";
 		$( "#Select" ).SetHasClass( "is-locked", !canPick );
+		if ( V2 )
+			$( "#SelectMode" ).text = "CASUAL DUEL  -  FIRST TO " + st.firstTo + "  -  GAME " + Math.max( 1, st.game ) +
+				( st.runbacks ? "  -  RUNBACK " + st.runbacks : "" );
 		$( "#LockLabel" ).text = canPick ? "LOCK IN" : "LOCKED";
 		$( "#LockBtn" ).enabled = canPick;
 		var t = parseInt( f.arena.deadline, 10 );
@@ -712,11 +778,11 @@ var SetFlow = ( function ()
 		var k = e.key, s = f.arena.state;
 		if ( s === "SELECT" && !myLock() )
 		{
-			var cols = 4;
+			var cols = V2 ? 0 : 4; // the v2 roster is one row
 			if ( k === "ArrowRight" || k === "d" || k === "D" ) moveCursor( cursor + 1 );
 			else if ( k === "ArrowLeft" || k === "a" || k === "A" ) moveCursor( cursor - 1 );
-			else if ( k === "ArrowDown" || k === "s" || k === "S" ) moveCursor( cursor + cols );
-			else if ( k === "ArrowUp" || k === "w" || k === "W" ) moveCursor( cursor - cols );
+			else if ( cols && ( k === "ArrowDown" || k === "s" || k === "S" ) ) moveCursor( cursor + cols );
+			else if ( cols && ( k === "ArrowUp" || k === "w" || k === "W" ) ) moveCursor( cursor - cols );
 			else if ( k === "Enter" || k === " " ) { pick( cursor ); lock(); }
 		}
 		else if ( s === "SET END" )
