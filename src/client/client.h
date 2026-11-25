@@ -348,6 +348,9 @@ void CL_FinishSignon(void); /* cl_main.c: loads the map once the files are here 
 void CL_InitMaster(void);
 bool CL_MasterConnectionless(const netadr_t *from, const uint8_t *data, size_t len);
 void CL_MasterFrame(void);
+void CL_MasterNoteConnect(const netadr_t *a); /* the browser's history */
+bool CL_ServerBrowserQuery(const char *req, strbuf_t *out); /* sb_... page requests */
+
 void MQC_Init(void);
 bool MQC_Load(void);
 void MQC_LoadWhenActive(void); /* once the game being started is in */

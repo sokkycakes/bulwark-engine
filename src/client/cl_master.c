@@ -12,6 +12,7 @@
 #include "client.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/json.h"
 #include "../net/protocol.h"
 #include "../server/sv_local.h"
 
@@ -31,21 +32,29 @@ typedef struct {
 	int players, maxplayers, bots, protocol;
 	int ping; /* -1 until it answers */
 	double sent;
+	double sent_wall; /* Sys_Seconds() when asked: pings finer than a frame */
 	char challenge[16];
 	bool printed;
 	char playerlines[1024]; /* the status lines: frags ping "name" */
+	int src;                /* SRC_*: which of the browser's lists it's on */
+	bool status;            /* the last answer was a status reply (has players) */
 } host_t;
+
+/* the server browser's lists (docs/spec/serverbrowser.md) */
+enum { SRC_INTERNET = 1, SRC_LAN = 2, SRC_FAVORITE = 4, SRC_HISTORY = 8 };
 
 static host_t *hosts;
 static int numhosts;
 static bool hostcache_dirty; /* answers came since the view was sorted */
 static int masters_asked, masters_answered;
 static bool print_replies; /* the console asked, so answers are printed */
-static double lan_sent;
+static double lan_sent, lan_sent_wall;
 static cvar_t *net_master[NUM_MASTERS];
 
 static const char *const default_masters[] = {"master.frag-net.com:27950", "dpmaster.deathmask.net:27950",
                                               "dpmaster.tchr.no:27950", NULL};
+
+static void CL_InitServerBrowser(void);
 
 static struct {
 	bool active;
@@ -78,6 +87,7 @@ static void query(host_t *h)
 {
 	snprintf(h->challenge, sizeof(h->challenge), "%08x", (unsigned)rand());
 	h->sent = cl.realtime;
+	h->sent_wall = Sys_Seconds();
 	NET_OutOfBandPrint(NS_CLIENT, &h->adr, "getstatus %s", h->challenge);
 }
 
@@ -172,18 +182,22 @@ static void ask_lan(void)
 	memset(&a, 0, sizeof(a));
 	a.type = NA_IP4;
 	memset(a.ip, 255, 4);
-	for (int p = PORT_SERVER; p < PORT_SERVER + 4; p++) {
+	/* a second server on a machine takes the next free port (net.c) */
+	for (int p = PORT_SERVER; p < PORT_SERVER + 10; p++) {
 		a.port = (uint16_t)p;
 		NET_OutOfBandPrint(NS_CLIENT, &a, "getinfo %s", lan_challenge);
 	}
 	lan_sent = cl.realtime;
+	lan_sent_wall = Sys_Seconds();
 	/* a server in this process answers over loopback */
 	if (sv.active) {
 		memset(&a, 0, sizeof(a));
 		a.type = NA_LOOPBACK;
 		host_t *h = add_host(&a);
-		if (h)
+		if (h) {
+			h->src |= SRC_LAN;
 			query(h);
+		}
 	}
 }
 
@@ -268,6 +282,8 @@ static void got_servers(const uint8_t *p, size_t len)
 			query(h);
 			added++;
 		}
+		if (h)
+			h->src |= SRC_INTERNET;
 	}
 	if (print_replies && added)
 		Con_Printf("%d server%s listed\n", added, added == 1 ? "" : "s");
@@ -291,14 +307,20 @@ static bool got_info(const netadr_t *from, const char *text)
 		if (!h)
 			return true;
 		h->sent = lan_sent;
+		h->sent_wall = lan_sent_wall;
 		Str_Copy(h->challenge, lan_challenge, sizeof(h->challenge));
 	}
+	if (lan_challenge[0] && !strcmp(ch, lan_challenge))
+		h->src |= SRC_LAN;
 	if (h->challenge[0] && strcmp(ch, h->challenge) && (!lan_challenge[0] || strcmp(ch, lan_challenge)))
 		return true; /* a stale or forged answer */
-	h->ping = (int)((cl.realtime - h->sent) * 1000);
+	h->ping = (int)(((h->sent_wall > 0 ? Sys_Seconds() - h->sent_wall : cl.realtime - h->sent)) * 1000);
 	parse_info(h, info);
+	h->status = !memcmp(text, "statusResponse", 14);
 	if (players)
 		Str_Copy(h->playerlines, players + 1, sizeof(h->playerlines));
+	else if (h->status)
+		h->playerlines[0] = 0;
 	hostcache_dirty = true;
 	if (print_replies && !h->printed) {
 		print_host(h);
@@ -341,8 +363,40 @@ bool CL_MasterConnectionless(const netadr_t *from, const uint8_t *data, size_t l
 	return false;
 }
 
+/* a join from the server browser: back to the browser if it fails */
+static struct {
+	bool active;
+	char addr[80];
+	double at;
+} sb_join;
+
+static void sb_join_frame(void)
+{
+	if (!sb_join.active || cl.realtime - sb_join.at < 0.5)
+		return;
+	if (cl.state == ca_active) {
+		sb_join.active = false;
+	} else if (cl.state == ca_disconnected) {
+		char reason[256], url[512];
+		sb_join.active = false;
+		/* the reason travels in the page's query: keep it to safe characters */
+		Str_Copy(reason, cl.disconnect_reason[0] ? cl.disconnect_reason : "no answer", sizeof(reason));
+		for (char *p = reason; *p; p++)
+			if (!isalnum((unsigned char)*p) && !strchr(" .,:()-", *p))
+				*p = ' ';
+		for (char *p = reason; *p; p++)
+			if (*p == ' ')
+				*p = '+';
+		Con_Printf("server browser: couldn't join %s (%s)\n", sb_join.addr,
+		           cl.disconnect_reason[0] ? cl.disconnect_reason : "no answer");
+		snprintf(url, sizeof(url), "fte://data/web/server-browser/index.html?failed=%s&reason=%s", sb_join.addr, reason);
+		WC_OpenPage(url);
+	}
+}
+
 void CL_MasterFrame(void)
 {
+	sb_join_frame();
 	if (quick.active && cl.realtime >= quick.at)
 		quick_pick();
 	if (transfer.active) {
@@ -512,6 +566,7 @@ void CL_InitMaster(void)
 	Cmd_AddD("net_ice_show", NetIceShow_f, "Show WebRTC/ICE connections (there are none in Bulwark)");
 	Cmd_AddD("dtls_importtrust", Dtls_f, "DTLS certificate trust (Bulwark has no DTLS)");
 	Cmd_AddD("dtls_untrustall", Dtls_f, "DTLS certificate trust (Bulwark has no DTLS)");
+	CL_InitServerBrowser();
 }
 
 /* --- the hostcache builtins (menu and client QC) -------------------------------------------- */
@@ -841,3 +896,393 @@ const qc_builtin_t cl_hostcache_builtins[] = {
 	{"resorthostcache", bi_resorthostcache}, {"sethostcachesort", bi_sethostcachesort},
 	{"refreshhostcache", bi_refreshhostcache}, {"getextresponse", bi_getextresponse},
 	{NULL, NULL}};
+
+/* --- the server browser page's requests ---------------------------------------------------
+ *
+ * The Panorama server browser (layout/web/server-browser.xml) asks through
+ * the webcore bridge with "sb_..." requests; docs/spec/serverbrowser.md
+ * lists them. The page keeps the filters and the sort; the engine keeps
+ * which list each server is on, favourites and history. */
+
+static cvar_t *sb_favorites, *sb_history, *sb_history_max;
+static double sb_refreshed_at;
+
+static bool sb_valid_addr(const char *s)
+{
+	size_t n = strlen(s);
+	if (n < 1 || n > 64)
+		return false;
+	for (; *s; s++)
+		if (!isalnum((unsigned char)*s) && !strchr("._:-[]", *s))
+			return false;
+	return true;
+}
+
+/* the canonical "ip:port" of an address a page or player typed, or "" */
+static const char *sb_canon(const char *s, char *out, size_t size)
+{
+	netadr_t a;
+	out[0] = 0;
+	if (sb_valid_addr(s) && NET_StringToAdr(s, &a, PORT_SERVER) && (a.type == NA_IP4 || a.type == NA_IP6))
+		Str_Copy(out, NET_AdrToString(&a), size);
+	return out;
+}
+
+static bool sb_list_has(const cvar_t *list, const char *addr)
+{
+	size_t n = strlen(addr);
+	for (const char *p = list->string; (p = strstr(p, addr)) != NULL; p += n)
+		if ((p == list->string || p[-1] == ' ') && (p[n] == ' ' || !p[n]))
+			return true;
+	return false;
+}
+
+/* rebuilds a space-separated list: addr removed, then put first when add */
+static void sb_list_put(cvar_t *list, const char *addr, bool add, int max)
+{
+	char out[4096] = "", copy[4096];
+	int count = 0;
+	if (add) {
+		Str_Copy(out, addr, sizeof(out));
+		count = 1;
+	}
+	Str_Copy(copy, list->string, sizeof(copy));
+	for (char *tok = strtok(copy, " "); tok; tok = strtok(NULL, " ")) {
+		if (!strcmp(tok, addr) || (max > 0 && count >= max))
+			continue;
+		if (strlen(out) + strlen(tok) + 2 >= sizeof(out))
+			break;
+		if (out[0])
+			strcat(out, " ");
+		strcat(out, tok);
+		count++;
+	}
+	Cvar_Set(list->name, out);
+}
+
+static void sb_mark(const char *addr, int src)
+{
+	netadr_t a;
+	if (!NET_StringToAdr(addr, &a, PORT_SERVER))
+		return;
+	host_t *h = add_host(&a);
+	if (h) {
+		h->src |= src;
+		query(h);
+	}
+}
+
+static void sb_ask_list(const cvar_t *list, int src)
+{
+	char copy[4096];
+	Str_Copy(copy, list->string, sizeof(copy));
+	for (char *tok = strtok(copy, " "); tok; tok = strtok(NULL, " "))
+		sb_mark(tok, src);
+}
+
+/* drops a list's mark from every server, and the servers left on none */
+static void sb_forget(int src)
+{
+	int n = 0;
+	for (int i = 0; i < numhosts; i++) {
+		hosts[i].src &= ~src;
+		if (hosts[i].src)
+			hosts[n++] = hosts[i];
+	}
+	numhosts = n;
+	hc_viewcount = 0;
+	hostcache_dirty = true;
+}
+
+static int sb_tab_src(const char *tab)
+{
+	if (!Str_ICmp(tab, "internet")) return SRC_INTERNET;
+	if (!Str_ICmp(tab, "lan")) return SRC_LAN;
+	if (!Str_ICmp(tab, "favorites")) return SRC_FAVORITE;
+	if (!Str_ICmp(tab, "history")) return SRC_HISTORY;
+	return SRC_INTERNET | SRC_LAN | SRC_FAVORITE | SRC_HISTORY;
+}
+
+static void sb_refresh(const char *tab)
+{
+	int src = sb_tab_src(tab);
+	print_replies = false;
+	sb_forget(src);
+	if (src & SRC_INTERNET) {
+		masters_asked = masters_answered = 0;
+		ask_masters(0, NULL);
+	}
+	if (src & SRC_LAN)
+		ask_lan();
+	if (src & SRC_FAVORITE)
+		sb_ask_list(sb_favorites, SRC_FAVORITE);
+	if (src & SRC_HISTORY)
+		sb_ask_list(sb_history, SRC_HISTORY);
+	sb_refreshed_at = cl.realtime;
+}
+
+/* the player lines of a status reply: frags ping "name" */
+static json_t *sb_players(const host_t *h)
+{
+	json_t *arr = JSON_New(JSON_ARRAY);
+	const char *p = h->playerlines;
+	while (*p) {
+		const char *end = strchr(p, '\n');
+		size_t len = end ? (size_t)(end - p) : strlen(p);
+		char line[256], name[128] = "";
+		Str_Copy(line, p, BW_MIN(sizeof(line), len + 1));
+		int frags = 0, ping = 0;
+		const char *q = strchr(line, '"');
+		sscanf(line, "%d %d", &frags, &ping);
+		if (q) {
+			const char *e = strchr(q + 1, '"');
+			Str_Copy(name, q + 1, BW_MIN(sizeof(name), (size_t)((e ? e : q + 1 + strlen(q + 1)) - q)));
+		}
+		if (line[0]) {
+			json_t *o = JSON_New(JSON_OBJECT);
+			JSON_SetString(o, "name", name);
+			JSON_SetNumber(o, "frags", frags);
+			JSON_SetNumber(o, "ping", ping);
+			JSON_SetBool(o, "bot", ping == 0);
+			JSON_Append(arr, o);
+		}
+		if (!end)
+			break;
+		p = end + 1;
+	}
+	return arr;
+}
+
+/* a picture of the map for the list: levelshots/<map>, else the map's
+ * overview, else "" (looked up once per map name) */
+static const char *sb_mapshot(const char *map)
+{
+	static struct { char map[64]; char path[96]; } cache[32];
+	static int next;
+	static const char *const tries[] = { "levelshots/%s.png", "levelshots/%s.jpg", "levelshots/%s.tga",
+	                                     "overviews/%s.png" };
+	if (!map[0] || strlen(map) >= sizeof(cache[0].map) || strchr(map, '/') || strchr(map, '\\') || strstr(map, ".."))
+		return "";
+	for (int i = 0; i < 32; i++)
+		if (!strcmp(cache[i].map, map))
+			return cache[i].path;
+	int slot = next++ % 32;
+	snprintf(cache[slot].map, sizeof(cache[slot].map), "%s", map);
+	cache[slot].path[0] = 0;
+	for (size_t i = 0; i < sizeof(tries) / sizeof(tries[0]); i++) {
+		char path[96];
+		snprintf(path, sizeof(path), tries[i], map);
+		if (FS_FileExists(path)) {
+			snprintf(cache[slot].path, sizeof(cache[slot].path), "%s", path);
+			break;
+		}
+	}
+	return cache[slot].path;
+}
+
+static json_t *sb_row(const host_t *h)
+{
+	char tmp[256];
+	const char *addr = NET_AdrToString(&h->adr);
+	json_t *o = JSON_New(JSON_OBJECT);
+	JSON_SetString(o, "addr", addr);
+	JSON_SetString(o, "name", h->name[0] ? h->name : addr);
+	JSON_SetString(o, "map", h->map);
+	JSON_SetString(o, "shot", sb_mapshot(h->map));
+	JSON_SetString(o, "game", h->game);
+	JSON_SetString(o, "mod", h->mod);
+	JSON_SetString(o, "gametype", ikey(h->info, "g_gametype", tmp, sizeof(tmp)));
+	JSON_SetString(o, "state", ikey(h->info, "arena_state", tmp, sizeof(tmp)));
+	JSON_SetString(o, "engine", ikey(h->info, "engine", tmp, sizeof(tmp)));
+	JSON_SetNumber(o, "players", h->players - h->bots);
+	JSON_SetNumber(o, "bots", h->bots);
+	JSON_SetNumber(o, "max", h->maxplayers);
+	JSON_SetNumber(o, "ping", h->ping);
+	JSON_SetNumber(o, "protocol", h->protocol);
+	JSON_SetBool(o, "password", atoi(ikey(h->info, "password", tmp, sizeof(tmp))) != 0 ||
+	                                atoi(ikey(h->info, "needpass", tmp, sizeof(tmp))) != 0);
+	JSON_SetBool(o, "compatible", h->protocol == PROTOCOL_VERSION);
+	JSON_SetBool(o, "internet", (h->src & SRC_INTERNET) != 0);
+	JSON_SetBool(o, "lan", (h->src & SRC_LAN) != 0);
+	JSON_SetBool(o, "favorite", sb_list_has(sb_favorites, addr));
+	JSON_SetBool(o, "history", sb_list_has(sb_history, addr));
+	return o;
+}
+
+static void sb_reply(strbuf_t *out, json_t *j)
+{
+	JSON_Write(out, j, -1);
+	JSON_Free(j);
+}
+
+/* sb_list[:all]: the servers that answered; other games' servers (a LAN
+ * or a shared master has them) only with :all */
+static void sb_getlist(strbuf_t *out, bool all)
+{
+	json_t *j = JSON_New(JSON_OBJECT), *arr = JSON_New(JSON_ARRAY);
+	const char *game = Cvar_String("com_protocolname");
+	int pending = 0, others = 0;
+	for (int i = 0; i < numhosts; i++) {
+		if (hosts[i].ping < 0) {
+			/* a server that hasn't answered in 3 s isn't coming */
+			pending += cl.realtime - hosts[i].sent < 3;
+			continue;
+		}
+		if (!all && hosts[i].game[0] && Str_ICmp(hosts[i].game, game)) {
+			others++;
+			continue;
+		}
+		JSON_Append(arr, sb_row(&hosts[i]));
+	}
+	JSON_SetNumber(j, "other_games", others);
+	JSON_SetString(j, "game", Cvar_String("com_protocolname"));
+	JSON_SetNumber(j, "protocol", PROTOCOL_VERSION);
+	JSON_SetNumber(j, "masters", masters_asked);
+	JSON_SetNumber(j, "masters_answered", BW_MIN(masters_answered, masters_asked));
+	JSON_SetNumber(j, "pending", pending);
+	JSON_SetBool(j, "refreshing", pending > 0 || cl.realtime - sb_refreshed_at < 1.5);
+	JSON_SetBool(j, "connected", cl.state == ca_active);
+	JSON_SetString(j, "server", cl.state >= ca_loading ? cl.servername : "");
+	JSON_Set(j, "servers", arr);
+	sb_reply(out, j);
+}
+
+static host_t *sb_find(const char *s)
+{
+	netadr_t a;
+	return sb_valid_addr(s) && NET_StringToAdr(s, &a, PORT_SERVER) ? find_host(&a) : NULL;
+}
+
+/* one server's players and rules; asks it again when the list only had
+ * its info reply or the status is stale */
+static void sb_details(const char *addr, strbuf_t *out)
+{
+	host_t *h = sb_find(addr);
+	if (!h) {
+		SB_AppendStr(out, "{\"ok\":false,\"error\":\"unknown server\"}");
+		return;
+	}
+	if ((!h->status || cl.realtime - h->sent > 5) && cl.realtime - h->sent > 1)
+		query(h);
+	json_t *j = h->ping >= 0 ? sb_row(h) : JSON_New(JSON_OBJECT);
+	JSON_SetBool(j, "ok", true);
+	JSON_SetBool(j, "answered", h->ping >= 0);
+	JSON_Set(j, "player_list", sb_players(h));
+	json_t *rules = JSON_New(JSON_OBJECT);
+	for (const char *p = h->info; *p == '\\';) {
+		const char *k = p + 1, *ke = strchr(k, '\\'), *ve;
+		char key[64], val[256];
+		if (!ke)
+			break;
+		ve = strchr(ke + 1, '\\');
+		if (!ve)
+			ve = ke + 1 + strlen(ke + 1);
+		Str_Copy(key, k, BW_MIN(sizeof(key), (size_t)(ke - k + 1)));
+		Str_Copy(val, ke + 1, BW_MIN(sizeof(val), (size_t)(ve - ke)));
+		if (strcmp(key, "challenge"))
+			JSON_SetString(rules, key, val);
+		p = ve;
+	}
+	JSON_Set(j, "rules", rules);
+	sb_reply(out, j);
+}
+
+void CL_MasterNoteConnect(const netadr_t *a)
+{
+	if (a->type != NA_IP4 && a->type != NA_IP6)
+		return;
+	const char *addr = NET_AdrToString(a);
+	sb_list_put(sb_history, addr, true, BW_CLAMP(sb_history_max->ivalue, 1, 100));
+	host_t *h = find_host(a);
+	if (h)
+		h->src |= SRC_HISTORY;
+}
+
+/* sb_connect:<addr>[ <password>] */
+static void sb_connect(const char *arg, strbuf_t *out)
+{
+	char addr[80], canon[80], pass[128] = "";
+	const char *sp = strchr(arg, ' ');
+	Str_Copy(addr, arg, sp ? BW_MIN(sizeof(addr), (size_t)(sp - arg + 1)) : sizeof(addr));
+	if (sp)
+		Str_Copy(pass, sp + 1, sizeof(pass));
+	if (!sb_canon(addr, canon, sizeof(canon))[0] || strpbrk(pass, "\\\";\n")) {
+		SB_AppendStr(out, "{\"ok\":false,\"error\":\"bad address\"}");
+		return;
+	}
+	Cvar_Set("password", pass);
+	Cbuf_AddText(va("connect %s\n", canon));
+	sb_join.active = true;
+	sb_join.at = cl.realtime;
+	Str_Copy(sb_join.addr, canon, sizeof(sb_join.addr));
+	SB_AppendStr(out, "{\"ok\":true}");
+}
+
+static void sb_favorite(const char *arg, strbuf_t *out, int mode)
+{
+	char canon[80];
+	if (!sb_canon(arg, canon, sizeof(canon))[0]) {
+		SB_AppendStr(out, "{\"ok\":false,\"error\":\"bad address\"}");
+		return;
+	}
+	bool on = mode < 0 ? !sb_list_has(sb_favorites, canon) : mode > 0;
+	sb_list_put(sb_favorites, canon, on, 200);
+	if (on)
+		sb_mark(canon, SRC_FAVORITE);
+	else {
+		host_t *h = sb_find(canon);
+		if (h)
+			h->src &= ~SRC_FAVORITE;
+	}
+	SB_Printf(out, "{\"ok\":true,\"favorite\":%s,\"addr\":\"%s\"}", on ? "true" : "false", canon);
+}
+
+bool CL_ServerBrowserQuery(const char *req, strbuf_t *out)
+{
+	if (!strncmp(req, "sb_refresh", 10)) {
+		sb_refresh(req[10] == ':' ? req + 11 : "all");
+		SB_AppendStr(out, "ok");
+	} else if (!strcmp(req, "sb_list") || !strcmp(req, "sb_list:all")) {
+		sb_getlist(out, req[7] == ':');
+	} else if (!strncmp(req, "sb_details:", 11)) {
+		sb_details(req + 11, out);
+	} else if (!strncmp(req, "sb_ping:", 8)) {
+		host_t *h = sb_find(req + 8);
+		if (h)
+			query(h);
+		SB_AppendStr(out, h ? "ok" : "unknown");
+	} else if (!strncmp(req, "sb_connect:", 11)) {
+		sb_connect(req + 11, out);
+	} else if (!strncmp(req, "sb_favorite:", 12)) {
+		sb_favorite(req + 12, out, -1);
+	} else if (!strncmp(req, "sb_add:", 7)) {
+		sb_favorite(req + 7, out, 1);
+	} else if (!strcmp(req, "sb_clearhistory")) {
+		Cvar_Set(sb_history->name, "");
+		sb_forget(SRC_HISTORY);
+		SB_AppendStr(out, "ok");
+	} else {
+		return false;
+	}
+	return true;
+}
+
+/* sb_query <request>: what the page would get, for tests and the console */
+static void SbQuery_f(int argc, const char **argv)
+{
+	strbuf_t out = {0};
+	if (argc < 2 || !CL_ServerBrowserQuery(argv[1], &out))
+		Con_Printf("usage: sb_query \"sb_refresh[:tab]|sb_list|sb_details:<addr>|...\"\n");
+	else
+		Con_Printf("%s\n", out.data ? out.data : "");
+	SB_Free(&out);
+}
+
+static void CL_InitServerBrowser(void)
+{
+	sb_favorites = Cvar_Get("sb_favorites", "", CVAR_ARCHIVE, "The server browser's favourite servers (ip:port, space separated)");
+	sb_history = Cvar_Get("sb_history", "", CVAR_ARCHIVE, "Servers you joined, newest first (ip:port, space separated)");
+	sb_history_max = Cvar_Get("sb_history_max", "30", CVAR_ARCHIVE, "How many servers the browser's history keeps");
+	Cvar_Get("password", "", CVAR_USERINFO, "The password sent to a server that asks for one");
+	Cmd_AddD("sb_query", SbQuery_f, "sb_query \"<request>\": run a server browser request and print the reply");
+}

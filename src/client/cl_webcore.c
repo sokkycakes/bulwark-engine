@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef enum { ROUTE_NONE, ROUTE_TITLE, ROUTE_LOBBY, ROUTE_PAUSE, ROUTE_ARENA, ROUTE_ONLINE, ROUTE_CUSTOM } route_t;
+typedef enum { ROUTE_NONE, ROUTE_TITLE, ROUTE_LOBBY, ROUTE_PAUSE, ROUTE_ARENA, ROUTE_ONLINE, ROUTE_SERVERS, ROUTE_CUSTOM } route_t;
 
 static cvar_t *webcore_menu_url, *webcore_menumap, *webcore_menu_enabled, *webcore_pause_url, *webcore_menu_music;
 static cvar_t *forceqmenu;
@@ -180,7 +180,8 @@ static void music_next(void)
 static void music_frame(void)
 {
 	bool want = wc.plugin && webcore_menu_music->ivalue && !in_game() &&
-	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE || EM_Active() || idle());
+	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE || wc.route == ROUTE_SERVERS ||
+	             EM_Active() || idle());
 	if (want && !S_MusicPlaying()) {
 		wc.music_on = true;
 		music_next();
@@ -280,6 +281,10 @@ static void MenuWebcore_f(int argc, const char **argv)
 		open_menu("fte://data/web/lobby-menu/index.html", ROUTE_LOBBY);
 	} else if (!Str_ICmp(a, "online")) {
 		open_menu("fte://data/web/online/index.html", ROUTE_ONLINE);
+	} else if (!Str_ICmp(a, "servers")) {
+		open_menu(argc > 2 ? va("fte://data/web/server-browser/index.html?%s", argv[2])
+		                   : "fte://data/web/server-browser/index.html",
+		          ROUTE_SERVERS);
 	} else if (!Str_ICmp(a, "pause")) {
 		open_menu(webcore_pause_url->string, ROUTE_PAUSE);
 	} else if (!Str_ICmp(a, "arena")) {
@@ -358,6 +363,10 @@ void WC_Frame(void)
 		if (!wc.starts_game && idle() && !Lobby_Active())
 			wc.title_pending = true;
 	}
+	/* the server browser can be open over a game; it gives way once the
+	 * game it joined is up */
+	if (wc.route == ROUTE_SERVERS && wc.prevstate != ca_active && cl.state == ca_active)
+		close_menu();
 	if (wc.prevstate != ca_disconnected && cl.state == ca_disconnected) {
 		wc.title_pending = true;
 		wc.backdrop = false;
@@ -558,7 +567,7 @@ const qc_builtin_t cl_webcore_builtins[] = {
 static const char *const cbuf_allowed[] = {
 	"menu_options", "quit", "lobby_create_lan", "lobby_create_online", "menu_webcore_lobby", "menu_lobby_create",
 	"menu_webcore_title", "menu_webcore", "webcore_closemenu", "menu_hostmenu", "menu_changeteam", "menu_callvote",
-	"lobby_close", "disconnect", "menu_webcore online", "ready", "map_restart", "togglemenu", "menu_maps", "menu_newmulti", NULL};
+	"lobby_close", "disconnect", "menu_webcore online", "menu_webcore servers", "ready", "map_restart", "togglemenu", "menu_maps", "menu_newmulti", NULL};
 
 static void reply_ok(strbuf_t *out, bool ok, const char *error)
 {
@@ -775,6 +784,8 @@ static void query(int view, const char *req, strbuf_t *out)
 		q_arena_action(req + 13, out);
 	else if (!strncmp(req, "lobby_join:", 11))
 		q_lobby_join(req + 11, out);
+	else if (!strncmp(req, "sb_", 3) && CL_ServerBrowserQuery(req, out))
+		;
 	else if (!SF_Query(req, out))
 		Lobby_Query(req, out); /* the lobby's requests; anything else replies "" */
 }
@@ -842,7 +853,7 @@ void WC_Init(void)
 	Cvar_Get("slint_ui", "0", 0, NULL);
 	Cvar_Get("slint_hud", "0", 0, NULL);
 	Cmd_AddD("menu_webcore", MenuWebcore_f,
-	         "menu_webcore [title|lobby|pause|arena <team|class|hero>|<url>]: open an HTML menu page");
+	         "menu_webcore [title|lobby|online|servers [query]|pause|arena <team|class|hero>|<url>]: open an HTML menu page");
 	Cmd_AddD("menu_webcore_title", MenuWebcoreTitle_f, "Open the title page");
 	Cmd_AddD("menu_webcore_lobby", MenuWebcoreLobby_f, "Open the lobby page");
 	Cmd_AddD("menu_lobby_create", MenuLobbyCreate_f, "Create a LAN lobby and show it");

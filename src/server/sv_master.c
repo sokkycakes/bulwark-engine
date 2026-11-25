@@ -57,6 +57,19 @@ static void build_info(char *out, size_t size, const char *challenge)
 	         Cvar_String("com_protocolname"), FS_GameDir(), PROTOCOL_VERSION, hostname->string, sv.mapname, n, bots,
 	         svs.maxclients, sv.mapname, svs.maxclients, PROTOCOL_NAME,
 	         Cvar_String("sv_password")[0] && strcmp(Cvar_String("sv_password"), "none") ? 1 : 0);
+	/* what a server browser shows besides the counts: the game mode, and
+	 * for Stiletto's duels the arena's state (docs/spec/serverbrowser.md) */
+	static const char *const extra[] = {"g_gametype", "arena_state", "arena_set", "sv_region", NULL};
+	for (int i = 0; extra[i]; i++) {
+		char v[128];
+		/* the mode is a plain cvar in most games: Stiletto's g_gametype */
+		if (!SV_InfoGet(sv.serverinfo, extra[i], v, sizeof(v))[0] && !strcmp(extra[i], "g_gametype"))
+			Str_Copy(v, Cvar_String("g_gametype"), sizeof(v));
+		if (v[0] && !strchr(v, '\\')) {
+			size_t len = strlen(out);
+			snprintf(out + len, size - len, "\\%s\\%s", extra[i], v);
+		}
+	}
 	if (challenge && *challenge && !strchr(challenge, '\\') && !strchr(challenge, '"')) {
 		size_t len = strlen(out);
 		snprintf(out + len, size - len, "\\challenge\\%s", challenge);
@@ -81,8 +94,27 @@ bool SV_MasterConnectionless(const netadr_t *from, int argc, const char **argv)
 	}
 	if (!strcmp(c, "getstatus") || !strcmp(c, "status")) {
 		strbuf_t sb = {0};
+		char pub[4096], extra[4096];
 		build_info(info, sizeof(info), argc > 1 ? argv[1] : NULL);
-		SB_Printf(&sb, "statusResponse\n%s\n", info);
+		/* status also carries the rest of the public serverinfo, as the
+		 * DarkPlaces and Quake 3 status replies do: the browser's rules */
+		SV_InfoPublic(sv.serverinfo, pub, sizeof(pub));
+		extra[0] = 0;
+		for (const char *p = pub; *p == '\\';) {
+			const char *k = p + 1, *ke = strchr(k, '\\'), *ve;
+			char key[64], v[8];
+			if (!ke)
+				break;
+			ve = strchr(ke + 1, '\\');
+			if (!ve)
+				ve = ke + 1 + strlen(ke + 1);
+			Str_Copy(key, k, BW_MIN(sizeof(key), (size_t)(ke - k + 1)));
+			/* keys build_info already gave win */
+			if (!SV_InfoGet(info, key, v, sizeof(v))[0] && strlen(extra) + (size_t)(ve - p) < 1024)
+				strncat(extra, p, (size_t)(ve - p));
+			p = ve;
+		}
+		SB_Printf(&sb, "statusResponse\n%s%s\n", info, extra);
 		for (int i = 0; i < svs.maxclients && sb.len < NET_MAX_PACKET - 100; i++) {
 			client_t *cl = &svs.clients[i];
 			if (cl->state != CS_FREE)
