@@ -538,6 +538,19 @@ void IN_ControllerAdded(int dev)
 		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
 }
 
+#ifdef BW_UI_NATIVE
+/* in_paddefaults: every pad button back to the layout above, for the
+ * Controller page's "Reset pad layout" (and after cfg_reset, whose
+ * unbindall leaves a console's pad with nothing bound) */
+static void PadDefaults_f(int argc, const char **argv)
+{
+	for (int k = K_GP_DPAD_UP; k <= K_GP_RTRIGGER; k++)
+		Key_SetBinding(k, "");
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
+		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
+}
+#endif
+
 void IN_ControllerRemoved(int dev)
 {
 	memset(joyaxis, 0, sizeof(joyaxis));
@@ -740,6 +753,9 @@ void IN_Init(void)
 	Cmd_Add("unbindall", Unbindall_f);
 	Cmd_Add("bindlist", Bindlist_f);
 	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");
+#ifdef BW_UI_NATIVE
+	Cmd_AddD("in_paddefaults", PadDefaults_f, "in_paddefaults: bind the controller's buttons to the default pad layout");
+#endif
 	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
 	Cmd_Add("impulse", Impulse_f);
 #define ADD(n)                                                                                                         \
