@@ -34,6 +34,7 @@ static void Cvar_Assign(cvar_t *v, const char *value)
 	v->value = (float)atof(value);
 	v->ivalue = atoi(value);
 	v->modified++;
+	v->changed_at = cvar_generation;
 	Mem_Free(old);
 	if (v == developer_cvar)
 		developer = v->ivalue;

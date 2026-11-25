@@ -957,19 +957,30 @@ bool SV_ConsoleCommand(const char *line)
 	return sv.vm->globals[OFS_RETURN].f != 0;
 }
 
+/* a line for the progs' ConsoleCmd, registered or not; false when there is
+ * no game or it didn't take the command */
+bool SV_GameCommand(const char *line)
+{
+	int f;
+	if (!sv.active || !sv.vm || !(f = QC_FindFunction(sv.vm, "ConsoleCmd")))
+		return false;
+	sv.vm->globals[OFS_PARM(0)].i = QC_NewString(sv.vm, line);
+	sv.vm->argc = 1;
+	QC_SetGInt(sv.vm, G.self, 0);
+	if (!QC_Execute(sv.vm, f))
+		return true;
+	return sv.vm->globals[OFS_RETURN].f != 0;
+}
+
 /* "sv <command>": hands the rest of the line to the progs' ConsoleCmd,
  * registered or not, as Nuclide's tools do with localcmd("sv ...") */
 static void SV_Cmd_f(int argc, const char **argv)
 {
-	int f;
-	if (argc < 2 || !sv.active || !sv.vm || !(f = QC_FindFunction(sv.vm, "ConsoleCmd"))) {
+	if (argc < 2 || !sv.active || !sv.vm || !QC_FindFunction(sv.vm, "ConsoleCmd")) {
 		Con_Printf("sv <command>: runs a command of the server game\n");
 		return;
 	}
-	sv.vm->globals[OFS_PARM(0)].i = QC_NewString(sv.vm, Cmd_Args());
-	sv.vm->argc = 1;
-	QC_SetGInt(sv.vm, G.self, 0);
-	if (QC_Execute(sv.vm, f) && sv.vm->globals[OFS_RETURN].f == 0)
+	if (!SV_GameCommand(Cmd_Args()))
 		Con_Printf("server game: unknown command \"%s\"\n", argv[1]);
 }
 
@@ -1007,6 +1018,33 @@ static void SV_Status_f(int argc, const char **argv)
 		live += !sv.vm->edicts[e].free;
 	Con_Printf("map %s, time %.2f, %d frames, %d/%d entities, %d QC strings\n", sv.mapname, sv.time, sv.frames,
 	           live, sv.vm->max_edicts, QC_LiveStrings());
+	/* who is on, as FTE's status lists them */
+	int players = 0, bots = 0, spectators = 0;
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state == CS_FREE)
+			continue;
+		if (c->spectator)
+			spectators++;
+		else if (c->bot)
+			bots++;
+		else
+			players++;
+	}
+	Con_Printf("host %s, port %d, %d players, %d bots, %d spectators, %d slots%s\n", Cvar_String("hostname"),
+	           NET_ServerPort(), players, bots, spectators, svs.maxclients, SV_JoinPassword()[0] ? ", password set" : "");
+	if (players + bots + spectators) {
+		int fr = QC_FieldOfs(sv.vm, "frags");
+		Con_Printf("slot name             state    frags address\n");
+		for (int i = 0; i < svs.maxclients; i++) {
+			client_t *c = &svs.clients[i];
+			if (c->state == CS_FREE)
+				continue;
+			Con_Printf("%4d %-16s %-8s %5d %s%s\n", i + 1, c->name,
+			           c->state == CS_SPAWNED ? "spawned" : "loading", fr >= 0 ? (int)QC_EdictFields(sv.vm, c->edict)[fr].f : 0,
+			           c->bot ? "bot" : NET_AdrToString(&c->chan.remote), c->spectator ? " (spectator)" : "");
+		}
+	}
 }
 
 static void SV_Edicts_f(int argc, const char **argv)

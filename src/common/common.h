@@ -61,6 +61,9 @@ void Host_SetLoadingHook(loading_hook_fn fn);
 void Host_Loading(const char *stage, const char *map, float frac);
 /* a second receiver of all output, for the console log file */
 void Con_SetLogHook(con_hook_fn fn);
+/* stdout gets plain text: no ^-colour codes or ^[link^] markup (a dedicated
+ * server's terminal) */
+void Con_SetPlainStdout(bool plain);
 void Con_Printf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_DPrintf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_Print(const char *text);

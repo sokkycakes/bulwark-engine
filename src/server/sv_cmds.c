@@ -272,13 +272,17 @@ bool SV_SetServerinfoKey(const char *key, const char *value)
 	return true;
 }
 
+/* "serverinfo" lists the running server's keys, as in QuakeWorld;
+ * "serverinfo <key> <value>" sets one and tells the clients */
 static void Serverinfo_f(int argc, const char **argv)
 {
-	if (argc < 3) {
-		Con_Printf("usage: %s <key> <value>\n", argv[0]);
+	if (!need_server())
 		return;
-	}
-	if (need_server())
+	if (argc < 3)
+		SV_PrintInfo(sv.serverinfo);
+	else if (argv[1][0] == '*')
+		Con_Printf("%s: keys starting with * are the engine's\n", argv[0]);
+	else
 		SV_SetServerinfoKey(argv[1], argv[2]);
 }
 
@@ -943,9 +947,47 @@ static void Lightstyle_f(int argc, const char **argv)
 	SV_BroadcastLightstyle(i, argv[2]);
 }
 
+/* sv_password, or on a dedicated server FTE's "password"; "none" is no
+ * password. A client's "password" is the userinfo key it sends to servers
+ * it joins (the server browser sets it), so a listen server doesn't read
+ * it: a host who once joined a locked server would lock their own game. */
+const char *SV_JoinPassword(void)
+{
+	const char *names[2] = {"sv_password", "password"};
+	for (int i = 0; i < (sv_dedicated ? 2 : 1); i++) {
+		const char *p = Cvar_String(names[i]);
+		if (p[0] && strcmp(p, "none"))
+			return p;
+	}
+	return "";
+}
+
+void SV_PrintInfo(const char *info)
+{
+	const char *p = info;
+	Con_Printf("Server info settings:\n");
+	while (*p == '\\') {
+		const char *k = p + 1, *ke = strchr(k, '\\'), *v, *ve;
+		if (!ke)
+			break;
+		v = ke + 1;
+		ve = strchr(v, '\\');
+		if (!ve)
+			ve = v + strlen(v);
+		Con_Printf("%-19.*s %.*s\n", (int)(ke - k), k, (int)(ve - v), v);
+		p = ve;
+	}
+}
+
 void SV_InitCommands(void)
 {
 	sv_password = Cvar_Get("sv_password", "", 0, "Password players must set (setinfo password) to join");
+	/* FTE's names (see SV_JoinPassword for "password") */
+	if (sv_dedicated)
+		Cvar_Get("password", "", 0, "Password players must set (setinfo password) to join, as sv_password");
+	Cvar_Get("spectator_password", "", 0, "Password spectators must give (setinfo spectator <password>) to join");
+	Cvar_Get("maxspectators", "8", CVAR_SERVERINFO, "Spectators (userinfo spectator set) allowed at once; they use player slots");
+	Cmd_AddD("serverinfo", Serverinfo_f, "serverinfo [key value]: show the server's info, or set a key");
 	rcon_password = Cvar_Get("rcon_password", "", 0, "Remote console password; empty turns rcon off");
 	rcon_level = Cvar_Get("rcon_level", "50", 0, "The execution level rcon_password gives (see restrict)");
 	sv_rcon_maxfailures = Cvar_Get("sv_rcon_maxfailures", "5", 0, "Wrong rcon passwords before an address is locked out for a minute");

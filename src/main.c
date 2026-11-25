@@ -55,7 +55,8 @@ static bool GamePreHook(const char *line, int argc, const char **argv)
 static void usage(void)
 {
 	Con_Printf("usage: bulwark [-basedir dir] [-game dir]... [-enginedata dir] [-userdir dir] [-headless] [-frames n] [-width w] [-height h]\n"
-	           "               [-window] [+command args]...\n");
+	           "               [-window] [+command args]...\n"
+	           "       bulwark -dedicated [maxplayers] [-port n] ...: run a dedicated server (see bulwark-ded -h)\n");
 }
 
 /* Bulwark Live: whether this game is in a match's game */
@@ -227,6 +228,12 @@ int main(int argc, char **argv)
 	bool fullscreen = false, size_given = false;
 	strbuf_t cmds = {0};
 
+#ifndef __EMSCRIPTEN__
+	/* "-dedicated", as in FTE: run as a dedicated server, no window */
+	for (int i = 1; i < argc; i++)
+		if (!strcmp(argv[i], "-dedicated"))
+			return Ded_Main(argc, argv);
+#endif
 	Plat_Init(&argc, &argv);
 	basedir = Plat_DefaultBaseDir();
 
