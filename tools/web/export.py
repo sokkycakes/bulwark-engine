@@ -35,7 +35,7 @@ DEFAULT_EXCLUDES = [
     ".git", ".git/*", "*/.git/*", ".svn/*", "*/.DS_Store", ".DS_Store", "Thumbs.db",
     "mapsrc/*", "modelsrc/*", "*.blend", "*.blend1", "*.psd", "*.xcf", "*.kra",
     "*.qc", "*.qh", "*.src", "*.pyc", "__pycache__/*", "*/__pycache__/*",
-    "*.autosave.*", "*.bak", "*~", "*.py", "*.prt", "*.srf", "*/autosave/*", "autosave/*",
+    "*.autosave.*", "*.bak", "*~", "*.py", "*.prt", "*.srf", "*.lno", "*/autosave/*", "autosave/*",
     # what a desktop run leaves behind
     "*.log", "screenshots/*", "condump*.txt", "qconsole.log",
 ]

@@ -116,6 +116,23 @@ static bool Host_Frame(void)
 	}
 	if (!host_headless && !VID_PumpEvents())
 		return false;
+#ifdef __EMSCRIPTEN__
+	/* a closing tab can't wait for the save to reach IndexedDB, so settings
+	 * are saved a moment after they change rather than only on the way out */
+	if (host_maxframes < 0) {
+		static int seen;
+		static double changed_at, saved_at;
+		double t = Sys_Seconds();
+		if (cfg_modified != seen) {
+			seen = cfg_modified;
+			changed_at = t;
+		} else if (changed_at > 0 && t - changed_at > 0.75 && t - saved_at > 2) {
+			Cfg_SaveIfModified();
+			changed_at = 0;
+			saved_at = t;
+		}
+	}
+#endif
 	Cbuf_Execute();
 	/* the saved video mode applies once the configs have run, unless
 	 * the command line chose one */

@@ -271,18 +271,19 @@ test("F11 and vid_fullscreen go fullscreen; Esc in the menu leaves it", async (t
 
 test("settings are saved and come back on the next visit", async (t) => {
 	let page = await t.play();
-	// as Nuclide's options menu does: the config, and the player's profile
-	// (configs/Default.cfg), which it loads after the config
+	// changed as a player would, with no save command: the page has to keep
+	// the config and the game's own profile config (Nuclide loads
+	// configs/Default.cfg after the config), since a closing tab can't wait
 	await command(page, "sensitivity 7.25");
-	await command(page, "cfg_save");
-	await command(page, "cfg_save Default.cfg");
-	await sleep(2500); // the page saves /user to IndexedDB shortly after a write
+	await command(page, "fov 115");
+	await sleep(3500); // saved a moment after the change, then to IndexedDB
 	page = await t.reopen(page);
 	await t.playOn(page);
-	await command(page, "sensitivity");
+	await command(page, "sensitivity; fov");
 	await sleep(300);
 	const log = await logText(page);
 	t.check(/sensitivity.*7\.25/.test(log), "sensitivity 7.25 after reloading the page");
+	t.check(/\bfov\b.*115/.test(log), "field of view 115 after reloading the page");
 });
 
 test("a controller starts the game from the Play card and plays it", async (t) => {

@@ -127,10 +127,29 @@ Browser players type `connect myserver.example` in the console, or open the
 page with `?connect=myserver.example`. Desktop players connect to the same
 address as before.
 
+### Lobbies (Stiletto's Create Lobby and Join Lobby)
+
+A lobby hosted in the desktop game uses two ports: the lobby's (27501) and,
+once the host starts, the game's (27500). The host runs one relay for both:
+
+```sh
+python3 tools/web/wsrelay.py --listen 27500 --listen 27501
+```
+
+Browser players open Join Lobby and type the host's address in Address/IP.
+They see the lobby, chat, ready up, and join the game when the host starts
+it, just as desktop players do; desktop players join the same lobby as
+before.
+
+- Room codes only reach lobbies on the host's own network, so in a browser
+  they don't find anything; the page says to join by address instead.
+- A lobby created in a browser works for playing alone, and its page says
+  that others can't join it.
+
 - For a page on https, put the relay behind a TLS proxy on the same port,
   since browsers refuse `ws://` from https pages. With Caddy:
-  `myserver.example:27500 { reverse_proxy 127.0.0.1:27501 }`, and run the
-  relay with `--listen 127.0.0.1:27501`.
+  `myserver.example:27500 { reverse_proxy 127.0.0.1:28500 }`, and run the
+  relay with `--listen 127.0.0.1:28500 --server 127.0.0.1:27500`.
 - `--origin https://mygame.example` lets only your own page join. Repeat it
   for more origins.
 - `--max 64` caps the number of browser players.
@@ -189,8 +208,9 @@ screen.
 - **No LAN discovery or master server lists.** A page can't broadcast or
   reach UDP masters, so the server browser stays empty on the web. Join with
   `connect` or `?connect=`, or give players a link.
-- **No hosting from the browser.** A listen server in a tab only takes
-  players from the same tab. Use `bulwark-ded` with the relay.
+- **No hosting from the browser.** A listen server or lobby in a tab only
+  takes players from the same tab. Host in the desktop game or `bulwark-ded`,
+  with the relay.
 - **A background tab pauses.** Browsers stop the animation frame in hidden
   tabs, so the game stops too, and an online player times out after a while.
 - **No plugins at run time.** Plugins have to be linked in when the engine

@@ -761,10 +761,21 @@ static void CfgSave_f(int argc, const char **argv)
 	Cfg_Save(cfg_name(argc, argv, false));
 }
 
+/* the config a game loaded by name (Nuclide's profiles: cfg_load
+ * "Default.cfg"), which it runs after config.cfg and saves itself only when
+ * its menu shuts down */
+static char cfg_loaded[256];
+
 void Cfg_SaveIfModified(void)
 {
-	if (cfg_save_auto && cfg_save_auto->ivalue && cfg_saved_at != cfg_modified)
+	if (cfg_save_auto && cfg_save_auto->ivalue && cfg_saved_at != cfg_modified) {
 		Cfg_Save(cfg_name(1, NULL, false));
+		/* a closing browser tab never reaches that shutdown, so the game's
+		 * own config is kept up to date too, or it would undo the change
+		 * on the next start */
+		if (cfg_loaded[0])
+			Cfg_Save(cfg_loaded);
+	}
 }
 
 /* back to the engine and game defaults: cvars, binds, then default.cfg */
@@ -788,7 +799,12 @@ static void exec_defaults(void)
 /* cfg_load [name]: the defaults, then the config */
 static void CfgLoad_f(int argc, const char **argv)
 {
-	const char *name = cfg_name(argc, argv, true);
+	char name[256];
+	Str_Copy(name, cfg_name(argc, argv, true), sizeof(name));
+	/* remembered even before it exists: Nuclide loads its profile config
+	 * first and writes it a moment later */
+	if (argc >= 2 && Str_ICmp(name, cfg_name(1, NULL, true)))
+		Str_Copy(cfg_loaded, name, sizeof(cfg_loaded));
 	if (!FS_FileExists(name)) {
 		Con_Printf("no config named %s\n", name);
 		return;

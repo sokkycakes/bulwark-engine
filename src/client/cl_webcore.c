@@ -294,6 +294,16 @@ static void MenuLobbyCreate_f(int argc, const char **argv)
 }
 static void CloseMenu_f(int argc, const char **argv) { close_menu(); }
 
+/* the pause page's CHANGE TEAM: the game's own team selector (Stiletto's
+ * duel opens its arena page from it, with JOIN MATCH), over the game */
+static void MenuChangeteam_f(int argc, const char **argv)
+{
+	if (!in_game())
+		return;
+	close_menu();
+	Cbuf_AddText("showTeamSelectionMenu\n");
+}
+
 static void PlugLoadWebcore(void) { wc.plugin = true; }
 
 /* togglemenu, when the game uses these menus; false leaves it to the others */
@@ -821,6 +831,7 @@ void WC_Init(void)
 	Cmd_AddD("menu_webcore_lobby", MenuWebcoreLobby_f, "Open the lobby page");
 	Cmd_AddD("menu_lobby_create", MenuLobbyCreate_f, "Create a LAN lobby and show it");
 	Cmd_AddD("webcore_closemenu", CloseMenu_f, "Close the HTML menu page");
+	Cmd_AddD("menu_changeteam", MenuChangeteam_f, "Close the menu page and open the game's team selection");
 	Cmd_AddD("webcore_query", WebcoreQuery_f, "webcore_query \"<request>\": print the bridge's reply to a page request");
 	UI_SetQueryHandler(query);
 	R_SetPicHook(pic_hook);

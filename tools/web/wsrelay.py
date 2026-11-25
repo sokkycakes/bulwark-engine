@@ -12,7 +12,17 @@ server.
     python3 tools/web/wsrelay.py --listen 27500 --server 127.0.0.1:27500
 
 Browser players then type `connect <host>` (or `connect <host>:27500`) as
-desktop players do. For an https page, put the relay behind a TLS proxy
+desktop players do.
+
+A desktop player hosting a lobby (Stiletto's Create Lobby) uses two ports:
+the lobby's (27501) and the game's (27500). Give --listen once for each;
+each port is passed to the same port of --server's machine:
+
+    python3 tools/web/wsrelay.py --listen 27500 --listen 27501
+
+Browser players then join the lobby with the host's address.
+
+For an https page, put the relay behind a TLS proxy
 (Caddy, nginx) on the same port, since browsers refuse ws:// from https.
 
 One UDP socket per browser player, so the server sees each as its own
@@ -198,20 +208,29 @@ def parse_addr(s, default_port):
 
 async def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--listen", default="27500", help="[address:]port for WebSockets (default 27500)")
-    ap.add_argument("--server", default="127.0.0.1:27500", help="the game server's UDP address (default 127.0.0.1:27500)")
+    ap.add_argument("--listen", action="append", default=[],
+                    help="[address:]port for WebSockets (default 27500); repeat for more ports")
+    ap.add_argument("--server", default="127.0.0.1",
+                    help="the game's UDP address: host[:port] (default 127.0.0.1, the same port as --listen)")
     ap.add_argument("--origin", action="append", default=[],
                     help="only pages from this origin may join (https://example.com); repeat for more")
     ap.add_argument("--max", type=int, default=64, help="most browser players at once (default 64)")
     a = ap.parse_args()
-    lhost, lport = parse_addr(a.listen, 27500) if ":" in a.listen else ("0.0.0.0", int(a.listen))
-    shost, sport = parse_addr(a.server, 27500)
-    server = (socket.gethostbyname(shost), sport)
-    relay = Relay(server, set(a.origin), a.max)
-    srv = await asyncio.start_server(relay.handle, lhost, lport)
-    log("relaying ws://%s:%d/ to udp %s:%d" % (lhost, lport, server[0], server[1]))
-    async with srv:
-        await srv.serve_forever()
+    listens = a.listen or ["27500"]
+    shost, sport = parse_addr(a.server, 0)
+    shost = socket.gethostbyname(shost)
+    if sport and len(listens) > 1:
+        ap.error("with more than one --listen, give --server without a port: each port goes to the same port")
+    clients = set()  # --max counts browser players on every port
+    servers = []
+    for spec in listens:
+        lhost, lport = parse_addr(spec, 27500) if ":" in spec else ("0.0.0.0", int(spec))
+        server = (shost, sport or lport)
+        relay = Relay(server, set(a.origin), a.max)
+        relay.clients = clients
+        servers.append(await asyncio.start_server(relay.handle, lhost, lport))
+        log("relaying ws://%s:%d/ to udp %s:%d" % (lhost, lport, server[0], server[1]))
+    await asyncio.gather(*(srv.serve_forever() for srv in servers))
 
 
 if __name__ == "__main__":

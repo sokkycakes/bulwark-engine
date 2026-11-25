@@ -81,6 +81,7 @@ static struct {
 	int revision;
 	int localseat;
 	char status[128], error[160];
+	char notice[200]; /* shown under the lobby, not an error */
 	char roomcode[8];
 	char map[64];
 	char ruleset[32];
@@ -395,6 +396,7 @@ static json_t *local_snapshot(void)
 	JSON_SetString(j, "phase", phase_names[L.phase]);
 	JSON_SetString(j, "status", L.status);
 	JSON_SetString(j, "error", L.error);
+	JSON_SetString(j, "notice", L.phase != LOBBY_IDLE ? L.notice : "");
 	JSON_SetString(j, "roomCode", L.roomcode);
 	JSON_SetString(j, "map", active ? L.map : "");
 	JSON_SetNumber(j, "max", L.max);
@@ -547,6 +549,7 @@ static void new_session(void)
 	L.sid = random32();
 	L.max = BW_CLAMP(lobby_maxplayers->ivalue, 1, LOBBY_SEATS);
 	L.error[0] = 0;
+	L.notice[0] = 0;
 	Str_Copy(L.map, lobby_defaultmap->string, sizeof(L.map));
 	Str_Copy(L.ruleset, *lobby_defaultruleset->string ? lobby_defaultruleset->string : "DUEL", sizeof(L.ruleset));
 	Str_Copy(L.timelimit, "0", sizeof(L.timelimit));
@@ -575,12 +578,20 @@ static void LobbyCreate_f(int argc, const char **argv)
 	if (!strcmp(L.network, "online") && Live_Connected()) {
 		/* the room code is the Live party's; Lobby_Frame picks it up */
 		Cbuf_InsertText(va("live_party %d 1\n", L.max));
-	} else if (!strcmp(L.network, "online")) {
+	}
+#ifdef __EMSCRIPTEN__
+	/* a browser tab can't take connections: the lobby and its game are
+	 * this player's alone, and a room code would lead nobody here */
+	Str_Copy(L.notice, "This lobby is hosted in your browser, so others can't join it. "
+		"To play together, join a lobby hosted in the desktop game.", sizeof(L.notice));
+#else
+	else if (!strcmp(L.network, "online")) {
 		static const char letters[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 		for (int i = 0; i < 6; i++)
 			L.roomcode[i] = letters[rand() % (int)(sizeof(letters) - 1)];
 		L.roomcode[6] = 0;
 	}
+#endif
 	L.host = true;
 	L.localseat = 0;
 	L.seats[0].used = true;
@@ -642,7 +653,11 @@ static void LobbyJoin_f(int argc, const char **argv)
 			return;
 		}
 		if (!ok) {
+#ifdef __EMSCRIPTEN__
+			close_with("Room codes only work in the desktop game. Ask the host for their address and join with that.");
+#else
 			close_with(va("No lobby with room code %s was found on this network", argv[1]));
+#endif
 			return;
 		}
 		Str_Copy(L.roomcode, argv[1], sizeof(L.roomcode));
