@@ -109,6 +109,42 @@ when the game hangs.
 
 Look at `bulwark.log`, or the serial file, for the engine's output.
 
+### In-match benchmark
+
+The deathmatch rules spawn the local player at once and then ask for the
+hero picker (`showClassSelectionMenu`, sent with `stuffcmd`). Text a server
+stuffs goes to the end of the command buffer, behind any `wait` still
+queued there, so a command line like `+wait 300 +selecthero collier +wait 30
++ui_close all` runs first and the picker opens after it, over a player who
+stands still and dies. (`ui_close all` also closes the HUD view, which makes
+the client game draw a slower HUD of its own.) A benchmark has to use
+`in <seconds> <command>`, which doesn't block the buffer:
+
+```
++set bot_minClients 8 +set sv_cheats 1 +map lqdm1
++in 40 "god 1" +in 45 "god 1" +in 50 "god 1" +in 55 "god 1"
++in 62 "ui_key enter" +in 72 "ui_key enter" +in 74 "god 1"
++in 75 "cmd setpos 1408 -128 28" +in 75 "setang_local 5 200"
+```
+
+`god 1` sets the flag rather than flipping it, so it can be repeated before
+the player has surely spawned (about 40 s after boot in xemu). `ui_key
+enter` presses A on the picker as a player would (the second press does
+nothing once it is closed). The player then stands, invulnerable, in the
+courtyard where the bots fight most, looking across it. Times are wall
+time: under heavy host load the spawn can come later.
+
+Two things make a match slower as it goes on, and neither is the engine's
+to change: the game's `FindXRInput` spawns three NSXRInput entities each
+time a player spawns or changes hero, about 20 a minute with 8 bots, and
+never removes them (on desktop, 36 after 19 s of match time and 69 after
+125 s). Its type test never matches, because it reads the high word of an
+int64 `!=` result, which the VM leaves as the temp held it. The game relies
+on that: its owner test is inverted, and with a full 64-bit write the
+players took each other's XR inputs and the bots stopped scoring kills;
+and sampling the guest with the QEMU monitor (`info registers`) slows it,
+so take profiles in a run whose reports aren't the baseline.
+
 ## Installing on a console
 
 This needs a console that runs unsigned code: one with a softmod (a
@@ -382,6 +418,9 @@ The native UI keeps no heap of its own between frames. Its atlas is about
 - **Settings:** the pages a console can't use are left out of the menu.
   That covers renderer switches, resolutions, the mouse, voice chat,
   teamplay messages, mods, demos, downloads and the media player.
+- **Entity growth:** see "In-match benchmark": the game leaks three
+  entities a spawn. At the rate measured with 8 bots, a match of 15 to 20
+  minutes would fill the 768 entity slots (not yet run that long).
 - **DVD:** a read-only disc saves nothing. Run from the hard disk to keep
   settings.
 - **FATX names:** at most 42 characters (see "Installing on a console").
