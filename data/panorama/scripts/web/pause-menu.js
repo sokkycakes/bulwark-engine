@@ -16,6 +16,10 @@ var PauseMenu = (function ()
 	// and leaving forfeits the set (src/client/cl_setflow.c)
 	var inSet = false;
 	var OFF_IN_SET = { 1: true, 2: true, 3: true };
+	// rows that are off: those above in a set, and Host Menu for anyone whose
+	// game isn't the server (the client game publishes _cl_host,
+	// src/client/vgui_hostmenu.qc, as the WebCore pause page reads it)
+	var off = {};
 	try
 	{
 		var flow = JSON.parse( fte_query( "getflow" ) || "null" );
@@ -26,9 +30,16 @@ var PauseMenu = (function ()
 			var running = st.length > 5 && st[ 5 ] === "0";
 			$( "#Item5" ).GetChild( 0 ).text = running ? "Forfeit Set" : "Leave Set";
 			for ( var k in OFF_IN_SET )
-				$( "#Item" + k ).SetHasClass( "is-off", true );
+				off[ k ] = true;
 		}
 	} catch ( e ) {}
+	try
+	{
+		if ( String( fte_query( "cvar:_cl_host" ) || "" ) === "0" )
+			off[ 1 ] = true;
+	} catch ( e ) {}
+	for ( var o in off )
+		$( "#Item" + o ).SetHasClass( "is-off", true );
 
 	function cbuf( cmd )
 	{
@@ -41,7 +52,7 @@ var PauseMenu = (function ()
 	{
 		if ( index < 0 ) index = 0;
 		if ( index >= COMMANDS.length ) index = COMMANDS.length - 1;
-		while ( inSet && OFF_IN_SET[ index ] )
+		while ( off[ index ] && index < COMMANDS.length - 1 )
 			index += dir || 1;
 		selected = index;
 		for ( var i = 1; i < COMMANDS.length; i++ )
@@ -50,7 +61,7 @@ var PauseMenu = (function ()
 
 	function activate()
 	{
-		if ( inSet && OFF_IN_SET[ selected ] )
+		if ( off[ selected ] )
 			return;
 		COMMANDS[ selected ].forEach( function ( cmd ) { cbuf( cmd ); } );
 	}
@@ -79,7 +90,7 @@ var PauseMenu = (function ()
 			// a clicked button keeps focus and Panorama would activate it on
 			// Enter too; keys go through the handler above only
 			$.GetContextPanel().SetFocus();
-			if ( inSet && OFF_IN_SET[ i ] )
+			if ( off[ i ] )
 				return;
 			select( i );
 			activate();
