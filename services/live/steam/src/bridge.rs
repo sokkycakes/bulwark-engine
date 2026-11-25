@@ -414,7 +414,7 @@ impl Bridge {
             "help" => {
                 println!(
                     "party [max] [open 0|1] [info] | join CODE | leave | open 0|1 | invite ID | list\n\
-                     queue PLAYLIST | cancel | left | card [ID] | status | game NAME | quit"
+                     queue PLAYLIST | cancel | left | card [ID] | guests NAME... | - | status | game NAME | quit"
                 );
                 return true;
             }
@@ -426,6 +426,13 @@ impl Bridge {
             "status" => {
                 self.print_status();
                 return true;
+            }
+            "guests" => {
+                // as a game's hello would name them
+                let guests = args.iter().filter(|g| **g != "-").map(|g| g.to_string()).collect();
+                let game = self.game.clone();
+                let name = self.name.clone();
+                Client::Hello { token: 0, game, name, lan: Vec::new(), guests }
             }
             "party" => Client::PartyCreate {
                 max: arg(0).parse().unwrap_or(4),
@@ -463,7 +470,15 @@ impl Bridge {
             println!("searching {}: stage {}, {} s, {} searching", q.playlist.id, q.stage, q.since.elapsed().as_secs(), q.searching);
         }
         if let Some(m) = &self.matched {
-            println!("match {} on {}, host {}{}", m.id, m.playlist, m.host, if self.match_over { " (left)" } else { "" });
+            let seats: Vec<String> = m.seats.iter().map(|s| format!("{}:{}:{}", s.id, s.slot, s.team)).collect();
+            println!(
+                "match {} on {}, host {}, seats {}{}",
+                m.id,
+                m.playlist,
+                m.host,
+                seats.join(" "),
+                if self.match_over { " (left)" } else { "" }
+            );
         }
     }
 
@@ -876,7 +891,7 @@ impl Bridge {
                     for id in ids {
                         if !got.contains(&id) && self.card_wanted.remove(&id) {
                             let name = self.s.friend_name(steamid(id));
-                            let json = records::Record::default().card_json(id, &name);
+                            let json = id_first(&records::Record::default().card_json(id, &name), id);
                             self.emit(Server::CardInfo { json });
                         }
                     }
@@ -898,7 +913,11 @@ impl Bridge {
         if Some(lobby) == self.joining_party {
             self.joining_party = None;
             if !ok {
-                return self.error(if response == 4 { err::PARTY_FULL } else { err::NO_CODE }, "couldn't join that party");
+                return if response == 4 {
+                    self.error(err::PARTY_FULL, "that party is full")
+                } else {
+                    self.error(err::NO_CODE, "couldn't join that party")
+                };
             }
             // guests count toward the party's size
             let max: usize = self.s.lobby_data(lobby, key::MAX).parse().unwrap_or(16);
@@ -1433,7 +1452,9 @@ impl Bridge {
             self.log(&format!("connect 127.0.0.1:{} to play", self.cfg.tunnel_port));
         }
         let Some(cmd) = cmd else { return };
-        let settings: Vec<String> = m.settings.iter().map(|(k, v)| format!("+set {k} \"{v}\"")).collect();
+        // unquoted, so a shell's word splitting gives one argument each;
+        // values with spaces are left out
+        let settings: Vec<String> = m.settings.iter().filter(|(_, v)| !v.contains(' ')).map(|(k, v)| format!("+set {k} {v}")).collect();
         let sh = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
         let r = std::process::Command::new(sh.0)
             .arg(sh.1)
@@ -1577,10 +1598,11 @@ impl Bridge {
     }
 
     fn my_card(&self) -> String {
-        match self.records.get(&self.my_key(0)) {
+        let json = match self.records.get(&self.my_key(0)) {
             Some(r) => r.card_json(self.me, &self.name),
             None => records::Record::default().card_json(self.me, &self.name),
-        }
+        };
+        id_first(&json, self.me)
     }
 
     fn board_name(&self) -> String {
@@ -1741,6 +1763,19 @@ impl Bridge {
     }
 }
 
+/// A card with "id" as its first member: the engine keeps a card only when
+/// it starts with {"id":N, and serde_json writes members sorted.
+fn id_first(json: &str, id: u32) -> String {
+    let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(json) else { return json.to_string() };
+    m.remove("id");
+    let rest = Value::Object(m).to_string();
+    if rest.len() <= 2 {
+        format!("{{\"id\":{id}}}")
+    } else {
+        format!("{{\"id\":{id},{}", &rest[1..])
+    }
+}
+
 fn split_guests(s: &str) -> Vec<String> {
     s.split('\n').filter(|g| !g.is_empty()).take(wire::MAX_GUESTS).map(|g| g.to_string()).collect()
 }
@@ -1826,6 +1861,14 @@ mod tests {
         for k in ["sets", "completed", "completion", "wins", "losses", "quits", "disconnects", "active_days", "form"] {
             assert_eq!(card[k], want[k], "{k}");
         }
+    }
+
+    #[test]
+    fn cards_start_with_their_id() {
+        let c = id_first(&records::Record::default().card_json(42, "ann"), 42);
+        assert!(c.starts_with("{\"id\":42,"), "{c}");
+        assert!(serde_json::from_str::<Value>(&c).is_ok());
+        assert!(card_from_details(7, "bo", &[]).starts_with("{\"id\":7,"));
     }
 
     #[test]

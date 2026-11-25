@@ -51,7 +51,7 @@ sleep ${STEAM_WAIT:-15}
 kill $CLIENTPID $HOSTPID 2>/dev/null || true
 sleep 0.5
 kill -9 $CLIENTPID $HOSTPID 2>/dev/null || true
-pkill -f "bwlive-steam --steam-lib $BIN" 2>/dev/null || true
+pkill -f "^$BIN/bwlive-steam" 2>/dev/null || true
 pkill -f "sleep 600" 2>/dev/null || true
 kill $HUBPID 2>/dev/null || true
 wait 2>/dev/null || true
