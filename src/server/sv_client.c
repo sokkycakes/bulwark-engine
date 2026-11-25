@@ -1500,6 +1500,16 @@ void SV_ClientsPreThink(void)
 	}
 }
 
+/* time the world skipped (sv_maxticks) still refills movement budgets */
+void SV_ClientsDroppedTime(double t)
+{
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state == CS_SPAWNED)
+			c->cmd_budget = BW_MIN(c->cmd_budget + (float)t, 0.25f);
+	}
+}
+
 void SV_ClientsPostThink(void)
 {
 	qcvm_t *vm = sv.vm;
@@ -1572,6 +1582,10 @@ void SV_SendClientMessages(void)
 		}
 		rate = c->updaterate > 0 ? c->updaterate : 1.0f / sv.frametime;
 		rate = BW_MAX(sv_minupdaterate->value, BW_MIN(rate, sv_maxupdaterate->value));
+#ifdef BW_XBOX
+		/* snapshots between ticks resend little but cost a SendEntity pass */
+		rate = BW_MIN(rate, 1.0f / sv.frametime);
+#endif
 		if (now < c->next_snapshot || !Netchan_CanSend(&c->chan))
 			continue;
 		c->next_snapshot = BW_MAX(c->next_snapshot + 1.0 / rate, now - 0.5 / rate);
