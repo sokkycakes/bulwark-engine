@@ -187,6 +187,7 @@ typedef struct {
 	GLuint *lightmaps;
 	int numlightmaps;
 	int lightmapsize;
+	int lightmaprows;  /* rows uploaded over all pages, when pages are cut shorter (0: all full) */
 	bool deluxe;       /* odd pages hold light directions */
 	rmodel_t *submodels;
 	int numsubmodels;

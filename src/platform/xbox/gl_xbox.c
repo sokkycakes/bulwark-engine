@@ -26,9 +26,12 @@
  *   dxt_xbox.c (gl_xbox_texcompress 0 keeps 16 bits, as world textures
  *   with alpha always do; gl_xbox_texquality 1 keeps 32 bits). Pictures
  *   of 512 x 512 texels or more that nothing mipmaps go to DXT too when
- *   the result is near-lossless (40 dB), at their first draw or the next
- *   upload, so a texture that glGenerateMipmap is about to replace isn't
- *   compressed twice; one that gets updated goes back to 32 bits.
+ *   the result is near-lossless (40 dB over the texels that show), at
+ *   their first draw or the next upload, so a texture that glGenerateMipmap
+ *   is about to replace isn't compressed twice. Smaller pictures, grey
+ *   ones with alpha (font and glyph atlases) and any texture given new
+ *   pixels after its first upload (glTexImage2D again, glTexSubImage2D)
+ *   stay 32-bit; one already compressed goes back to 32 bits for good.
  *   Lightmaps stay 32-bit: their atlas packs unrelated faces into the
  *   same 4x4 blocks, which DXT smears (30 dB on lqdm1).
  * - Vertex buffers live in contiguous memory too. Streamed ones come from a
@@ -389,6 +392,7 @@ typedef struct {
 	GLenum minf, magf, wraps, wrapt;
 	uint8_t *pending; /* level 0 (tw x th RGBA) kept until glGenerateMipmap or the next upload */
 	bool try_dxt;     /* a big picture: compress it from pending unless it gets mipmaps */
+	bool updated;     /* re-specified or sub-updated since it was made: stays 32-bit */
 } xtex_t;
 
 typedef struct {
@@ -761,6 +765,7 @@ static float dxt_psnr(const uint8_t *blocks, const uint8_t *rgba, int w, int h, 
 	int bb = dxt_block_bytes(fmt), bw = (w + 3) / 4, bh = (h + 3) / 4;
 	uint8_t dec[64];
 	double se = 0;
+	size_t shown = 0; /* texels with alpha in the picture or the copy */
 	for (int by = 0; by < bh; by++)
 		for (int bx = 0; bx < bw; bx++, blocks += bb) {
 			if (fmt == FMT_DXT1)
@@ -770,6 +775,11 @@ static float dxt_psnr(const uint8_t *blocks, const uint8_t *rgba, int w, int h, 
 			for (int y = 0; y < 4 && by * 4 + y < h; y++)
 				for (int x = 0; x < 4 && bx * 4 + x < w; x++) {
 					const uint8_t *s = rgba + ((size_t)(by * 4 + y) * w + bx * 4 + x) * 4, *d = dec + (y * 4 + x) * 4;
+					/* fully transparent texels would let a sparse picture
+					   pass on its empty space alone */
+					if (!s[3] && !d[3])
+						continue;
+					shown++;
 					for (int c = 0; c < 3; c++) {
 						int e = (d[c] * d[3] - s[c] * s[3]) / 255;
 						se += e * e;
@@ -777,20 +787,29 @@ static float dxt_psnr(const uint8_t *blocks, const uint8_t *rgba, int w, int h, 
 					se += (d[3] - s[3]) * (d[3] - s[3]);
 				}
 		}
+	if (!shown)
+		return 0; /* nothing shows: nothing to gain from compressing either */
 	if (se <= 0)
 		return 99;
-	return (float)(10.0 * log10(255.0 * 255.0 * 4.0 * w * h / se));
+	return (float)(10.0 * log10(255.0 * 255.0 * 4.0 * (double)shown / se));
 }
 
 /* a big picture that nothing mipmapped: to DXT if that is near-lossless */
 static void compress_picture(xtex_t *t)
 {
 	t->try_dxt = false;
-	if (!t->pending || !t->data || t->cube || t->mipped || t->fmt != FMT_A8B8G8R8)
+	if (!t->pending || !t->data || t->cube || t->mipped || t->updated || t->fmt != FMT_A8B8G8R8)
 		return;
-	bool alpha = false;
-	for (int i = 0; i < t->tw * t->th && !alpha; i++)
-		alpha = t->pending[i * 4 + 3] != 255;
+	bool alpha = false, grey = true;
+	for (int i = 0; i < t->tw * t->th; i++) {
+		const uint8_t *px = t->pending + (size_t)i * 4;
+		alpha |= px[3] != 255;
+		grey &= px[0] == px[1] && px[1] == px[2];
+	}
+	/* grey with alpha is a coverage atlas (fonts: white texels, or
+	 * premultiplied coverage in every channel), whose glyph edges DXT smears */
+	if (alpha && grey)
+		return;
 	uint32_t fmt = alpha ? FMT_DXT5 : FMT_DXT1;
 	size_t bytes = level_bytes(t->tw, t->th, fmt);
 	uint8_t *blocks = malloc(bytes);
@@ -870,6 +889,9 @@ static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint intern
 		set_error(GL_OUT_OF_MEMORY);
 		return;
 	}
+	/* new pixels for a texture that had some: an atlas or a moving picture */
+	if (t->data && !t->cube)
+		t->updated = true;
 	free_tex_storage(t);
 	t->cube = false;
 	t->w = w, t->h = h, t->tw = tw, t->th = th;
@@ -892,8 +914,10 @@ static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint intern
 	drop_pending();
 	t->pending = img;
 	pending_id = tex_id(t);
-	/* lightmaps (RGB) and the small pictures (HUD sheets, fonts) stay as they are */
-	t->try_dxt = !dynamic && texcompress() && !(gl_xbox_texquality && gl_xbox_texquality->ivalue) &&
+	/* lightmaps (RGB), pictures under 512 x 512 (HUD sheets, small fonts) and
+	 * textures updated before stay as they are; compress_picture also leaves
+	 * coverage atlases */
+	t->try_dxt = !dynamic && !t->updated && texcompress() && !(gl_xbox_texquality && gl_xbox_texquality->ivalue) &&
 	             internal != GL_RGB8 && internal != GL_RGB && tw * th >= 512 * 512;
 }
 
@@ -1127,6 +1151,7 @@ static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLin
 	/* a picture that gets updated (a cinematic's frames) stays 32-bit: no
 	 * compressing each update, and no compressing it from a stale copy */
 	t->try_dxt = false;
+	t->updated = true;
 	if (fmt_dxt(t->fmt) && !t->mipped)
 		decompress_picture(t);
 	if (t->pending && t->tw == t->w && t->th == t->h) {

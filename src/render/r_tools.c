@@ -150,7 +150,8 @@ static void Memlist_f(int argc, const char **argv)
 		int v, t;
 		size_t b = R_ModelMemory(&r_world.submodels[i], &v, &t);
 		if (i == 0)
-			b += (size_t)r_world.numlightmaps * r_world.lightmapsize * r_world.lightmapsize * 4;
+			b += (size_t)(r_world.lightmaprows ? r_world.lightmaprows : r_world.numlightmaps * r_world.lightmapsize) *
+			     r_world.lightmapsize * 4;
 		Con_Printf("%s%s: %zu bytes (%d triangles)\n", i ? va("*%d:", i) : "", r_world.name, b, t);
 		total += b;
 	}

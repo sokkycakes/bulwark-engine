@@ -619,21 +619,23 @@ static studiocache_t *studiocache;
 static void drop_pixels(studiocache_t *c);
 #endif
 
-const studio_model_t *Studio_Cached(const char *name)
+static studiocache_t *lookup(const char *name)
 {
-	studiocache_t *c;
-	size_t size = 0;
-	char err[256];
-	if (!name || !*name || name[0] == '*')
-		return NULL;
-	for (c = studiocache; c; c = c->next)
+	for (studiocache_t *c = studiocache; c; c = c->next)
 		if (!Str_ICmp(c->name, name))
-			return c->ok ? &c->model : NULL;
-	c = Mem_Alloc(sizeof(*c));
+			return c;
+	return NULL;
+}
+
+/* a new cache entry for name, which keeps buf (the file, or NULL) */
+static const studio_model_t *cache_new(const char *name, uint8_t *buf, size_t size)
+{
+	char err[256];
+	studiocache_t *c = Mem_Alloc(sizeof(*c));
 	Str_Copy(c->name, name, sizeof(c->name));
 	c->next = studiocache;
 	studiocache = c;
-	c->buf = (uint8_t *)FS_LoadFile(name, &size);
+	c->buf = buf;
 	if (!c->buf || size < 8 || memcmp(c->buf, "IDST", 4)) {
 		Mem_Free(c->buf), c->buf = NULL;
 		return NULL;
@@ -672,6 +674,43 @@ const studio_model_t *Studio_Cached(const char *name)
 	drop_pixels(c);
 #endif
 	return &c->model;
+}
+
+static bool bad_name(const char *name)
+{
+	return !name || !*name || name[0] == '*';
+}
+
+const studio_model_t *Studio_Cached(const char *name)
+{
+	studiocache_t *c;
+	size_t size = 0;
+	if (bad_name(name))
+		return NULL;
+	if ((c = lookup(name)))
+		return c->ok ? &c->model : NULL;
+	uint8_t *buf = (uint8_t *)FS_LoadFile(name, &size);
+	return cache_new(name, buf, size);
+}
+
+const studio_model_t *Studio_Peek(const char *name)
+{
+	studiocache_t *c = bad_name(name) ? NULL : lookup(name);
+	return c && c->ok ? &c->model : NULL;
+}
+
+const studio_model_t *Studio_CacheBuffer(const char *name, uint8_t *buf, size_t size)
+{
+	studiocache_t *c;
+	if (bad_name(name)) {
+		Mem_Free(buf);
+		return NULL;
+	}
+	if ((c = lookup(name))) {
+		Mem_Free(buf);
+		return c->ok ? &c->model : NULL;
+	}
+	return cache_new(name, buf, size);
 }
 
 #ifdef BW_LOWMEM
@@ -730,8 +769,24 @@ static size_t pixels_start(const studiocache_t *c, size_t len)
 	}
 	for (int i = 0; i < m->numseqs; i++) {
 		const studio_seq_t *s = &m->seqs[i];
-		if (s->anim && (s->anim < b || s->anim + 12 * (size_t)s->numblends * m->numbones > b + cut))
+		if (!s->anim)
+			continue;
+		if (s->anim < b || s->anim + 12 * (size_t)s->numblends * m->numbones > b + cut)
 			return 0;
+		/* every run of every channel must end before the cut too */
+		for (int bl = 0; bl < s->numblends; bl++)
+			for (int j = 0; j < m->numbones; j++)
+				for (int k = 0; k < 6; k++) {
+					const uint8_t *p = channel(m, s, bl, j, k);
+					for (int covered = 0; p && covered < s->numframes;) {
+						if (p + 2 > b + cut || p[1] == 0 || p[0] > p[1])
+							return 0;
+						covered += p[1];
+						p += 2 * (p[0] + 1);
+						if (p > b + cut)
+							return 0;
+					}
+				}
 	}
 	for (int i = 0; i < m->numbodyparts; i++)
 		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
@@ -739,9 +794,17 @@ static size_t pixels_start(const studiocache_t *c, size_t len)
 			if (sm->vertbone + sm->numverts > b + cut || sm->verts + (size_t)sm->numverts * 12 > b + cut ||
 			    sm->normbone + sm->numnorms > b + cut || sm->norms + (size_t)sm->numnorms * 12 > b + cut)
 				return 0;
-			for (int k = 0; k < sm->nummeshes; k++)
-				if (sm->meshes[k].cmds >= b + cut)
+			for (int k = 0; k < sm->nummeshes; k++) {
+				/* the whole command list, not just its start, must lie
+				   before the cut: count it again with the cut as its limit */
+				studio_mesh_t cutmesh = sm->meshes[k];
+				if (cutmesh.cmds < b || cutmesh.cmds >= b + cut)
 					return 0;
+				cutmesh.cmdslimit = b + cut;
+				int full = Studio_CountTris(m, &sm->meshes[k], sm->numverts, sm->numnorms);
+				if (full < 0 || Studio_CountTris(m, &cutmesh, sm->numverts, sm->numnorms) != full)
+					return 0;
+			}
 		}
 	return cut;
 }

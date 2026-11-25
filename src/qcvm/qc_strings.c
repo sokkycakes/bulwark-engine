@@ -43,7 +43,7 @@ const char *QC_GetString(qcvm_t *vm, string_t s)
 	if (!(u & QC_STRING_RUNTIME))
 		return QC_ProgsString(vm, s);
 	u &= SLOT_MASK;
-	if (u >= nstrs || !strs[u])
+	if (!u || u >= nstrs || !strs[u])
 		return "";
 	return strs[u];
 }
@@ -61,7 +61,7 @@ char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len)
 		return vm->progs[pn].strings + ofs;
 	}
 	u &= SLOT_MASK;
-	if (u >= nstrs || !strs[u])
+	if (!u || u >= nstrs || !strs[u])
 		return NULL;
 	*len = text_len(strs[u]);
 	return strs[u];
@@ -72,6 +72,7 @@ static void resize_slots(uint32_t cap)
 	capstrs = cap;
 	strs = Mem_Realloc(strs, sizeof(char *) * capstrs);
 	marks = Mem_Realloc(marks, capstrs / 8);
+	strs[0] = NULL; /* slot 0 is never handed out */
 }
 
 string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len)
