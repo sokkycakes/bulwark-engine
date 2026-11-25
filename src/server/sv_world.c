@@ -78,7 +78,7 @@ typedef struct area_s {
 	int numnodes;
 	areanode_t nodes[AREA_NODES];
 	int *node, *next, *prev; /* per slot; node -1 until filed */
-	float (*box)[6]; /* the absmin, absmax each slot was filed with */
+	qcval_t (*box)[6]; /* the absmin, absmax each slot was filed with */
 	uint32_t *bits; /* one per slot, all clear between queries */
 	int *scratch; /* candidate lists; nested queries stack up in it */
 	int scratch_top, scratch_size;
@@ -143,8 +143,10 @@ static void area_file(area_t *a, int e, const float *amin, const float *amax)
 	if (a->next[e] >= 0)
 		a->prev[a->next[e]] = e;
 	a->nodes[n].head = e;
-	memcpy(a->box[e], amin, sizeof(float) * 3);
-	memcpy(a->box[e] + 3, amax, sizeof(float) * 3);
+	for (int i = 0; i < 3; i++) {
+		a->box[e][i].f = amin[i];
+		a->box[e][3 + i].f = amax[i];
+	}
 }
 
 static void area_sync(area_t *a)
@@ -153,8 +155,10 @@ static void area_sync(area_t *a)
 	int fmin = vm->fofs.absmin, fmax = vm->fofs.absmax;
 	for (int e = 1; e < vm->num_edicts; e++) {
 		const qcval_t *f = QC_EdictFields(vm, e);
-		if (a->node[e] >= 0 && !memcmp(a->box[e], &f[fmin], sizeof(float) * 3) &&
-		    !memcmp(a->box[e] + 3, &f[fmax], sizeof(float) * 3))
+		const qcval_t *b = a->box[e];
+		/* bit for bit, so a NaN that stays put counts as unchanged */
+		if (a->node[e] >= 0 && b[0].i == f[fmin].i && b[1].i == f[fmin + 1].i && b[2].i == f[fmin + 2].i &&
+		    b[3].i == f[fmax].i && b[4].i == f[fmax + 1].i && b[5].i == f[fmax + 2].i)
 			continue;
 		area_file(a, e, &f[fmin].f, &f[fmax].f);
 	}
@@ -244,8 +248,9 @@ static void area_query(arealist_t *l, const float *lo, const float *hi)
 	while (sp) {
 		const areanode_t *an = &a->nodes[stack[--sp]];
 		for (int e = an->head; e >= 0; e = a->next[e]) {
-			const float *b = a->box[e];
-			if (b[0] > hi[0] || b[1] > hi[1] || b[2] > hi[2] || b[3] < lo[0] || b[4] < lo[1] || b[5] < lo[2])
+			const qcval_t *b = a->box[e];
+			if (b[0].f > hi[0] || b[1].f > hi[1] || b[2].f > hi[2] || b[3].f < lo[0] || b[4].f < lo[1] ||
+			    b[5].f < lo[2])
 				continue;
 			ids[n++] = e;
 		}
