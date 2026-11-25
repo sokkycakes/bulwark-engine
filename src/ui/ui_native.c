@@ -495,8 +495,8 @@ void UI_Draw(void)
 		n = open_order(order);
 		for (int i = 0; i < n; i++) {
 			uin_view_t *v = order[i];
-			if (!(v->flags & UI_INPUT) || !v->open)
-				continue; /* the HUD draws through UI_DrawAt */
+			if ((v->flags & UI_EMBED) || !v->open)
+				continue; /* the HUD draws through UI_DrawAt; one opened with ui_open, here */
 			d_xf(NULL);
 			v->screen->draw(v, 0, 0, (float)sw, (float)sh);
 		}
@@ -609,6 +609,29 @@ static void UIKey_f(int argc, const char **argv)
 		IN_KeyEvent(k, false, 0);
 }
 
+/* ui_open <layout> [input] and ui_close <view|all>, as the Panorama build
+ * has them: a view drawn over the whole screen, for screenshot tests of the
+ * same page in both builds (tools/ui/uidiff.py) */
+static void UINativeOpen_f(int argc, const char **argv)
+{
+	int v;
+	if (argc < 2) {
+		Con_Printf("usage: ui_open <layout> [input]\n");
+		return;
+	}
+	v = UI_Open(argv[1], argc > 2 && !strcmp(argv[2], "input") ? UI_INPUT : 0);
+	if (v)
+		Con_Printf("ui: view %d is %s\n", v, argv[1]);
+}
+
+static void UINativeClose_f(int argc, const char **argv)
+{
+	if (argc < 2 || !strcmp(argv[1], "all"))
+		UI_CloseAll();
+	else
+		UI_Close(atoi(argv[1]));
+}
+
 static void UINativeList_f(int argc, const char **argv)
 {
 	for (int i = 0; i < MAX_VIEWS; i++)
@@ -635,6 +658,8 @@ void UI_Init(void)
 	Cmd_AddD("ui_native_atlas", UINativeAtlas_f, "ui_native_atlas [0|1|2]: show an atlas page at 1:1 (0 hides)");
 	Cmd_AddD("ui_native_shot", UINativeShot_f, "ui_native_shot <name>: screenshot once the UI has drawn");
 	Cmd_AddD("ui_list", UINativeList_f, "List the open UI views");
+	Cmd_AddD("ui_open", UINativeOpen_f, "ui_open <layout> [input]: open a view over the whole screen (tests)");
+	Cmd_AddD("ui_close", UINativeClose_f, "ui_close <view|all>: close a view (tests)");
 	Cmd_AddD("ui_key", UIKey_f, "ui_key <key> [down|up]: press a key as the player would (tests)");
 	uin_atlas_init();
 }
