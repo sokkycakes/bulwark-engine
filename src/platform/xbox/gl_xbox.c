@@ -21,8 +21,16 @@
  *   lighting directions and fog distances match the shaders'. Alpha
  *   testing is the hardware's. Dynamic lights are not drawn yet.
  * - Textures are resampled to powers of two, swizzled, and kept in
- *   contiguous write-combined memory; mipmaps are made on the CPU. World
- *   textures may be stored as 16 bits (gl_xbox_texquality 0).
+ *   contiguous write-combined memory; mipmaps are made on the CPU. Opaque
+ *   world textures and the sky are stored as DXT1, compressed on upload by
+ *   dxt_xbox.c (gl_xbox_texcompress 0 keeps 16 bits, as world textures
+ *   with alpha always do; gl_xbox_texquality 1 keeps 32 bits). Pictures
+ *   of 512 x 512 texels or more that nothing mipmaps go to DXT too when
+ *   the result is near-lossless (40 dB), at their first draw or the next
+ *   upload, so a texture that glGenerateMipmap is about to replace isn't
+ *   compressed twice; one that gets updated goes back to 32 bits.
+ *   Lightmaps stay 32-bit: their atlas packs unrelated faces into the
+ *   same 4x4 blocks, which DXT smears (30 dB on lqdm1).
  * - Vertex buffers live in contiguous memory too. Streamed ones come from a
  *   ring that alternates halves every frame; storage the GPU may still read
  *   is freed two frames later.
@@ -46,19 +54,30 @@
 #include "../../common/cmd.h"
 #include "../../common/cvar.h"
 #include "../../render/r_gl.h"
+#include "dxt_xbox.h"
 #include "xbox.h"
 
 #define RVERT_STRIDE 44 /* sizeof(rvert_t): pos 3f, st 2f, lm 2f, normal 3f, colour 4ub */
+#ifdef BW_LOWMEM
+/* a frame of lqdm1 is about 350 draws and 38000 indices (under 1 MB of
+ * stream even at the 600 words a draw reserves) and 700 KB of streamed
+ * vertices; a full push buffer resets mid-frame and a full ring falls back
+ * to pool memory, so these cost time, not correctness */
+#define PB_SIZE (2u << 20)
+#define RING_HALF (1536u << 10)
+#else
 #define PB_SIZE (4u << 20)
-#define PB_DWORDS (PB_SIZE / 4)
 #define RING_HALF (2u << 20)
+#endif
+#define PB_DWORDS (PB_SIZE / 4)
 #define ZMAX 16777215.0f
 #define GPU_MAXRAM 0x03FFAFFF
 
 #define GL_OUT_OF_MEMORY 0x0505
 #define GL_INVALID_ENUM 0x0500
 
-static cvar_t *gl_max_size, *gl_xbox_texquality, *gl_xbox_mipmaps, *vid_xbox_swapinterval, *gl_xbox_aniso, *gl_xbox_stats;
+static cvar_t *gl_max_size, *gl_xbox_texquality, *gl_xbox_texcompress, *gl_xbox_mipmaps, *vid_xbox_swapinterval,
+	*gl_xbox_aniso, *gl_xbox_stats;
 
 static bool ready;
 static int fbw = 640, fbh = 480;
@@ -234,7 +253,7 @@ static void run_deferred(bool all)
 
 /* this frame's streamed vertices: a ring whose halves alternate by frame */
 static uint8_t *ring;
-static size_t ringused;
+static size_t ringused, ringpeak, ringspill; /* the busiest frame's use and what didn't fit (gl_xbox_stats) */
 
 static void *ring_alloc(size_t size)
 {
@@ -243,8 +262,10 @@ static void *ring_alloc(size_t size)
 	if (ringused + size <= RING_HALF) {
 		void *p = half + ringused;
 		ringused += size;
+		ringpeak = BW_MAX(ringpeak, ringused);
 		return p;
 	}
+	ringspill += size;
 	void *p = gpu_alloc(size);
 	gpu_free(p, size);
 	return p;
@@ -365,9 +386,9 @@ typedef struct {
 	int tw, th; /* on the GPU */
 	int levels;
 	uint32_t fmt; /* NV2A colour format */
-	int bpp;
 	GLenum minf, magf, wraps, wrapt;
 	uint8_t *pending; /* level 0 (tw x th RGBA) kept until glGenerateMipmap or the next upload */
+	bool try_dxt;     /* a big picture: compress it from pending unless it gets mipmaps */
 } xtex_t;
 
 typedef struct {
@@ -547,8 +568,14 @@ static uint8_t *resample(const uint8_t *src, int sw, int sh, int dw, int dh)
 #define FMT_R5G6B5 0x05
 #define FMT_A4R4G4B4 0x04
 #define FMT_A1R5G5B5 0x02
+#define FMT_DXT1 0x0C /* COLOR_L_DXT1_A1R5G5B5: 4x4 blocks of 8 bytes, not swizzled */
+#define FMT_DXT5 0x0F /* COLOR_L_DXT45_A8R8G8B8: 4x4 blocks of 16 bytes */
 
-static int fmt_bpp(uint32_t fmt) { return fmt == FMT_A8B8G8R8 ? 4 : 2; }
+static bool fmt_dxt(uint32_t fmt) { return fmt == FMT_DXT1 || fmt == FMT_DXT5; }
+static int dxt_block_bytes(uint32_t fmt) { return fmt == FMT_DXT1 ? DXT1_BLOCK_BYTES : DXT5_BLOCK_BYTES; }
+/* bits per texel, for the memory report */
+static int fmt_bits(uint32_t fmt) { return fmt == FMT_A8B8G8R8 ? 32 : fmt == FMT_DXT1 ? 4 : fmt == FMT_DXT5 ? 8 : 16; }
+static bool texcompress(void) { return !gl_xbox_texcompress || gl_xbox_texcompress->ivalue; }
 
 /* The GPU's swizzled layout: the bits of x and y interleaved, x first,
  * until the shorter side runs out; the rest come from the longer side. */
@@ -644,18 +671,38 @@ static uint32_t pick_format(const uint8_t *rgba, int n, GLint internal, bool wor
 	}
 	if (blank)
 		partial = true;
+	/* opaque ones as DXT1 (36.4 dB against 37.7 for 565 on lqdm1); the cut-out
+	 * ones keep 16 bits, as DXT smears their edges (34 dB against 40) */
+	if (!alpha && texcompress())
+		return FMT_DXT1;
 	return !alpha ? FMT_R5G6B5 : partial ? FMT_A4R4G4B4 : FMT_A1R5G5B5;
 }
 
-static size_t level_bytes(int w, int h, int bpp) { return (size_t)BW_MAX(w, 1) * BW_MAX(h, 1) * bpp; }
+static size_t level_bytes(int w, int h, uint32_t fmt)
+{
+	w = BW_MAX(w, 1), h = BW_MAX(h, 1);
+	if (fmt_dxt(fmt))
+		return DXT_LevelBytes(w, h, dxt_block_bytes(fmt));
+	return (size_t)w * h * (fmt == FMT_A8B8G8R8 ? 4 : 2);
+}
 
-static size_t chain_bytes(int w, int h, int levels, int bpp)
+static size_t chain_bytes(int w, int h, int levels, uint32_t fmt)
 {
 	size_t n = 0;
 	for (int l = 0; l < levels; l++)
-		n += level_bytes(w >> l, h >> l, bpp);
+		n += level_bytes(w >> l, h >> l, fmt);
 	return n;
 }
+
+/* a whole w x h level of RGBA into GPU memory: swizzled, or as DXT blocks in rows */
+static void store_level(uint8_t *dst, int w, int h, const uint8_t *rgba, uint32_t fmt)
+{
+	if (fmt_dxt(fmt))
+		DXT_EncodeImage(dst, rgba, w, h, dxt_block_bytes(fmt), 0);
+	else
+		swizzle_rect(dst, w, h, rgba, w, 0, 0, w, h, fmt);
+}
+
 
 static GLuint pending_id; /* the one texture that may hold its RGBA (upload_2d) */
 
@@ -672,6 +719,7 @@ static void free_tex_storage(xtex_t *t)
 	t->bytes = 0;
 	free(t->pending);
 	t->pending = NULL;
+	t->try_dxt = false;
 	if (pending_id && pending_id == tex_id(t))
 		pending_id = 0;
 }
@@ -706,21 +754,83 @@ static uint8_t *expand_rgb(const uint8_t *rgb, int w, int h)
 	return out;
 }
 
+/* How far a DXT copy is from the picture, as the screen shows it (colour
+ * weighted by alpha, and alpha): peak signal to noise in dB. */
+static float dxt_psnr(const uint8_t *blocks, const uint8_t *rgba, int w, int h, uint32_t fmt)
+{
+	int bb = dxt_block_bytes(fmt), bw = (w + 3) / 4, bh = (h + 3) / 4;
+	uint8_t dec[64];
+	double se = 0;
+	for (int by = 0; by < bh; by++)
+		for (int bx = 0; bx < bw; bx++, blocks += bb) {
+			if (fmt == FMT_DXT1)
+				DXT_DecodeBlock1(blocks, dec);
+			else
+				DXT_DecodeBlock5(blocks, dec);
+			for (int y = 0; y < 4 && by * 4 + y < h; y++)
+				for (int x = 0; x < 4 && bx * 4 + x < w; x++) {
+					const uint8_t *s = rgba + ((size_t)(by * 4 + y) * w + bx * 4 + x) * 4, *d = dec + (y * 4 + x) * 4;
+					for (int c = 0; c < 3; c++) {
+						int e = (d[c] * d[3] - s[c] * s[3]) / 255;
+						se += e * e;
+					}
+					se += (d[3] - s[3]) * (d[3] - s[3]);
+				}
+		}
+	if (se <= 0)
+		return 99;
+	return (float)(10.0 * log10(255.0 * 255.0 * 4.0 * w * h / se));
+}
+
+/* a big picture that nothing mipmapped: to DXT if that is near-lossless */
+static void compress_picture(xtex_t *t)
+{
+	t->try_dxt = false;
+	if (!t->pending || !t->data || t->cube || t->mipped || t->fmt != FMT_A8B8G8R8)
+		return;
+	bool alpha = false;
+	for (int i = 0; i < t->tw * t->th && !alpha; i++)
+		alpha = t->pending[i * 4 + 3] != 255;
+	uint32_t fmt = alpha ? FMT_DXT5 : FMT_DXT1;
+	size_t bytes = level_bytes(t->tw, t->th, fmt);
+	uint8_t *blocks = malloc(bytes);
+	if (!blocks)
+		return;
+	DXT_EncodeImage(blocks, t->pending, t->tw, t->th, dxt_block_bytes(fmt), 0);
+	uint8_t *data = dxt_psnr(blocks, t->pending, t->tw, t->th, fmt) >= 40 ? gpu_alloc(bytes) : NULL;
+	if (data) {
+		memcpy(data, blocks, bytes);
+		gpu_free(t->data, t->bytes);
+		t->data = data;
+		t->bytes = bytes;
+		t->fmt = fmt;
+	}
+	free(blocks);
+}
+
 static void drop_pending(void)
 {
 	xtex_t *p = get_texs(pending_id);
 	if (p) {
+		if (p->try_dxt)
+			compress_picture(p);
 		free(p->pending);
 		p->pending = NULL;
 	}
 	pending_id = 0;
 }
 
-/* level 0 of a 32-bit texture back to linear RGBA */
+/* level 0 of a 32-bit or DXT texture back to linear RGBA */
 static uint8_t *unswizzle(const xtex_t *t)
 {
-	if (t->fmt != FMT_A8B8G8R8 || !t->data)
+	if ((t->fmt != FMT_A8B8G8R8 && !fmt_dxt(t->fmt)) || !t->data)
 		return NULL;
+	if (fmt_dxt(t->fmt)) {
+		uint8_t *rgba = malloc((size_t)t->tw * t->th * 4);
+		if (rgba)
+			DXT_DecodeImage(t->data, rgba, t->tw, t->th, dxt_block_bytes(t->fmt));
+		return rgba;
+	}
 	uint8_t *out = malloc((size_t)t->tw * t->th * 4);
 	uint32_t *xo = malloc(sizeof(uint32_t) * (size_t)t->tw), *yo = malloc(sizeof(uint32_t) * (size_t)t->th);
 	if (!out || !xo || !yo) {
@@ -736,6 +846,22 @@ static uint8_t *unswizzle(const xtex_t *t)
 	return out;
 }
 
+/* back to 32 bits */
+static void decompress_picture(xtex_t *t)
+{
+	uint8_t *rgba = unswizzle(t);
+	size_t bytes = level_bytes(t->tw, t->th, FMT_A8B8G8R8);
+	uint8_t *data = rgba ? gpu_alloc(bytes) : NULL;
+	if (data) {
+		swizzle_rect(data, t->tw, t->th, rgba, t->tw, 0, 0, t->tw, t->th, FMT_A8B8G8R8);
+		gpu_free(t->data, t->bytes);
+		t->data = data;
+		t->bytes = bytes;
+		t->fmt = FMT_A8B8G8R8;
+	}
+	free(rgba);
+}
+
 static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint internal, bool dynamic)
 {
 	int tw, th;
@@ -748,10 +874,9 @@ static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint intern
 	t->cube = false;
 	t->w = w, t->h = h, t->tw = tw, t->th = th;
 	t->fmt = dynamic ? FMT_A8B8G8R8 : pick_format(img, tw * th, internal, false);
-	t->bpp = fmt_bpp(t->fmt);
 	t->levels = 1;
 	t->mipped = false;
-	t->bytes = level_bytes(tw, th, t->bpp);
+	t->bytes = level_bytes(tw, th, t->fmt);
 	t->data = gpu_alloc(t->bytes);
 	if (!t->data) {
 		Con_Printf("^3gl_xbox: out of memory for a %dx%d texture\n", tw, th);
@@ -767,6 +892,9 @@ static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint intern
 	drop_pending();
 	t->pending = img;
 	pending_id = tex_id(t);
+	/* lightmaps (RGB) and the small pictures (HUD sheets, fonts) stay as they are */
+	t->try_dxt = !dynamic && texcompress() && !(gl_xbox_texquality && gl_xbox_texquality->ivalue) &&
+	             internal != GL_RGB8 && internal != GL_RGB && tw * th >= 512 * 512;
 }
 
 /* a world texture: capped to gl_max_size, maybe 16-bit, with its mip chain */
@@ -792,8 +920,7 @@ static void generate_mips(xtex_t *t)
 	fmt = pick_format(img, nw * nh, GL_RGBA8, true);
 	if (!gl_xbox_mipmaps || gl_xbox_mipmaps->ivalue)
 		levels = ilog2(BW_MAX(nw, nh)) + 1;
-	int bpp = fmt_bpp(fmt);
-	size_t bytes = chain_bytes(nw, nh, levels, bpp);
+	size_t bytes = chain_bytes(nw, nh, levels, fmt);
 	uint8_t *data = gpu_alloc(bytes);
 	if (!data) {
 		if (img != t->pending)
@@ -825,8 +952,8 @@ static void generate_mips(xtex_t *t)
 			cur = next;
 			pw = w, ph = h;
 		}
-		swizzle_rect(dst, w, h, cur, w, 0, 0, w, h, fmt);
-		dst += level_bytes(w, h, bpp);
+		store_level(dst, w, h, cur, fmt);
+		dst += level_bytes(w, h, fmt);
 		w = BW_MAX(w >> 1, 1), h = BW_MAX(h >> 1, 1);
 	}
 	if (cur != img)
@@ -840,9 +967,9 @@ static void generate_mips(xtex_t *t)
 	t->bytes = bytes;
 	t->tw = nw, t->th = nh;
 	t->fmt = fmt;
-	t->bpp = bpp;
 	t->levels = levels;
 	t->mipped = levels > 1;
+	t->try_dxt = false;
 }
 
 static void upload_cube_face(xtex_t *t, int face, const uint8_t *rgba, int w, int h)
@@ -863,10 +990,11 @@ static void upload_cube_face(xtex_t *t, int face, const uint8_t *rgba, int w, in
 		free_tex_storage(t);
 		t->cube = true;
 		t->w = w, t->h = h, t->tw = tw, t->th = th;
-		t->fmt = gl_xbox_texquality && gl_xbox_texquality->ivalue ? FMT_A8B8G8R8 : FMT_R5G6B5;
-		t->bpp = fmt_bpp(t->fmt);
+		t->fmt = gl_xbox_texquality && gl_xbox_texquality->ivalue ? FMT_A8B8G8R8
+		         : texcompress()                                   ? FMT_DXT1
+		                                                           : FMT_R5G6B5;
 		t->levels = 1;
-		size_t face_bytes = (level_bytes(tw, th, t->bpp) + 127) & ~(size_t)127;
+		size_t face_bytes = (level_bytes(tw, th, t->fmt) + 127) & ~(size_t)127;
 		t->bytes = face_bytes * 6;
 		t->data = gpu_alloc(t->bytes);
 		if (!t->data) {
@@ -874,8 +1002,8 @@ static void upload_cube_face(xtex_t *t, int face, const uint8_t *rgba, int w, in
 			return;
 		}
 	}
-	size_t face_bytes = (level_bytes(tw, th, t->bpp) + 127) & ~(size_t)127;
-	swizzle_rect(t->data + face_bytes * face, tw, th, img, tw, 0, 0, tw, th, t->fmt);
+	size_t face_bytes = (level_bytes(tw, th, t->fmt) + 127) & ~(size_t)127;
+	store_level(t->data + face_bytes * face, tw, th, img, t->fmt);
 	free(img);
 }
 
@@ -952,6 +1080,38 @@ static void BWGLAPI xb_glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsi
 	free(expanded);
 }
 
+/* rows of RGBA (pitch in texels) into level 0 at x0,y0. DXT blocks the
+ * rectangle touches are read back, patched and compressed again. */
+static void write_rect(xtex_t *t, const uint8_t *rgba, int pitch, int x0, int y0, int rw, int rh)
+{
+	if (!fmt_dxt(t->fmt)) {
+		swizzle_rect(t->data, t->tw, t->th, rgba, pitch, x0, y0, rw, rh, t->fmt);
+		return;
+	}
+	int bb = dxt_block_bytes(t->fmt), bw = (t->tw + 3) / 4;
+	uint8_t block[64], enc[DXT5_BLOCK_BYTES];
+	for (int by = y0 / 4; by <= (y0 + rh - 1) / 4; by++)
+		for (int bx = x0 / 4; bx <= (x0 + rw - 1) / 4; bx++) {
+			uint8_t *b = t->data + ((size_t)by * bw + bx) * bb;
+			memcpy(enc, b, (size_t)bb); /* one read of write-combined memory */
+			if (bb == DXT1_BLOCK_BYTES)
+				DXT_DecodeBlock1(enc, block);
+			else
+				DXT_DecodeBlock5(enc, block);
+			for (int y = 0; y < 4; y++)
+				for (int x = 0; x < 4; x++) {
+					int tx = bx * 4 + x, ty = by * 4 + y;
+					if (tx >= x0 && tx < x0 + rw && ty >= y0 && ty < y0 + rh)
+						memcpy(block + (y * 4 + x) * 4, rgba + ((size_t)(ty - y0) * pitch + tx - x0) * 4, 4);
+				}
+			if (bb == DXT1_BLOCK_BYTES)
+				DXT_EncodeBlock1(enc, block, 0);
+			else
+				DXT_EncodeBlock5(enc, block);
+			memcpy(b, enc, (size_t)bb);
+		}
+}
+
 static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h,
                                        GLenum fmt, GLenum type, const void *pixels)
 {
@@ -964,25 +1124,34 @@ static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLin
 		src = expanded = expand_rgb(pixels, w, h);
 	if (!src)
 		return;
+	/* a picture that gets updated (a cinematic's frames) stays 32-bit: no
+	 * compressing each update, and no compressing it from a stale copy */
+	t->try_dxt = false;
+	if (fmt_dxt(t->fmt) && !t->mipped)
+		decompress_picture(t);
 	if (t->pending && t->tw == t->w && t->th == t->h) {
 		/* keep the copy that glGenerateMipmap works from up to date */
 		for (int r = 0; r < h; r++)
 			memcpy(t->pending + ((size_t)(y + r) * t->tw + x) * 4, src + (size_t)r * w * 4, (size_t)w * 4);
 	}
 	if (t->tw == t->w && t->th == t->h && x >= 0 && y >= 0 && x + w <= t->tw && y + h <= t->th) {
-		swizzle_rect(t->data, t->tw, t->th, src, w, x, y, w, h, t->fmt);
+		write_rect(t, src, w, x, y, w, h);
 	} else {
 		/* the texture was resized: scale the rectangle and point-sample it */
 		float sx = (float)t->tw / t->w, sy = (float)t->th / t->h;
-		int x0 = (int)(x * sx), y0 = (int)(y * sy), x1 = (int)((x + w) * sx + 0.999f), y1 = (int)((y + h) * sy + 0.999f);
-		uint8_t texel[4];
-		for (int ty = BW_MAX(y0, 0); ty < BW_MIN(y1, t->th); ty++)
-			for (int tx = BW_MAX(x0, 0); tx < BW_MIN(x1, t->tw); tx++) {
-				int ix = BW_CLAMP((int)((tx + 0.5f) / sx) - x, 0, w - 1);
-				int iy = BW_CLAMP((int)((ty + 0.5f) / sy) - y, 0, h - 1);
-				memcpy(texel, src + ((size_t)iy * w + ix) * 4, 4);
-				swizzle_rect(t->data, t->tw, t->th, texel, 1, tx, ty, 1, 1, t->fmt);
-			}
+		int x0 = BW_MAX((int)(x * sx), 0), y0 = BW_MAX((int)(y * sy), 0);
+		int x1 = BW_MIN((int)((x + w) * sx + 0.999f), t->tw), y1 = BW_MIN((int)((y + h) * sy + 0.999f), t->th);
+		uint8_t *patch = x1 > x0 && y1 > y0 ? malloc((size_t)(x1 - x0) * (y1 - y0) * 4) : NULL;
+		if (patch) {
+			for (int ty = y0; ty < y1; ty++)
+				for (int tx = x0; tx < x1; tx++) {
+					int ix = BW_CLAMP((int)((tx + 0.5f) / sx) - x, 0, w - 1);
+					int iy = BW_CLAMP((int)((ty + 0.5f) / sy) - y, 0, h - 1);
+					memcpy(patch + ((size_t)(ty - y0) * (x1 - x0) + tx - x0) * 4, src + ((size_t)iy * w + ix) * 4, 4);
+				}
+			write_rect(t, patch, x1 - x0, x0, y0, x1 - x0, y1 - y0);
+			free(patch);
+		}
 	}
 	free(expanded);
 }
@@ -1538,6 +1707,12 @@ static void bind_unit(int unit, const xtex_t *t)
 static const xtex_t *tex2d(GLuint id)
 {
 	xtex_t *t = get_texs(id);
+	if (t && t->try_dxt) {
+		/* drawn without mipmaps: the picture is final */
+		compress_picture(t);
+		if (pending_id == id)
+			drop_pending();
+	}
 	return t && t->data && !t->cube ? t : &whitetex;
 }
 
@@ -2160,10 +2335,14 @@ static void frame_stats(ULONGLONG t0, size_t pbused, int missed)
 		fst.since = now;
 	if (now - fst.since >= 5000 && fst.frames) {
 		double secs = (now - fst.since) / 1000.0;
-		Con_Printf("xbox: %.1f fps, frame work %.1f ms (worst %.1f), wait %.1f ms, %d late, %d draws, %d tris, pb %u KB, GPU %u KB, %u KB free\n",
+		Con_Printf("xbox: %.1f fps, frame work %.1f ms (worst %.1f), wait %.1f ms, %d late, %d draws, %d tris, pb %u of %u KB, "
+		           "ring %u of %u KB (%u KB spilled), GPU %u KB, %u KB free\n",
 		           fst.frames / secs, fst.work / fst.frames, fst.worst, fst.wait / fst.frames, fst.missed, fst.draws / fst.frames,
-		           fst.tris / fst.frames, (unsigned)(fst.pb * 4 / 1024), (unsigned)(gpu_used >> 10), (unsigned)(XBX_FreeMemory() >> 10));
+		           fst.tris / fst.frames, (unsigned)(fst.pb * 4 / 1024), PB_SIZE >> 10, (unsigned)(ringpeak >> 10),
+		           RING_HALF >> 10, (unsigned)(ringspill >> 10), (unsigned)(gpu_used >> 10),
+		           (unsigned)(XBX_FreeMemory() >> 10));
 		memset(&fst, 0, sizeof(fst));
+		ringpeak = ringspill = 0;
 		fst.since = now;
 	}
 }
@@ -2205,7 +2384,7 @@ static void make_fallback_textures(void)
 {
 	memset(&whitetex, 0, sizeof(whitetex));
 	whitetex.tw = whitetex.th = whitetex.w = whitetex.h = 4;
-	whitetex.fmt = FMT_A8B8G8R8, whitetex.bpp = 4, whitetex.levels = 1;
+	whitetex.fmt = FMT_A8B8G8R8, whitetex.levels = 1;
 	whitetex.minf = whitetex.magf = GL_NEAREST, whitetex.wraps = whitetex.wrapt = GL_REPEAT;
 	whitetex.bytes = 64;
 	whitetex.data = gpu_alloc(64);
@@ -2214,7 +2393,7 @@ static void make_fallback_textures(void)
 	memset(&blackcube, 0, sizeof(blackcube));
 	blackcube.cube = true;
 	blackcube.tw = blackcube.th = blackcube.w = blackcube.h = 4;
-	blackcube.fmt = FMT_A8B8G8R8, blackcube.bpp = 4, blackcube.levels = 1;
+	blackcube.fmt = FMT_A8B8G8R8, blackcube.levels = 1;
 	blackcube.minf = blackcube.magf = GL_NEAREST;
 	blackcube.bytes = 128 * 6;
 	blackcube.data = gpu_alloc(blackcube.bytes);
@@ -2254,8 +2433,8 @@ void XBGL_PrintGpuMemory(void)
 	           (unsigned)(cube >> 10), (unsigned)(buf >> 10));
 	for (int k = 0; k < 8 && top[k]; k++) {
 		xtex_t *t = &texs[top[k]];
-		Con_Printf("  texture %d: %dx%d as %dx%d, %d levels, %d bytes/texel%s, %u KB\n", top[k], t->w, t->h, t->tw, t->th,
-		           t->levels, t->bpp, t->cube ? ", cube" : "", (unsigned)(t->bytes >> 10));
+		Con_Printf("  texture %d: %dx%d as %dx%d, %d levels, %d bits/texel%s, %u KB\n", top[k], t->w, t->h, t->tw, t->th,
+		           t->levels, fmt_bits(t->fmt), t->cube ? ", cube" : "", (unsigned)(t->bytes >> 10));
 	}
 }
 
@@ -2272,6 +2451,9 @@ void XBGL_RegisterCvars(void)
 	                       "Largest side of a world texture on the GPU; bigger ones are scaled down when loaded (Xbox)");
 	gl_xbox_texquality = Cvar_Get("gl_xbox_texquality", "0", CVAR_ARCHIVE,
 	                              "1 keeps world textures at 32 bits; 0 stores them as 16-bit, half the memory (Xbox)");
+	gl_xbox_texcompress = Cvar_Get("gl_xbox_texcompress", "1", CVAR_ARCHIVE,
+	                               "1 stores opaque world textures and the sky as DXT1 (a quarter of 16 bits) and "
+	                               "big pictures as DXT when that is near-lossless; 0 keeps 16 and 32 bits (Xbox)");
 	gl_xbox_mipmaps = Cvar_Get("gl_xbox_mipmaps", "1", CVAR_ARCHIVE, "Make mipmaps for textures that ask for them (Xbox)");
 	gl_xbox_aniso = Cvar_Get("gl_xbox_aniso", "1", CVAR_ARCHIVE,
 	                         "Anisotropic filtering of mipmapped textures: 0 off, 1 2x, 2 4x, 3 8x (Xbox)");

@@ -75,6 +75,15 @@ static size_t heap_bytes(void)
 	return total;
 }
 
+/* PDCLib's malloc is dlmalloc 2.8.6 over NtAllocateVirtualMemory: 64 KB
+ * segments for the heap, requests of 256 KB and more mapped on their own
+ * and returned on free, whole free segments released. Its statistics are
+ * exported unprefixed-but-for-"dl"; the layout is dlmalloc's own. */
+struct bwx_mallinfo {
+	size_t arena, ordblks, smblks, hblks, hblkhd, usmblks, fsmblks, uordblks, fordblks, keepcost;
+};
+extern struct bwx_mallinfo dlmallinfo(void);
+
 void XBX_PrintMemory(const char *when)
 {
 	MM_STATISTICS ms;
@@ -85,7 +94,10 @@ void XBX_PrintMemory(const char *when)
 	           (unsigned)(ms.AvailablePages * 4), (unsigned)(ms.TotalPhysicalPages * 4), (unsigned)(ms.PoolPagesCommitted * 4),
 	           (unsigned)(ms.ImagePagesCommitted * 4), (unsigned)(ms.StackPagesCommitted * 4),
 	           (unsigned)(ms.CachePagesCommitted * 4));
-	Con_Printf("  C heap %u KB\n", (unsigned)(heap_bytes() >> 10));
+	struct bwx_mallinfo mi = dlmallinfo();
+	Con_Printf("  C heap %u KB: malloc's heap %u KB (%u KB of it free, %u chunks), %u KB mapped directly\n",
+	           (unsigned)(heap_bytes() >> 10), (unsigned)(mi.arena >> 10), (unsigned)(mi.fordblks >> 10),
+	           (unsigned)mi.ordblks, (unsigned)(mi.hblkhd >> 10));
 	XBGL_PrintGpuMemory();
 }
 
