@@ -468,7 +468,7 @@ held and the matching `-` command when it's let go.
 | `gamemap` | gamemap <map>: start a map |
 | `give` | give <item or health> [amount]: (cheat) |
 | `globalservers` | globalservers [master...]: list the servers the master servers know |
-| `god` | Toggle invulnerability (cheat) |
+| `god` | god [0\|1]: toggle or set invulnerability (cheat) |
 | `heartbeat` | Sends an update or ping to the master servers so the server stays listed |
 | `help` | help <name>: describe a command or cvar |
 | `hideconsole` | Close the console |
@@ -655,7 +655,7 @@ held and the matching `-` command when it's let go.
 | `newalias` | newalias <name> <commands>: alias |
 | `nextul` | For internal use |
 | `noclip` | Toggle flying through walls (cheat) |
-| `notarget` | Toggle being ignored by monsters (cheat) |
+| `notarget` | notarget [0\|1]: toggle or set being ignored by monsters (cheat) |
 | `observe` | Spectate |
 | `openroute` | Ask the router to forward the server's port (NAT-PMP) |
 | `+p` / `-p` | Following input is for the next seat |

@@ -407,8 +407,8 @@ void CL_InitCommands(void)
 {
 	{
 		static const char *const fwd[][2] = {
-			{"god", "Toggle invulnerability (cheat)"}, {"buddha", "Take damage but don't die (cheat)"},
-			{"noclip", "Toggle flying through walls (cheat)"}, {"notarget", "Toggle being ignored by monsters (cheat)"},
+			{"god", "god [0|1]: toggle or set invulnerability (cheat)"}, {"buddha", "Take damage but don't die (cheat)"},
+			{"noclip", "Toggle flying through walls (cheat)"}, {"notarget", "notarget [0|1]: toggle or set being ignored by monsters (cheat)"},
 			{"fly", "Toggle flying (cheat)"}, {"give", "give <item or health> [amount]: (cheat)"},
 			{"setpos", "setpos <x> <y> <z> [pitch yaw roll]: move yourself (cheat)"}, {"kill", "Kill yourself"},
 			{"join", "Join the game from spectating"}, {"observe", "Spectate"},
