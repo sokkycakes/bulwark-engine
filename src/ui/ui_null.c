@@ -39,6 +39,8 @@ bool UI_IsOpen(int view) { (void)view; return false; }
 void UI_Post(int view, const char *event, const char *json) { (void)view, (void)event, (void)json; }
 void UI_Eval(int view, const char *js) { (void)view, (void)js; }
 bool UI_WantsInput(void) { return false; }
+bool UI_WantsSeatInput(void) { return false; }
+void UI_SetKeySource(int device, int seat) { (void)device; (void)seat; }
 bool UI_KeyEvent(int key, bool down, int unicode) { (void)key, (void)down, (void)unicode; return false; }
 void UI_MouseMove(float x, float y) { (void)x, (void)y; }
 void UI_Frame(double dt) { (void)dt; }

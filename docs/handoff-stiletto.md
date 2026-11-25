@@ -111,6 +111,13 @@ the script as `location.search`.
   key presses only. Stiletto's side is set play in `rules/arena.qc` (nuclide
   branch `claude/project-thread-mk4lnf`).
 
+- **Local Play** (docs/spec/localplay.md): split screen from the title
+  menu for up to four players with their own controllers (SDL or Steam
+  Input): versus sets with per-player hero and rematch cards, free for all
+  with bots, a HUD per player. Stiletto's side is nuclide branch
+  `claude/project-thread-iztdb8` (each seat's view and viewmodel, and
+  `g_nomotd` in free for all).
+
 ## Not finished
 
 1. **Online room codes work on the LAN only**, found by discovery; there is

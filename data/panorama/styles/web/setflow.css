@@ -503,3 +503,154 @@
 	font-size: 18px;
 	color: #9d9d9d;
 }
+
+/* --- several players on this screen (Local Play) ---------------------------------------
+   One card per player over their own view; the script places each card
+   (x, y, width, height from the seat's view) and its hero tiles. */
+
+.local-layer
+{
+	width: 100%;
+	height: 100%;
+	overflow: noclip;
+}
+.lcard
+{
+	background-color: #1a1a1ae8;
+	border: 3px solid #4a4a4a;
+	overflow: clip;
+}
+.lcard.is-done { border: 3px solid #8a0f12; }
+.lcard-head
+{
+	x: 0px;
+	y: 0px;
+	width: 100%;
+	height: 56px;
+	background-color: #333333;
+}
+.lcard-tag
+{
+	x: 0px;
+	width: 72px;
+	height: 56px;
+	background-color: #e0262b;
+}
+.lcard-tag Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 34px;
+	color: #ffffff;
+}
+.lcard-name
+{
+	x: 88px;
+	vertical-align: center;
+	width: 60%;
+	font-size: 28px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.lcard-timer
+{
+	horizontal-align: right;
+	vertical-align: center;
+	margin-right: 18px;
+	width: 120px;
+	text-align: right;
+	font-size: 40px;
+	color: #e0262b;
+}
+.lcard-timer.low { color: #ffffff; }
+.ltile
+{
+	background-color: #333333;
+	border: 3px solid #4a4a4a;
+	overflow: clip;
+}
+.ltile.is-cursor { border: 3px solid #ffffff; background-color: #444444; }
+.ltile.is-picked { background-color: #8a0f12; border: 3px solid #e0262b; }
+.ltile.is-picked.is-cursor { border: 3px solid #ffffff; }
+.ltile.is-off { opacity: 0.35; }
+.ltile-name
+{
+	x: 6%;
+	y: 30%;
+	width: 90%;
+	font-size: 30px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.ltile-role
+{
+	x: 6%;
+	y: 62%;
+	width: 90%;
+	font-family: "hooge_05_57";
+	font-size: 15px;
+	color: #9d9d9d;
+	text-overflow: shrink;
+}
+.ltile.is-picked .ltile-role { color: #ffd0d0; }
+.lcard-pick
+{
+	x: 4%;
+	width: 58%;
+	font-size: 40px;
+	letter-spacing: -2px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.lcard-status
+{
+	horizontal-align: right;
+	margin-right: 4%;
+	width: 36%;
+	text-align: right;
+	font-size: 24px;
+	text-transform: uppercase;
+	color: #bfbfbf;
+	text-overflow: shrink;
+}
+.lcard.is-done .lcard-status { color: #e0262b; }
+.lcard-result
+{
+	x: 4%;
+	width: 92%;
+	text-align: center;
+	font-size: 48px;
+	letter-spacing: -2px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.lcard-result.win { color: #e0262b; }
+.lcard-sub
+{
+	x: 4%;
+	width: 92%;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 20px;
+	color: #9d9d9d;
+	text-overflow: shrink;
+}
+.lvote Label { font-size: 22px; }
+.lvote.is-chosen { background-color: #e0262b; border: 3px solid #ffffff; }
+.lvote.is-chosen Label { color: #ffffff; }
+.lcard-hint
+{
+	x: 4%;
+	width: 92%;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 15px;
+	color: #6d6d6d;
+	text-overflow: shrink;
+}

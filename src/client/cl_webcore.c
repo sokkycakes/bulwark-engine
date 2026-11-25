@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef enum { ROUTE_NONE, ROUTE_TITLE, ROUTE_LOBBY, ROUTE_PAUSE, ROUTE_ARENA, ROUTE_ONLINE, ROUTE_SERVERS, ROUTE_CUSTOM } route_t;
+typedef enum { ROUTE_NONE, ROUTE_TITLE, ROUTE_LOBBY, ROUTE_PAUSE, ROUTE_ARENA, ROUTE_ONLINE, ROUTE_SERVERS, ROUTE_LOCAL, ROUTE_CUSTOM } route_t;
 
 static cvar_t *webcore_menu_url, *webcore_menumap, *webcore_menu_enabled, *webcore_pause_url, *webcore_menu_music;
 static cvar_t *forceqmenu;
@@ -56,7 +56,19 @@ static struct {
 	int view;
 	float w, h;
 	bool csqc; /* made by the client game: closed with it */
+	int seatview[MAX_SEATS]; /* split screen: another copy for each local player after the first */
 } gecko[MAX_GECKO];
+
+/* Split screen: the client game draws its HUD page once per local player,
+ * setting the page's webcore_hud_* cvars for that player first. Each player
+ * after the first gets their own copy of the page, and a copy of those cvars
+ * as they were when it was drawn, which the copy's requests read. */
+#define HUD_STASH 48
+static struct {
+	char name[48];
+	char value[64];
+} hud_stash[MAX_SEATS][HUD_STASH];
+static int hud_stash_n[MAX_SEATS];
 
 /* --- contexts ------------------------------------------------------------------------- */
 
@@ -69,6 +81,9 @@ static bool on_backdrop(void)
 	v = CL_ServerKey("background", buf, sizeof(buf));
 	return v && atof(v) == 1;
 }
+
+/* the title's background map is running (it is not a game to play) */
+bool WC_OnBackdrop(void) { return on_backdrop(); }
 
 /* playing a real game (not the title's background map) */
 static bool in_game(void) { return cl.state == ca_active && !on_backdrop(); }
@@ -181,6 +196,7 @@ static void music_frame(void)
 {
 	bool want = wc.plugin && webcore_menu_music->ivalue && !in_game() &&
 	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE || wc.route == ROUTE_SERVERS ||
+	             wc.route == ROUTE_LOCAL ||
 	             EM_Active() || idle());
 	if (want && !S_MusicPlaying()) {
 		wc.music_on = true;
@@ -285,6 +301,8 @@ static void MenuWebcore_f(int argc, const char **argv)
 		open_menu(argc > 2 ? va("fte://data/web/server-browser/index.html?%s", argv[2])
 		                   : "fte://data/web/server-browser/index.html",
 		          ROUTE_SERVERS);
+	} else if (!Str_ICmp(a, "local")) {
+		open_menu(LP_URL, ROUTE_LOCAL);
 	} else if (!Str_ICmp(a, "pause")) {
 		open_menu(webcore_pause_url->string, ROUTE_PAUSE);
 	} else if (!Str_ICmp(a, "arena")) {
@@ -353,6 +371,7 @@ void WC_Frame(void)
 {
 	wc.frames++;
 	SF_Frame();
+	LP_Frame();
 	if (wc.menu && !UI_IsOpen(wc.menu)) {
 		wc.menu = 0; /* closed with ui_close */
 		wc.route = ROUTE_NONE;
@@ -374,7 +393,8 @@ void WC_Frame(void)
 	}
 	wc.prevstate = cl.state;
 	/* a real game took over: title and lobby pages give way */
-	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE))
+	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE ||
+	                  wc.route == ROUTE_LOCAL))
 		close_menu();
 	/* the set view seats players and picks heroes: no arena menu over it */
 	if (wc.route == ROUTE_ARENA && SF_SetGame())
@@ -383,7 +403,7 @@ void WC_Frame(void)
 		char url[512];
 		Str_Copy(url, wc.page_pending, sizeof(url));
 		wc.page_pending[0] = 0;
-		if (open_menu(url, ROUTE_ONLINE)) {
+		if (open_menu(url, strstr(url, "/local/") ? ROUTE_LOCAL : ROUTE_ONLINE)) {
 			wc.title_pending = false;
 			Con_SetActive(false);
 		}
@@ -416,7 +436,57 @@ static void gecko_close(int i)
 {
 	if (gecko[i].view)
 		UI_Close(gecko[i].view);
+	for (int k = 0; k < MAX_SEATS; k++)
+		if (gecko[i].seatview[k])
+			UI_Close(gecko[i].seatview[k]);
 	memset(&gecko[i], 0, sizeof(gecko[i]));
+}
+
+/* the local player a gecko view copy draws for, or -1 for none */
+static int gecko_view_seat(int view)
+{
+	for (int i = 0; view && i < MAX_GECKO; i++)
+		for (int k = 1; k < MAX_SEATS; k++)
+			if (gecko[i].seatview[k] == view)
+				return k;
+	return -1;
+}
+
+static void stash_hud_cvars(int k)
+{
+	int n = 0;
+	for (cvar_t *v = Cvar_First(); v && n < HUD_STASH; v = v->next)
+		if (!strncmp(v->name, "webcore_hud", 11)) {
+			Str_Copy(hud_stash[k][n].name, v->name, sizeof(hud_stash[k][n].name));
+			Str_Copy(hud_stash[k][n].value, v->string, sizeof(hud_stash[k][n].value));
+			n++;
+		}
+	hud_stash_n[k] = n;
+}
+
+/* a cvar as local player k's copy of the HUD page sees it */
+static const char *seat_cvar(int k, const char *name)
+{
+	if (k > 0)
+		for (int i = 0; i < hud_stash_n[k]; i++)
+			if (!strcmp(hud_stash[k][i].name, name))
+				return hud_stash[k][i].value;
+	cvar_t *v = Cvar_Find(name);
+	return v ? v->string : NULL;
+}
+
+/* the view a gecko page is drawn with for the active local player */
+static int gecko_draw_view(int i)
+{
+	int k = cl.seat;
+	if (!gecko[i].csqc || k <= 0 || k >= MAX_SEATS || CL_NumSeats() < 2)
+		return gecko[i].view;
+	stash_hud_cvars(k);
+	if (gecko[i].seatview[k] && !UI_IsOpen(gecko[i].seatview[k]))
+		gecko[i].seatview[k] = 0;
+	if (!gecko[i].seatview[k] && gecko[i].url[0])
+		gecko[i].seatview[k] = open_page(gecko[i].url, UI_EMBED);
+	return gecko[i].seatview[k] ? gecko[i].seatview[k] : gecko[i].view;
 }
 
 /* the views a client game made close with it */
@@ -437,6 +507,11 @@ static bool gecko_navigate(int i, const char *uri)
 		return false;
 	if (gecko[i].view)
 		UI_Close(gecko[i].view);
+	for (int k = 0; k < MAX_SEATS; k++)
+		if (gecko[i].seatview[k]) {
+			UI_Close(gecko[i].seatview[k]); /* the copies open again with the new page */
+			gecko[i].seatview[k] = 0;
+		}
 	gecko[i].view = view;
 	Str_Copy(gecko[i].url, uri, sizeof(gecko[i].url));
 	return true;
@@ -550,7 +625,7 @@ static bool pic_hook(const char *name, float x, float y, float w, float h, const
 			UI_ViewSize(gecko[i].view, &size[0], &size[1]);
 		return true;
 	}
-	UI_DrawAt(gecko[i].view, x, y, w, h, rgb, alpha);
+	UI_DrawAt(gecko_draw_view(i), x, y, w, h, rgb, alpha);
 	return true;
 }
 
@@ -567,7 +642,7 @@ const qc_builtin_t cl_webcore_builtins[] = {
 static const char *const cbuf_allowed[] = {
 	"menu_options", "quit", "lobby_create_lan", "lobby_create_online", "menu_webcore_lobby", "menu_lobby_create",
 	"menu_webcore_title", "menu_webcore", "webcore_closemenu", "menu_hostmenu", "menu_changeteam", "menu_callvote",
-	"lobby_close", "disconnect", "menu_webcore online", "menu_webcore servers", "ready", "map_restart", "togglemenu", "menu_maps", "menu_newmulti", NULL};
+	"lobby_close", "disconnect", "menu_webcore online", "menu_webcore servers", "menu_webcore local", "ready", "map_restart", "togglemenu", "menu_maps", "menu_newmulti", NULL};
 
 static void reply_ok(strbuf_t *out, bool ok, const char *error)
 {
@@ -616,11 +691,11 @@ static void q_localsound(const char *sample, strbuf_t *out)
 	SB_AppendStr(out, "ok");
 }
 
-static void q_cvar(const char *name, strbuf_t *out)
+static void q_cvar(int seat, const char *name, strbuf_t *out)
 {
-	cvar_t *v = Cvar_Find(name);
+	const char *v = seat_cvar(seat, name);
 	if (v && !strstr(name, "password") && !strstr(name, "rcon"))
-		SB_AppendStr(out, v->string);
+		SB_AppendStr(out, v);
 }
 
 static void q_getstats(strbuf_t *out)
@@ -639,7 +714,7 @@ static void q_getstats(strbuf_t *out)
 }
 
 /* the HUD's numbers, from the cvars the client game publishes */
-static void q_gethud(strbuf_t *out)
+static void q_gethud(int seat, strbuf_t *out)
 {
 	static const struct {
 		const char *key, *cvar;
@@ -658,16 +733,16 @@ static void q_gethud(strbuf_t *out)
 		return;
 	SB_AppendStr(out, "{");
 	for (size_t i = 0; i < BW_ARRAY_COUNT(fields); i++) {
-		cvar_t *v = Cvar_Find(fields[i].cvar);
+		const char *v = seat_cvar(seat, fields[i].cvar);
 		if (!v)
 			continue;
 		SB_Printf(out, "%s\"%s\":", first ? "" : ",", fields[i].key);
 		first = false;
 		if (fields[i].number) {
-			SB_Printf(out, "%g", atof(v->string));
+			SB_Printf(out, "%g", atof(v));
 		} else {
 			SB_AppendStr(out, "\"");
-			for (const char *s = v->string; *s; s++)
+			for (const char *s = v; *s; s++)
 				if (*s == '"' || *s == '\\')
 					SB_Printf(out, "\\%c", *s);
 				else if ((unsigned char)*s >= 0x20)
@@ -763,7 +838,7 @@ static void q_lobby_join(const char *target, strbuf_t *out)
 
 static void query(int view, const char *req, strbuf_t *out)
 {
-	(void)view;
+	int seat = gecko_view_seat(view); /* a split screen player's copy of a HUD page */
 	if (!strncmp(req, "cbuf:", 5))
 		q_cbuf(req + 5, out);
 	else if (!strncmp(req, "localsound:", 11))
@@ -771,13 +846,13 @@ static void query(int view, const char *req, strbuf_t *out)
 	else if (!strncmp(req, "clipboard_copy:", 15))
 		SB_AppendStr(out, VID_SetClipboard(req + 15) ? "ok" : "failed");
 	else if (!strncmp(req, "cvar:", 5))
-		q_cvar(req + 5, out);
+		q_cvar(seat, req + 5, out);
 	else if (!strncmp(req, "get_cvar ", 9))
-		q_cvar(req + 9, out);
+		q_cvar(seat, req + 9, out);
 	else if (!strcmp(req, "getstats"))
 		q_getstats(out);
 	else if (!strcmp(req, "gethud"))
-		q_gethud(out);
+		q_gethud(seat, out);
 	else if (!strcmp(req, "getarena"))
 		q_getarena(out);
 	else if (!strncmp(req, "arena_action:", 13))
@@ -786,7 +861,9 @@ static void query(int view, const char *req, strbuf_t *out)
 		q_lobby_join(req + 11, out);
 	else if (!strncmp(req, "sb_", 3) && CL_ServerBrowserQuery(req, out))
 		;
-	else if (!SF_Query(req, out))
+	else if (LP_Query(req, out) || SF_Query(req, out))
+		;
+	else
 		Lobby_Query(req, out); /* the lobby's requests; anything else replies "" */
 }
 
@@ -860,6 +937,7 @@ void WC_Init(void)
 	Cmd_AddD("webcore_closemenu", CloseMenu_f, "Close the HTML menu page");
 	Cmd_AddD("webcore_query", WebcoreQuery_f, "webcore_query \"<request>\": print the bridge's reply to a page request");
 	SF_Init();
+	LP_Init();
 	UI_SetQueryHandler(query);
 	R_SetPicHook(pic_hook);
 	Plug_SetBuiltinHook(WC_PluginLoad);

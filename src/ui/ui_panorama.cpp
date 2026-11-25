@@ -1290,6 +1290,20 @@ void UI_Eval(int num, const char *js)
 
 bool UI_WantsInput(void) { return input_view() != nullptr; }
 
+bool UI_WantsSeatInput(void)
+{
+	View *v = input_view();
+	return v && (v->flags & UI_SEATS);
+}
+
+static int key_device, key_seat;
+
+void UI_SetKeySource(int device, int seat)
+{
+	key_device = device;
+	key_seat = seat;
+}
+
 /* posts a "key" event: key is the DOM-style name (may be empty), bind the
  * engine's own key name, as the bind command takes it */
 static void post_key(View *v, const char *name, int key, bool down)
@@ -1299,7 +1313,8 @@ static void post_key(View *v, const char *name, int key, bool down)
 	                   ",\"down\":" + (down ? "true" : "false") +
 	                   ",\"shift\":" + (Key_IsDown(K_LSHIFT) ? "true" : "false") +
 	                   ",\"ctrl\":" + (Key_IsDown(K_LCTRL) ? "true" : "false") +
-	                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") + "}";
+	                   ",\"alt\":" + (Key_IsDown(K_LALT) ? "true" : "false") +
+	                   ",\"device\":" + std::to_string(key_device) + ",\"seat\":" + std::to_string(key_seat) + "}";
 	UI_Post(v->num, "key", json.c_str());
 }
 

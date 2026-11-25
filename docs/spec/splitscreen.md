@@ -120,6 +120,8 @@ seat the server won't allow.
   that player's. Buttons, impulses, stick axes and turns are kept per seat.
 - The console and the engine's menus belong to seat 0.
 - A guest's controller unplugging keeps the seat; the same slot picks it up.
+- A Panorama view opened with `UI_SEATS` also gets guests' keys in a game,
+  tagged with their device and seat (localplay.md).
 - `joy_virtual [count]` attaches up to four pretend controllers and
   `joy_virtual_set [pad] axis|button n value` drives one.
 

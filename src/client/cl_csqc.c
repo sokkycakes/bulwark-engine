@@ -705,6 +705,13 @@ bool CSQC_ConsoleCommand(const char *line)
 	for (int i = 0; t->argc && i < numregistered; i++)
 		if (!Str_ICmp(registered[i], t->argv[0]))
 			known = true;
+	/* Local Play: several players pick their heroes in the set view, not in
+	 * the game's menu, which takes the first player's input only */
+	if (known && t->argc && SF_HidesHeroMenu() &&
+	    (!Str_ICmp(t->argv[0], "showClassSelectionMenu") || !Str_ICmp(t->argv[0], "showHeroSelectionMenu"))) {
+		Mem_Free(t);
+		return true;
+	}
 	Mem_Free(t);
 	if (!known)
 		return false;

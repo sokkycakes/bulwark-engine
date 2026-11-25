@@ -364,11 +364,16 @@ static void last_device(int pad)
 
 static void seat_key_event(int dev, int seat, int key, bool down);
 
+/* the device of the key event being handled: 0 the keyboard and mouse, or
+ * a controller slot + 1 (IN_DeviceKeyEvent) */
+static int key_device;
+
 void IN_KeyEvent(int key, bool down, int unicode)
 {
 	const char *b;
 	if (key < 0 || key >= K_MAX)
 		return;
+	UI_SetKeySource(key_device, CL_SeatForDevice(key_device));
 	if (cl.state == ca_active && !(key >= K_JOY1 && key <= K_GP_RTRIGGER) && CL_SeatForDevice(0) > 0 &&
 	    key != '`' && key != '~' && !Con_IsActive()) {
 		seat_key_event(0, CL_SeatForDevice(0), key, down); /* seat_device gave the keyboard to a guest */
@@ -465,6 +470,7 @@ void IN_KeyEvent(int key, bool down, int unicode)
 #define IN_DEVICES (MAX_SEATS + 1) /* the keyboard and mouse, then each controller */
 static bool devkeydown[IN_DEVICES][K_MAX];
 static char *devheld[IN_DEVICES][K_MAX];
+static bool devui[IN_DEVICES][K_MAX]; /* went to a view that takes every seat's keys */
 
 /* a key of a device that belongs to split screen seat 'seat' (not the
  * first player): only the game and that player's bindings see it */
@@ -508,6 +514,9 @@ static void seat_key_event(int dev, int seat, int key, bool down)
  * player's go through the normal path; a split screen player's to their
  * seat; one nobody has can join with Start, and otherwise only drives the
  * menus outside a game */
+/* in a game the players play (not the title's background map) */
+static bool playing(void) { return cl.state == ca_active && !WC_OnBackdrop(); }
+
 void IN_DeviceKeyEvent(int device, int key, bool down, int unicode)
 {
 	int seat = CL_SeatForDevice(device);
@@ -516,9 +525,19 @@ void IN_DeviceKeyEvent(int device, int key, bool down, int unicode)
 	if (seat < 0 && down)
 		CL_SeatDevicePressed(device, key);
 	seat = CL_SeatForDevice(device);
-	if (seat < 0 && down && cl.state == ca_active)
+	if (seat < 0 && down && playing())
 		return;
-	if (seat > 0 && cl.state == ca_active) {
+	/* a view that serves every local player (the set view's per-player
+	 * hero pick) takes a guest's keys before the game does */
+	if (seat > 0 && playing() && !Con_IsActive() &&
+	    (down ? UI_WantsSeatInput() && !devheld[device][key] : devui[device][key])) {
+		devui[device][key] = down;
+		UI_SetKeySource(device, seat);
+		UI_KeyEvent(key, down, unicode);
+		UI_SetKeySource(0, CL_SeatForDevice(0));
+		return;
+	}
+	if (seat > 0 && playing()) {
 		seat_key_event(device, seat, key, down);
 		return;
 	}
@@ -526,7 +545,10 @@ void IN_DeviceKeyEvent(int device, int key, bool down, int unicode)
 		seat_key_event(device, seat, key, down);
 		return;
 	}
+	key_device = device;
 	IN_KeyEvent(key, down, unicode);
+	key_device = 0;
+	UI_SetKeySource(0, CL_SeatForDevice(0));
 }
 
 /* a split screen player left or lost a controller: nothing stays held */
@@ -586,22 +608,27 @@ void IN_MouseMove(float dx, float dy)
 /* while a menu view takes input, the left stick moves through it like the
  * d-pad: pushing past half way presses that d-pad key once, letting it back
  * under a third releases it */
-static int stick_held[2];
+static int stick_held[MAX_SEATS][2];
 
-static void stick_nav(int axis, float value)
+/* dev is the controller slot; the d-pad key goes through IN_DeviceKeyEvent
+ * so a view that serves every local player knows whose stick it was */
+static void stick_nav(int dev, int axis, float value)
 {
 	static const int keys[2][2] = {{K_GP_DPAD_LEFT, K_GP_DPAD_RIGHT}, {K_GP_DPAD_UP, K_GP_DPAD_DOWN}};
 	int dir = value <= -0.5f ? -1 : value >= 0.5f ? 1 : 0;
-	int held = stick_held[axis];
+	int held = stick_held[dev][axis];
+	int seat = CL_SeatForDevice(dev + 1);
 	if (held && fabsf(value) > 0.33f && (dir == 0 || dir == held))
 		return;
 	if (held) {
-		stick_held[axis] = 0;
-		IN_KeyEvent(keys[axis][held > 0], false, 0);
+		stick_held[dev][axis] = 0;
+		IN_DeviceKeyEvent(dev + 1, keys[axis][held > 0], false, 0);
 	}
-	if (dir && UI_WantsInput()) {
-		stick_held[axis] = dir;
-		IN_KeyEvent(keys[axis][dir > 0], true, 0);
+	/* the first player's stick (or a free one) in any menu; a guest's out
+	 * of a game, or in a game in a view that serves every local player */
+	if (dir && UI_WantsInput() && (seat <= 0 || !playing() || UI_WantsSeatInput())) {
+		stick_held[dev][axis] = dir;
+		IN_DeviceKeyEvent(dev + 1, keys[axis][dir > 0], true, 0);
 	}
 }
 
@@ -612,7 +639,7 @@ void IN_JoyAxis(int dev, int axis, float value)
 		return;
 	/* a controller nobody has moves nothing in the game, and the menus
 	 * only out of it */
-	if (seat < 0 && cl.state == ca_active)
+	if (seat < 0 && playing())
 		return;
 	if (seat < 0)
 		seat = 0;
@@ -624,8 +651,8 @@ void IN_JoyAxis(int dev, int axis, float value)
 		CL_SetSeat(0);
 	}
 	joyaxis_s[seat][axis] = value;
-	if (axis <= 1 && seat == 0)
-		stick_nav(axis, value);
+	if (axis <= 1 && dev < MAX_SEATS)
+		stick_nav(dev, axis, value);
 }
 
 /* layout like a console shooter's, applied only to an unbound pad so a

@@ -3,7 +3,9 @@
 	strip, blind hero select and the reveal, game results, the set's results
 	with the rematch vote, and the search ribbon while training. The engine
 	opens it in set games (src/client/cl_setflow.c) and gives it input only
-	while the player has something to choose. Stiletto's look: #333 panels,
+	while the player has something to choose. With several players on one
+	screen (Local Play) each picks and votes in their own part of it, with
+	their own controller: key events say whose they are. Stiletto's look: #333 panels,
 	red accents, standard_07_57 and hooge_05_57.
 -->
 <root>
@@ -123,6 +125,11 @@
 				<Label id="LeavingSub" class="banner-sub" text="" hittest="false" />
 			</Panel>
 		</Panel>
+
+		<!-- several players on this screen (Local Play): a hero pick or a
+		     rematch vote in each player's own part of the screen, built by
+		     the script from the seats' view rectangles -->
+		<Panel id="LocalLayer" class="local-layer hidden" />
 
 		<!-- bottom: searching while training -->
 		<Panel id="Ribbon" class="ribbon hidden" hittest="false">
