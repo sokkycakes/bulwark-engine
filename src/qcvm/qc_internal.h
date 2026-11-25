@@ -27,6 +27,11 @@ typedef struct qc_tokens_s {
 	int len[QC_MAX_TOKENS];
 	char *buf;
 	size_t buflen, bufcap;
+	/* the text tokenize_console split last: Nuclide splits the same
+	 * spawn data again for every key it looks up */
+	char *src;
+	size_t srclen, srccap;
+	bool src_valid;
 } qc_tokens_t;
 
 #define QC_MAX_FILES 64

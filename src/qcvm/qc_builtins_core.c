@@ -907,6 +907,7 @@ static void tokens_reset(qcvm_t *vm)
 {
 	vm->extra->tokens.count = 0;
 	vm->extra->tokens.buflen = 0;
+	vm->extra->tokens.src_valid = false;
 }
 
 static void token_add(qcvm_t *vm, const char *src, const char *s, size_t n, const char *start, const char *end)
@@ -986,6 +987,16 @@ static void bi_tokenize(qcvm_t *vm)
 static void bi_tokenize_console(qcvm_t *vm)
 {
 	const char *src = QC_PSTR(vm, 0), *p = src;
+	qc_tokens_t *t = &vm->extra->tokens;
+	size_t srclen = strlen(src);
+	if (t->src_valid && srclen == t->srclen && !memcmp(src, t->src, srclen)) {
+		/* the same text as last time splits the same way: only the
+		 * strings argv() made need making again, as they would be */
+		for (int i = 0; i < t->count; i++)
+			t->argv[i] = 0;
+		QC_ReturnFloat(vm, (float)t->count);
+		return;
+	}
 	tokens_reset(vm);
 	for (;;) {
 		const char *start;
@@ -1012,7 +1023,15 @@ static void bi_tokenize_console(qcvm_t *vm)
 			p++;
 		token_add(vm, src, start, (size_t)(p - start), start, p);
 	}
-	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
+	if (srclen + 1 > t->srccap) {
+		t->srccap = srclen + 1 > 256 ? srclen + 1 : 256;
+		Mem_Free(t->src);
+		t->src = Mem_Alloc(t->srccap);
+	}
+	memcpy(t->src, src, srclen + 1);
+	t->srclen = srclen;
+	t->src_valid = true;
+	QC_ReturnFloat(vm, (float)t->count);
 }
 
 static void bi_tokenizebyseparator(qcvm_t *vm)
