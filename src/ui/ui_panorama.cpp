@@ -1434,4 +1434,11 @@ void UI_Draw(void)
 		stat_draw += Sys_Seconds() - start;
 }
 
+/* the pages and the client game route their own menus here */
+bool UI_PreCommand(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	return false;
+}
+
 } // extern "C"

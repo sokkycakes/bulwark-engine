@@ -43,3 +43,4 @@ bool UI_KeyEvent(int key, bool down, int unicode) { (void)key, (void)down, (void
 void UI_MouseMove(float x, float y) { (void)x, (void)y; }
 void UI_Frame(double dt) { (void)dt; }
 void UI_Draw(void) {}
+bool UI_PreCommand(int argc, const char **argv) { (void)argc, (void)argv; return false; }
