@@ -841,7 +841,7 @@ Server-side meaning, for reference (game code, not engine):
 | `lobby_port` | `27501` | UDP port the host's lobby listens on. Also the default port for `lobby_join <host>` without a port. [SRC] |
 | `lobby_readytime` | [UNCERTAIN; PROPOSED `5`] | All-ready countdown length in seconds. Configs use 3 and 10. [SRC] |
 | `lobby_maxplayers` | `16` | Seats. Snapshot `max`. [SRC] |
-| `lobby_defaultmap` | `envtest` | Map selected at create (`base/maps/envtest.bsp`). [SRC] |
+| `lobby_defaultmap` | `envtest` | Map selected at create (`base/maps/envtest.bsp`). [SRC] Bulwark leaves it empty and picks the ruleset's own map from `scripts/lobby.txt` ([lobby.md](lobby.md)). |
 | `lobby_defaultruleset` | `DUEL` | Ruleset at create, and the fallback mode ID when no MenuQC registered modes. [SRC] |
 | `lobby_snapshot` | `""` | The current atomic snapshot JSON (9.8), refreshed whenever the revision or local connection state changes. Read-only for users. [SRC] |
 | `hostname` / `name` | standard | `name` is the local player name in the roster. [SRC] |
@@ -986,7 +986,11 @@ Shape [SRC: plan field list, UI consumers and the native test fixture]:
   "players": [
     { "seat": number, "name": string, "host": boolean,
       "ready": boolean, "connected": boolean }
-  ]
+  ],
+  // Bulwark additions (lobby.md, "Maps and rulesets"); pages fall back to
+  // their own lists when these are missing:
+  "maps":     [ { "id": string, "name": string } ],
+  "rulesets": [ { "id": string, "name": string, "map": string, "available": boolean } ]
 }
 ```
 

@@ -83,6 +83,7 @@ static struct {
 	char status[128], error[160];
 	char roomcode[8];
 	char map[64];
+	bool mapchosen;  /* the host picked the map; a ruleset change keeps it */
 	char ruleset[32];
 	char timelimit[16], fraglimit[16];
 	double countdown_end;
@@ -377,6 +378,244 @@ static json_t *chat_json(void)
 	return arr;
 }
 
+/* --- what the host can pick: maps and rulesets ------------------------------------------ */
+
+/* The game names its lobby's choices in scripts/lobby.txt, one per line:
+ *   map <id> "<title>"
+ *   ruleset <ID> "<title>" [<map the ruleset picks>]
+ * A listed map whose maps/<id>.bsp (or .scene) isn't there is left out. With
+ * no file, every map in maps/ is offered under its own name, with the
+ * built-in rulesets below. MenuQC's lobby_registermode adds rulesets either
+ * way. The page shows these lists ("maps", "rulesets" in getlobby) and falls
+ * back to its own when they are missing. */
+#define LOBBY_MAX_MAPS 64
+#define LOBBY_MAX_RULESETS 24
+
+typedef struct {
+	char id[64], name[64];
+} lobbymap_t;
+
+typedef struct {
+	char id[32], name[64], map[64];
+	bool available; /* its progs are in this game */
+} lobbyruleset_t;
+
+static const struct {
+	const char *id, *name;
+} builtin_rulesets[] = {
+	{"DUEL", "Duel"},       {"DEATHMATCH", "Deathmatch"}, {"TEAMDM", "Team Deathmatch"},
+	{"DOMINATION", "Domination"}, {"FREEZETAG", "Freeze Tag"}, {"ARCHSTILETTO", "Archstiletto"},
+};
+
+static struct {
+	int fsgen;
+	bool loaded, fromfile;
+	lobbymap_t maps[LOBBY_MAX_MAPS];
+	int nummaps;
+	lobbyruleset_t rulesets[LOBBY_MAX_RULESETS];
+	int numrulesets;
+} cat = {.fsgen = -1};
+
+static bool map_present(const char *id)
+{
+	return FS_FileExists(va("maps/%s.bsp", id)) || FS_FileExists(va("maps/%s.scene", id));
+}
+
+/* Nuclide runs a ruleset from progs/<id in lower case>.dat; without it the
+ * server has no rules and nobody spawns, so such a ruleset can't be picked */
+static bool progs_present(const char *id)
+{
+	char path[64];
+	int n = snprintf(path, sizeof(path), "progs/%s.dat", id);
+	for (int i = 6; i < n; i++)
+		path[i] = (char)tolower((unsigned char)path[i]);
+	return FS_FileExists(path);
+}
+
+static void add_map(const char *id, const char *name)
+{
+	if (cat.nummaps == LOBBY_MAX_MAPS || !*id)
+		return;
+	for (int i = 0; i < cat.nummaps; i++)
+		if (!Str_ICmp(cat.maps[i].id, id))
+			return;
+	Str_Copy(cat.maps[cat.nummaps].id, id, sizeof(cat.maps[0].id));
+	Str_Copy(cat.maps[cat.nummaps].name, *name ? name : id, sizeof(cat.maps[0].name));
+	cat.nummaps++;
+}
+
+static void add_ruleset(const char *id, const char *name, const char *map)
+{
+	lobbyruleset_t *r = NULL;
+	char up[32];
+	int n = 0;
+	for (; id[n] && n < (int)sizeof(up) - 1; n++)
+		up[n] = (char)toupper((unsigned char)id[n]);
+	up[n] = 0;
+	if (!n)
+		return;
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (!strcmp(cat.rulesets[i].id, up))
+			r = &cat.rulesets[i];
+	if (!r) {
+		if (cat.numrulesets == LOBBY_MAX_RULESETS)
+			return;
+		r = &cat.rulesets[cat.numrulesets++];
+	}
+	Str_Copy(r->id, up, sizeof(r->id));
+	Str_Copy(r->name, *name ? name : up, sizeof(r->name));
+	Str_Copy(r->map, map, sizeof(r->map));
+	r->available = progs_present(up);
+}
+
+static void list_map(const char *name, const char *searchpath, void *ctx)
+{
+	char id[64];
+	const char *base = strrchr(name, '/');
+	size_t n;
+	(void)searchpath;
+	(void)ctx;
+	base = base ? base + 1 : name;
+	n = strlen(base);
+	if (n < 5 || n - 4 >= sizeof(id) || Str_ICmp(base + n - 4, ".bsp"))
+		return;
+	memcpy(id, base, n - 4);
+	id[n - 4] = 0;
+	for (const char *p = id; *p; p++)
+		if (!isalnum((unsigned char)*p) && *p != '_')
+			return;
+	add_map(id, id);
+}
+
+static int cmp_maps(const void *a, const void *b)
+{
+	return Str_ICmp(((const lobbymap_t *)a)->id, ((const lobbymap_t *)b)->id);
+}
+
+static void parse_catalog(const char *text)
+{
+	char line[512], kind[16], id[64], name[64], map[64];
+	while (*text) {
+		const char *end = strchr(text, '\n'), *p;
+		size_t n = end ? (size_t)(end - text) : strlen(text);
+		if (n >= sizeof(line))
+			n = sizeof(line) - 1;
+		memcpy(line, text, n);
+		line[n] = 0;
+		text += end ? (size_t)(end - text) + 1 : strlen(text);
+		kind[0] = id[0] = name[0] = map[0] = 0;
+		if (!(p = COM_Parse(line, kind, sizeof(kind))))
+			continue;
+		if ((p = COM_Parse(p, id, sizeof(id))))
+			if ((p = COM_Parse(p, name, sizeof(name))))
+				COM_Parse(p, map, sizeof(map));
+		if (!Str_ICmp(kind, "map")) {
+			if (map_present(id))
+				add_map(id, name);
+			else
+				Con_DPrintf("lobby: scripts/lobby.txt lists map %s, which isn't in this game\n", id);
+		} else if (!Str_ICmp(kind, "ruleset"))
+			add_ruleset(id, name, map);
+	}
+}
+
+/* (re)built when the lobby opens or the search path changes */
+static void load_catalog(void)
+{
+	char *text;
+	if (cat.loaded && cat.fsgen == FS_Generation())
+		return;
+	cat.loaded = true;
+	cat.fsgen = FS_Generation();
+	cat.nummaps = cat.numrulesets = 0;
+	text = FS_LoadFile("scripts/lobby.txt", NULL);
+	cat.fromfile = text != NULL;
+	if (text) {
+		parse_catalog(text);
+		Mem_Free(text);
+	}
+	if (!cat.nummaps) {
+		FS_List("maps/*.bsp", true, list_map, NULL);
+		qsort(cat.maps, (size_t)cat.nummaps, sizeof(cat.maps[0]), cmp_maps);
+	}
+	if (!cat.numrulesets)
+		for (size_t i = 0; i < BW_ARRAY_COUNT(builtin_rulesets); i++)
+			add_ruleset(builtin_rulesets[i].id, builtin_rulesets[i].name, "");
+}
+
+static const lobbyruleset_t *find_ruleset(const char *id)
+{
+	load_catalog();
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (!Str_ICmp(cat.rulesets[i].id, id))
+			return &cat.rulesets[i];
+	return NULL;
+}
+
+/* A game with no rules progs at all (not Nuclide) runs any ruleset alike */
+static bool ruleset_runs(const char *id)
+{
+	const lobbyruleset_t *r = find_ruleset(id); /* loads the catalog; its answer is cached */
+	if (r ? r->available : progs_present(id))
+		return true;
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (cat.rulesets[i].available)
+			return false;
+	return true;
+}
+
+/* the map a ruleset starts on: lobby_defaultmap when set, else the ruleset's
+ * own, else the first listed (docs/spec/lobby.md) */
+static const char *ruleset_map(const char *id)
+{
+	const lobbyruleset_t *r = find_ruleset(id);
+	load_catalog();
+	if (*lobby_defaultmap->string)
+		return lobby_defaultmap->string;
+	if (r && r->map[0] && map_present(r->map))
+		return r->map;
+	return cat.nummaps ? cat.maps[0].id : "start";
+}
+
+static json_t *maps_json(void)
+{
+	json_t *arr = JSON_New(JSON_ARRAY);
+	load_catalog();
+	for (int i = 0; i < cat.nummaps; i++) {
+		json_t *m = JSON_New(JSON_OBJECT);
+		JSON_SetString(m, "id", cat.maps[i].id);
+		JSON_SetString(m, "name", cat.maps[i].name);
+		JSON_Append(arr, m);
+	}
+	return arr;
+}
+
+static json_t *rulesets_json(void)
+{
+	json_t *arr = JSON_New(JSON_ARRAY);
+	load_catalog();
+	for (int i = 0; i < cat.numrulesets; i++) {
+		json_t *r = JSON_New(JSON_OBJECT);
+		JSON_SetString(r, "id", cat.rulesets[i].id);
+		JSON_SetString(r, "name", cat.rulesets[i].name);
+		JSON_SetString(r, "map", cat.rulesets[i].map);
+		JSON_SetBool(r, "available", ruleset_runs(cat.rulesets[i].id));
+		JSON_Append(arr, r);
+	}
+	for (int i = 0; i < nummodes; i++) {
+		json_t *r;
+		if (find_ruleset(modes[i].id))
+			continue;
+		r = JSON_New(JSON_OBJECT);
+		JSON_SetString(r, "id", modes[i].id);
+		JSON_SetString(r, "name", modes[i].name[0] ? modes[i].name : modes[i].id);
+		JSON_SetString(r, "map", "");
+		JSON_SetBool(r, "available", ruleset_runs(modes[i].id));
+		JSON_Append(arr, r);
+	}
+	return arr;
+}
+
 /* what the lobby page reads (getlobby) */
 static json_t *local_snapshot(void)
 {
@@ -408,6 +647,8 @@ static json_t *local_snapshot(void)
 	JSON_SetBool(j, "canChat", active && can_chat());
 	JSON_Set(j, "settings", active ? settings_json() : JSON_New(JSON_OBJECT));
 	JSON_Set(j, "players", active ? players_json() : JSON_New(JSON_ARRAY));
+	JSON_Set(j, "maps", maps_json());
+	JSON_Set(j, "rulesets", rulesets_json());
 	return j;
 }
 
@@ -487,8 +728,6 @@ static void publish(void)
 
 /* --- modes ---------------------------------------------------------------------------- */
 
-static const char *const builtin_rulesets[] = {"DUEL", "DEATHMATCH", "TEAMDM", "DOMINATION", NULL};
-
 static const lobbymode_t *find_mode(const char *id)
 {
 	for (int i = 0; i < nummodes; i++)
@@ -499,10 +738,22 @@ static const lobbymode_t *find_mode(const char *id)
 
 static bool valid_ruleset(const char *id)
 {
-	for (int i = 0; builtin_rulesets[i]; i++)
-		if (!Str_ICmp(builtin_rulesets[i], id))
-			return true;
-	return find_mode(id) != NULL;
+	return find_ruleset(id) != NULL || find_mode(id) != NULL;
+}
+
+/* lobby_defaultruleset when it can run, else the first listed that can */
+static const char *default_ruleset(void)
+{
+	const char *want = *lobby_defaultruleset->string ? lobby_defaultruleset->string : "DUEL";
+	if (valid_ruleset(want) && ruleset_runs(want))
+		return want;
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (cat.rulesets[i].available) {
+			Con_Printf("^3lobby: ruleset %s isn't in this game (its progs are missing); the lobby starts on %s\n", want,
+			           cat.rulesets[i].name);
+			return cat.rulesets[i].id;
+		}
+	return want;
 }
 
 static void bi_lobby_registermode(qcvm_t *vm)
@@ -547,12 +798,15 @@ static void new_session(void)
 	L.sid = random32();
 	L.max = BW_CLAMP(lobby_maxplayers->ivalue, 1, LOBBY_SEATS);
 	L.error[0] = 0;
-	Str_Copy(L.map, lobby_defaultmap->string, sizeof(L.map));
-	Str_Copy(L.ruleset, *lobby_defaultruleset->string ? lobby_defaultruleset->string : "DUEL", sizeof(L.ruleset));
+	cat.loaded = false; /* a new lobby looks at the game's files again */
+	Str_Copy(L.ruleset, default_ruleset(), sizeof(L.ruleset));
 	Str_Copy(L.timelimit, "0", sizeof(L.timelimit));
 	Str_Copy(L.fraglimit, "0", sizeof(L.fraglimit));
 	for (char *p = L.ruleset; *p; p++)
 		*p = (char)toupper((unsigned char)*p);
+	/* lobby_defaultmap, when set, wins; otherwise the ruleset's own map */
+	Str_Copy(L.map, ruleset_map(L.ruleset), sizeof(L.map));
+	L.mapchosen = false;
 }
 
 static void LobbyCreate_f(int argc, const char **argv)
@@ -1244,6 +1498,7 @@ static void LobbyClose_f(int argc, const char **argv)
 
 static void set_map(const char *id)
 {
+	L.mapchosen = true;
 	if (!strcmp(L.map, id))
 		return;
 	cancel_countdown("The map changed");
@@ -1255,7 +1510,7 @@ static bool set_ruleset(const char *id)
 {
 	char up[32];
 	int n = 0;
-	if (!valid_ruleset(id))
+	if (!valid_ruleset(id) || !ruleset_runs(id))
 		return false;
 	for (; id[n] && n < (int)sizeof(up) - 1; n++)
 		up[n] = (char)toupper((unsigned char)id[n]);
@@ -1263,6 +1518,9 @@ static bool set_ruleset(const char *id)
 	if (strcmp(L.ruleset, up)) {
 		cancel_countdown("The rules changed");
 		Str_Copy(L.ruleset, up, sizeof(L.ruleset));
+		/* until the host picks a map, each ruleset brings its own (Duel: duel_alley) */
+		if (!L.mapchosen && !*lobby_defaultmap->string)
+			Str_Copy(L.map, ruleset_map(up), sizeof(L.map));
 		changed();
 	}
 	return true;
@@ -1290,8 +1548,12 @@ static void LobbySet_f(int argc, const char **argv)
 		Con_Printf("usage: lobby_set <ruleset|map> <value> (host only)\n");
 		return;
 	}
-	if (!Str_ICmp(argv[1], "ruleset") && !set_ruleset(argv[2]))
-		Con_Printf("lobby_set: unknown ruleset %s\n", argv[2]);
+	if (!Str_ICmp(argv[1], "ruleset") && !set_ruleset(argv[2])) {
+		if (valid_ruleset(argv[2]))
+			Con_Printf("lobby_set: ruleset %s isn't in this game (its progs are missing)\n", argv[2]);
+		else
+			Con_Printf("lobby_set: unknown ruleset %s\n", argv[2]);
+	}
 	else if (!Str_ICmp(argv[1], "map"))
 		set_map(argv[2]);
 }
@@ -1396,7 +1658,7 @@ static bool map_id_ok(const char *id)
 	for (const char *p = id; *p; p++)
 		if (!isalnum((unsigned char)*p) && *p != '_')
 			return false;
-	return FS_FileExists(va("maps/%s.bsp", id)) || FS_FileExists(va("maps/%s.scene", id));
+	return map_present(id);
 }
 
 static void lobby_action(const char *a, strbuf_t *out)
@@ -1577,7 +1839,7 @@ void Lobby_Init(void)
 	lobby_port = Cvar_Get("lobby_port", "27501", 0, "UDP port a lobby host listens on");
 	lobby_readytime = Cvar_Get("lobby_readytime", "5", CVAR_ARCHIVE, "Seconds of countdown once every lobby player is ready");
 	lobby_maxplayers = Cvar_Get("lobby_maxplayers", "16", 0, "Seats in a lobby");
-	lobby_defaultmap = Cvar_Get("lobby_defaultmap", "envtest", 0, "The map a new lobby picks");
+	lobby_defaultmap = Cvar_Get("lobby_defaultmap", "", 0, "The map a new lobby picks; empty picks the ruleset's own (scripts/lobby.txt)");
 	lobby_defaultruleset = Cvar_Get("lobby_defaultruleset", "DUEL", 0, "The rules a new lobby picks");
 	lobby_snapshot = Cvar_Get("lobby_snapshot", "", CVAR_READONLY | CVAR_NOSAVE, "The lobby's state as JSON");
 	Cmd_AddD("lobby_create", LobbyCreate_f, "lobby_create <lan|online|offline>: host a lobby");

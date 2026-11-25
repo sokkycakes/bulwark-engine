@@ -6,3 +6,6 @@ tests/script/game/scripts/vscripts/test_qc.lno
 # private game art (never in git)
 **/wt-private/
 **/*.bsk
+
+# written by the lobby_snapshot console command into the working directory
+lobby_snapshot.json
