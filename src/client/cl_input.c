@@ -724,12 +724,28 @@ static void InPadDefaults_f(int argc, const char **argv)
 	apply_pad_defaults();
 }
 
-void IN_ControllerAdded(int dev)
+static bool pad_any_bound(void)
 {
 	for (int k = K_GP_DPAD_UP; k <= K_GP_LAST; k++)
 		if (bindings[k] && bindings[k][0])
-			return;
-	apply_pad_defaults();
+			return true;
+	return false;
+}
+
+/* pad_defaults_ifunbound: the layout, only when no controller button is
+ * bound. Games run it after config.cfg (an old config's unbindall leaves a
+ * controller with nothing); FTE's menu provides the same command. */
+static void PadDefaultsIfUnbound_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	if (!pad_any_bound())
+		apply_pad_defaults();
+}
+
+void IN_ControllerAdded(int dev)
+{
+	if (!pad_any_bound())
+		apply_pad_defaults();
 }
 
 void IN_ControllerRemoved(int dev)
@@ -944,6 +960,7 @@ void IN_Init(void)
 	Cmd_Add("bind", Bind_f);
 	Cmd_Add("unbind", Unbind_f);
 	Cmd_Add("unbindall", Unbindall_f);
+	Cmd_AddD("pad_defaults_ifunbound", PadDefaultsIfUnbound_f, "Bind the controller's buttons to the game's layout, only if none of them is bound");
 	Cmd_AddD("in_paddefaults", InPadDefaults_f, "Bind the controller's buttons to the game's layout (pad_defaults.cfg) or the engine's");
 	Cmd_Add("bindlist", Bindlist_f);
 	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");

@@ -161,6 +161,9 @@ engine binds a layout: the game's own `pad_defaults.cfg` if it ships one
 a config still queued can't be overwritten by them), otherwise a built-in
 console-shooter layout. `in_paddefaults` applies the same layout on demand,
 whatever is bound.
+`pad_defaults_ifunbound` applies it only when no controller button is
+bound; Stiletto's quake.rc runs it after config.cfg, so a config saved
+before the layout existed (it starts with `unbindall`) still gets one.
 
 Options > Controller (`menu_controller`) holds the stick tuning (`joy_enable`,
 `joy_yawspeed`, `joy_pitchspeed`, `joy_invert`, `joy_deadzone`, `joy_curve`
@@ -173,7 +176,10 @@ The Keys page (`menu_keys`) lists the game's own actions: the first of
 One row a line: `"command" "description"` (anything after is ignored); a
 `blank "TITLE"` or `- "TITLE"` line, or a quoted title alone, is a section
 heading. A game without any of these gets a short list of common actions.
-Unbound rows say "not bound".
+Unbound rows say "not bound". Enter or A on a row waits up to 5 seconds
+for the key or button to bind: any key except Escape, and every
+controller button (Back and Start included), becomes the binding; Escape or
+the wait running out leaves the row as it was. Backspace clears it.
 
 ## Tests
 

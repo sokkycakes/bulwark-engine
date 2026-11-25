@@ -64,6 +64,8 @@ static int depth;
 static bool editing;     /* an edit field has the keys */
 static char editbuf[256];
 static bool binding;     /* waiting for the key to bind */
+static double binding_until; /* when the wait gives up */
+#define BIND_WAIT 5 /* seconds; a pad has no spare key to cancel with */
 static float lastmx = -1, lastmy = -1;
 
 static const float c_text[3] = {0.85f, 0.85f, 0.85f}, c_dim[3] = {0.5f, 0.5f, 0.5f}, c_title[3] = {1, 0.75f, 0.35f};
@@ -362,8 +364,10 @@ static void activate(page_t *p, item_t *it, int dir)
 		}
 		break;
 	case IT_BIND:
-		if (dir == 0)
+		if (dir == 0) {
 			binding = true;
+			binding_until = Sys_Seconds() + BIND_WAIT;
+		}
 		break;
 	default:
 		break;
@@ -450,7 +454,9 @@ static void draw_value(const item_t *it, float x, float y, float w, float size, 
 		}
 	}
 	if (it->type == IT_BIND && sel && binding) {
-		R_Text(x, y, "press a key...", size, c_title, 1);
+		int left = (int)(binding_until - Sys_Seconds()) + 1;
+		snprintf(buf, sizeof(buf), "press a key or button... %d", left < 1 ? 1 : left);
+		R_Text(x, y, buf, size, c_title, 1);
 		return;
 	}
 	value_text(it, buf, sizeof(buf));
@@ -555,6 +561,8 @@ void EM_Draw(int w, int h)
 	page_t *p = top();
 	if (!p)
 		return;
+	if (binding && Sys_Seconds() >= binding_until)
+		binding = false; /* nothing pressed: leave the binding as it was */
 	if (p->populate && p->refresh > 0 && Sys_Seconds() >= p->nextrefresh) {
 		p->nextrefresh = Sys_Seconds() + p->refresh;
 		if (!editing && !binding)
@@ -618,9 +626,10 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	item_t *it = p->numitems ? &p->items[p->cursor] : NULL;
 	if (binding && it && it->type == IT_BIND) {
 		binding = false;
-		/* Escape, or Back/View on a controller, cancels; any other key or
-		 * button (B included, so it can be bound) becomes the binding */
-		if (key != K_ESCAPE && key != K_GP_VIEW)
+		/* Escape cancels; any other key or button, every pad button
+		 * included, becomes the binding. A controller cancels by waiting
+		 * BIND_WAIT seconds, since each of its buttons may need binding */
+		if (key != K_ESCAPE)
 			Key_SetBinding(key, it->command);
 		return true;
 	}
@@ -936,7 +945,7 @@ static void pg_keys(page_t *p)
 	if (!keys_from_list(p))
 		for (size_t i = 0; i < BW_ARRAY_COUNT(binds); i++)
 			add_bind(p, binds[i][0], binds[i][1]);
-	Str_Copy(p->footer, "Enter/A, then the key or button. Esc/Back cancels, Backspace clears", sizeof(p->footer));
+	Str_Copy(p->footer, "A/Enter, then a key. Esc or 5 s cancels, Bksp clears", sizeof(p->footer));
 }
 
 /* the sticks' tuning (cl_input.c) and vibration (vid_sdl.c); the buttons

@@ -671,6 +671,7 @@ held and the matching `-` command when it's let go.
 | `+p4` / `-p4` | +pN <button>: press a button for split screen player N |
 | `p4` | p4 <command>: run a command for seat 4 |
 | `packet` | packet <destination> <contents>: send a connectionless packet (\n for a line break) |
+| `pad_defaults_ifunbound` | Bind the controller buttons to the default layout, only when none of them is bound (a game's quake.rc runs it after config.cfg) |
 | `pause` | Pause or unpause the game |
 | `pin_add` | pin_add <author> <message>: a message shown to players as they join |
 | `pin_delete` | pin_delete <number\|all>: remove pinned messages |
