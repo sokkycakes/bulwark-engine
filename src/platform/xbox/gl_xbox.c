@@ -321,11 +321,13 @@ static void pb_resync(void) { P = kicked = pb_begin(); }
 static uint64_t stream_pos(const uint32_t *p) { return pblap + (uint64_t)(p - pbbase); }
 
 /* how far the GPU has read: it is never a whole lap behind the kicked position */
+static uint64_t gpu_seen; /* the last gpu_pos: reading the register is slow */
+
 static uint64_t gpu_pos(void)
 {
 	uint32_t get = ((DMA_GET & 0x03FFFFFF) - ((uint32_t)pbbase & 0x03FFFFFF)) / 4;
 	uint32_t k = (uint32_t)(kicked - pbbase);
-	return stream_pos(kicked) - (k + PB_DWORDS - get) % PB_DWORDS;
+	return gpu_seen = stream_pos(kicked) - (k + PB_DWORDS - get) % PB_DWORDS;
 }
 
 /* waits until everything before the position has been done */
@@ -366,7 +368,7 @@ static void pb_open(size_t n)
 		kicked = P;
 	}
 	uint64_t end = stream_pos(P) + n;
-	if (end > PB_DWORDS && gpu_pos() + PB_DWORDS < end) {
+	if (end > PB_DWORDS && gpu_seen + PB_DWORDS < end && gpu_pos() + PB_DWORDS < end) {
 		ULONGLONG t0 = KeQueryPerformanceCounter();
 		pb_kick();
 		while (gpu_pos() + PB_DWORDS < end && pb_busy())
@@ -484,9 +486,23 @@ typedef struct {
 	uint32_t usedframe; /* the last frame that drew with it */
 } xtex_t;
 
+/* a run of a static index buffer as GPU commands, called from the stream */
+typedef struct {
+	size_t ofs;
+	int count; /* 0: an empty slot */
+	bool u32;  /* the buffer holds 32-bit indices (part of the key) */
+	bool wide; /* sent as 32-bit indices */
+	uint32_t lo, hi;
+	uint32_t *cmds; /* GPU memory, ending in a return */
+	uint32_t bytes;
+} iseg_t;
+
 typedef struct {
 	bool used;
 	bool element; /* data is in the normal heap, read by the CPU when drawing */
+	bool stream;  /* given as GL_STREAM_DRAW */
+	iseg_t *segs; /* element buffers: a hash of the runs drawn so far */
+	int numsegs, maxsegs;
 	bool ring;    /* data is in this frame's ring */
 	uint8_t *data;
 	size_t size, alloc;
@@ -1307,8 +1323,19 @@ static void BWGLAPI xb_glGenBuffers(GLsizei n, GLuint *ids)
 		ids[i] = new_bufs();
 }
 
+static void free_segs(xbuf_t *b)
+{
+	for (int i = 0; i < b->maxsegs; i++)
+		if (b->segs[i].count)
+			gpu_free(b->segs[i].cmds, b->segs[i].bytes); /* a frame in flight may call it */
+	free(b->segs);
+	b->segs = NULL;
+	b->numsegs = b->maxsegs = 0;
+}
+
 static void release_storage(xbuf_t *b)
 {
+	free_segs(b);
 	if (!b->data || b->ring)
 		return;
 	if (b->element)
@@ -1344,9 +1371,11 @@ static xbuf_t *bound_buf(GLenum target) { return get_bufs(target == GL_ELEMENT_A
 /* new storage for a buffer's whole contents */
 static bool respecify(xbuf_t *b, GLenum target, size_t size, bool stream)
 {
+	b->stream = stream;
 	if (b->element && target == GL_ELEMENT_ARRAY_BUFFER && b->data && size && size <= b->alloc) {
 		/* only the CPU reads indices, at draw time: the old storage can be
 		 * overwritten (streamed indices come every draw) */
+		free_segs(b);
 		b->size = size;
 		return true;
 	}
@@ -1398,6 +1427,8 @@ static void BWGLAPI xb_glBufferSubData(GLenum target, GLintptr ofs, GLsizeiptr s
 	xbuf_t *b = bound_buf(target);
 	if (!b || !b->data || ofs < 0 || (size_t)(ofs + size) > b->size)
 		return;
+	if (b->element)
+		free_segs(b);
 	if (!b->element && (uint32_t)(framenum - b->usedframe) < 2) {
 		/* the GPU may still read the old contents */
 		if (ofs == 0 && (size_t)size == b->size) {
@@ -2192,26 +2223,126 @@ static void set_arrays(const vsrc_t *src, uint32_t lo)
 
 static int draws_this_frame, tris_this_frame;
 
-static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *idx16, int first)
+/* the bounds of the indices a draw uses */
+static void index_range(int count, const uint32_t *idx32, const uint16_t *idx16, uint32_t *lo, uint32_t *hi)
+{
+	uint32_t l = UINT32_MAX, h = 0;
+	if (idx32) {
+		for (int i = 0; i < count; i++)
+			l = BW_MIN(l, idx32[i]), h = BW_MAX(h, idx32[i]);
+	} else {
+		for (int i = 0; i < count; i++)
+			l = BW_MIN(l, idx16[i]), h = BW_MAX(h, idx16[i]);
+	}
+	*lo = l, *hi = h;
+}
+
+/* the dwords put_indices may write */
+static size_t index_words(int count, bool wide) { return (wide ? (size_t)count : (size_t)count / 2 + 1) + (size_t)count / 2047 + 2; }
+
+/* the commands that send indices, rebased to lo: 16 bits each when the
+ * range allows, two a word, an odd last one alone */
+static uint32_t *put_indices(uint32_t *p, int count, const uint32_t *idx32, const uint16_t *idx16, uint32_t lo, bool wide)
+{
+	if (!wide) {
+		int pairs = count / 2, i = 0;
+		while (pairs > 0) {
+			int words = BW_MIN(pairs, 2047);
+			*p++ = 0x40000000u | ((uint32_t)words << 18) | NV097_ARRAY_ELEMENT16;
+			if (idx16) {
+				for (int w = 0; w < words; w++, i += 2)
+					*p++ = (uint32_t)(idx16[i] - lo) | ((uint32_t)(idx16[i + 1] - lo) << 16);
+			} else {
+				for (int w = 0; w < words; w++, i += 2)
+					*p++ = (idx32[i] - lo) | ((idx32[i + 1] - lo) << 16);
+			}
+			pairs -= words;
+		}
+		if (count & 1) {
+			*p++ = (1u << 18) | NV097_ARRAY_ELEMENT32;
+			*p++ = (idx32 ? idx32[count - 1] : idx16[count - 1]) - lo;
+		}
+	} else {
+		int left = count, i = 0;
+		while (left > 0) {
+			int words = BW_MIN(left, 2047);
+			*p++ = 0x40000000u | ((uint32_t)words << 18) | NV097_ARRAY_ELEMENT32;
+			for (int w = 0; w < words; w++, i++)
+				*p++ = (idx32 ? idx32[i] : idx16[i]) - lo;
+			left -= words;
+		}
+	}
+	return p;
+}
+
+/* A static index buffer's runs are made into commands in GPU memory the
+ * first time they are drawn; the stream then calls them, so drawing the
+ * world or a model doesn't read and copy its indices again. They live in
+ * a hash by offset and count. */
+static iseg_t *seg_slot(iseg_t *segs, int max, size_t ofs, int count, bool u32)
+{
+	uint32_t i = ((uint32_t)ofs * 2654435761u ^ (uint32_t)count * 40503u) & (uint32_t)(max - 1);
+	while (segs[i].count && !(segs[i].ofs == ofs && segs[i].count == count && segs[i].u32 == u32))
+		i = (i + 1) & (uint32_t)(max - 1);
+	return &segs[i];
+}
+
+static iseg_t *find_seg(xbuf_t *b, size_t ofs, int count, const uint32_t *idx32, const uint16_t *idx16)
+{
+	iseg_t *g;
+	if (b->maxsegs && (g = seg_slot(b->segs, b->maxsegs, ofs, count, idx32 != NULL))->count)
+		return g;
+	if (b->numsegs * 2 >= b->maxsegs) {
+		/* grow the hash */
+		int max = b->maxsegs ? b->maxsegs * 2 : 64;
+		iseg_t *segs = calloc((size_t)max, sizeof(iseg_t));
+		if (!segs)
+			return NULL;
+		for (int i = 0; i < b->maxsegs; i++)
+			if (b->segs[i].count)
+				*seg_slot(segs, max, b->segs[i].ofs, b->segs[i].count, b->segs[i].u32) = b->segs[i];
+		free(b->segs);
+		b->segs = segs, b->maxsegs = max;
+	}
+	uint32_t lo, hi;
+	index_range(count, idx32, idx16, &lo, &hi);
+	bool wide = hi - lo > 0xFFFF;
+	uint32_t bytes = (uint32_t)(index_words(count, wide) + 1) * 4;
+	uint32_t *cmds = gpu_alloc(bytes);
+	if (!cmds)
+		return NULL;
+	uint32_t *e = put_indices(cmds, count, idx32, idx16, lo, wide);
+	*e = 0x00020000; /* return */
+	g = seg_slot(b->segs, b->maxsegs, ofs, count, idx32 != NULL);
+	*g = (iseg_t){ofs, count, idx32 != NULL, wide, lo, hi, cmds, bytes};
+	b->numsegs++;
+	return g;
+}
+
+/* eb: the element buffer the indices are in, at byte ofs, or NULL */
+static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *idx16, int first, xbuf_t *eb, size_t ofs)
 {
 	vsrc_t src[NATTRS];
-	bool ring;
-	uint32_t lo = UINT32_MAX, hi = 0;
+	bool ring, wide = false;
+	uint32_t lo, hi;
+	iseg_t *seg = NULL;
 	if (mode > GL_TRIANGLE_FAN || count <= 0 || !ready)
 		return;
-	if (idx32 || idx16) {
-		for (int i = 0; i < count; i++) {
-			uint32_t x = idx32 ? idx32[i] : idx16[i];
-			lo = BW_MIN(lo, x), hi = BW_MAX(hi, x);
-		}
+	if (eb && !eb->stream) {
+		seg = find_seg(eb, ofs, count, idx32, idx16);
+	}
+	if (seg) {
+		lo = seg->lo, hi = seg->hi;
+	} else if (idx32 || idx16) {
+		index_range(count, idx32, idx16, &lo, &hi);
+		wide = hi - lo > 0xFFFF;
 	} else {
 		lo = (uint32_t)first, hi = (uint32_t)(first + count - 1);
 	}
 	if (!vertex_sources(src, hi, &ring))
 		return;
-	bool small = hi - lo <= 0xFFFF;
 
-	pb_open(600 + (size_t)count + (size_t)count / 2047);
+	pb_open(600 + (seg || !(idx32 || idx16) ? (size_t)count / 256 : index_words(count, wide)));
 	set_fixed_state();
 	if (!set_program()) {
 		pb_close();
@@ -2222,7 +2353,9 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 		put1(NV097_BREAK_VERTEX_BUFFER_CACHE, 0);
 
 	put1(NV097_SET_BEGIN_END, mode + 1); /* GL's primitives, one up */
-	if (!idx32 && !idx16) {
+	if (seg) {
+		*P++ = ((uint32_t)seg->cmds & 0x03FFFFFF) | 2; /* call */
+	} else if (!idx32 && !idx16) {
 		/* runs of up to 256 vertices, from the rebased start */
 		int left = count, start = 0;
 		while (left > 0) {
@@ -2234,29 +2367,8 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 				start += n, left -= n;
 			}
 		}
-	} else if (small) {
-		/* two 16-bit indices a word; an odd last one goes alone */
-		int pairs = count / 2, i = 0;
-		while (pairs > 0) {
-			int words = BW_MIN(pairs, 2047);
-			cmd_noinc(NV097_ARRAY_ELEMENT16, (uint32_t)words);
-			for (int w = 0; w < words; w++, i += 2) {
-				uint32_t a = (idx32 ? idx32[i] : idx16[i]) - lo, b = (idx32 ? idx32[i + 1] : idx16[i + 1]) - lo;
-				*P++ = a | (b << 16);
-			}
-			pairs -= words;
-		}
-		if (count & 1)
-			put1(NV097_ARRAY_ELEMENT32, (idx32 ? idx32[count - 1] : idx16[count - 1]) - lo);
 	} else {
-		int left = count, i = 0;
-		while (left > 0) {
-			int words = BW_MIN(left, 2047);
-			cmd_noinc(NV097_ARRAY_ELEMENT32, (uint32_t)words);
-			for (int w = 0; w < words; w++, i++)
-				*P++ = (idx32 ? idx32[i] : idx16[i]) - lo;
-			left -= words;
-		}
+		P = put_indices(P, count, idx32, idx16, lo, wide);
 	}
 	put1(NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
 	pb_close();
@@ -2267,7 +2379,7 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 		tris_this_frame += mode == GL_TRIANGLES ? count / 3 : count - 2;
 }
 
-static void BWGLAPI xb_glDrawArrays(GLenum mode, GLint first, GLsizei count) { draw(mode, count, NULL, NULL, first); }
+static void BWGLAPI xb_glDrawArrays(GLenum mode, GLint first, GLsizei count) { draw(mode, count, NULL, NULL, first, NULL, 0); }
 
 static void BWGLAPI xb_glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *ofs,
                                                 GLint basevertex)
@@ -2284,9 +2396,9 @@ static void BWGLAPI xb_glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLen
 		return;
 	}
 	if (type == GL_UNSIGNED_INT)
-		draw(mode, count, (const uint32_t *)(eb->data + o), NULL, 0);
+		draw(mode, count, (const uint32_t *)(eb->data + o), NULL, 0, eb, o);
 	else if (type == GL_UNSIGNED_SHORT)
-		draw(mode, count, NULL, (const uint16_t *)(eb->data + o), 0);
+		draw(mode, count, NULL, (const uint16_t *)(eb->data + o), 0, eb, o);
 }
 
 static void BWGLAPI xb_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *ofs)
