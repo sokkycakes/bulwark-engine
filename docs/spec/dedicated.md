@@ -59,7 +59,9 @@ Lines typed on the terminal (or piped into stdin) run as console commands
 between frames. POSIX polls file descriptor 0 without blocking; Windows
 reads stdin on a thread, since a console handle can't be polled for whole
 lines. End of input (stdin closed, or `/dev/null`) stops reading and the
-server keeps running; `quit` or `exit` stops it. A server put in the
+server keeps running; `quit` or `exit` stops it, and so does Ctrl+C or
+SIGTERM (the players are told "server shut down"; a second Ctrl+C exits at
+once). A server put in the
 background of a shell doesn't read the terminal (that would stop it with
 SIGTTIN).
 

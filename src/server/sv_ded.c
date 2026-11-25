@@ -4,6 +4,7 @@
  * "bulwark -dedicated", so testers can host with the game's own binary.
  * Behaviour is described in docs/spec/dedicated.md. ISC licence, see
  * LICENSE. */
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,11 +28,21 @@
 #include "../net/pkg.h"
 #include "sv_local.h"
 
-static bool quit_requested;
+static volatile sig_atomic_t quit_requested;
 
 static void Path_f(int argc, const char **argv) { FS_PrintPath(); }
 
-static void Quit_f(int argc, const char **argv) { quit_requested = true; }
+static void Quit_f(int argc, const char **argv) { quit_requested = 1; }
+
+/* Ctrl+C (or a service manager's SIGTERM) shuts down as "quit" does, so the
+ * players are told; a second one doesn't wait */
+static void on_signal(int sig)
+{
+	if (quit_requested)
+		_Exit(1);
+	quit_requested = 1;
+	signal(sig, on_signal);
+}
 
 /* --- the typed console ------------------------------------------------------
  * Lines typed on the terminal (or piped in) run as console commands. Reading
@@ -283,6 +294,8 @@ int Ded_Main(int argc, char **argv)
 	Plug_AutoLoad();
 	Cmd_SetPreHook(DedPreHook);
 	Cmd_SetFallback(DedFallback);
+	signal(SIGINT, on_signal);
+	signal(SIGTERM, on_signal);
 
 	holding_maps = true;
 	/* -port and -dedicated n apply before the configs and again after,
