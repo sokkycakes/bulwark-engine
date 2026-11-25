@@ -827,6 +827,8 @@ static void query(int view, const char *req, strbuf_t *out)
 		q_lobby_join(req + 11, out);
 	else if (!strcmp(req, "takedisconnect"))
 		q_takedisconnect(out);
+	else if (!strcmp(req, "arenaselector"))
+		SB_AppendStr(out, wc.selector); /* menu_webcore arena <selector>: team, class or hero */
 	else
 		Lobby_Query(req, out); /* the lobby's requests; anything else replies "" */
 }

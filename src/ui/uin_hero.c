@@ -69,7 +69,9 @@ typedef struct {
 typedef struct {
 	/* getclient */
 	char mode[32], hero[40];
+	int state;          /* cl.state; 0 is disconnected */
 	bool inGame;
+	bool team_menu;     /* opened for a team request (arenaselector "team") */
 	int team;           /* the local player's, 0 for none (spectating) */
 	char teams[MAX_TEAMS][24];
 	int nteams;
@@ -185,6 +187,7 @@ static void parse_client(hero_t *h, const char *reply)
 	json_t *j = JSON_Parse(reply, NULL, 0);
 	if (!j)
 		return;
+	h->state = (int)JSON_GetNumber(j, "state", 0);
 	Str_Copy(h->mode, JSON_GetString(j, "mode", ""), sizeof(h->mode));
 	Str_Copy(h->hero, JSON_GetString(j, "hero", ""), sizeof(h->hero));
 	h->inGame = JSON_GetBool(j, "inGame", false);
@@ -203,6 +206,21 @@ static void parse_client(hero_t *h, const char *reply)
 static bool needs_team(const hero_t *h)
 {
 	return !h->duel && h->team == 0 && h->nteams >= 2;
+}
+
+/* The team chips: for a player with no team, and also for one in a team
+ * who asked for the team menu (Change Team, showTeamSelectionMenu) or
+ * whose rules take no hero (domination), where the team is the only
+ * choice there is. On Panorama these requests reach the client game's
+ * own team menu, which sends the same joinTeam. */
+static bool offer_teams(const hero_t *h)
+{
+	return !h->duel && h->nteams >= 2 && (h->team == 0 || h->team_menu || !h->nheroes);
+}
+
+static bool team_marked(const hero_t *h, int team)
+{
+	return h->team ? h->team == team : h->join_team == team;
 }
 
 /* the focusable items in focus order: heroes row-major, then buttons,
@@ -231,10 +249,10 @@ static void rebuild_items(hero_t *h)
 			         !strcmp(picked, h->heroes[i]), NULL);
 		if (h->duel)
 			add_item(h, ACT_SPECTATE, -1, chipX, 160 + (float)((h->nheroes + 1) / 2) * 28 + 8, false, true, "SPECTATE");
-		else if (needs_team(h))
+		else if (offer_teams(h))
 			/* beside the third hero row, so left and right reach them */
 			for (int i = 0; i < h->nteams && i < 2; i++)
-				add_item(h, ACT_TEAM, i + 1, 92 + i * colStep, 216, false, h->join_team == i + 1, h->teams[i]);
+				add_item(h, ACT_TEAM, i + 1, 92 + i * colStep, 216, false, team_marked(h, i + 1), h->teams[i]);
 	} else if (h->active) {
 		bool canReady = h->localState == 0 && h->localHero[0] && !h->needsHero;
 		float by = 206;
@@ -256,6 +274,10 @@ static void rebuild_items(hero_t *h)
 	/* the focus stays on what it was on, else the picked hero, else the first */
 	for (int i = 0; i < h->nitems && focus < 0; i++)
 		if (h->items[i].act == h->focus_act && h->items[i].hero == h->focus_hero)
+			focus = i;
+	/* a team request starts on the team chips */
+	for (int i = 0; i < h->nitems && focus < 0 && h->team_menu; i++)
+		if (h->items[i].act == ACT_TEAM && h->items[i].yellow)
 			focus = i;
 	for (int i = 0; i < h->nitems && focus < 0; i++)
 		if (h->items[i].act == ACT_HERO && h->items[i].yellow)
@@ -286,6 +308,17 @@ static bool poll(uin_view_t *v, hero_t *h, bool force)
 		if (!(r = uin_query(v, "getclient")))
 			return false;
 		parse_client(h, r);
+		/* The connection went (a kick, a timeout, the LAN host left).
+		 * Panorama's pickers are client game windows that die with it;
+		 * this one is a router page, so it closes itself, which lets the
+		 * title and its DISCONNECTED dialog come up (close_menu). */
+		if (h->state == 0) {
+			uin_query(v, "arena_action:close");
+			return false;
+		}
+		if (!(r = uin_query(v, "arenaselector")))
+			return false;
+		h->team_menu = !Str_ICmp(r, "team");
 		h->next_client = now + CLIENT_POLL_S;
 		changed = true;
 	}
@@ -381,10 +414,14 @@ static void activate(uin_view_t *v, hero_t *h)
 	if (!h->duel) {
 		if (it->act == ACT_HERO) {
 			generic_pick(h, h->heroes[it->hero]);
-		} else if (it->act == ACT_TEAM && !h->nheroes) {
-			/* no hero to pick in these rules: the team is the whole choice */
+		} else if (it->act == ACT_TEAM && (!h->nheroes || h->team)) {
+			/* no hero to pick in these rules, or a change of team: the team
+			 * is the whole choice. The team already in closes the menu. */
 			char cmd[64];
-			snprintf(cmd, sizeof(cmd), "cmd joinTeam %d\nwebcore_closemenu\n", it->hero);
+			if (it->hero == h->team)
+				Str_Copy(cmd, "webcore_closemenu\n", sizeof(cmd));
+			else
+				snprintf(cmd, sizeof(cmd), "cmd joinTeam %d\nwebcore_closemenu\n", it->hero);
 			uin_cmd(cmd);
 		} else if (it->act == ACT_TEAM) {
 			h->join_team = it->hero;
@@ -519,20 +556,35 @@ static const char *hero_label(const char *id, char *out, size_t size, bool upper
 
 /* drawArenaButton: a chip (navright 80x20, label right-aligned at x+54)
  * or the join button (bigred 103x24, label at x+86). The page lit the
- * hovered one; here the focused one is lit the same way, and the join
- * button, whose art doesn't change, gets a FOCUS outline too. */
+ * hovered one and the current pick alike, which a mouse pointer tells
+ * apart; a pad has only the focus, so the two must differ here:
+ * - the focus: lit art (navrighty) and a FOCUS outline, label in FOCUS;
+ * - the current pick (hero, team, the duel's own hero): plain art with
+ *   its label in FOCUS, and the bar beside it (draw_items);
+ * - SPECTATE and LEAVE QUEUE keep the page's yellow art, without the
+ *   outline unless focused. */
 static void draw_button(const hero_t *h, const item_t *it, bool focused)
 {
 	char label[40];
 	float w = it->join ? 103 : 80, bh = it->join ? 24 : 20;
-	int art = it->join ? UIN_R_BIGRED : (it->yellow || focused) ? UIN_R_NAVRIGHTY : UIN_R_NAVRIGHT;
+	bool lit = focused || (it->act == ACT_SPECTATE && it->yellow);
+	int art = it->join ? UIN_R_BIGRED : lit ? UIN_R_NAVRIGHTY : UIN_R_NAVRIGHT;
+	int face = UIN_F_STD8;
 	const char *s = it->label;
 	if (it->act == ACT_HERO)
 		s = hero_label(h->heroes[it->hero], label, sizeof(label), !h->duel);
 	d_img(art, it->x, it->y, w, bh, col(C_WHITE));
-	if (focused && it->join)
+	if (focused)
 		uin_debug_box(it->x - 1, it->y - 1, w + 2, bh + 2, NULL, col(UIN_COL_FOCUS));
-	text(UIN_F_STD8, it->x + (it->join ? 86 : 54), it->y + 18, s, UIN_RIGHT,
+	/* ql-menu draws the join button's label at 12 px; the 16 px glyphs
+	 * are nearer that than the 8 px ones, where they fit the button (JOIN
+	 * MATCH doesn't: 8 px, with a dark drop shadow that keeps it legible
+	 * on the red art) */
+	if (it->join && d_text_width(UIN_F_STD16, s, 0) <= 80)
+		face = UIN_F_STD16;
+	if (it->join)
+		text(face, it->x + 87, it->y + (face == UIN_F_STD16 ? 20 : 19), s, UIN_RIGHT, 0x000000ccu);
+	text(face, it->x + (it->join ? 86 : 54), it->y + (face == UIN_F_STD16 ? 19 : 18), s, UIN_RIGHT,
 	     focused || (it->act != ACT_SPECTATE && it->yellow) ? UIN_COL_FOCUS : C_WHITE);
 }
 
@@ -597,7 +649,8 @@ static void draw_duel(const hero_t *h)
 static void draw_generic(const hero_t *h)
 {
 	char label[40], line[64];
-	text(UIN_F_STD16, 84, 88, h->nheroes || !needs_team(h) ? "SELECT YOUR HERO" : "SELECT YOUR TEAM", UIN_LEFT,
+	bool teams = offer_teams(h);
+	text(UIN_F_STD16, 84, 88, teams && (!h->nheroes || h->team_menu) ? "SELECT YOUR TEAM" : "SELECT YOUR HERO", UIN_LEFT,
 	     C_WHITE);
 	Str_Copy(line, h->mode[0] ? h->mode : "game", sizeof(line));
 	for (char *c = line; *c; c++)
@@ -610,8 +663,8 @@ static void draw_generic(const hero_t *h)
 		text(UIN_F_STD8, 300, 145, "HEROES", UIN_LEFT, UIN_COL_FOCUS);
 	else
 		text(UIN_F_STD8, 300, 145, "NO HERO CHOICE IN THIS MODE", UIN_LEFT, C_GREY_77);
-	if (needs_team(h))
-		text(UIN_F_STD8, 92, 206, "JOIN TEAM", UIN_LEFT, UIN_COL_FOCUS);
+	if (teams)
+		text(UIN_F_STD8, 92, 206, h->team ? "CHANGE TEAM" : "JOIN TEAM", UIN_LEFT, UIN_COL_FOCUS);
 	draw_items(h);
 	draw_status(h);
 }
@@ -657,6 +710,8 @@ bool UI_PreCommand(int argc, const char **argv)
 	snap = Cvar_Find("webcore_arena_snapshot");
 	if (snap && strstr(snap->string, "\"active\":true"))
 		return false;
-	Cbuf_AddText("menu_webcore arena class\n");
+	/* the router keeps which one it was (arenaselector): a team request
+	 * offers the teams to a player already in one */
+	Cbuf_AddText(Str_ICmp(argv[0], "showTeamSelectionMenu") ? "menu_webcore arena class\n" : "menu_webcore arena team\n");
 	return true;
 }
