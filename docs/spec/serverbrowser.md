@@ -58,8 +58,8 @@ player: `frags ping "name"` (ping 0 for bots).
 
 Top to bottom, on the hub's look (#2a2a2a, red wash, Stiletto's fonts):
 
-- **Title band:** FIND SERVERS, and at the right what is listed (source,
-  master servers that answered, how many servers match).
+- **Title band:** FIND SERVERS, and at the right how many servers were
+  found in the shown source ("3 SERVERS FOUND").
 - **Toolbar:** the filter button, a search field (matches server name, map,
   mode and address; every typed word must match), refresh.
 - **Sort row:** SORT BY: Name, Map, Players, Latency (the default), Last

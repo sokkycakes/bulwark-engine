@@ -301,13 +301,8 @@ var Servers = ( function ()
 	{
 		var st = $( "#Status" );
 		var total = countIn( null );
-		var bits = [ SOURCE_NAMES[ source ] ];
-		if ( SOURCES[ source ] === "internet" && data )
-			bits.push( data.masters_answered + " of " + data.masters + " master server" + ( data.masters === 1 ? "" : "s" ) );
-		bits.push( shown.length + ( shown.length !== total ? " of " + total : "" ) + " server" + ( total === 1 ? "" : "s" ) );
-		if ( data && data.refreshing )
-			bits.push( "refreshing" );
-		st.text = bits.join( "  -  " ).toUpperCase();
+		// only how many servers were found
+		st.text = ( total + " server" + ( total === 1 ? "" : "s" ) + " found" ).toUpperCase();
 		st.SetHasClass( "busy", !!( data && data.refreshing ) );
 		$( "#Empty" ).text = shown.length ? "" : emptyText();
 	}
