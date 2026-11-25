@@ -45,7 +45,7 @@ typedef struct {
 
 static bool compiling;
 
-#if defined(__3DS__) || defined(__NDS__)
+#if defined(__3DS__) || defined(__NDS__) || defined(BW_XBOX)
 /* consoles can't start another program */
 static void compile_work(void *ctx)
 {

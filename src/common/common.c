@@ -9,6 +9,9 @@
 #ifdef __3DS__
 void CTR_PrintMemory(const char *when);
 #endif
+#ifdef BW_XBOX
+void XBX_Log(const char *text);
+#endif
 
 int developer = 0;
 static con_hook_fn con_hook, con_log_hook;
@@ -37,8 +40,12 @@ void Con_Print(const char *text)
 		con_log_hook(text);
 	if (con_redirect)
 		SB_AppendStr(con_redirect, text);
+#ifdef BW_XBOX
+	XBX_Log(text); /* no stdout: the log file and the kernel debugger */
+#else
 	fputs(text, stdout);
 	fflush(stdout);
+#endif
 }
 
 void Con_Printf(const char *fmt, ...)
@@ -74,6 +81,13 @@ void Sys_Error(const char *fmt, ...)
 #ifdef __3DS__
 	CTR_PrintMemory("at the error");
 #endif
+#ifdef BW_XBOX
+	XBX_Log("FATAL: ");
+	XBX_Log(buf);
+	XBX_Log("\n");
+	XBX_PrintMemory("at the error");
+	XBX_FatalScreen(buf);
+#endif
 	exit(1);
 }
 
@@ -101,6 +115,13 @@ void Sys_Sleep(double seconds)
 void *Mem_Alloc(size_t size)
 {
 	void *p = calloc(1, size ? size : 1);
+#if defined(BW_MEMTRACE) && defined(BW_XBOX)
+	if (size >= 128 * 1024) {
+		char b[128];
+		snprintf(b, sizeof(b), "memtrace %u KB from %p, %u KB free\n", (unsigned)(size >> 10), __builtin_return_address(0), (unsigned)(XBX_FreeMemory() >> 10));
+		XBX_Log(b);
+	}
+#endif
 	if (!p)
 		Sys_Error("out of memory allocating %zu bytes (from %p)", size, __builtin_return_address(0));
 	return p;
@@ -109,6 +130,13 @@ void *Mem_Alloc(size_t size)
 void *Mem_Realloc(void *p, size_t size)
 {
 	void *n = realloc(p, size ? size : 1);
+#if defined(BW_MEMTRACE) && defined(BW_XBOX)
+	if (size >= 128 * 1024) {
+		char b[128];
+		snprintf(b, sizeof(b), "memtrace realloc %u KB from %p, %u KB free\n", (unsigned)(size >> 10), __builtin_return_address(0), (unsigned)(XBX_FreeMemory() >> 10));
+		XBX_Log(b);
+	}
+#endif
 	if (!n)
 		Sys_Error("out of memory reallocating %zu bytes", size);
 	return n;

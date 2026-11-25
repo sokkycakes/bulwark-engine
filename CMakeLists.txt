@@ -5,7 +5,10 @@ project(bulwark C CXX)
 # (-DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake or NDS.cmake); see
 # docs/platforms/3ds.md and nds.md. They leave out what those systems can't host:
 # dynamic plugins, PanoramaEngine and QuickJS, the host tools and tests.
-if(NINTENDO_3DS OR NINTENDO_DS)
+# The original Xbox builds with nxdk's toolchain file
+# (-DCMAKE_TOOLCHAIN_FILE=$NXDK_DIR/share/toolchain-nxdk.cmake); see
+# docs/platforms/xbox.md.
+if(NINTENDO_3DS OR NINTENDO_DS OR NXDK)
 	set(BULWARK_CONSOLE ON)
 	set(CMAKE_DL_LIBS "") # no dynamic linker (src/common/sys_dl.h)
 else()
@@ -20,6 +23,9 @@ endif()
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 	add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-sign-compare)
 	add_compile_definitions(_GNU_SOURCE)
+endif()
+if(NXDK)
+	include(src/platform/xbox/xbox.cmake)
 endif()
 
 # The DS (4 MB of RAM, no FPU) can't host the engine: it gets a small Quake
@@ -62,7 +68,11 @@ if(NINTENDO_DS)
 	return()
 endif()
 
-find_package(Threads REQUIRED)
+if(NXDK)
+	add_library(Threads::Threads INTERFACE IMPORTED) # src/platform/xbox/posix_xbox.c
+else()
+	find_package(Threads REQUIRED)
+endif()
 
 add_library(bwcommon STATIC
 	src/common/common.c
@@ -143,6 +153,10 @@ if(BULWARK_SCRIPT_LUA)
 	file(GLOB LUA_SOURCES third_party/lua-5.4.7/*.c)
 	add_library(bwlua STATIC ${LUA_SOURCES})
 	target_include_directories(bwlua PUBLIC third_party/lua-5.4.7)
+	if(NXDK)
+		# nxdk defines _WIN32, but Lua's Windows paths (popen, LoadLibrary) aren't there
+		target_compile_options(bwlua PRIVATE -U_WIN32)
+	endif()
 	if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 		target_compile_options(bwlua PRIVATE -w)
 	endif()
@@ -344,6 +358,8 @@ if(NINTENDO_3DS)
 		DESCRIPTION "Bulwark engine"
 		AUTHOR "sokky")
 	ctr_create_3dsx(bulwark SMDH bulwark.smdh)
+elseif(NXDK)
+	bulwark_xbox_executable()
 elseif(SDL2_FOUND)
 	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c)
 	target_include_directories(bulwark PRIVATE ${SDL2_INCLUDE_DIRS})
