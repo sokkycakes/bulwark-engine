@@ -36,7 +36,6 @@ typedef float vec3_t[3];
 #define BW_CSQC_MAXEDICTS 768
 #define BW_CSQC_HEAP_MB 4
 #define BW_MENU_MAXEDICTS 256
-#define BW_MENU_HEAP_MB 2
 #define BW_CL_MAXENTS 4096 /* network entity numbers the client game can track */
 #else
 #define BW_QC_SPARE_FIELDS 256
@@ -46,7 +45,6 @@ typedef float vec3_t[3];
 #define BW_CSQC_MAXEDICTS 8192
 #define BW_CSQC_HEAP_MB 32
 #define BW_MENU_MAXEDICTS 4096
-#define BW_MENU_HEAP_MB 16
 #define BW_CL_MAXENTS 65536
 #endif
 
