@@ -42,6 +42,7 @@ static struct {
 	bool title_pending;
 	char page_pending[512]; /* WC_OpenPage: shown instead of the title once idle */
 	int prevstate;
+	int prevspawn; /* cl.spawncount: changes with every level */
 	bool backdrop;    /* we started the title's background map */
 	int music_track;  /* -1 menu_boot, then 1, 2, ... */
 	bool music_on;
@@ -396,6 +397,13 @@ void WC_Frame(void)
 		wc.backdrop = false;
 		/* views a client game made die with it */
 	}
+	/* a level change (map, changelevel, restart): the arena page belongs to
+	 * the game that opened it. Left open it sat over the next mode, Duel's
+	 * hero picker over a deathmatch, taking the input; an arena mode on the
+	 * new level opens it again. */
+	if (wc.route == ROUTE_ARENA && (cl.spawncount != wc.prevspawn || cl.state != ca_active))
+		close_menu();
+	wc.prevspawn = cl.spawncount;
 	wc.prevstate = cl.state;
 	/* a real game took over: title and lobby pages give way */
 	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE))
