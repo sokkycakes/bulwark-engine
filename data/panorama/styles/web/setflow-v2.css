@@ -297,15 +297,6 @@
 }
 .v2-strip .tile.is-picked .tile-name { background-color: #8a0f12e0; }
 .v2-strip .tile.is-picked .tile-name { color: #ffffff; }
-.tile-hp
-{
-	x: 6px;
-	y: 4px;
-	font-family: "hooge_05_57";
-	font-size: 13px;
-	color: #e0262b;
-}
-.v2-strip .tile.is-picked .tile-hp { color: #ffffff; }
 
 /* footer: keys */
 .v2-footer

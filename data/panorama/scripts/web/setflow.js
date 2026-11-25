@@ -127,7 +127,6 @@ var SetFlow = ( function ()
 					$.CreatePanel( "Image", t, "", { class: "tile-portrait", src: "$rt:portrait_" + id, scaling: "stretch-to-fit-preserve-aspect", hittest: "false" } );
 				$.CreatePanel( "Label", t, "", { class: "tile-initial", text: heroName( id ).charAt( 0 ), hittest: "false" } );
 				$.CreatePanel( "Label", t, "", { class: "tile-name", text: heroName( id ), hittest: "false" } );
-				$.CreatePanel( "Label", t, "", { class: "tile-hp", text: ( HP[ id ] || 4 ) + " HP", hittest: "false" } );
 				t.SetPanelEvent( "onactivate", function () { pick( i ); } );
 				t.SetPanelEvent( "onmouseover", function () { moveCursor( i, false ); } );
 				return;
