@@ -1330,6 +1330,8 @@ static void bi_wasfreed(qcvm_t *vm)
 
 static int next_live(qcvm_t *vm, int e)
 {
+	if (e < 0)
+		e = 0; /* bad progs: start from the world rather than read before it */
 	for (e++; e < vm->num_edicts; e++)
 		if (!vm->edicts[e].free)
 			return e;
@@ -1368,6 +1370,8 @@ static void bi_findfloat(qcvm_t *vm)
 	if (f >= 0 && f < vm->edict_words) {
 		const qcval_t *v = QC_EdictFields(vm, 0) + f;
 		size_t stride = (size_t)vm->edict_words;
+		if (e < 0)
+			e = 0;
 		for (e++; e < vm->num_edicts; e++)
 			if (v[(size_t)e * stride].i == match && !vm->edicts[e].free) {
 				QC_ReturnInt(vm, e);

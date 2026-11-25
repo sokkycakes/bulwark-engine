@@ -1470,6 +1470,21 @@ void SV_ReadPackets(void)
 
 /* --- per frame ---------------------------------------------------------- */
 
+/* one command for a bot, repeating its last one */
+static void bot_command(client_t *c, float msec)
+{
+	usercmd_t cmd;
+	if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
+		return;
+	cmd = c->lastucmd;
+	cmd.sequence = c->lastcmd + 1;
+	cmd.msec = msec;
+	cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
+	cmd.impulse = 0;
+	c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
+	run_usercmd(c, &cmd);
+}
+
 void SV_ClientsPreThink(void)
 {
 	qcvm_t *vm = sv.vm;
@@ -1485,28 +1500,21 @@ void SV_ClientsPreThink(void)
 	/* bots send no input, so each frame runs one command for them, repeating
 	 * the last one; the game fills input_* from its AI inside
 	 * SV_RunClientCommand, as Nuclide's bots do */
-	for (int i = 0; i < svs.maxclients; i++) {
-		client_t *c = &svs.clients[i];
-		usercmd_t cmd;
-		if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
-			continue;
-		cmd = c->lastucmd;
-		cmd.sequence = c->lastcmd + 1;
-		cmd.msec = sv.frametime;
-		cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
-		cmd.impulse = 0;
-		c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
-		run_usercmd(c, &cmd);
-	}
+	for (int i = 0; i < svs.maxclients; i++)
+		bot_command(&svs.clients[i], sv.frametime);
 }
 
-/* time the world skipped (sv_maxticks) still refills movement budgets */
+/* Time the world skipped (sv_maxticks) still refills movement budgets, and
+ * bots get it as commands of their own, so they keep pace with players. */
 void SV_ClientsDroppedTime(double t)
 {
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state == CS_SPAWNED)
-			c->cmd_budget = BW_MIN(c->cmd_budget + (float)t, 0.25f);
+		if (c->state != CS_SPAWNED)
+			continue;
+		c->cmd_budget = BW_MIN(c->cmd_budget + (float)t, 0.25f);
+		for (double left = t; left > 0.0005; left -= 0.1)
+			bot_command(c, (float)BW_MIN(left, 0.1));
 	}
 }
 

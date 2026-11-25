@@ -286,7 +286,7 @@ The targets are a HUD under 0.2 ms and menus under 1 ms per frame.
 | `gl_xbox_stats` | 0 | every 5 s, print the frame rate, frame and wait times, draws, triangles, push buffer use, GPU memory and free memory |
 | `snd_xbox_rate` | 24000 | rate the mixer runs at, 24000 or 48000 |
 | `sv_tickrate` | 30 | server ticks a second (72 on the desktop); players move by their own commands either way |
-| `sv_maxticks` | 3 | most server ticks in one frame (no limit on the desktop); past it the world drops the time rather than catching up |
+| `sv_maxticks` | 3 | most server ticks in one frame (no limit on the desktop); past it the world drops the time rather than catching up; players and bots still get the dropped time as movement, so only thinks, physics and projectiles slow |
 | `xbox_meminfo` | | free memory, the kernel's pools, the C heap and GPU memory |
 | `xbox_gpuinfo` | | GPU memory in use and the last frame's draws and triangles |
 

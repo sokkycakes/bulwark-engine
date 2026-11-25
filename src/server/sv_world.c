@@ -51,22 +51,22 @@ static inline float *evec(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFie
 
 /* --- area tree ------------------------------------------------------------
  * Every entity slot is filed under the deepest node of a fixed tree of boxes
- * (the world's bounds halved along x or y, AREA_DEPTH times) that holds its
+ * (the world's bounds halved along x or y, TREE_DEPTH times) that holds its
  * absmin..absmax whole. A trace, point or touch then looks only at the
  * nodes its own box reaches. SV_LinkEdict is what writes absmin and absmax,
  * so it refiles the entity; a check of every slot once per server frame and
  * per host frame catches the rest (slots cleared or reused, boxes restored
  * by a save or written by QC). Each candidate still gets every test it got
  * when all slots were scanned, in slot order, so results are unchanged. */
-#define AREA_DEPTH 5
-#define AREA_NODES ((2 << AREA_DEPTH) - 1)
+#define TREE_DEPTH 5
+#define TREE_NODES ((2 << TREE_DEPTH) - 1)
 
 typedef struct {
 	int axis; /* -1 for a leaf */
 	float dist;
 	int children[2]; /* [0] above dist, [1] below */
 	int head; /* first entity filed here, -1 for none */
-} areanode_t;
+} boxnode_t;
 
 typedef struct area_s {
 	qcvm_t *vm;
@@ -76,7 +76,7 @@ typedef struct area_s {
 	double synced_time;
 	int synced_frame;
 	int numnodes;
-	areanode_t nodes[AREA_NODES];
+	boxnode_t nodes[TREE_NODES];
 	int *node, *next, *prev; /* per slot; node -1 until filed */
 	qcval_t (*box)[6]; /* the absmin, absmax each slot was filed with */
 	uint32_t *bits; /* one per slot, all clear between queries */
@@ -87,9 +87,9 @@ typedef struct area_s {
 static int area_build(area_t *a, int depth, const float *mins, const float *maxs)
 {
 	int n = a->numnodes++;
-	areanode_t *an = &a->nodes[n];
+	boxnode_t *an = &a->nodes[n];
 	an->head = -1;
-	if (depth == AREA_DEPTH) {
+	if (depth == TREE_DEPTH) {
 		an->axis = -1;
 		an->children[0] = an->children[1] = -1;
 		return n;
@@ -127,7 +127,7 @@ static void area_file(area_t *a, int e, const float *amin, const float *amax)
 	int n = 0;
 	area_unfile(a, e);
 	for (;;) {
-		const areanode_t *an = &a->nodes[n];
+		const boxnode_t *an = &a->nodes[n];
 		if (an->axis < 0)
 			break;
 		if (amin[an->axis] > an->dist)
@@ -231,7 +231,7 @@ typedef struct {
 static void area_query(arealist_t *l, const float *lo, const float *hi)
 {
 	area_t *a = area_get();
-	int stack[AREA_NODES], sp = 0, n = 0, room, *ids;
+	int stack[TREE_NODES], sp = 0, n = 0, room, *ids;
 	l->a = NULL;
 	l->n = 0;
 	l->ids = NULL;
@@ -240,13 +240,15 @@ static void area_query(arealist_t *l, const float *lo, const float *hi)
 			a = NULL; /* NaN boxes overlap everything */
 	if (!a)
 		return;
+	/* any filed slot can be listed, even one past num_edicts that a reused
+	   tree still holds, so room is counted against every slot */
 	room = a->scratch_size - a->scratch_top;
-	if (room < a->vm->num_edicts)
+	if (room < a->max_edicts)
 		return;
 	ids = a->scratch + a->scratch_top;
 	stack[sp++] = 0;
 	while (sp) {
-		const areanode_t *an = &a->nodes[stack[--sp]];
+		const boxnode_t *an = &a->nodes[stack[--sp]];
 		for (int e = an->head; e >= 0; e = a->next[e]) {
 			const qcval_t *b = a->box[e];
 			if (b[0].f > hi[0] || b[1].f > hi[1] || b[2].f > hi[2] || b[3].f < lo[0] || b[4].f < lo[1] ||
