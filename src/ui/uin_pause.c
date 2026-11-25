@@ -26,7 +26,10 @@
 #define P_ROW_W 452
 #define P_ROW_H 32
 #define P_LABEL_X 9 /* .menu-item padding-left 9, padding-top 4 */
-#define P_LABEL_Y 4
+/* padding-top 4, plus the half-leading of the label's line box that the
+ * page's glyphs sit under (3 screen px at 480 lines, measured against the
+ * Panorama build) */
+#define P_LABEL_Y 8.5f
 /* .menu-item:nth-child(n) top */
 static const float row_y[] = {67, 98, 130, 162, 193, 225};
 #define MAX_ROWS ((int)BW_ARRAY_COUNT(row_y))
@@ -275,8 +278,18 @@ static void pause_draw(uin_view_t *v, float x, float y, float w, float h)
 	d_fill(0, P_PANEL_Y, P_BANNER_W, P_BANNER_H, uin_col_alpha(0x1a1a1affu, fade));
 	{
 		const uin_face_t *f = uin_face(UIN_F_PAUSE);
-		float track = f ? f->px * 0.2f : 6;
-		d_text_ex(UIN_F_PAUSE, P_BANNER_W * 0.5f, P_PANEL_Y + P_BANNER_H * 0.5f, "PAUSE", UIN_CENTER | UIN_MIDDLE,
+		float track = f ? f->px * 0.2f : 6, cx = P_BANNER_W * 0.5f;
+		float sx, sy, sw, sh, half;
+		/* The page centres it in the banner, which on a 640-wide TV puts its
+		 * ink across the action-safe edge (PC monitors don't overscan). The
+		 * band stays at the screen edge; the label moves in to clear
+		 * ui_native_safe, staying in the band. Glyphs aren't scaled by the
+		 * frame, so its half-height is in screen pixels. */
+		uin_safe_rect(&sx, &sy, &sw, &sh);
+		half = f ? (f->ascent + f->descent) * 0.5f : 12;
+		cx = BW_MAX(cx, (sx + half - xf.ox) / xf.sx);
+		cx = BW_MIN(cx, P_BANNER_W - half / xf.sx);
+		d_text_ex(UIN_F_PAUSE, cx, P_PANEL_Y + P_BANNER_H * 0.5f, "PAUSE", UIN_CENTER | UIN_MIDDLE,
 		          uin_col_alpha(UIN_COL_ACCENT, fade), track, -90);
 	}
 

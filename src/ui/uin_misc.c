@@ -38,9 +38,15 @@ float uin_prompt(float right, float base, const char *button, const char *label,
 
 void uin_footer(float w, float h, const char *spec)
 {
-	/* laid out right to left from the action-safe corner (design 6.0) */
+	/* laid out right to left from the action-safe corner (design 6.0),
+	 * moved further in when ui_native_safe asks for more than that (a TV
+	 * that crops more); 2 px clear the disc's bottom below the baseline */
 	float x = UIN_FOOTER_RIGHT * w / 640, base = UIN_FOOTER_BASELINE * h / 480;
+	float sx, sy, sw, sh;
 	const char *end = spec + strlen(spec);
+	uin_safe_rect(&sx, &sy, &sw, &sh);
+	x = BW_MIN(x, sx + sw);
+	base = BW_MIN(base, sy + sh - 2);
 	while (end > spec) {
 		const char *start = end, *eq;
 		char label[32], button[8];
@@ -184,6 +190,27 @@ static void upper(const char *s, char *out, size_t outsize)
 	out[n] = 0;
 }
 
+/* Host_Loading's stage names (sv_main.c, cl_main.c, r_main.c) are
+ * identifiers; the player reads these instead. An unknown stage shows as
+ * plain "LOADING" rather than as a token. */
+static const char *stage_label(const char *stage)
+{
+	static const struct {
+		const char *id, *label;
+	} labels[] = {
+	    {"connecting", "CONNECTING"},         {"server_world", "LOADING THE MAP"},
+	    {"server_progs", "STARTING THE GAME"}, {"server_entities", "PLACING ITEMS"},
+	    {"precache", "PREPARING"},            {"world", "LOADING THE MAP"},
+	    {"world_render", "PREPARING THE WORLD"}, {"models", "LOADING MODELS"},
+	    {"sounds", "LOADING SOUNDS"},         {"csprogs", "STARTING THE GAME"},
+	    {"spawning", "ENTERING THE GAME"},
+	};
+	for (size_t i = 0; i < BW_ARRAY_COUNT(labels); i++)
+		if (!Str_ICmp(stage, labels[i].id))
+			return labels[i].label;
+	return "LOADING";
+}
+
 bool uin_loading_draw(float w, float h)
 {
 	char map[64], stage[96];
@@ -207,7 +234,7 @@ bool uin_loading_draw(float w, float h)
 	                                      (webcore_menumap && !Str_ICmp(cl_loadmap->string, webcore_menumap->string))))
 		return false;
 	upper(cl_loadmap ? cl_loadmap->string : "", map, sizeof(map));
-	upper(cl_loadstage->string, stage, sizeof(stage));
+	Str_Copy(stage, stage_label(cl_loadstage->string), sizeof(stage));
 	frac = cl_loadprogress ? BW_CLAMP(cl_loadprogress->value, 0.0f, 1.0f) : 0;
 	/* design 6.5, at 640x480: the map in FOCUS, the stage under it, the bar */
 	uin_xf_stretch(&xf, 640, 480, 0, 0, w, h);

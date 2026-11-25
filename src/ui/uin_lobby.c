@@ -35,6 +35,10 @@
 #define CHAT_Y 440.0f
 #define CHAT_H 150.0f
 #define CHAT_LINES 6
+#define LEAVE_X 330.0f   /* the Leave Lobby dialog */
+#define LEAVE_Y 296.0f
+#define LEAVE_H 128.0f
+#define LEAVE_ROWS 66.0f /* its LEAVE and STAY rows, from its top */
 #define ROSTER_X 615.0f
 #define ROSTER_Y 29.0f
 #define ROSTER_W 282.0f
@@ -72,6 +76,27 @@ static const char *const map_ids[] = {
 	"lqdm6", "lqdm7", "lqdm8", "lqdm9", "lqdm10", "duel_alley",
 };
 #define MAX_MAPS ((int)BW_ARRAY_COUNT(map_ids))
+
+/* the names the page shows for its four (model.js MAPS, mapTitle), upper
+ * case for the menu faces; the others show their id, as mapTitle does */
+static const struct {
+	const char *id, *name;
+} map_names[] = {
+	{"envtest", "ENV TEST"}, {"lean", "LEAN TEST"}, {"arch_testbed", "ARCH TESTBED"}, {"arch_crux_test", "ARCH CRUX TEST"},
+};
+
+static void map_title(const char *id, char *out, size_t size)
+{
+	size_t n = 0;
+	for (size_t i = 0; i < BW_ARRAY_COUNT(map_names); i++)
+		if (!Str_ICmp(id, map_names[i].id)) {
+			Str_Copy(out, map_names[i].name, size);
+			return;
+		}
+	for (; *id && n + 1 < size; id++)
+		out[n++] = (char)toupper((unsigned char)*id);
+	out[n] = 0;
+}
 
 static const char *const skill_label[] = {"EASY", "NORMAL", "HARD"};
 
@@ -546,14 +571,9 @@ static void value_text(const lobby_t *l, int row, char *out, size_t size)
 	case ROW_RULESET:
 		Str_Copy(out, l->rs >= 0 ? rulesets[l->rs].label : l->ruleset, size);
 		break;
-	case ROW_MAP: {
-		size_t n = 0;
-		const char *m = l->mapi >= 0 ? map_ids[l->maps[l->mapi]] : l->map;
-		for (; *m && n + 1 < size; m++)
-			out[n++] = (char)toupper((unsigned char)*m);
-		out[n] = 0;
+	case ROW_MAP:
+		map_title(l->mapi >= 0 ? map_ids[l->maps[l->mapi]] : l->map, out, size);
 		break;
-	}
 	case ROW_TIME:
 		if (l->tl)
 			snprintf(out, size, "%d MIN", l->tl);
@@ -636,7 +656,6 @@ static void draw_preview(const lobby_t *l, float a)
 {
 	char line[64], name[48], fitted[48];
 	const char *rs = l->rs >= 0 ? rulesets[l->rs].label : l->ruleset;
-	size_t n = 0;
 	/* mapPreview: no levelshots ship, so the page's plain panel */
 	d_fill(50, 66.75f, 522, 175.25f, UIN_HEXA(0x3e3e3e, 0.65f * a));
 	d_text(UIN_F_INTER10, 56, 72.5f, rs[0] ? rs : "Waiting for settings", UIN_LEFT | UIN_TOP, UIN_HEXA(0xffffff, 0.65f * a));
@@ -651,25 +670,40 @@ static void draw_preview(const lobby_t *l, float a)
 		Str_Copy(line, "No frag limit", sizeof(line));
 	d_text(UIN_F_INTER10, 56, 102.5f, line, UIN_LEFT | UIN_TOP, UIN_HEXA(0xffffff, 0.65f * a));
 	/* the map's name, large, bottom left (.map-title) */
-	for (const char *m = l->mapi >= 0 ? map_ids[l->maps[l->mapi]] : l->map; *m && n + 1 < sizeof(name); m++)
-		name[n++] = (char)toupper((unsigned char)*m);
-	name[n] = 0;
+	map_title(l->mapi >= 0 ? map_ids[l->maps[l->mapi]] : l->map, name, sizeof(name));
 	d_text(UIN_F_INTERB26, 57, 215.5f, d_text_fit(UIN_F_INTERB26, name, to_px(508), fitted, sizeof(fitted)), UIN_LEFT | UIN_MIDDLE,
 	       UIN_HEXA(0xffffff, 0.65f * a));
+}
+
+/* The lobby fills the screen (design 6.2), which puts the roster's header
+ * and the status line in the strip a TV's overscan crops. Text keeps to
+ * the title-safe area, twice ui_native_safe in from each edge, in frame
+ * units; with ui_native_safe 0 (the desktop) the page's own places. */
+static void title_safe(float *top, float *bottom)
+{
+	const uin_xf_t *xf = d_get_xf();
+	float sx, sy, sw, sh;
+	uin_safe_rect(&sx, &sy, &sw, &sh);
+	*top = (2 * sy - xf->oy) / xf->sy;
+	*bottom = (sh - xf->oy) / xf->sy; /* the screen is sh + 2 sy tall */
 }
 
 static void draw_roster(const lobby_t *l, float a)
 {
 	char count[16], name[40];
-	float y = ROSTER_Y + 38;
-	const char *net = !strcmp(l->network, "offline") ? "OFFLINE" : !strcmp(l->network, "online") ? "ONLINE" : "SYSTEM LINK";
+	float top, bottom, ry, y;
+	const char *net;
+	title_safe(&top, &bottom);
+	ry = BW_MAX(ROSTER_Y, top);
+	y = ry + 38;
+	net = !strcmp(l->network, "offline") ? "OFFLINE" : !strcmp(l->network, "online") ? "ONLINE" : "SYSTEM LINK";
 	/* rosterInfo: the kind of lobby, and players / seats */
-	d_fill(ROSTER_X, ROSTER_Y, ROSTER_W, 37, UIN_HEXA(0x242424, 0.72f * a));
-	d_text(UIN_F_STD8, ROSTER_X + 6, ROSTER_Y + 18.5f, net, UIN_LEFT | UIN_MIDDLE, uin_col_alpha(COL_TEXT, a));
+	d_fill(ROSTER_X, ry, ROSTER_W, 37, UIN_HEXA(0x242424, 0.72f * a));
+	d_text(UIN_F_STD8, ROSTER_X + 6, ry + 18.5f, net, UIN_LEFT | UIN_MIDDLE, uin_col_alpha(COL_TEXT, a));
 	/* .player-count: the count, a faint slash and the seats, 1.62 px apart */
 	{
 		char num[8];
-		float right = ROSTER_X + ROSTER_W - 6, cy = ROSTER_Y + 18.5f, gap = 4.74f;
+		float right = ROSTER_X + ROSTER_W - 6, cy = ry + 18.5f, gap = 4.74f;
 		float wmax, wslash;
 		snprintf(count, sizeof(count), "%d", l->max);
 		snprintf(num, sizeof(num), "%d", l->numplayers);
@@ -718,26 +752,38 @@ static void draw_chat(const lobby_t *l, float a)
 static void draw_status(const lobby_t *l, float a)
 {
 	char line[128];
+	const uin_face_t *f = uin_face(UIN_F_INTER10);
+	float top, bottom, y;
+	title_safe(&top, &bottom);
+	/* the page's 675, or as far up as the line's height needs; the chat
+	 * box above ends at 590 */
+	y = BW_MIN(675.0f, bottom - (f ? (f->ascent + f->descent) / d_get_xf()->sy : 15));
+	y = BW_MAX(y, (float)(CHAT_Y + CHAT_H + 4));
 	if (l->error[0]) {
-		d_text(UIN_F_INTER10, 54, 675, l->error, UIN_LEFT | UIN_TOP, uin_col_alpha(COL_ERROR, a));
+		d_text(UIN_F_INTER10, 54, y, l->error, UIN_LEFT | UIN_TOP, uin_col_alpha(COL_ERROR, a));
 		return;
 	}
 	if (!strcmp(l->phase, "COUNTDOWN") && l->remaining >= 0)
 		snprintf(line, sizeof(line), "%s: %d", l->status, (int)(l->remaining + 0.99));
 	else
 		Str_Copy(line, l->status, sizeof(line));
-	d_text(UIN_F_INTER10, 54, 675, line, UIN_LEFT | UIN_TOP, uin_col_alpha(COL_SOFT, a));
+	d_text(UIN_F_INTER10, 54, y, line, UIN_LEFT | UIN_TOP, uin_col_alpha(COL_SOFT, a));
 }
 
-static void draw_leave(float a)
+static void draw_leave(const lobby_t *l, float a)
 {
 	/* the title's dialog look, in the middle of the frame */
-	const float x = 330, y = 306, w = 300, h = 108;
+	const float x = LEAVE_X, y = LEAVE_Y, w = 300, h = LEAVE_H;
 	d_fill(0, 0, 960, 720, UIN_HEXA(0x000000, 0.5f * a));
 	d_fill(x, y, w, h, UIN_HEXA(0x242424, 0.97f * a));
 	d_fill(x, y, w, 2, uin_col_alpha(0x898989ffu, a));
 	d_fill(x, y + h - 2, w, 2, uin_col_alpha(0x898989ffu, a));
 	d_text(UIN_F_TG15, x + 15, y + 12, "LEAVE LOBBY?", UIN_LEFT | UIN_TOP, uin_col_alpha(COL_SOFT, a));
+	/* what leaving does (lobby-menu app.js LeaveConfirm): a host's lobby
+	 * ends for every guest */
+	d_text(UIN_F_INTER10, x + 15, y + 40,
+	       l->host ? "Leaving closes your lobby for everyone." : "You will return to the title menu.",
+	       UIN_LEFT | UIN_TOP, uin_col_alpha(COL_SOFT, a));
 }
 
 static void lobby_draw(uin_view_t *v, float x, float y, float w, float h)
@@ -763,9 +809,9 @@ static void lobby_draw(uin_view_t *v, float x, float y, float w, float h)
 	}
 	if (l->leave) {
 		float la = BW_CLAMP((float)((uin_now() - l->leave_opened) / UIN_FADE_S), 0.0f, 1.0f);
-		draw_leave(la);
+		draw_leave(l, la);
 		for (int i = 0; i < 2; i++) {
-			float ry = 306 + 44 + 24.0f * i;
+			float ry = LEAVE_Y + LEAVE_ROWS + 24.0f * i;
 			bool f = l->lfocus == i;
 			if (f)
 				d_fill(336, ry, 288, 22, uin_col_alpha(COL_BAR, la));
