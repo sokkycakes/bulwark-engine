@@ -2,6 +2,7 @@
  * ISC licence, see LICENSE. */
 #include "client.h"
 #include "console.h"
+#include "lobby.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/digest.h"
@@ -1247,6 +1248,8 @@ static void CL_Disconnect_f(int argc, const char **argv)
 	CL_Disconnect(NULL);
 	if (host && Cmd_Exists("killserver"))
 		Cmd_ExecuteString("killserver");
+	/* before anything after "disconnect" in the buffer starts another map */
+	Lobby_ServerCheck();
 }
 
 static void CL_Reconnect_f(int argc, const char **argv)

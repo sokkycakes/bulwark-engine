@@ -54,8 +54,6 @@ void DedLaunch_Stop(void) {}
 
 #else
 
-bool DedLaunch_Supported(void) { return true; }
-
 static pid_t child = -1;
 static int child_port;
 
@@ -106,6 +104,15 @@ static bool find_program(char *out, size_t size, bool *needflag)
 		*needflag = true;
 		return true;
 	}
+}
+
+/* offered only when there is a program to start: without /proc (macOS and
+ * the BSDs) this program can't find itself, so ded_exe has to name one */
+bool DedLaunch_Supported(void)
+{
+	char program[1024];
+	bool needflag;
+	return ded_exe && find_program(program, sizeof(program), &needflag);
 }
 
 static bool port_free(int port)

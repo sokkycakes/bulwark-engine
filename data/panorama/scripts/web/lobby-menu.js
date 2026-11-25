@@ -149,6 +149,8 @@ var LobbyMenu = (function ()
 		s.hostname = settings.hostname || "";
 		s.maxplayers = settings.maxplayers || s.max;
 		s.bots = settings.bots == null ? 0 : settings.bots;
+		// botsDefault: the rules' own bots (the Bots box is empty)
+		s.botsDefault = settings.botsDefault === true;
 		s.listed = !!settings[ "public" ];
 		s.locked = !!settings.password;
 		s.passwordText = settings.passwordText || "";
@@ -340,7 +342,7 @@ var LobbyMenu = (function ()
 			$( "#HostName" ).text = s.hostname;
 			$( "#MaxPlayers" ).text = String( s.maxplayers );
 			$( "#ServerPassword" ).text = s.passwordText;
-			$( "#BotCount" ).text = String( s.bots < 0 ? 0 : s.bots );
+			$( "#BotCount" ).text = s.botsDefault ? "" : String( s.bots < 0 ? 0 : s.bots );
 		}
 		if ( kind === "password" )
 		{
@@ -815,7 +817,7 @@ var LobbyMenu = (function ()
 			return "Max players is 1 to " + seats;
 		if ( Number( max ) < snapshot.players.length )
 			return "There are already " + snapshot.players.length + " players in the lobby";
-		if ( !srv.fill && ( !/^\d{1,2}$/.test( bots ) || Number( bots ) > Number( max ) - snapshot.players.length ) )
+		if ( !srv.fill && bots !== "" && ( !/^\d{1,2}$/.test( bots ) || Number( bots ) > Number( max ) - snapshot.players.length ) )
 			return "Bots: 0 to " + Math.max( 0, Number( max ) - snapshot.players.length ) + " (free player slots), or Fill";
 		if ( /["\\;]/.test( $( "#HostName" ).text + $( "#ServerPassword" ).text ) )
 			return "Names and passwords can't have quotes, backslashes or semicolons";
@@ -844,8 +846,11 @@ var LobbyMenu = (function ()
 			: "Your game hosts the match: it ends when you leave.";
 		if ( !err && srv.listed )
 			note += " Public: listed on the master servers (sv_public 1).";
+		var nobots = dialog === "server" && !srv.fill && $( "#BotCount" ).text === "";
 		if ( !err && seatBots( s ) )
-			note += " " + rulesetTitle( s.ruleset ) + " seats its own bots (0 turns them off).";
+			note += " " + rulesetTitle( s.ruleset ) + " seats its own bots" + ( nobots ? "." : " (0 turns them off, empty leaves them on)." );
+		else if ( !err && nobots )
+			note += " Bots: empty leaves them to the game (no bots of the lobby's own).";
 		else if ( !err && srv.fill )
 			note += " Bots fill every free player slot.";
 		setText( $( "#ServerNote" ), note );
@@ -865,7 +870,7 @@ var LobbyMenu = (function ()
 			return;
 		}
 		var name = "setserver:" + ( srv.dedicated ? "dedicated" : "listen" ) + ":" + Number( $( "#MaxPlayers" ).text ) + ":" +
-			( srv.fill ? "fill" : Number( $( "#BotCount" ).text ) ) + ":" + ( srv.listed ? 1 : 0 ) + ":" +
+			( srv.fill ? "fill" : $( "#BotCount" ).text === "" ? "" : Number( $( "#BotCount" ).text ) ) + ":" + ( srv.listed ? 1 : 0 ) + ":" +
 			encodeHex( $( "#HostName" ).text.trim() ) + ":" + encodeHex( $( "#ServerPassword" ).text );
 		var why = actionError( name );
 		if ( why )

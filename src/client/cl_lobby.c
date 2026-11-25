@@ -42,6 +42,7 @@
 #define LOBBY_CHAT 10
 #define LOBBY_TIMEOUT 10.0
 #define LOBBY_MAX_INTENTS 32
+#define BOTS_DEFAULT (-2) /* L.bots: the rules' own bots, nothing set */
 
 typedef struct {
 	bool used;
@@ -311,11 +312,66 @@ static void reset_session(void)
 	L.revision++;
 }
 
+/* The listen server's settings are the host's own cvars: the lobby keeps what
+ * they were and puts them back once that game's server stops, so a later
+ * console map or listen server doesn't inherit the lobby's bots or password. */
+static const char *const override_names[] = {"hostname", "sv_password", "sv_public", "bot_minClients", "arena_bots",
+                                             "maxplayers", "sv_playerslots", "timelimit", "fraglimit"};
+static struct {
+	bool armed; /* values saved, the lobby's game is starting or running */
+	bool up;    /* that game came up */
+	bool had[BW_ARRAY_COUNT(override_names)];
+	char value[BW_ARRAY_COUNT(override_names)][128];
+} saved;
+
+static void save_overrides(void)
+{
+	if (saved.armed)
+		return; /* still the values from before the first lobby game */
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(override_names); i++) {
+		cvar_t *v = Cvar_Find(override_names[i]);
+		saved.had[i] = v != NULL;
+		Str_Copy(saved.value[i], v ? v->string : "", sizeof(saved.value[i]));
+	}
+	saved.armed = true;
+	saved.up = false;
+}
+
+static void restore_overrides(void)
+{
+	if (!saved.armed)
+		return;
+	saved.armed = saved.up = false;
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(override_names); i++) {
+		cvar_t *v = Cvar_Find(override_names[i]);
+		if (!v)
+			continue;
+		if (saved.had[i])
+			Cvar_SetDirect(v, saved.value[i]);
+		else
+			Cvar_Reset(v); /* the game registered it later: its default */
+	}
+	Con_DPrintf("lobby: the host's server settings are back as they were\n");
+}
+
+void Lobby_ServerCheck(void)
+{
+	if (saved.up && !sv.active)
+		restore_overrides();
+}
+
 /* ends the session with a reason everyone sees for a moment */
 static void close_with(const char *error)
 {
 	if (L.phase == LOBBY_IDLE)
 		return;
+	if (L.host && L.phase == LOBBY_STARTING) {
+		/* the start failed before any guest heard of the server: don't
+		 * leave a dedicated server behind, or the host's cvars changed */
+		if (L.dedicated && L.dedport && DedLaunch_Running())
+			DedLaunch_Stop();
+		restore_overrides();
+	}
 	Str_Copy(L.error, error ? error : "", sizeof(L.error));
 	if (error && *error)
 		Con_Printf("lobby: %s\n", error);
@@ -374,7 +430,9 @@ static json_t *settings_json(bool for_host)
 	JSON_SetString(s, "fraglimit", L.fraglimit);
 	JSON_SetString(s, "hostname", L.host ? server_name() : L.hostname);
 	JSON_SetNumber(s, "maxplayers", L.max);
-	JSON_SetNumber(s, "bots", L.bots);
+	/* bots: a count, -1 fill; botsDefault: the rules' own bots (0 for older pages) */
+	JSON_SetNumber(s, "bots", L.bots == BOTS_DEFAULT ? 0 : L.bots);
+	JSON_SetBool(s, "botsDefault", L.bots == BOTS_DEFAULT);
 	JSON_SetBool(s, "public", L.listed);
 	JSON_SetBool(s, "password", L.host ? L.password[0] != 0 : L.locked);
 	if (for_host)
@@ -882,7 +940,9 @@ static void new_session(void)
 	Str_Copy(L.hostname, text_ok(lobby_hostname->string) ? lobby_hostname->string : "", sizeof(L.hostname));
 	Str_Copy(L.password, text_ok(lobby_password->string) ? lobby_password->string : "", sizeof(L.password));
 	L.locked = false;
-	L.bots = !Str_ICmp(lobby_bots->string, "fill") ? -1 : BW_CLAMP(lobby_bots->ivalue, 0, LOBBY_SEATS - 1);
+	L.bots = !Str_ICmp(lobby_bots->string, "fill") ? -1
+	         : (!lobby_bots->string[0] || !Str_ICmp(lobby_bots->string, "default")) ? BOTS_DEFAULT
+	                                                                                : BW_CLAMP(lobby_bots->ivalue, 0, LOBBY_SEATS - 1);
 	L.listed = lobby_public->ivalue != 0;
 	L.dedicated = !Str_ICmp(lobby_servertype->string, "dedicated") && DedLaunch_Supported();
 	L.dedpending = false;
@@ -1214,7 +1274,7 @@ static void begin_start(void)
 		strbuf_t sb = {0};
 		/* Nuclide's bots: bot_minClients keeps that many players (bots
 		 * included) on the server, on every map; -1 leaves bots alone */
-		int bots = L.bots < 0 ? L.max : BW_MIN(L.max, occupied() + L.bots);
+		int bots = L.bots == -1 ? L.max : BW_MIN(L.max, occupied() + BW_MAX(L.bots, 0));
 		const lobbyruleset_t *rs = find_ruleset(L.ruleset);
 		SB_Printf(&sb, "set sv_background 0\nset coop 0\nset deathmatch 1\nset maxplayers %d\nset sv_playerslots %d\n"
 		               "set g_gametype %s\n",
@@ -1224,7 +1284,9 @@ static void begin_start(void)
 		/* rules that seat bots themselves (Stiletto's Freeze Tag and
 		 * Archstiletto: arena_bots) would fight a quota: they get theirs
 		 * switched on or off instead */
-		if (rs && rs->seatbots)
+		if (L.bots == BOTS_DEFAULT)
+			; /* the default: the rules' own bots, as a console map gets them */
+		else if (rs && rs->seatbots)
 			SB_Printf(&sb, "set bot_minClients -1\nset arena_bots %d\n", L.bots != 0 ? 1 : 0);
 		else
 			SB_Printf(&sb, "set bot_minClients %d\n", L.bots == 0 ? 0 : bots);
@@ -1247,6 +1309,8 @@ static void begin_start(void)
 				Cbuf_InsertText("disconnect\nkillserver\n");
 		} else {
 			SB_Printf(&sb, "map %s\n", L.map);
+			/* this session's cvars go back once the game's server stops */
+			save_overrides();
 			/* ahead of anything waiting in the buffer (a script's waits) */
 			Cbuf_InsertText(sb.data);
 		}
@@ -1279,7 +1343,8 @@ static bool host_dedicated_frame(double now)
 	if (cl.state == ca_disconnected && now >= L.nextconnect) {
 		/* the host knows the password; connect retries for ten seconds */
 		Cvar_Set("password", L.password);
-		Cbuf_AddText(va("connect 127.0.0.1:%d\n", L.dedport));
+		/* straight away: a script's "wait" holds the whole command buffer */
+		CL_Connect(va("127.0.0.1:%d", L.dedport));
 		L.nextconnect = now + 12;
 	}
 	return cl.state == ca_active;
@@ -1298,6 +1363,7 @@ static void host_starting_frame(void)
 		return; /* still loading */
 	if (L.phase == LOBBY_STARTING) {
 		L.phase = LOBBY_INGAME;
+		saved.up = saved.armed;
 		Str_Copy(L.status, "In game", sizeof(L.status));
 		L.startdeadline = now + 10; /* for the guests' answers */
 		changed();
@@ -1351,7 +1417,7 @@ static void guest_snapshot(const json_t *j)
 		Str_Copy(L.timelimit, JSON_GetString(settings, "timelimit", L.timelimit), sizeof(L.timelimit));
 		Str_Copy(L.fraglimit, JSON_GetString(settings, "fraglimit", L.fraglimit), sizeof(L.fraglimit));
 		Str_Copy(L.hostname, JSON_GetString(settings, "hostname", L.hostname), sizeof(L.hostname));
-		L.bots = (int)JSON_GetNumber(settings, "bots", L.bots);
+		L.bots = JSON_GetBool(settings, "botsDefault", false) ? BOTS_DEFAULT : (int)JSON_GetNumber(settings, "bots", L.bots);
 		L.listed = JSON_GetBool(settings, "public", L.listed);
 		L.locked = JSON_GetBool(settings, "password", L.locked);
 		L.dedicated = !strcmp(JSON_GetString(settings, "servertype", ""), "DEDICATED SERVER");
@@ -1734,7 +1800,7 @@ static const char *set_server(const char *type, const char *max, const char *bot
 		else
 			return "the server type is listen or dedicated";
 		if (dedicated && !DedLaunch_Supported())
-			return "this platform can't start a dedicated server";
+			return "no dedicated server program was found (ded_exe names one)";
 	}
 	if (max) {
 		char *end;
@@ -1751,6 +1817,8 @@ static const char *set_server(const char *type, const char *max, const char *bot
 		long v = strtol(bots, &end, 10);
 		if (!Str_ICmp(bots, "fill") || !strcmp(bots, "-1"))
 			b = -1;
+		else if (!bots[0] || !Str_ICmp(bots, "default"))
+			b = BOTS_DEFAULT; /* leave the bots to the game's rules */
 		else if (*end || v < 0 || v >= LOBBY_SEATS)
 			return "bots is a number or fill";
 		else
@@ -2032,6 +2100,7 @@ bool Lobby_Query(const char *req, strbuf_t *out)
 void Lobby_Frame(void)
 {
 	double now = Sys_Seconds();
+	Lobby_ServerCheck();
 	receive();
 	switch (L.phase) {
 	case LOBBY_IDLE:
@@ -2138,7 +2207,8 @@ void Lobby_Init(void)
 	lobby_snapshot = Cvar_Get("lobby_snapshot", "", CVAR_READONLY | CVAR_NOSAVE, "The lobby's state as JSON");
 	lobby_hostname = Cvar_Get("lobby_hostname", "", CVAR_ARCHIVE, "The server name a new lobby starts with; empty: <name>'s server");
 	lobby_password = Cvar_Get("lobby_password", "", 0, "The password a new lobby starts with (joining it, and its server)");
-	lobby_bots = Cvar_Get("lobby_bots", "0", CVAR_ARCHIVE, "Bots a new lobby's server adds besides the players, or fill");
+	lobby_bots = Cvar_Get("lobby_bots", "", CVAR_ARCHIVE,
+	                      "Bots a new lobby's server adds besides the players, or fill; empty: the game's own bots");
 	lobby_public = Cvar_Get("lobby_public", "0", CVAR_ARCHIVE, "1: a new lobby's server is listed on the master servers (sv_public)");
 	lobby_servertype = Cvar_Get("lobby_servertype", "listen", CVAR_ARCHIVE, "listen or dedicated: the server a new lobby starts");
 	DedLaunch_Init();

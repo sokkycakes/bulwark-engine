@@ -23,7 +23,7 @@ reference engine's was never documented.
 | `lobby_ready [1\|0]` | Ready (or not). |
 | `lobby_start` / `lobby_cancel` | Host: start now / stop the countdown. |
 | `lobby_set ruleset <id>` / `lobby_set map <id>` / `lobby_limits <minutes> <frags>` | Host: the game's settings. |
-| `lobby_set servertype <listen\|dedicated>` / `maxplayers <1-16>` / `bots <n\|fill>` / `public <0\|1>` / `hostname <text>` / `password <text>` | Host: the server the lobby starts (below). An empty name or password clears it. |
+| `lobby_set servertype <listen\|dedicated>` / `maxplayers <1-16>` / `bots <n\|fill\|default>` / `public <0\|1>` / `hostname <text>` / `password <text>` | Host: the server the lobby starts (below). An empty name or password clears it. |
 | `ded_stop` / `ded_status` | Stop / ask about the dedicated server this game started. |
 | `lobby_chat_hex <hex>` | Say something: UTF-8 bytes as hex, at most 240. |
 | `lobby_close` | Leave, or close the lobby for everyone when hosting. |
@@ -37,7 +37,7 @@ reference engine's was never documented.
 | `lobby_defaultmap` | (empty) | when set, the map every new lobby picks; empty picks the ruleset's own map (below) |
 | `lobby_defaultruleset` | DUEL | the rules a new lobby picks, when they can run (below) |
 | `lobby_snapshot` | | the state as JSON (read-only); also written to `lobby_snapshot.json` in the working directory while `developer` is on |
-| `lobby_hostname` / `lobby_password` / `lobby_bots` / `lobby_public` / `lobby_servertype` | (empty) / (empty) / 0 / 0 / listen | what a new lobby's server settings start from |
+| `lobby_hostname` / `lobby_password` / `lobby_bots` / `lobby_public` / `lobby_servertype` | (empty) / (empty) / (empty: default) / 0 / listen | what a new lobby's server settings start from |
 | `ded_exe` | (empty) | the dedicated server program; empty: `bulwark-ded` beside this program, else this program with `-dedicated` |
 | `ded_port` | 27500 | the first UDP port tried for it (the first free one of the next 32 is used) |
 
@@ -108,16 +108,20 @@ ruleset <ID> "<title>" [<map the ruleset picks>]
 
 The host also picks the server the lobby starts. `getlobby`'s `settings`
 carries them (`servertype` LISTEN SERVER or DEDICATED SERVER, `hostname`,
-`maxplayers`, `bots`: a number or -1 for fill, `public`, `password`: whether
+`maxplayers`, `bots`: a number or -1 for fill, `botsDefault`: true when the
+lobby leaves bots to the rules (then `bots` is 0), `public`, `password`: whether
 there is one, and `passwordText` on the host's own page only), and `hosting`
 says what this engine can host: `serverTypes` (`listen`, and `dedicated`
 where programs can be started), `maxSeats`, `online` and `onlineConfigured`
 (Bulwark Live), `dedicatedRunning`. The page changes them with
 `setserver:<listen|dedicated>:<max>:<bots|fill>:<public 0|1>:<name hex>:<password hex>`
-(UTF-8 as hex, empty for none); a refusal answers
+(UTF-8 as hex, empty for none; an empty or `default` bots field is the
+rules' own bots); a refusal answers
 `{"ok":false,"error":"<why>"}`. Refused: fewer seats than players in the
 lobby, more bots than free seats, a name or password with `"`, `\` or `;`
-or over 63 bytes, Dedicated where programs can't be started. A change stops
+or over 63 bytes, Dedicated where programs can't be started or no server
+program is found (without /proc, as on macOS, only `ded_exe` names one; the
+page isn't offered `dedicated` then). A change stops
 the countdown like any other.
 
 - **Password.** A lobby with a password turns a `join` without the right
@@ -131,10 +135,17 @@ the countdown like any other.
 - **Starting** adds `hostname` (the host's name, else "<host>'s server"),
   `sv_password`, `sv_public` and bots to the commands above. Bots use the
   game's own quota, Nuclide's `bot_minClients`: the lobby's players plus the
-  count (at most `maxplayers`), `maxplayers` for fill, 0 for none. A ruleset
+  count (at most `maxplayers`), `maxplayers` for fill, 0 for none. The
+  default (empty Bots) sets neither cvar, so the rules seat their own bots
+  as they do for a console `map`. A ruleset
   marked `seatbots` in `scripts/lobby.txt` (a fourth word on its line; built
   in: FREEZETAG and ARCHSTILETTO) fills its own seats, and a quota would
   fight it: it gets `bot_minClients -1` and `arena_bots` 1 (any bots) or 0.
+  On a listen server these are the host's own cvars: the lobby keeps what
+  `hostname`, `sv_password`, `sv_public`, `bot_minClients`, `arena_bots`,
+  `maxplayers`, `sv_playerslots`, `timelimit` and `fraglimit` were and puts
+  them back once that game's server stops (`disconnect`, `killserver`), or
+  when the start fails, so a later console `map` doesn't inherit them.
   A player joining a server that bots fill takes a bot's slot
   (`sv_botsyield`, server side).
 - **Dedicated** (`src/client/cl_dedlaunch.c`): instead of `map`, the host
@@ -146,9 +157,11 @@ the countdown like any other.
   standard input from /dev/null, its output in `dedicated.log` beside the
   config, in a session of its own. The host then sets `password`,
   `rcon_password` and `rcon_address` (so `rcon` reaches the server) and
-  connects to 127.0.0.1 on that port, again every 12 s while it isn't in.
+  connects to 127.0.0.1 on that port straight away (not through the command
+  buffer, which a script's `wait` holds), again every 12 s while it isn't in.
   Guests get that port in `start`. If the program exits first, the lobby
-  closes with "The dedicated server stopped". The server keeps running when
+  closes with "The dedicated server stopped"; if the game doesn't start in
+  30 s the lobby stops the server it launched. The server keeps running when
   the host leaves, as a dedicated server does; `ded_stop` stops it.
 - **Online without Bulwark Live.** An `online` lobby's host whose Live isn't
   connected gets `warning` ("Online services are not connected in this
