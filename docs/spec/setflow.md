@@ -94,3 +94,7 @@ disconnect).
 `setflow_ui.py` in `tests/live` runs two windowed clients on their own Xvfb
 displays through all of this with key presses only (xdotool), and takes a
 screenshot of each screen.
+
+On one screen (Local Play, localplay.md) every player in the set picks and
+votes on a card over their own view; `getflow` lists them under `seats` and
+`flow:p<n>:<verb>` acts for player n. Local sets skip Live.
