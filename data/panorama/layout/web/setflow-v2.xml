@@ -155,6 +155,11 @@
 			</Panel>
 		</Panel>
 
+		<!-- several players on this screen (Local Play): a hero pick or a
+		     rematch vote in each player's own part of the screen, built by
+		     the script from the seats' view rectangles -->
+		<Panel id="LocalLayer" class="local-layer hidden" />
+
 		<!-- the set closed: leaving -->
 		<Panel id="Leaving" class="screen leaving hidden" hittest="false">
 			<Panel class="dim" hittest="false" />
