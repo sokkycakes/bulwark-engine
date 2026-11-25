@@ -65,7 +65,46 @@ var TitleMenu = (function ()
 	function focusJoinField()
 	{
 		if ( joinOpen )
+		{
 			$( "#JoinAddr" ).SetFocus();
+			dialogFocus = lanRows.length + 2; // Refresh, the rows, Join Selected, then the field
+		}
+	}
+
+	// the dialog's controls in screen order, for the d-pad / arrow keys
+	// (a controller has no Tab); Enter (A) then activates the focused one
+	var dialogFocus = -1;
+	function dialogControls()
+	{
+		var out = [];
+		if ( joinDialog.BHasClass( "join-create" ) )
+			out = [ $( "#CreateOnline" ), $( "#CreateLan" ) ];
+		else
+		{
+			out.push( $( "#JoinRefresh" ) );
+			for ( var i = 0; i < lanRows.length; i++ )
+				out.push( lanRows[ i ].panel );
+			out.push( joinConnect, $( "#JoinAddr" ), $( "#JoinAddrGo" ), $( "#JoinCode" ), $( "#JoinCodeGo" ) );
+		}
+		out.push( $( "#JoinBack" ) );
+		return out;
+	}
+
+	function moveDialogFocus( dir )
+	{
+		var all = dialogControls();
+		var n = all.length;
+		for ( var step = 0; step < n; step++ )
+		{
+			dialogFocus = dialogFocus < 0 ? ( dir > 0 ? 0 : n - 1 ) : ( dialogFocus + dir + n ) % n;
+			var p = all[ dialogFocus ];
+			if ( p && p.enabled !== false )
+			{
+				p.SetFocus();
+				localsound( SND_NAV );
+				return;
+			}
+		}
 	}
 
 	function select( index, playNav )
@@ -95,6 +134,7 @@ var TitleMenu = (function ()
 		transitioning = true;
 		joinOpen = true;
 		selectedAddr = null;
+		dialogFocus = -1;
 		joinConnect.enabled = false;
 		if ( !create )
 			refreshLan();
@@ -404,6 +444,8 @@ var TitleMenu = (function ()
 		{
 			if ( key === "Escape" )
 				closeJoin();
+			else if ( key === "ArrowUp" || key === "ArrowDown" )
+				moveDialogFocus( key === "ArrowDown" ? 1 : -1 );
 			return;
 		}
 		if ( key === "ArrowUp" || key === "w" || key === "W" )

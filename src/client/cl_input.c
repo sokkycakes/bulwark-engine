@@ -648,7 +648,7 @@ static void stick_nav(int axis, float value)
 		stick_held[axis] = 0;
 		IN_KeyEvent(keys[axis][held > 0], false, 0);
 	}
-	if (dir && UI_WantsInput()) {
+	if (dir && (UI_WantsInput() || EM_Active())) {
 		stick_held[axis] = dir;
 		IN_KeyEvent(keys[axis][dir > 0], true, 0);
 	}
@@ -780,7 +780,7 @@ static void fill_command(usercmd_t *u, double now)
 	clamp_pitch();
 
 	/* controller sticks: right one turns, left one moves */
-	if (joy_enable->ivalue && !Con_IsActive() && !UI_WantsInput()) {
+	if (joy_enable->ivalue && !Con_IsActive() && !UI_WantsInput() && !EM_Active()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
 		if ((lx || ly || rx || ry) && cl.seat == 0)
 			last_device(1);
@@ -969,7 +969,11 @@ void IN_MouseAbs(float x, float y)
 {
 	in_mouse_x = x;
 	in_mouse_y = y;
-	UI_MouseMove(x, y);
+	/* the engine's menus draw over a menu page (Settings from the title or
+	 * the pause menu): the page under them doesn't follow the pointer, so
+	 * it neither highlights nor plays its rollover sounds behind them */
+	if (!EM_Active())
+		UI_MouseMove(x, y);
 	if (!Con_IsActive() && !MQC_InputEvent(3, x, y, 0))
 		CSQC_InputEvent(3, x, y, 0);
 }

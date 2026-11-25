@@ -167,6 +167,8 @@
 	background-color: #3c3c3cf2;
 }
 .btn:hover { border: 1.5px solid #44aa99; }
+/* the d-pad / arrow keys move focus through the dialog */
+.btn:enabled:focus { border: 1.5px solid #44aa99; background-color: #44aa9940; }
 .btn:disabled { opacity: 0.4; }
 .btn:disabled:hover { border: 1.5px solid #666666; }
 .btn Label
