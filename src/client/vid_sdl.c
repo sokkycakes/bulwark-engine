@@ -9,11 +9,60 @@
 #include <stdlib.h>
 
 #include <SDL.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
 
 static SDL_Window *window;
 static SDL_GLContext glctx;
 static bool grabbed;
 static cvar_t *vid_vsync, *vid_width, *vid_height, *vid_fullscreen;
+
+#ifdef __EMSCRIPTEN__
+/* In a browser the page (tools/web/shell) owns the canvas's size, the
+ * pointer lock and fullscreen, since browsers allow those only from a click
+ * or key press. The engine says what it wants; the page makes it so. */
+/* clang-format off */
+EM_JS(void, web_set_grab, (int grab), {
+	if (Module.bulwarkSetGrab) Module.bulwarkSetGrab(!!grab);
+});
+EM_JS(void, web_set_fullscreen, (int on), {
+	if (Module.bulwarkSetFullscreen) Module.bulwarkSetFullscreen(!!on);
+});
+EM_JS(int, web_is_fullscreen, (void), {
+	return Module.bulwarkIsFullscreen ? (Module.bulwarkIsFullscreen() ? 1 : 0) : 0;
+});
+EM_JS(void, web_set_title, (const char *text), {
+	if (Module.bulwarkSetTitle) Module.bulwarkSetTitle(UTF8ToString(text));
+});
+/* clang-format on */
+
+/* the page lost the pointer lock on its own (Esc, alt-tab): the game hears
+ * an Esc, so it opens its menu as it would on the desktop, unless the Esc
+ * the player pressed already reached it */
+EMSCRIPTEN_KEEPALIVE void bulwark_pointer_lock_lost(int esc_seen)
+{
+	if (!grabbed)
+		return;
+	if (!esc_seen) {
+		IN_KeyEvent(K_ESCAPE, true, 0);
+		IN_KeyEvent(K_ESCAPE, false, 0);
+	}
+}
+
+/* the page's window or fullscreen state changed size: follow the canvas */
+static void web_follow_canvas(void)
+{
+	double cw, ch;
+	int w, h;
+	if (!window || emscripten_get_element_css_size("#canvas", &cw, &ch) != EMSCRIPTEN_RESULT_SUCCESS)
+		return;
+	SDL_GetWindowSize(window, &w, &h);
+	if ((int)cw > 0 && (int)ch > 0 && ((int)cw != w || (int)ch != h))
+		SDL_SetWindowSize(window, (int)cw, (int)ch);
+}
+#endif
 
 /* --- game controllers ------------------------------------------------------ */
 
@@ -239,6 +288,14 @@ static void apply_mode(void)
 	int w = vid_width->ivalue, h = vid_height->ivalue, fs = vid_fullscreen->ivalue;
 	if (!window)
 		return;
+#ifdef __EMSCRIPTEN__
+	/* the page is the window: its size is the browser's, and fullscreen is
+	 * the page's (only a click or key may start it, so the page waits for one) */
+	(void)w, (void)h;
+	web_set_fullscreen(fs != 0);
+	web_follow_canvas();
+	return;
+#endif
 	if (fs) {
 		if (fs == 1 && w > 0 && h > 0) {
 			SDL_DisplayMode mode;
@@ -269,6 +326,12 @@ static void VidRestart_f(int argc, const char **argv)
 
 static void VidToggle_f(int argc, const char **argv)
 {
+#ifdef __EMSCRIPTEN__
+	/* the player may have left fullscreen with Esc or F11 */
+	Cvar_Set("vid_fullscreen", web_is_fullscreen() ? "0" : "2");
+	apply_mode();
+	return;
+#endif
 	Cvar_Set("vid_fullscreen", vid_fullscreen->ivalue ? "0" : "2");
 	apply_mode();
 }
@@ -309,18 +372,36 @@ bool VID_Init(int width, int height, bool fullscreen)
 #ifdef SDL_HINT_APP_NAME
 	SDL_SetHint(SDL_HINT_APP_NAME, "Bulwark"); /* window class and audio stream name */
 #endif
+#ifdef __EMSCRIPTEN__
+	/* SDL drops controller input while its window lacks keyboard focus, and
+	 * in a page that's whenever focus sits on the page rather than the
+	 * canvas (after a tap on a handheld's screen, say). The page is the
+	 * window: a hidden tab gets no frames anyway. */
+	SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#endif
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
 		Con_Printf("SDL_Init: %s\n", SDL_GetError());
 		return false;
 	}
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+#ifdef __EMSCRIPTEN__
+	/* WebGL 2, which is OpenGL ES 3.0: the shaders get an ES header (r_gl.c) */
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	/* the page sizes the canvas; the window takes its size from there */
+	fullscreen = false;
+#else
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 	window = SDL_CreateWindow("Bulwark", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height,
 	                          SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
+#ifdef __EMSCRIPTEN__
+	                              SDL_WINDOW_ALLOW_HIGHDPI | /* sharp on phones and handhelds */
+#endif
 	                              (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
 	if (!window) {
 		Con_Printf("SDL_CreateWindow: %s\n", SDL_GetError());
@@ -329,7 +410,11 @@ bool VID_Init(int width, int height, bool fullscreen)
 	}
 	glctx = SDL_GL_CreateContext(window);
 	if (!glctx) {
+#ifdef __EMSCRIPTEN__
+		Con_Printf("WebGL 2 context: %s\n", SDL_GetError());
+#else
 		Con_Printf("OpenGL 3.3 core context: %s\n", SDL_GetError());
+#endif
 		SDL_DestroyWindow(window);
 		window = NULL;
 		SDL_Quit();
@@ -400,13 +485,21 @@ void VID_SetMouseGrab(bool grab)
 	if (!window || grab == grabbed)
 		return;
 	grabbed = grab;
+#ifdef __EMSCRIPTEN__
+	web_set_grab(grab);
+#else
 	SDL_SetRelativeMouseMode(grab ? SDL_TRUE : SDL_FALSE);
+#endif
 }
 
 void VID_SetCaption(const char *text)
 {
+#ifdef __EMSCRIPTEN__
+	web_set_title(text);
+#else
 	if (window)
 		SDL_SetWindowTitle(window, text);
+#endif
 }
 
 bool VID_SetClipboard(const char *text) { return SDL_SetClipboardText(text) == 0; }
@@ -458,6 +551,9 @@ bool VID_PumpEvents(void)
 	int pending_key = 0;
 	if (!window)
 		return true;
+#ifdef __EMSCRIPTEN__
+	web_follow_canvas();
+#endif
 	while (SDL_PollEvent(&ev)) {
 		if (pending_key && ev.type != SDL_TEXTINPUT) {
 			IN_KeyEvent(pending_key, true, 0);
@@ -465,7 +561,13 @@ bool VID_PumpEvents(void)
 		}
 		switch (ev.type) {
 		case SDL_QUIT:
+#ifdef __EMSCRIPTEN__
+			/* the page closing: nothing to quit to, and the config is
+			 * saved from the page's pagehide */
+			break;
+#else
 			return false;
+#endif
 		case SDL_KEYDOWN:
 		case SDL_KEYUP: {
 			int k = map_key(ev.key.keysym.sym);

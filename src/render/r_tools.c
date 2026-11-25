@@ -814,8 +814,7 @@ static uint8_t *render_view(const float *org, const float *ang, float fovx, floa
 		redrawing = false;
 		px = Mem_Alloc((size_t)w * h * 3);
 		row = Mem_Alloc((size_t)w * 3);
-		qglPixelStorei(GL_PACK_ALIGNMENT, 1);
-		qglReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
+		GL_ReadRGB(0, 0, w, h, px);
 		for (int y = 0; y < h / 2; y++) {
 			memcpy(row, px + (size_t)y * w * 3, (size_t)w * 3);
 			memcpy(px + (size_t)y * w * 3, px + (size_t)(h - 1 - y) * w * 3, (size_t)w * 3);

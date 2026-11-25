@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #include "client/client.h"
 #include "client/console.h"
@@ -51,7 +54,7 @@ static bool GamePreHook(const char *line, int argc, const char **argv)
 
 static void usage(void)
 {
-	Con_Printf("usage: bulwark [-basedir dir] [-game dir]... [-enginedata dir] [-headless] [-frames n] [-width w] [-height h]\n"
+	Con_Printf("usage: bulwark [-basedir dir] [-game dir]... [-enginedata dir] [-userdir dir] [-headless] [-frames n] [-width w] [-height h]\n"
 	           "               [-window] [+command args]...\n");
 }
 
@@ -59,6 +62,175 @@ static void usage(void)
 static bool live_in_game(void)
 {
 	return sv.active || cl.state == ca_active;
+}
+
+/* --- the frame loop ----------------------------------------------------------
+ * main() sets up, then runs Host_Frame until it returns false. In a browser
+ * the page's animation frames call it instead (Host_BrowserFrame). */
+static double host_last;
+static long host_maxframes = -1, host_frames;
+static bool host_headless, host_size_given, host_mode_applied, host_server_was_active;
+static int host_seen_spawncount;
+static cvar_t *host_fps_max, *host_cl_maxfps, *host_timescale_cvar, *host_framerate_cvar;
+
+static void Host_Shutdown(void);
+
+/* one frame; false once the game should quit */
+static bool Host_Frame(void)
+{
+	double now, dt;
+	if (quit_requested)
+		return false;
+	if (host_maxframes >= 0) {
+		/* scripted runs step a fixed frame time without sleeping */
+		if (host_frames++ >= host_maxframes)
+			return false;
+		dt = 1.0 / 72;
+	} else {
+		float cap = host_fps_max->value > 0 ? host_fps_max->value : host_cl_maxfps->value;
+		double mindt = cap > 0 ? 1.0 / BW_MAX(cap, 10) : 0.001;
+		now = Sys_Seconds();
+		dt = now - host_last;
+#ifdef __EMSCRIPTEN__
+		/* the browser paces frames to the display; a cap below its rate
+		 * skips refreshes, and nothing may sleep */
+		if (cap > 0 && dt < mindt - 0.002)
+			return true;
+		if (dt <= 0)
+			return true;
+		/* a background tab gets no frames: don't simulate the gap in one step */
+		if (dt > 0.25)
+			dt = 0.25;
+#else
+		if (dt < mindt) {
+			/* sleep most of the gap, then spin the rest for an even rate */
+			if (mindt - dt > 0.002)
+				Sys_Sleep(mindt - dt - 0.001);
+			return true;
+		}
+#endif
+		host_last = now;
+		host_frames++;
+		if (host_framerate_cvar->value > 0)
+			dt = host_framerate_cvar->value;
+	}
+	if (!host_headless && !VID_PumpEvents())
+		return false;
+#ifdef __EMSCRIPTEN__
+	/* a closing tab can't wait for the save to reach IndexedDB, so settings
+	 * are saved a moment after they change rather than only on the way out */
+	if (host_maxframes < 0) {
+		static int seen;
+		static double changed_at, saved_at;
+		double t = Sys_Seconds();
+		if (cfg_modified != seen) {
+			seen = cfg_modified;
+			changed_at = t;
+		} else if (changed_at > 0 && t - changed_at > 0.75 && t - saved_at > 2) {
+			Cfg_SaveIfModified();
+			changed_at = 0;
+			saved_at = t;
+		}
+	}
+#endif
+	Cbuf_Execute();
+	/* the saved video mode applies once the configs have run, unless
+	 * the command line chose one */
+	if (host_frames <= 1 && host_maxframes < 0 && !host_size_given && !host_headless && !host_mode_applied) {
+		host_mode_applied = true;
+		VID_ApplyMode();
+	}
+
+	/* a map started here: join it over loopback. That includes a new
+	 * map started after "disconnect", which leaves the server running */
+	if (sv.active && (!host_server_was_active || (sv_spawncount != host_seen_spawncount && cl.state == ca_disconnected))) {
+		cl.listen = true;
+		CL_Connect("localhost");
+	}
+	host_seen_spawncount = sv_spawncount;
+	if (!sv.active && host_server_was_active)
+		cl.listen = false;
+	host_server_was_active = sv.active;
+	MQC_PendingLoad();
+
+	host_time += dt;
+	/* a local game can run slow or fast; a remote server sets its own pace */
+	double gdt = sv.active && host_timescale_cvar->value > 0 ? dt * BW_CLAMP(host_timescale_cvar->value, 0.01f, 10) : dt;
+	NET_RunDelayed();
+	Live_Frame();
+	PKG_Frame();
+	Worker_Frame();
+	Plug_Frame();
+	QC_URIFrame();
+	SV_Frame(gdt);
+	CL_Frame(gdt);
+	Lobby_Frame();
+	WC_Frame();
+	R_BeginFrame();
+	{
+		int w, h;
+		R_GetSize(&w, &h);
+		CSQC_Frame(w, h);
+		MQC_Frame(w, h);
+	}
+	UI_Frame(dt);
+	UI_Draw();
+	R_EndFrame();
+	S_Update(NULL, NULL, NULL, NULL);
+	return !quit_requested;
+}
+
+#ifdef __EMSCRIPTEN__
+/* for the page (tools/web/shell): */
+/* it's being hidden or closed: save the config now, as quitting would */
+EMSCRIPTEN_KEEPALIVE void bulwark_page_hidden(void)
+{
+	if (host_maxframes < 0)
+		Cfg_SaveIfModified();
+}
+
+/* a console command from the page */
+EMSCRIPTEN_KEEPALIVE void bulwark_command(const char *text)
+{
+	Cbuf_AddText(text);
+	Cbuf_AddText("\n");
+}
+
+/* for the page's tests: 0 disconnected .. 3 in the game (cl.state), and the
+ * frames run */
+EMSCRIPTEN_KEEPALIVE int bulwark_client_state(void) { return (int)cl.state; }
+EMSCRIPTEN_KEEPALIVE double bulwark_frames(void) { return (double)host_frames; }
+
+static void Host_BrowserFrame(void)
+{
+	if (Host_Frame())
+		return;
+	emscripten_cancel_main_loop();
+	Host_Shutdown();
+	Plat_Quit();
+}
+#endif
+
+static void Host_Shutdown(void)
+{
+	if (host_maxframes >= 0)
+		Cmd_ExecuteString("netstats");
+	/* scripted runs never touch the player's config */
+	if (host_maxframes < 0)
+		Cfg_SaveIfModified();
+	CL_Disconnect("quit");
+	MQC_Shutdown();
+	Plug_Shutdown();
+	if (sv.active)
+		SV_DropClients("server shut down");
+	SV_Shutdown();
+	Live_Shutdown();
+	QC_URIDrain(3);
+	UI_Shutdown();
+	S_Shutdown();
+	R_Shutdown();
+	VID_Shutdown();
+	Plat_Shutdown();
 }
 
 int main(int argc, char **argv)
@@ -82,6 +254,8 @@ int main(int argc, char **argv)
 			games[numgames++] = argv[++i];
 		else if (!strcmp(argv[i], "-enginedata") && i + 1 < argc)
 			FS_SetEngineDir(argv[++i]);
+		else if (!strcmp(argv[i], "-userdir") && i + 1 < argc)
+			FS_SetUserDir(argv[++i]);
 		else if (!strcmp(argv[i], "-frames") && i + 1 < argc)
 			maxframes = strtol(argv[++i], NULL, 10);
 		else if (!strcmp(argv[i], "-headless"))
@@ -172,96 +346,24 @@ int main(int argc, char **argv)
 	else if (MQC_Load())
 		MQC_Toggle(1);
 
-	double last = Sys_Seconds();
-	long frames = 0;
-	bool server_was_active = false, mode_applied = false;
-	int seen_spawncount = 0;
-	while (!quit_requested) {
-		double now, dt;
-		if (maxframes >= 0) {
-			/* scripted runs step a fixed frame time without sleeping */
-			if (frames++ >= maxframes)
-				break;
-			dt = 1.0 / 72;
-		} else {
-			float cap = fps_max->value > 0 ? fps_max->value : cl_maxfps->value;
-			double mindt = cap > 0 ? 1.0 / BW_MAX(cap, 10) : 0.001;
-			now = Sys_Seconds();
-			dt = now - last;
-			if (dt < mindt) {
-				/* sleep most of the gap, then spin the rest for an even rate */
-				if (mindt - dt > 0.002)
-					Sys_Sleep(mindt - dt - 0.001);
-				continue;
-			}
-			last = now;
-			if (host_framerate->value > 0)
-				dt = host_framerate->value;
-		}
-		if (!headless && !VID_PumpEvents())
-			break;
-		Cbuf_Execute();
-		/* the saved video mode applies once the configs have run, unless
-		 * the command line chose one */
-		if (frames <= 1 && maxframes < 0 && !size_given && !headless && !mode_applied) {
-			mode_applied = true;
-			VID_ApplyMode();
-		}
-
-		/* a map started here: join it over loopback. That includes a new
-		 * map started after "disconnect", which leaves the server running */
-		if (sv.active && (!server_was_active || (sv_spawncount != seen_spawncount && cl.state == ca_disconnected))) {
-			cl.listen = true;
-			CL_Connect("localhost");
-		}
-		seen_spawncount = sv_spawncount;
-		if (!sv.active && server_was_active)
-			cl.listen = false;
-		server_was_active = sv.active;
-		MQC_PendingLoad();
-
-		host_time += dt;
-		/* a local game can run slow or fast; a remote server sets its own pace */
-		double gdt = sv.active && host_timescale->value > 0 ? dt * BW_CLAMP(host_timescale->value, 0.01f, 10) : dt;
-		NET_RunDelayed();
-		Live_Frame();
-		PKG_Frame();
-		Worker_Frame();
-		Plug_Frame();
-		QC_URIFrame();
-		SV_Frame(gdt);
-		CL_Frame(gdt);
-		Lobby_Frame();
-		WC_Frame();
-		R_BeginFrame();
-		{
-			int w, h;
-			R_GetSize(&w, &h);
-			CSQC_Frame(w, h);
-			MQC_Frame(w, h);
-		}
-		UI_Frame(dt);
-		UI_Draw();
-		R_EndFrame();
-		S_Update(NULL, NULL, NULL, NULL);
+	host_last = Sys_Seconds();
+	host_maxframes = maxframes;
+	host_headless = headless;
+	host_size_given = size_given;
+	host_fps_max = fps_max;
+	host_cl_maxfps = cl_maxfps;
+	host_timescale_cvar = host_timescale;
+	host_framerate_cvar = host_framerate;
+#ifdef __EMSCRIPTEN__
+	/* the browser owns the loop: one frame per display refresh, and the
+	 * page keeps running after main returns */
+	if (maxframes < 0) {
+		emscripten_set_main_loop(Host_BrowserFrame, 0, 0);
+		return 0;
 	}
-	if (maxframes >= 0)
-		Cmd_ExecuteString("netstats");
-	/* scripted runs never touch the player's config */
-	if (maxframes < 0)
-		Cfg_SaveIfModified();
-	CL_Disconnect("quit");
-	MQC_Shutdown();
-	Plug_Shutdown();
-	if (sv.active)
-		SV_DropClients("server shut down");
-	SV_Shutdown();
-	Live_Shutdown();
-	QC_URIDrain(3);
-	UI_Shutdown();
-	S_Shutdown();
-	R_Shutdown();
-	VID_Shutdown();
-	Plat_Shutdown();
+#endif
+	while (Host_Frame())
+		;
+	Host_Shutdown();
 	return 0;
 }

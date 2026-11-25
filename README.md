@@ -92,6 +92,21 @@ build directory; `-enginedata <dir>` points elsewhere). Build Stiletto's
 progs from its source first (`make game GAME=base` in the Nuclide tree, with
 FTEQCC): its repository ignores `*.dat`, and the few checked in are old.
 
+## Web export
+
+A game can be exported as a folder any web host can serve, and played in
+Chrome, Firefox and Android handheld browsers:
+
+```sh
+tools/web/build.sh build-web            # needs the Emscripten SDK
+python3 tools/web/export.py --basedir /path/to/nuclide --game base --engine build-web \
+    --out out/web-base -- +map ai
+python3 tools/web/serve.py out/web-base
+```
+
+See [docs/platforms/web.md](docs/platforms/web.md), including how browser
+players join a desktop server.
+
 ## Running Nuclide's server
 
 ```sh
@@ -100,7 +115,8 @@ FTEQCC): its repository ignores `*.dat`, and the few checked in are old.
 ```
 
 Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
-`-frames n`, `-developer`, and `+command args` for console commands.
+`-frames n`, `-developer`, `-userdir dir` (write configs and saves there
+instead of the game folder), and `+command args` for console commands.
 
 ## Scenes
 

@@ -2,6 +2,9 @@
  * in them (.pk3 zip archives, Quake .pak files). Zip layout from PKWARE's
  * APPNOTE; inflate by stb_image (public domain). ISC licence, see LICENSE. */
 #include "fs.h"
+#ifdef __EMSCRIPTEN__
+#include "../platform/platform.h"
+#endif
 #include "../thirdparty/stb_image.h"
 
 #include <stdio.h>
@@ -18,6 +21,7 @@ static char fs_basedir[1024] = ".";
 /* Bulwark's own files (UI layouts and the like), searched after every game
  * directory: loose files only, see FS_SetEngineDir */
 static char fs_enginedir[1024];
+static char fs_userdir[1024]; /* where the player's files go, searched before each game dir */
 static char fs_gamedirs[FS_MAX_PATHS][64];
 static int fs_numgamedirs;
 static int fs_generation; /* bumped whenever the search path changes */
@@ -301,6 +305,8 @@ void FS_PrintPath(void)
 	}
 	if (fs_enginedir[0])
 		Con_Printf("%s (engine data)\n", fs_enginedir);
+	if (fs_userdir[0])
+		Con_Printf("%s (the player's files, searched before each game dir)\n", fs_userdir);
 }
 
 void FS_Init(const char *basedir)
@@ -411,6 +417,32 @@ static bool os_path(int dir, const char *path, char *out, size_t outsize)
 	return n > 0 && (size_t)n < outsize;
 }
 
+/* the same file in the user directory, when there is one */
+static bool user_path(int dir, const char *path, char *out, size_t outsize)
+{
+	if (!fs_userdir[0])
+		return false;
+	int n = snprintf(out, outsize, "%s/%s/%s", fs_userdir, fs_gamedirs[dir], path);
+	return n > 0 && (size_t)n < outsize;
+}
+
+static bool is_file(const char *ospath)
+{
+	struct stat st;
+	return !stat(ospath, &st) && S_ISREG(st.st_mode);
+}
+
+void FS_SetUserDir(const char *path)
+{
+	Str_Copy(fs_userdir, path ? path : "", sizeof(fs_userdir));
+	size_t n = strlen(fs_userdir);
+	while (n > 1 && fs_userdir[n - 1] == '/')
+		fs_userdir[--n] = 0;
+	fs_generation++;
+}
+
+const char *FS_UserDir(void) { return fs_userdir; }
+
 /* GoldSrc content names files in any case ("resource/Quest/QuestClosed")
  * and was made on a case-insensitive file system. When the name as given
  * isn't there, the all-lowercase name is tried, which is how extracted
@@ -468,6 +500,9 @@ char *FS_LoadFile(const char *path, size_t *len)
 		return NULL;
 	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
 		char *buf;
+		/* what the player saved comes before what the game shipped */
+		if (user_path(i, path, ospath, sizeof(ospath)) && (buf = load_os_file(ospath, len)))
+			return buf;
 		if (!os_path(i, path, ospath, sizeof(ospath)))
 			continue;
 		buf = load_os_file(ospath, len);
@@ -500,6 +535,8 @@ int FS_WhichGameDir(const char *path)
 	if (!FS_SafeName(path))
 		return -1;
 	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
+		if (user_path(i, path, ospath, sizeof(ospath)) && is_file(ospath))
+			return i;
 		if (os_path(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
 			return i;
 		if (os_path_lower(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
@@ -518,6 +555,8 @@ const char *FS_WhichPath(const char *path)
 		return NULL;
 	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
 		pack_t *pk;
+		if (user_path(i, path, ospath, sizeof(ospath)) && is_file(ospath))
+			return fs_gamedirs[i];
 		if (os_path(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
 			return fs_gamedirs[i];
 		if (os_path_lower(i, path, ospath, sizeof(ospath)) && !stat(ospath, &st) && S_ISREG(st.st_mode))
@@ -539,6 +578,11 @@ bool FS_WritePath(const char *path, char *out, size_t outsize)
 {
 	if (!fs_numgamedirs || !FS_SafeName(path))
 		return false;
+#ifdef __EMSCRIPTEN__
+	Plat_UserFilesChanged(); /* the page saves /user a moment after the write */
+#endif
+	if (fs_userdir[0])
+		return user_path(fs_numgamedirs - 1, path, out, outsize);
 	return os_path(fs_numgamedirs - 1, path, out, outsize);
 }
 
@@ -667,6 +711,10 @@ void FS_List(const char *pattern, bool nocase, fs_list_fn fn, void *ctx)
 		return;
 	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
 		char root[1100];
+		if (fs_userdir[0]) {
+			snprintf(root, sizeof(root), "%s/%s", fs_userdir, fs_gamedirs[i]);
+			walk(root, base, pattern, nocase, &seen, fs_gamedirs[i], fn, ctx, 0);
+		}
 		snprintf(root, sizeof(root), "%s/%s", fs_basedir, fs_gamedirs[i]);
 		walk(root, base, pattern, nocase, &seen, fs_gamedirs[i], fn, ctx, 0);
 		for (int k = numpacks - 1; k >= 0; k--) {

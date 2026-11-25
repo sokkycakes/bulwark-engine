@@ -665,7 +665,7 @@ var LobbyMenu = (function ()
 		// footer and status
 		setEnabled( $( "#BtnLeaveLobby" ), s.canLeave );
 		var status = $( "#StatusLine" );
-		setText( status, s.error || connectionError || notice || ( s.phase === "JOINING" || s.phase === "CLOSING" ? s.status : "" ) );
+		setText( status, s.error || connectionError || notice || s.notice || ( s.phase === "JOINING" || s.phase === "CLOSING" ? s.status : "" ) );
 		status.SetHasClass( "error", !!s.error );
 
 		renderDialogs();

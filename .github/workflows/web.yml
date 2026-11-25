@@ -1,0 +1,96 @@
+name: Web export
+
+# Builds the web engine, exports Nuclide's base game with it, and plays the
+# export in Chrome and Firefox (tests/web): loading, Play, keyboard and mouse,
+# the pointer lock and Esc, resizing, fullscreen, saved settings, a
+# controller, the Back button, quitting, a broken export, and joining a
+# desktop server through the WebSocket relay. The export is kept as an
+# artifact anyone can download and host.
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    paths:
+      - 'src/**'
+      - 'plugins/**'
+      - 'data/**'
+      - 'third_party/**'
+      - 'CMakeLists.txt'
+      - 'tools/web/**'
+      - 'tests/web/**'
+      - '.github/workflows/web.yml'
+
+env:
+  EMSDK_VERSION: 7.0.1
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Nuclide (the test game)
+        uses: actions/checkout@v4
+        with:
+          repository: sokkycakes/nuclide
+          ref: master
+          path: nuclide
+
+      - name: Cache the Emscripten SDK
+        id: emsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}-v1
+
+      - name: Emscripten SDK
+        run: |
+          if [ ! -d emsdk ]; then git clone --depth 1 https://github.com/emscripten-core/emsdk; fi
+          ./emsdk/emsdk install $EMSDK_VERSION
+          ./emsdk/emsdk activate $EMSDK_VERSION
+
+      - name: Build the web engine
+        run: |
+          . ./emsdk/emsdk_env.sh
+          tools/web/build.sh build-web
+          ls -la build-web/bulwark.js build-web/bulwark.wasm
+
+      - name: Build the desktop dedicated server (for the online test)
+        run: |
+          cmake -S . -B build-ded -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-ded --target bulwark-ded -j4
+
+      - name: Export Nuclide's base game
+        run: python3 tools/web/export.py --basedir nuclide --game base --engine build-web --out out/web-base --title "Bulwark web test" -- +map ai
+
+      - name: Browsers, a display and a sound server
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb pulseaudio
+          pulseaudio --start --exit-idle-time=-1 || true
+          google-chrome --version
+          firefox --version
+
+      - name: Play it in Chrome and Firefox
+        working-directory: tests/web
+        run: |
+          npm ci --no-audit --no-fund
+          xvfb-run -a -s "-screen 0 1280x800x24" node webtest.mjs --export ../../out/web-base --browser all \
+            --chrome "$(command -v google-chrome)" --firefox "$(command -v firefox)" \
+            --ded ../../build-ded/bulwark-ded --basedir ../../nuclide --out out
+
+      - name: Test screenshots and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-test-results
+          path: tests/web/out
+          retention-days: 14
+
+      - name: The export, ready to host
+        uses: actions/upload-artifact@v4
+        with:
+          name: bulwark-web-export
+          path: out/web-base
+          retention-days: 14

@@ -25,6 +25,7 @@ typedef struct {
 	char name[64];
 	char path[1024];
 	void *handle;
+	bool linked_in;       /* built into the engine (BW_LINKED_PLUGINS), not a file */
 	void (*frame)(double realtime);
 	void (*shutdown)(void);
 } plugin_t;
@@ -247,7 +248,8 @@ static void unload(int i)
 	for (int k = 0; k < MAX_PLUGFMTS; k++)
 		if (plugfmts[k].fn && plugfmts[k].owner == i)
 			plugfmts[k].fn = NULL;
-	dlclose(p->handle);
+	if (!p->linked_in)
+		dlclose(p->handle);
 	Con_Printf("Unloaded plugin %s\n", p->name);
 	memset(p, 0, sizeof(*p));
 }
@@ -399,8 +401,46 @@ void Plug_Shutdown(void) { PlugCloseAll_f(0, NULL); }
 /* every bwplug_*.so next to the engine (not in the game directories, which
  * downloads can reach): plugins that ship with it, such as the Source file
  * formats, work without a plug_load. Remove the file to leave one out. */
+#ifdef BW_LINKED_PLUGIN_SOURCE
+#define BW_LINKED_PLUGINS(X) X(source)
+#endif
+#ifdef BW_LINKED_PLUGINS
+/* Builds without a dynamic linker (the browser) link the plugins that ship
+ * with the engine into it, under their own names (CMakeLists.txt renames each
+ * one's bwplug_init); they start as the files next to the engine would. */
+#define X(name) int bwplug_##name##_init(const bwplug_api_t *a);
+BW_LINKED_PLUGINS(X)
+#undef X
+static void load_linked(const char *name, int (*init)(const bwplug_api_t *))
+{
+	int slot = -1;
+	for (int i = 0; i < MAX_PLUGINS && slot < 0; i++)
+		if (!plugins[i].handle)
+			slot = i;
+	if (slot < 0)
+		return;
+	plugin_t *p = &plugins[slot];
+	Str_Copy(p->name, name, sizeof(p->name));
+	Str_Copy(p->path, "(linked in)", sizeof(p->path));
+	p->handle = p; /* marks the slot used */
+	p->linked_in = true;
+	loading = slot;
+	int ok = init(&api);
+	loading = -1;
+	if (!ok) {
+		Con_Printf("Plugin %s didn't want to load\n", name);
+		unload(slot);
+	}
+}
+#endif
+
 void Plug_AutoLoad(void)
 {
+#ifdef BW_LINKED_PLUGINS
+#define X(name) load_linked(#name, bwplug_##name##_init);
+	BW_LINKED_PLUGINS(X)
+#undef X
+#endif
 	DIR *d = opendir(bindir());
 	struct dirent *e;
 	if (!d)

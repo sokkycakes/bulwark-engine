@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- Bulwark web shell. tools/web/export.py copies this next to the engine
+     and the game's data; bulwark-web.json says what to load and run. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<title>{{TITLE}}</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="bulwark-shell.css">
+</head>
+<body>
+<div id="stage">
+	<canvas id="canvas" tabindex="0" aria-label="Game"></canvas>
+
+	<!-- loading, start, resume, errors and the end of the game -->
+	<div id="cover" class="cover">
+		<div class="card">
+			<div id="title" class="title">{{TITLE}}</div>
+			<div id="status" class="status">Loading…</div>
+			<div id="bar" class="bar"><div id="fill" class="fill"></div></div>
+			<div id="detail" class="detail"></div>
+			<button id="play" class="play" hidden>Play</button>
+			<div id="hint" class="hint" hidden></div>
+			<div id="actions" class="actions" hidden>
+				<button id="reload" class="secondary">Reload</button>
+				<button id="copylog" class="secondary">Copy log</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- the game wants the mouse back, and only a click may give it -->
+	<div id="resume" class="resume" hidden>
+		<div class="resume-text">Click to resume</div>
+	</div>
+
+	<!-- in menus: fullscreen, for players who'd look for a button -->
+	<button id="fsbutton" class="fsbutton" title="Fullscreen (F11)" aria-label="Fullscreen" hidden>
+		<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></svg>
+	</button>
+
+	<!-- short notes: a controller connected, sound needs a tap -->
+	<div id="toast" class="toast" hidden></div>
+</div>
+<script src="bulwark-shell.js"></script>
+</body>
+</html>

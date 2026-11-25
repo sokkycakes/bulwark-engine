@@ -23,7 +23,7 @@ static bool ServerFallback(const char *line, int argc, const char **argv) { retu
 
 static void usage(void)
 {
-	Con_Printf("usage: bulwark-ded [-basedir dir] [-game dir]... [-enginedata dir] [-frames n] [+command args]...\n");
+	Con_Printf("usage: bulwark-ded [-basedir dir] [-game dir]... [-enginedata dir] [-userdir dir] [-frames n] [+command args]...\n");
 }
 
 /* Bulwark Live: whether this game is in a match's game */
@@ -47,6 +47,8 @@ int main(int argc, char **argv)
 			games[numgames++] = argv[++i];
 		else if (!strcmp(argv[i], "-enginedata") && i + 1 < argc)
 			FS_SetEngineDir(argv[++i]);
+		else if (!strcmp(argv[i], "-userdir") && i + 1 < argc)
+			FS_SetUserDir(argv[++i]);
 		else if (!strcmp(argv[i], "-frames") && i + 1 < argc)
 			maxframes = strtol(argv[++i], NULL, 10);
 		else if (!strcmp(argv[i], "-developer"))

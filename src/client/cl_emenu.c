@@ -44,6 +44,7 @@ typedef struct {
 	float x, y, w, h; /* script menus: where; boxes: size in characters */
 	bool placed, big, header;
 	float rx, ry, rw, rh; /* where it was last drawn, for the mouse */
+	float bx, bw;         /* a slider's bar, for clicks and drags */
 } item_t;
 
 typedef struct page_s {
@@ -65,6 +66,7 @@ static bool editing;     /* an edit field has the keys */
 static char editbuf[256];
 static bool binding;     /* waiting for the key to bind */
 static float lastmx = -1, lastmy = -1;
+static item_t *dragging; /* the slider held under the mouse */
 
 static const float c_text[3] = {0.85f, 0.85f, 0.85f}, c_dim[3] = {0.5f, 0.5f, 0.5f}, c_title[3] = {1, 0.75f, 0.35f};
 static const float c_sel[3] = {1, 1, 1}, c_bar[3] = {0.25f, 0.45f, 0.8f}, c_panel[3] = {0.05f, 0.06f, 0.08f};
@@ -231,6 +233,7 @@ static void pop(void)
 {
 	if (!depth)
 		return;
+	dragging = NULL;
 	free_page(stack[--depth]);
 	editing = binding = false;
 }
@@ -245,6 +248,7 @@ static void close_all(void)
 static void repopulate(page_t *p)
 {
 	int cursor = p->cursor, scroll = p->scroll;
+	dragging = NULL;
 	free_items(p);
 	p->populate(p);
 	p->cursor = cursor;
@@ -418,12 +422,29 @@ static void value_text(const item_t *it, char *out, size_t size)
 	}
 }
 
-static void draw_slider(const item_t *it, float x, float y, float w, float size, bool sel)
+/* a click or drag on a slider's bar sets the value under the pointer */
+static void slide_to(item_t *it, float mx)
+{
+	char buf[64], cur[64];
+	if (it->bw <= 0)
+		return;
+	float f = (mx - it->bx) / it->bw;
+	f = BW_MAX(0.0f, BW_MIN(f, 1.0f));
+	float v = it->min + f * (it->max - it->min);
+	if (it->step > 0)
+		v = roundf(v / it->step) * it->step;
+	snprintf(buf, sizeof(buf), "%g", v);
+	if (strcmp(buf, get_value(it->cvar, cur, sizeof(cur))))
+		set_value(it->cvar, buf);
+}
+
+static void draw_slider(item_t *it, float x, float y, float w, float size, bool sel)
 {
 	char buf[64];
 	float v = (float)atof(get_value(it->cvar, buf, sizeof(buf)));
 	float f = it->max != it->min ? (v - it->min) / (it->max - it->min) : 0;
 	f = BW_MAX(0.0f, BW_MIN(f, 1.0f));
+	it->bx = x, it->bw = w;
 	R_Rect(x, y + size * 0.3f, w, size * 0.4f, c_dim, 0.6f);
 	R_Rect(x, y + size * 0.3f, w * f, size * 0.4f, sel ? c_sel : c_bar, 0.9f);
 	R_Rect(x + w * f - 1, y, 3, size, sel ? c_sel : c_text, 1);
@@ -432,7 +453,7 @@ static void draw_slider(const item_t *it, float x, float y, float w, float size,
 }
 
 /* the value part of a row, from x */
-static void draw_value(const item_t *it, float x, float y, float w, float size, bool sel)
+static void draw_value(item_t *it, float x, float y, float w, float size, bool sel)
 {
 	char buf[256];
 	const float *col = sel ? c_sel : c_text;
@@ -564,6 +585,8 @@ void EM_Draw(int w, int h)
 	float scale = R_Get2DScale(), mx = in_mouse_x / scale, my = in_mouse_y / scale;
 	if (mx != lastmx || my != lastmy) {
 		lastmx = mx, lastmy = my;
+		if (dragging && dragging >= p->items && dragging < p->items + p->numitems)
+			slide_to(dragging, mx);
 		for (int i = 0; i < p->numitems && !editing && !binding; i++) {
 			const item_t *it = &p->items[i];
 			if (it->rw > 0 && selectable(it) && mx >= it->rx && mx < it->rx + it->rw && my >= it->ry && my < it->ry + it->rh)
@@ -611,6 +634,8 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	page_t *p = top();
 	if (!p)
 		return false;
+	if (key == K_MOUSE1 && !down)
+		dragging = NULL;
 	if (!down)
 		return true;
 	item_t *it = p->numitems ? &p->items[p->cursor] : NULL;
@@ -661,9 +686,25 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 		break;
 	case K_ENTER: case K_KP_ENTER: case K_MOUSE1: case K_GP_A:
 		if (key == K_MOUSE1) {
+			/* the row under the pointer, even if no frame has drawn since it
+			 * moved there (a tap on a touch screen, a quick click) */
 			float scale = R_Get2DScale(), mx = in_mouse_x / scale, my = in_mouse_y / scale;
-			if (!it || !(mx >= it->rx && mx < it->rx + it->rw && my >= it->ry && my < it->ry + it->rh))
+			it = NULL;
+			for (int i = 0; i < p->numitems; i++) {
+				item_t *r = &p->items[i];
+				if (r->rw > 0 && selectable(r) && mx >= r->rx && mx < r->rx + r->rw && my >= r->ry && my < r->ry + r->rh) {
+					p->cursor = i;
+					it = r;
+					break;
+				}
+			}
+			if (!it)
 				break; /* a click off the rows does nothing */
+			if (it->type == IT_SLIDER && mx >= it->bx - 4 && mx <= it->bx + it->bw + 4) {
+				slide_to(it, mx);
+				dragging = it;
+				break;
+			}
 		}
 		if (it && selectable(it))
 			activate(p, it, 0);
