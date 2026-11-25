@@ -1363,6 +1363,19 @@ static void bi_findfloat(qcvm_t *vm)
 {
 	int e = QC_PENT(vm, 0), f = QC_PINT(vm, 1);
 	int32_t match = QC_PINT(vm, 2);
+	/* games walk every entity with this each frame (Nuclide's StartFrame),
+	   so the scan steps through the field directly */
+	if (f >= 0 && f < vm->edict_words) {
+		const qcval_t *v = QC_EdictFields(vm, 0) + f;
+		size_t stride = (size_t)vm->edict_words;
+		for (e++; e < vm->num_edicts; e++)
+			if (v[(size_t)e * stride].i == match && !vm->edicts[e].free) {
+				QC_ReturnInt(vm, e);
+				return;
+			}
+		QC_ReturnInt(vm, 0);
+		return;
+	}
 	while ((e = next_live(vm, e))) {
 		if (QC_EInt(vm, e, f) == match) {
 			QC_ReturnInt(vm, e);
