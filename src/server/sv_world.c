@@ -794,9 +794,12 @@ void SV_TouchTriggers(int e)
 		if (l.a) {
 			area_done(&l);
 			area_query(&l, amin, amax);
-			for (k = 0; k < l.n && l.ids[k] <= t; k++)
-				;
-			k--;
+			if (l.a) {
+				for (k = 0; k < l.n && l.ids[k] <= t; k++)
+					;
+				k--;
+			} else
+				k = t - 1; /* scanning every slot: carry on after t */
 		}
 	}
 	area_done(&l);
