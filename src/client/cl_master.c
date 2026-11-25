@@ -12,6 +12,7 @@
 #include "client.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/fs.h"
 #include "../common/json.h"
 #include "../net/protocol.h"
 #include "../server/sv_local.h"

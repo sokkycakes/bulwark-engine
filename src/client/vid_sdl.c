@@ -696,6 +696,10 @@ void VID_Shutdown(void)
 
 bool VID_Active(void) { return window != NULL; }
 
+/* keyboard focus and not minimised; s_inactive and cl_idlefps act on it */
+static bool win_focus = true, win_minimised;
+bool VID_Focused(void) { return !window || (win_focus && !win_minimised); }
+
 void VID_GetSize(int *w, int *h)
 {
 	if (window)
@@ -873,8 +877,15 @@ bool VID_PumpEvents(void)
 			break;
 		}
 		case SDL_WINDOWEVENT:
-			if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+			if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
 				IN_ReleaseAll();
+				win_focus = false;
+			} else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
+				win_focus = true;
+			else if (ev.window.event == SDL_WINDOWEVENT_MINIMIZED)
+				win_minimised = true;
+			else if (ev.window.event == SDL_WINDOWEVENT_RESTORED || ev.window.event == SDL_WINDOWEVENT_MAXIMIZED)
+				win_minimised = false;
 			break;
 		}
 	}

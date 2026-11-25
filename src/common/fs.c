@@ -2,6 +2,7 @@
  * in them (.pk3 zip archives, Quake .pak files). Zip layout from PKWARE's
  * APPNOTE; inflate by stb_image (public domain). ISC licence, see LICENSE. */
 #include "fs.h"
+#include "cvar.h"
 #ifdef __EMSCRIPTEN__
 #include "../platform/platform.h"
 #endif
@@ -360,6 +361,17 @@ void FS_SetEngineDir(const char *path)
 
 const char *FS_EngineDir(void) { return fs_enginedir; }
 
+/* fs_game: the active (last) game directory, read-only, as FTE has it.
+ * Nuclide finds its locale files (<game>_english.txt), titles and map
+ * list by it. */
+static void update_fs_game(void)
+{
+	cvar_t *v = Cvar_Find("fs_game");
+	if (!v)
+		v = Cvar_Get("fs_game", "", CVAR_READONLY, "The active game directory (read-only; change it with gamedir)");
+	Cvar_SetDirect(v, FS_GameDir());
+}
+
 void FS_AddGameDir(const char *gamedir)
 {
 	for (int i = 0; i < fs_numgamedirs; i++)
@@ -370,6 +382,7 @@ void FS_AddGameDir(const char *gamedir)
 	Str_Copy(fs_gamedirs[fs_numgamedirs++], gamedir, sizeof(fs_gamedirs[0]));
 	add_packs(fs_numgamedirs - 1);
 	fs_generation++;
+	update_fs_game();
 }
 
 /* rescans the packages of every game directory, for files added while running */
@@ -394,6 +407,7 @@ void FS_SetGameDirs(const char *const *dirs, int count)
 	fs_generation++;
 	for (int i = 0; i < count; i++)
 		FS_AddGameDir(dirs[i]);
+	update_fs_game();
 }
 
 const char *FS_GameDir(void) { return fs_numgamedirs ? fs_gamedirs[fs_numgamedirs - 1] : ""; }
@@ -570,6 +584,24 @@ const char *FS_WhichPath(const char *path)
 			return "(engine)";
 	}
 	return NULL;
+}
+
+/* the OS path of a loose file (not one in a package) where the search path
+ * finds it: the user directory first, then the game folders */
+bool FS_LooseOSPath(const char *path, char *out, size_t outsize)
+{
+	struct stat st;
+	if (!FS_SafeName(path))
+		return false;
+	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
+		if (user_path(i, path, out, outsize) && is_file(out))
+			return true;
+		if (os_path(i, path, out, outsize) && !stat(out, &st) && S_ISREG(st.st_mode))
+			return true;
+		if (os_path_lower(i, path, out, outsize) && !stat(out, &st) && S_ISREG(st.st_mode))
+			return true;
+	}
+	return false;
 }
 
 bool FS_FileExists(const char *path) { return FS_WhichPath(path) != NULL; }

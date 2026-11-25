@@ -320,11 +320,10 @@ static bool open_demo(const char *name)
 	tries[n] = NULL;
 	for (int i = 0; tries[i]; i++) {
 		char path[1024];
-		const char *where = FS_WhichPath(tries[i]);
-		/* demos are loose files: open them where the search path found them */
-		if (!where)
+		/* demos are loose files: open them where the search path found
+		 * them, which is the user directory (-userdir) for recorded ones */
+		if (!FS_LooseOSPath(tries[i], path, sizeof(path)))
 			continue;
-		snprintf(path, sizeof(path), "%s/%s/%s", FS_BaseDir(), where, tries[i]);
 		if ((demo.play = fopen(path, "rb"))) {
 			Str_Copy(rel, tries[i], sizeof(rel));
 			break;

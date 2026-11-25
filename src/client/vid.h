@@ -9,6 +9,8 @@ void VID_Shutdown(void);
 /* resizes the window to vid_width/vid_height/vid_fullscreen */
 void VID_ApplyMode(void);
 bool VID_Active(void);
+/* false while the window is in the background (focus elsewhere, or minimised) */
+bool VID_Focused(void);
 bool VID_PumpEvents(void);     /* false when the window was closed */
 void VID_GetSize(int *w, int *h);
 void VID_Swap(void);

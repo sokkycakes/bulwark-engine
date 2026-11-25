@@ -37,6 +37,28 @@ static void Quit_f(int argc, const char **argv) { quit_requested = true; }
  * replaces the game the command line asked for */
 static bool drop_menu_map;
 
+/* the menu module loads once the startup configs have run, as FTE starts
+ * menu.dat after quake.rc: a config's "set forceqmenu 1" then keeps it from
+ * loading at all, and the module's own start-up commands (Nuclide's profile
+ * cfg_load) come after autoexec.cfg instead of replacing what it set */
+static bool menu_startup_starts_game, menu_startup_done;
+static void MenuStartup_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	if (menu_startup_done)
+		return;
+	menu_startup_done = true;
+	/* when the command line starts a game, the menu loads once that game is
+	 * running, so its init sees clientstate() 2 and skips the background
+	 * map and intro it would otherwise queue in front of the game */
+	if (menu_startup_starts_game)
+		MQC_LoadWhenActive();
+	else if (MQC_VM())
+		MQC_Toggle(1); /* a config's menu_restart already loaded it */
+	else if (MQC_Load())
+		MQC_Toggle(1);
+}
+
 /* commands the game modules registered come before the engine's own */
 static bool GamePreHook(const char *line, int argc, const char **argv)
 {
@@ -71,7 +93,10 @@ static double host_last;
 static long host_maxframes = -1, host_frames;
 static bool host_headless, host_size_given, host_mode_applied, host_server_was_active;
 static int host_seen_spawncount;
-static cvar_t *host_fps_max, *host_cl_maxfps, *host_timescale_cvar, *host_framerate_cvar;
+static cvar_t *host_fps_max, *host_cl_maxfps, *host_timescale_cvar, *host_framerate_cvar, *host_idlefps, *host_speeds;
+/* host_speeds: summed milliseconds of each part of the frame, printed each second */
+static double speeds_sv, speeds_cl, speeds_gfx, speeds_snd, speeds_since;
+static int speeds_frames;
 
 static void Host_Shutdown(void);
 
@@ -88,6 +113,10 @@ static bool Host_Frame(void)
 		dt = 1.0 / 72;
 	} else {
 		float cap = host_fps_max->value > 0 ? host_fps_max->value : host_cl_maxfps->value;
+		/* in the background (alt-tabbed, minimised) frames cost the
+		 * machine and show nothing: cl_idlefps caps them, as FTE does */
+		if (!host_headless && host_idlefps->value > 0 && !VID_Focused() && (cap <= 0 || cap > host_idlefps->value))
+			cap = host_idlefps->value;
 		double mindt = cap > 0 ? 1.0 / BW_MAX(cap, 10) : 0.001;
 		now = Sys_Seconds();
 		dt = now - host_last;
@@ -145,10 +174,13 @@ static bool Host_Frame(void)
 	Worker_Frame();
 	Plug_Frame();
 	QC_URIFrame();
+	double t0 = host_speeds->ivalue ? Sys_Seconds() : 0;
 	SV_Frame(gdt);
+	double t1 = host_speeds->ivalue ? Sys_Seconds() : 0;
 	CL_Frame(gdt);
 	Lobby_Frame();
 	WC_Frame();
+	double t2 = host_speeds->ivalue ? Sys_Seconds() : 0;
 	R_BeginFrame();
 	{
 		int w, h;
@@ -159,7 +191,24 @@ static bool Host_Frame(void)
 	UI_Frame(dt);
 	UI_Draw();
 	R_EndFrame();
+	double t3 = host_speeds->ivalue ? Sys_Seconds() : 0;
 	S_Update(NULL, NULL, NULL, NULL);
+	if (host_speeds->ivalue) {
+		double t4 = Sys_Seconds();
+		speeds_sv += t1 - t0, speeds_cl += t2 - t1, speeds_gfx += t3 - t2, speeds_snd += t4 - t3;
+		if (!speeds_since)
+			speeds_since = t0;
+		if (++speeds_frames, t4 - speeds_since >= 1) {
+			double n = speeds_frames;
+			Con_Printf("host_speeds: %d fps, ms/frame %.2f tot %.2f server %.2f client %.2f gfx %.2f snd\n", speeds_frames,
+			           (t4 - speeds_since) * 1000 / n, speeds_sv * 1000 / n, speeds_cl * 1000 / n, speeds_gfx * 1000 / n,
+			           speeds_snd * 1000 / n);
+			speeds_sv = speeds_cl = speeds_gfx = speeds_snd = 0;
+			speeds_frames = 0;
+			speeds_since = t4;
+		}
+	} else
+		speeds_since = 0, speeds_frames = 0;
 	return !quit_requested;
 }
 
@@ -300,6 +349,9 @@ int main(int argc, char **argv)
 	Cmd_AddD("exit", Quit_f, "Quit the game");
 	cvar_t *fps_max = Cvar_Get("fps_max", "0", CVAR_ARCHIVE, "Frame rate cap, 0 for none");
 	cvar_t *cl_maxfps = Cvar_Get("cl_maxfps", "0", CVAR_ARCHIVE, "Frame rate cap (FTE's name), used when fps_max is 0");
+	host_speeds = Cvar_Get("host_speeds", "0", 0, "1 prints, each second, the average milliseconds a frame spends in the server, the client, drawing and sound");
+	Cvar_Get("gl_clear", "0", 0, "Accepted for FTE configs; Bulwark clears the frame before drawing anyway");
+	host_idlefps = Cvar_Get("cl_idlefps", "60", CVAR_ARCHIVE, "Frame rate cap while the window is in the background (alt-tabbed or minimised), 0 for none");
 	cvar_t *host_timescale = Cvar_Get("host_timescale", "1", CVAR_CHEAT, "Game speed multiplier for a local server");
 	cvar_t *host_framerate = Cvar_Get("host_framerate", "0", 0, "Fixed seconds per frame when above 0, for recording");
 	Cmd_Add("path", Path_f);
@@ -318,16 +370,12 @@ int main(int argc, char **argv)
 	}
 	drop_menu_map = starts_game;
 	WC_SetStartsGame(starts_game);
+	menu_startup_starts_game = starts_game;
+	Cmd_AddD("_menu_startup", MenuStartup_f, "Engine start-up step: loads the menu module once the startup configs have run");
+	Cbuf_AddText("_menu_startup\n");
 	if (cmds.data)
 		Cbuf_AddText(cmds.data);
 	SB_Free(&cmds);
-	/* when the command line starts a game, the menu loads once that game is
-	 * running, so its init sees clientstate() 2 and skips the background
-	 * map and intro it would otherwise queue in front of the game */
-	if (starts_game)
-		MQC_LoadWhenActive();
-	else if (MQC_Load())
-		MQC_Toggle(1);
 
 	host_last = Sys_Seconds();
 	host_maxframes = maxframes;

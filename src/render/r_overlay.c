@@ -41,13 +41,14 @@ static void draw_screen_tints(int w, int h)
 	}
 }
 
-static void draw_notify(int w, int h, float size)
+/* the notify lines at the top left; returns the y below them */
+static float draw_notify(int w, int h, float size)
 {
 	int shown = 0, max = BW_CLAMP(cl_screen.notifylines->ivalue, 0, 32);
 	float y = 4;
 	const char *lines[32];
 	if (!cl_screen.drawnotify->ivalue || Con_IsActive())
-		return;
+		return y;
 	/* the newest lines still within the notify time, drawn oldest first */
 	for (int back = 1; back < CON_LINES - 1 && shown < max; back++) {
 		const char *l = Con_Line(back);
@@ -60,9 +61,12 @@ static void draw_notify(int w, int h, float size)
 	}
 	for (int i = shown - 1; i >= 0; i--, y += size)
 		R_DrawString(4, y, lines[i], size, size, white, 1, 0, true);
+	return y;
 }
 
-static void draw_chat(int w, int h, float size)
+/* the messagemode prompt, under the notify lines in the console's font,
+ * where FTE puts it (Nuclide's own chat feed is drawn by its client game) */
+static void draw_chat(int w, float y, float size)
 {
 	char line[CON_INPUT + 32];
 	int mode = Con_ChatMode();
@@ -70,7 +74,11 @@ static void draw_chat(int w, int h, float size)
 		return;
 	snprintf(line, sizeof(line), "%s %s%s", mode == 2 ? "say_team:" : "say:", Con_ChatInput(),
 	         ((int)(cl.realtime * 3)) & 1 ? "_" : "");
-	R_DrawString(8, (float)h * 0.6f, line, size, size, white, 1, 0, false);
+	/* a long line keeps its end (the cursor) on screen */
+	const char *shown = line;
+	while (*shown && R_StringWidth(shown, size, size, false) > w - 8)
+		shown++;
+	R_DrawString(4, y, shown, size, size, white, 1, 0, false);
 }
 
 static void draw_centerprint(int w, int h, float size)
@@ -167,9 +175,14 @@ void R_DrawOverlays(int w, int h)
 		lastorigin_time = cl.realtime;
 	}
 	draw_screen_tints(w, h);
-	draw_notify(w, h, size);
 	draw_centerprint(w, h, size * 2);
-	draw_chat(w, h, size);
+	{
+		float consize;
+		int saved = R_UseConsoleFont(&consize);
+		float y = draw_notify(w, h, consize);
+		draw_chat(w, y, consize);
+		R_RestoreDrawFont(saved);
+	}
 	{
 		/* fps, position and netgraph in the console's own font */
 		float consize;

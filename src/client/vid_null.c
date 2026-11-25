@@ -4,6 +4,7 @@
 bool VID_Init(int width, int height, bool fullscreen) { return false; }
 void VID_Shutdown(void) {}
 bool VID_Active(void) { return false; }
+bool VID_Focused(void) { return true; }
 bool VID_PumpEvents(void) { return true; }
 void VID_GetSize(int *w, int *h) { *w = 640, *h = 480; }
 void VID_Swap(void) {}
