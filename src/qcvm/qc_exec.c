@@ -224,11 +224,7 @@ static int string_char(qcvm_t *vm, int32_t s, int64_t idx)
 
 static void string_setchar(qcvm_t *vm, int32_t s, int64_t idx, int ch)
 {
-	size_t len;
-	char *p = QC_StringBuffer(vm, s, &len);
-	if (!p || idx < 0 || (size_t)idx >= len)
-		QC_RunError(vm, "string index %lld out of range", (long long)idx);
-	p[idx] = (char)ch;
+	QC_StringSetChar(vm, s, idx, ch);
 }
 
 /* Float truth and equality by IEEE rules, whatever the FPU does with

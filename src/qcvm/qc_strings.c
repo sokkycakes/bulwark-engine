@@ -31,7 +31,11 @@ static uint32_t live, threshold = 8192;
 #define SLOT_MASK 0x7fffffffu
 #define MIN_SLOTS 4096u
 
-static uint32_t text_len(const char *text) { return ((const uint32_t *)(const void *)text)[-1]; }
+/* The top bit of the length word is set once QC stores a NUL into the
+ * text: the string then ends there for every reader, and the stored length
+ * only gives the room. */
+#define LEN_SHORTENED 0x80000000u
+static uint32_t text_len(const char *text) { return ((const uint32_t *)(const void *)text)[-1] & ~LEN_SHORTENED; }
 
 /* Most strings are short and live a few frames, so they come from free
  * lists of fixed-size blocks in one region instead of malloc and free each
@@ -76,7 +80,7 @@ static uint32_t *block_alloc(size_t bytes)
 
 static void block_free(uint32_t *block)
 {
-	int k = pool_class(sizeof(uint32_t) + block[0] + 1);
+	int k = pool_class(sizeof(uint32_t) + (block[0] & ~LEN_SHORTENED) + 1);
 	if (!pool || (uintptr_t)block - (uintptr_t)pool >= POOL_BYTES) {
 		Mem_Free(block);
 		return;
@@ -100,16 +104,41 @@ const char *QC_GetString(qcvm_t *vm, string_t s)
 	return strs[u];
 }
 
-/* the interpreter's string ==, with both lookups inline (QC can write a
- * NUL into a string, so the stored lengths cannot settle it) */
+/* the interpreter's string ==. Two engine strings of different lengths
+ * differ, unless QC stored a NUL into one of them. */
 bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b)
 {
 	const char *x, *y;
+	uint32_t ua = (uint32_t)a, ub = (uint32_t)b;
 	if (a == b)
 		return true;
+	if (ua & ub & QC_STRING_RUNTIME) {
+		ua &= SLOT_MASK;
+		ub &= SLOT_MASK;
+		x = ua && ua < nstrs ? strs[ua] : NULL;
+		y = ub && ub < nstrs ? strs[ub] : NULL;
+		if (x && y) {
+			uint32_t lx = ((const uint32_t *)(const void *)x)[-1], ly = ((const uint32_t *)(const void *)y)[-1];
+			if (!((lx | ly) & LEN_SHORTENED))
+				return lx == ly && !memcmp(x, y, lx);
+		}
+	}
 	x = QC_GetString(vm, a);
 	y = QC_GetString(vm, b);
 	return x[0] == y[0] && !strcmp(x, y);
+}
+
+void QC_StringSetChar(qcvm_t *vm, string_t s, int64_t idx, int ch)
+{
+	size_t len;
+	char *p = QC_StringBuffer(vm, s, &len);
+	uint32_t u = (uint32_t)s;
+	if (!p || idx < 0 || (uint64_t)idx >= len)
+		QC_RunError(vm, "string index %lld out of range", (long long)idx);
+	p[idx] = (char)ch;
+	if (!(char)ch && (u & QC_STRING_RUNTIME))
+		((uint32_t *)(void *)p)[-1] |= LEN_SHORTENED;
+	qc_string_writes++;
 }
 
 char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len)
@@ -163,6 +192,9 @@ string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len)
 	}
 	block = block_alloc(sizeof(uint32_t) + len + 1);
 	block[0] = (uint32_t)len;
+	/* binary text with a NUL in it ends early, as one stored from QC does */
+	if (memchr(s, 0, len))
+		block[0] |= LEN_SHORTENED;
 	strs[slot] = (char *)(block + 1);
 	memcpy(strs[slot], s, len);
 	strs[slot][len] = 0;
@@ -215,8 +247,7 @@ static void mark_vm(qcvm_t *vm)
 			mark_words((const qcval_t *)(vm->mem + vm->heap_ofs + ofs + 16), (size - 16) / 4);
 		ofs += size;
 	}
-	for (int i = 0; i < vm->extra->tokens.count; i++)
-		mark_value((uint32_t)vm->extra->tokens.argv[i]);
+	QC_MarkTokens(vm, mark_value);
 	QC_MarkHashTables(vm, mark_value);
 }
 

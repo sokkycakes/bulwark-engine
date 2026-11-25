@@ -903,22 +903,61 @@ static void bi_sprintf(qcvm_t *vm)
 
 /* --- tokenize -------------------------------------------------------- */
 
-static void tokens_reset(qcvm_t *vm)
+uint32_t qc_string_writes;
+
+/* a character store may have changed a cached split's source or the
+ * strings argv() made from it, so the cache starts over */
+static void tokens_check_writes(qc_tokens_t *tk)
 {
-	vm->extra->tokens.count = 0;
-	vm->extra->tokens.buflen = 0;
-	vm->extra->tokens.src_valid = false;
+	if (tk->writes == qc_string_writes)
+		return;
+	tk->writes = qc_string_writes;
+	for (int k = 0; k < QC_TOKEN_SETS; k++) {
+		qc_tokset_t *t = &tk->sets[k];
+		t->key = 0;
+		t->src_valid = false;
+		for (int i = 0; i < t->count; i++)
+			t->argv[i] = 0;
+	}
 }
 
-static void token_add(qcvm_t *vm, const char *src, const char *s, size_t n, const char *start, const char *end)
+/* the least recently used split, emptied, as the one argv() reads */
+static qc_tokset_t *tokens_take(qcvm_t *vm)
 {
-	qc_tokens_t *t = &vm->extra->tokens;
+	qc_tokens_t *tk = &vm->extra->tokens;
+	qc_tokset_t *t = &tk->sets[0];
+	tokens_check_writes(tk);
+	for (int k = 1; k < QC_TOKEN_SETS; k++)
+		if (tk->sets[k].used < t->used)
+			t = &tk->sets[k];
+	t->count = 0;
+	t->buflen = 0;
+	t->key = 0;
+	t->src_valid = false;
+	t->used = ++tk->clock;
+	tk->cur = t;
+	return t;
+}
+
+static void token_add(qc_tokset_t *t, const char *src, const char *s, size_t n, const char *start, const char *end)
+{
 	if (t->count >= QC_MAX_TOKENS)
 		return;
+	if (t->count >= t->cap) {
+		int cap = t->cap ? t->cap * 2 : 64;
+		if (cap > QC_MAX_TOKENS)
+			cap = QC_MAX_TOKENS;
+		t->argv = Mem_Realloc(t->argv, sizeof(*t->argv) * (size_t)cap);
+		t->start = Mem_Realloc(t->start, sizeof(int) * (size_t)cap);
+		t->end = Mem_Realloc(t->end, sizeof(int) * (size_t)cap);
+		t->text = Mem_Realloc(t->text, sizeof(int) * (size_t)cap);
+		t->len = Mem_Realloc(t->len, sizeof(int) * (size_t)cap);
+		t->cap = cap;
+	}
 	if (n > 0x3fffffff)
 		n = 0x3fffffff;
 	if (t->buflen + n + 1 > t->bufcap) {
-		size_t cap = t->bufcap ? t->bufcap : 4096;
+		size_t cap = t->bufcap ? t->bufcap : 1024;
 		while (cap < t->buflen + n + 1)
 			cap *= 2;
 		t->buf = Mem_Realloc(t->buf, cap);
@@ -935,12 +974,36 @@ static void token_add(qcvm_t *vm, const char *src, const char *s, size_t n, cons
 	t->count++;
 }
 
+void QC_FreeTokens(qcvm_t *vm)
+{
+	for (int k = 0; k < QC_TOKEN_SETS; k++) {
+		qc_tokset_t *t = &vm->extra->tokens.sets[k];
+		Mem_Free(t->argv);
+		Mem_Free(t->start);
+		Mem_Free(t->end);
+		Mem_Free(t->text);
+		Mem_Free(t->len);
+		Mem_Free(t->buf);
+		Mem_Free(t->src);
+	}
+}
+
+void QC_MarkTokens(qcvm_t *vm, void (*mark)(uint32_t value))
+{
+	for (int k = 0; k < QC_TOKEN_SETS; k++) {
+		const qc_tokset_t *t = &vm->extra->tokens.sets[k];
+		mark((uint32_t)t->key);
+		for (int i = 0; i < t->count; i++)
+			mark((uint32_t)t->argv[i]);
+	}
+}
+
 /* general purpose split: whitespace, double quotes group, single-character
  * tokens for braces and parentheses, // comments end the line */
 static void bi_tokenize(qcvm_t *vm)
 {
 	const char *src = QC_PSTR(vm, 0), *p = src;
-	tokens_reset(vm);
+	qc_tokset_t *t = tokens_take(vm);
 	for (;;) {
 		const char *start;
 		while (*p && (unsigned char)*p <= ' ')
@@ -954,7 +1017,7 @@ static void bi_tokenize(qcvm_t *vm)
 			size_t len = strlen(p);
 			char *buf = Mem_Alloc(len + 1);
 			size_t n = Str_ParseEscaped(&p, buf, len + 1);
-			token_add(vm, src, buf, n, start, p);
+			token_add(t, src, buf, n, start, p);
 			Mem_Free(buf);
 			continue;
 		}
@@ -962,21 +1025,21 @@ static void bi_tokenize(qcvm_t *vm)
 			const char *q = ++p;
 			while (*p && *p != '"')
 				p++;
-			token_add(vm, src, q, (size_t)(p - q), start, *p ? p + 1 : p);
+			token_add(t, src, q, (size_t)(p - q), start, *p ? p + 1 : p);
 			if (*p)
 				p++;
 			continue;
 		}
 		if (strchr("{}()", *p)) {
-			token_add(vm, src, p, 1, start, p + 1);
+			token_add(t, src, p, 1, start, p + 1);
 			p++;
 			continue;
 		}
 		while ((unsigned char)*p > ' ' && *p != '"' && !strchr("{}()", *p))
 			p++;
-		token_add(vm, src, start, (size_t)(p - start), start, p);
+		token_add(t, src, start, (size_t)(p - start), start, p);
 	}
-	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
+	QC_ReturnFloat(vm, (float)t->count);
 }
 
 /* console-style split: whitespace (newlines included) separates, double
@@ -986,18 +1049,29 @@ static void bi_tokenize(qcvm_t *vm)
  * console's own command tokenizer does. */
 static void bi_tokenize_console(qcvm_t *vm)
 {
-	const char *src = QC_PSTR(vm, 0), *p = src;
-	qc_tokens_t *t = &vm->extra->tokens;
-	size_t srclen = strlen(src);
-	if (t->src_valid && srclen == t->srclen && !memcmp(src, t->src, srclen)) {
-		/* the same text as last time splits the same way: only the
-		 * strings argv() made need making again, as they would be */
-		for (int i = 0; i < t->count; i++)
-			t->argv[i] = 0;
-		QC_ReturnFloat(vm, (float)t->count);
-		return;
+	string_t h = QC_Parm(vm, 0)->i;
+	const char *src = QC_GetString(vm, h), *p = src;
+	qc_tokens_t *tk = &vm->extra->tokens;
+	qc_tokset_t *t;
+	size_t srclen;
+	tokens_check_writes(tk);
+	/* the same text splits the same way */
+	if (h) {
+		for (int k = 0; k < QC_TOKEN_SETS; k++) {
+			t = &tk->sets[k];
+			if (t->key == h && t->src_valid)
+				goto found;
+		}
 	}
-	tokens_reset(vm);
+	srclen = strlen(src);
+	for (int k = 0; k < QC_TOKEN_SETS; k++) {
+		t = &tk->sets[k];
+		if (t->src_valid && t->srclen == srclen && !memcmp(src, t->src, srclen)) {
+			t->key = h;
+			goto found;
+		}
+	}
+	t = tokens_take(vm);
 	for (;;) {
 		const char *start;
 		while (*p && (unsigned char)*p <= ' ')
@@ -1014,14 +1088,14 @@ static void bi_tokenize_console(qcvm_t *vm)
 			const char *q = ++p;
 			while (*p && *p != '"')
 				p++;
-			token_add(vm, src, q, (size_t)(p - q), start, *p ? p + 1 : p);
+			token_add(t, src, q, (size_t)(p - q), start, *p ? p + 1 : p);
 			if (*p)
 				p++;
 			continue;
 		}
 		while ((unsigned char)*p > ' ')
 			p++;
-		token_add(vm, src, start, (size_t)(p - start), start, p);
+		token_add(t, src, start, (size_t)(p - start), start, p);
 	}
 	if (srclen + 1 > t->srccap) {
 		t->srccap = srclen + 1 > 256 ? srclen + 1 : 256;
@@ -1031,6 +1105,12 @@ static void bi_tokenize_console(qcvm_t *vm)
 	memcpy(t->src, src, srclen + 1);
 	t->srclen = srclen;
 	t->src_valid = true;
+	t->key = h;
+	QC_ReturnFloat(vm, (float)t->count);
+	return;
+found:
+	t->used = ++tk->clock;
+	tk->cur = t;
 	QC_ReturnFloat(vm, (float)t->count);
 }
 
@@ -1039,7 +1119,7 @@ static void bi_tokenizebyseparator(qcvm_t *vm)
 	const char *src = QC_PSTR(vm, 0), *p = src, *tokstart = src;
 	const char *seps[QC_MAX_EXTPARMS + MAX_PARMS];
 	int nseps = 0;
-	tokens_reset(vm);
+	qc_tokset_t *t = tokens_take(vm);
 	for (int i = 1; i < vm->argc && nseps < (int)BW_ARRAY_COUNT(seps); i++) {
 		const char *s = QC_PSTR(vm, i);
 		if (*s)
@@ -1057,30 +1137,38 @@ static void bi_tokenizebyseparator(qcvm_t *vm)
 				break;
 			}
 		if (hit >= 0) {
-			token_add(vm, src, tokstart, (size_t)(p - tokstart), tokstart, p);
+			token_add(t, src, tokstart, (size_t)(p - tokstart), tokstart, p);
 			p += strlen(seps[hit]);
 			tokstart = p;
 		} else {
 			p++;
 		}
 	}
-	token_add(vm, src, tokstart, (size_t)(p - tokstart), tokstart, p);
-	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
+	token_add(t, src, tokstart, (size_t)(p - tokstart), tokstart, p);
+	QC_ReturnFloat(vm, (float)t->count);
 }
 
-static int token_index(qcvm_t *vm)
+/* the split argv() reads, with the token its first parameter names in
+ * *index, or NULL */
+static qc_tokset_t *token_at(qcvm_t *vm, int *index)
 {
+	qc_tokset_t *t = vm->extra->tokens.cur;
 	int i = (int)QC_PFLOAT(vm, 0);
+	if (!t)
+		return NULL;
 	if (i < 0)
-		i += vm->extra->tokens.count;
-	return i;
+		i += t->count;
+	if (i < 0 || i >= t->count)
+		return NULL;
+	*index = i;
+	return t;
 }
 
 static void bi_argv(qcvm_t *vm)
 {
-	int i = token_index(vm);
-	qc_tokens_t *t = &vm->extra->tokens;
-	if (i < 0 || i >= t->count) {
+	int i;
+	qc_tokset_t *t = token_at(vm, &i);
+	if (!t) {
 		vm->globals[OFS_RETURN].i = 0;
 		return;
 	}
@@ -1091,16 +1179,16 @@ static void bi_argv(qcvm_t *vm)
 
 static void bi_argv_start_index(qcvm_t *vm)
 {
-	int i = token_index(vm);
-	qc_tokens_t *t = &vm->extra->tokens;
-	QC_ReturnFloat(vm, (i >= 0 && i < t->count) ? (float)t->start[i] : -1);
+	int i;
+	qc_tokset_t *t = token_at(vm, &i);
+	QC_ReturnFloat(vm, t ? (float)t->start[i] : -1);
 }
 
 static void bi_argv_end_index(qcvm_t *vm)
 {
-	int i = token_index(vm);
-	qc_tokens_t *t = &vm->extra->tokens;
-	QC_ReturnFloat(vm, (i >= 0 && i < t->count) ? (float)t->end[i] : -1);
+	int i;
+	qc_tokset_t *t = token_at(vm, &i);
+	QC_ReturnFloat(vm, t ? (float)t->end[i] : -1);
 }
 
 /* --- console, cvars, commands ---------------------------------------- */

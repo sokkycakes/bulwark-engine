@@ -34,24 +34,46 @@ static inline unsigned QC_PlainOp(unsigned op)
 }
 
 #define QC_MAX_TOKENS 1024
-/* The text of each token is kept in buf, and argv() makes it a string the
- * first time it is asked for: Nuclide tokenizes whole decl files while a
- * map loads, when no collection can run, and most tokens are never read. */
-typedef struct qc_tokens_s {
-	int count;
-	string_t argv[QC_MAX_TOKENS]; /* 0 until argv() asks for the token */
-	int start[QC_MAX_TOKENS];
-	int end[QC_MAX_TOKENS];
-	int text[QC_MAX_TOKENS]; /* offset of the token's text in buf */
-	int len[QC_MAX_TOKENS];
+/* One split of a string. The text of each token is kept in buf, and argv()
+ * makes it a string the first time it is asked for: Nuclide tokenizes whole
+ * decl files while a map loads, when no collection can run, and most tokens
+ * are never read. */
+typedef struct qc_tokset_s {
+	int count, cap;
+	string_t *argv; /* 0 until argv() asks for the token */
+	int *start, *end;
+	int *text; /* offset of the token's text in buf */
+	int *len;
 	char *buf;
 	size_t buflen, bufcap;
-	/* the text tokenize_console split last: Nuclide splits the same
-	 * spawn data again for every key it looks up */
+	/* what tokenize_console split, for finding it again: the string
+	 * handle (0 for none) and a copy of the text */
+	string_t key;
 	char *src;
 	size_t srclen, srccap;
 	bool src_valid;
+	uint32_t used; /* when it was last used, for replacing the oldest */
+} qc_tokset_t;
+
+/* Nuclide looks up entity keys by splitting the same few spawn data strings
+ * again and again, walking each class's inheritance chain, so the last
+ * splits are kept. A split found again keeps the strings argv() made for
+ * it: they are kept alive by the collector while the split is cached, and
+ * a string's text only changes through a character store, which empties
+ * the whole cache. */
+#ifdef BW_LOWMEM
+#define QC_TOKEN_SETS 16
+#else
+#define QC_TOKEN_SETS 32
+#endif
+typedef struct qc_tokens_s {
+	qc_tokset_t sets[QC_TOKEN_SETS];
+	qc_tokset_t *cur; /* what argv() reads; NULL before the first split */
+	uint32_t clock;
+	uint32_t writes; /* qc_string_writes when the cache was last checked */
 } qc_tokens_t;
+/* bumped by every character store into a string (str[i] = c in QC) */
+extern uint32_t qc_string_writes;
 
 #define QC_MAX_FILES 64
 #define QC_MAX_SEARCHES 32
@@ -102,6 +124,10 @@ void QC_HeapInit(qcvm_t *vm);
 bool QC_HeapBlockUsed(qcvm_t *vm, size_t ofs, size_t *size);
 const char *QC_ProgsString(qcvm_t *vm, int32_t ofs);
 void QC_MarkHashTables(qcvm_t *vm, void (*mark)(uint32_t value));
+void QC_MarkTokens(qcvm_t *vm, void (*mark)(uint32_t value));
+void QC_FreeTokens(qcvm_t *vm);
+/* str[idx] = ch from QC: the only way QC changes a string's text */
+void QC_StringSetChar(qcvm_t *vm, string_t s, int64_t idx, int ch);
 bool QC_AnyExecuting(void);
 BW_NORETURN void QC_AbortUnwind(qcvm_t *vm);
 bool QC_BuiltinImplemented(qcvm_t *vm, int fnum);
