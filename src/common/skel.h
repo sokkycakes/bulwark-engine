@@ -33,7 +33,14 @@ typedef struct skelmodel_s {
 	float *base;          /* numjoints x 10: translate, rotate (xyzw), scale */
 	bonemat_t *invbind;   /* inverse of the bind pose, absolute */
 	int numframes;
-	float *frames;        /* numframes x numjoints x 10, as base */
+	float *frames;        /* numframes x numjoints x 10, as base; NULL when
+	                         they are decoded from `studio` on demand */
+	/* low-memory builds keep a studio model's animation in its run-length
+	   coded form and decode the frames a pose needs: frame f of the whole
+	   model is frame f - seqfirst[s] of sequence s */
+	const struct studio_model_s *studio;
+	int *seqfirst;        /* numseqs + 1 entries */
+	int numseqs;
 	framegroup_t *anims;
 	int numanims;
 	struct skelmodel_s *next;

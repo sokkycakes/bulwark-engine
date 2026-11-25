@@ -602,10 +602,22 @@ typedef struct studiocache_s {
 	uint8_t *buf, *texbuf;
 	studio_model_t model;
 	bool ok;
+#ifdef BW_LOWMEM
+	/* textures whose pixels left memory once the renderer had them: each
+	   one's offset in its file, which is name or texname */
+	bool dropped;
+	size_t buflen;
+	int64_t *pixofs;
+	char texname[130];
+	uint8_t *pixbuf; /* that file again while they are back */
+#endif
 	struct studiocache_s *next;
 } studiocache_t;
 
 static studiocache_t *studiocache;
+#ifdef BW_LOWMEM
+static void drop_pixels(studiocache_t *c);
+#endif
 
 const studio_model_t *Studio_Cached(const char *name)
 {
@@ -627,6 +639,9 @@ const studio_model_t *Studio_Cached(const char *name)
 		return NULL;
 	}
 	c->ok = Studio_Parse(&c->model, c->buf, size, err, sizeof(err));
+#ifdef BW_LOWMEM
+	c->buflen = size;
+#endif
 	if (!c->ok) {
 		Con_DPrintf("%s: %s\n", name, err);
 		Studio_Free(&c->model);
@@ -647,9 +662,153 @@ const studio_model_t *Studio_Cached(const char *name)
 			Con_DPrintf("%s: %s\n", tname, err);
 			Mem_Free(c->texbuf), c->texbuf = NULL;
 		}
+#ifdef BW_LOWMEM
+		if (c->texbuf)
+			Str_Copy(c->texname, tname, sizeof(c->texname));
+#endif
 	}
+#ifdef BW_LOWMEM
+	/* the renderer reads them back when it uploads them */
+	drop_pixels(c);
+#endif
 	return &c->model;
 }
+
+#ifdef BW_LOWMEM
+static studiocache_t *find_cached(const char *name)
+{
+	for (studiocache_t *c = studiocache; c && name; c = c->next)
+		if (c->ok && !Str_ICmp(c->name, name))
+			return c;
+	return NULL;
+}
+
+/* moves every pointer the model keeps into [old, old + len) to the same
+ * place in nu, and keeps the bounds-checking limits within nulen. Only the
+ * addresses are compared; old is not read. */
+static const uint8_t *rebase(const uint8_t *p, uintptr_t old, size_t len, uint8_t *nu, size_t nulen)
+{
+	uintptr_t a = (uintptr_t)p;
+	if (!p || a < old || a > old + len)
+		return p;
+	return nu + BW_MIN((size_t)(a - old), nulen);
+}
+
+static void rebase_model(studio_model_t *m, uintptr_t old, size_t len, uint8_t *nu, size_t nulen)
+{
+	for (int i = 0; i < m->numseqs; i++) {
+		m->seqs[i].anim = rebase(m->seqs[i].anim, old, len, nu, nulen);
+		m->seqs[i].animlimit = rebase(m->seqs[i].animlimit, old, len, nu, nulen);
+	}
+	for (int i = 0; i < m->numbodyparts; i++)
+		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
+			studio_submodel_t *sm = &m->bodyparts[i].models[j];
+			sm->vertbone = rebase(sm->vertbone, old, len, nu, nulen);
+			sm->verts = rebase(sm->verts, old, len, nu, nulen);
+			sm->normbone = rebase(sm->normbone, old, len, nu, nulen);
+			sm->norms = rebase(sm->norms, old, len, nu, nulen);
+			for (int k = 0; k < sm->nummeshes; k++) {
+				sm->meshes[k].cmds = rebase(sm->meshes[k].cmds, old, len, nu, nulen);
+				sm->meshes[k].cmdslimit = rebase(sm->meshes[k].cmdslimit, old, len, nu, nulen);
+			}
+		}
+}
+
+/* where the model's own texture pixels start, if nothing else the model
+ * reads lies from there on (as in the files seen so far, where the
+ * textures end the file); 0 if the file cannot be cut there */
+static size_t pixels_start(const studiocache_t *c, size_t len)
+{
+	const studio_model_t *m = &c->model;
+	const uint8_t *b = c->buf;
+	size_t cut = len;
+	for (int i = 0; i < m->numtextures; i++) {
+		const uint8_t *p = m->textures[i].pixels;
+		if (p < b || p >= b + len)
+			return 0;
+		cut = BW_MIN(cut, (size_t)(p - b));
+	}
+	for (int i = 0; i < m->numseqs; i++) {
+		const studio_seq_t *s = &m->seqs[i];
+		if (s->anim && (s->anim < b || s->anim + 12 * (size_t)s->numblends * m->numbones > b + cut))
+			return 0;
+	}
+	for (int i = 0; i < m->numbodyparts; i++)
+		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
+			const studio_submodel_t *sm = &m->bodyparts[i].models[j];
+			if (sm->vertbone + sm->numverts > b + cut || sm->verts + (size_t)sm->numverts * 12 > b + cut ||
+			    sm->normbone + sm->numnorms > b + cut || sm->norms + (size_t)sm->numnorms * 12 > b + cut)
+				return 0;
+			for (int k = 0; k < sm->nummeshes; k++)
+				if (sm->meshes[k].cmds >= b + cut)
+					return 0;
+		}
+	return cut;
+}
+
+static void drop_pixels(studiocache_t *c)
+{
+	studio_model_t *m;
+	if (!c || !c->model.numtextures)
+		return;
+	m = &c->model;
+	if (c->dropped) {
+		/* they were only borrowed back */
+		Mem_Free(c->pixbuf), c->pixbuf = NULL;
+	} else {
+		const uint8_t *from = c->texbuf ? c->texbuf : c->buf;
+		size_t cut = 0, len = c->buflen;
+		if (!c->texbuf && !(cut = pixels_start(c, len)))
+			return;
+		c->pixofs = Mem_Alloc(sizeof(int64_t) * m->numtextures);
+		for (int i = 0; i < m->numtextures; i++)
+			c->pixofs[i] = m->textures[i].pixels - from;
+		if (c->texbuf) {
+			Mem_Free(c->texbuf), c->texbuf = NULL;
+		} else {
+			uintptr_t old = (uintptr_t)c->buf;
+			uint8_t *nu = Mem_Realloc(c->buf, cut);
+			rebase_model(m, old, len, nu, cut);
+			c->buf = nu;
+			c->buflen = cut;
+		}
+		c->dropped = true;
+	}
+	for (int i = 0; i < m->numtextures; i++)
+		m->textures[i].pixels = m->textures[i].palette = NULL;
+}
+
+void Studio_DropPixels(const char *name)
+{
+	drop_pixels(find_cached(name));
+}
+
+bool Studio_LoadPixels(const char *name)
+{
+	studiocache_t *c = find_cached(name);
+	size_t len = 0;
+	if (!c)
+		return false;
+	if (!c->dropped || c->pixbuf)
+		return true;
+	c->pixbuf = (uint8_t *)FS_LoadFile(c->texname[0] ? c->texname : c->name, &len);
+	if (!c->pixbuf)
+		return false;
+	for (int i = 0; i < c->model.numtextures; i++) {
+		studio_texture_t *t = &c->model.textures[i];
+		if (c->pixofs[i] < 0 || (uint64_t)c->pixofs[i] + (uint64_t)t->width * t->height + 768 > len) {
+			/* the file changed under us */
+			for (int k = 0; k < c->model.numtextures; k++)
+				c->model.textures[k].pixels = c->model.textures[k].palette = NULL;
+			Mem_Free(c->pixbuf), c->pixbuf = NULL;
+			return false;
+		}
+		t->pixels = c->pixbuf + c->pixofs[i];
+		t->palette = t->pixels + (size_t)t->width * t->height;
+	}
+	return true;
+}
+#endif
 
 float Studio_SeqDuration(const studio_model_t *m, int seq)
 {

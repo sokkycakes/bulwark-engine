@@ -42,6 +42,13 @@ typedef struct alias_s {
 	material_t **skins;
 	framegroup_t *groups;
 	int numgroups;
+#ifdef BW_LOWMEM
+	/* poses and normals as the file codes them, in place of poses and
+	   normals: position = qpos * scale + origin, normal = qnorm / 127 */
+	uint8_t *qpos;       /* numposes * numverts * 3 */
+	int8_t *qnorm;       /* numposes * numverts * 3 */
+	float *qxform;       /* numposes * 6: scale xyz, origin xyz */
+#endif
 } alias_t;
 
 static uint8_t palette[768];
@@ -135,6 +142,33 @@ static void compute_normals(alias_t *a, const int *tris)
 		}
 	}
 }
+
+#ifdef BW_LOWMEM
+/* swaps the float poses and normals of a loaded model for their coded
+ * form. Every position was a byte times its pose's scale plus its origin
+ * (xform, six floats a pose), so the byte comes back exactly and decodes
+ * to the same float. */
+static void alias_compact(alias_t *a, const float *xform)
+{
+	size_t n = (size_t)a->numposes * a->numverts;
+	a->qpos = Mem_Alloc(n * 3);
+	a->qnorm = Mem_Alloc(n * 3);
+	a->qxform = Mem_Alloc(sizeof(float) * 6 * a->numposes);
+	memcpy(a->qxform, xform, sizeof(float) * 6 * a->numposes);
+	for (int p = 0; p < a->numposes; p++) {
+		const float *x = xform + p * 6;
+		for (size_t i = (size_t)p * a->numverts * 3; i < (size_t)(p + 1) * a->numverts * 3; i++) {
+			int k = (int)(i % 3);
+			float q = x[k] != 0 ? (a->poses[i] - x[3 + k]) / x[k] : 0;
+			float nv = a->normals[i] * 127.0f;
+			a->qpos[i] = (uint8_t)BW_MAX(0, BW_MIN(255, (int)lrintf(q)));
+			a->qnorm[i] = (int8_t)BW_MAX(-127, BW_MIN(127, (int)lrintf(nv)));
+		}
+	}
+	Mem_Free(a->poses), a->poses = NULL;
+	Mem_Free(a->normals), a->normals = NULL;
+}
+#endif
 
 static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 {
@@ -290,6 +324,8 @@ static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 			a->numposes++;
 		}
 	}
+	/* the doubling above leaves room that is never used */
+	a->poses = Mem_Realloc(a->poses, sizeof(float) * 3 * numverts * BW_MAX(1, a->numposes));
 	a->normals = Mem_Alloc(sizeof(float) * 3 * numverts * a->numposes);
 	compute_normals(a, tris);
 	Mem_Free(onseam);
@@ -308,6 +344,17 @@ static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 			if (v > mod->maxs[k])
 				mod->maxs[k] = v;
 		}
+#ifdef BW_LOWMEM
+	{
+		/* one scale and origin for every pose */
+		float *xf = Mem_Alloc(sizeof(float) * 6 * a->numposes);
+		for (int i = 0; i < a->numposes; i++)
+			for (int k = 0; k < 3; k++)
+				xf[i * 6 + k] = scale[k], xf[i * 6 + 3 + k] = origin[k];
+		alias_compact(a, xf);
+		Mem_Free(xf);
+	}
+#endif
 	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
 	mod->alias = a;
 	mod->type = MOD_ALIAS;
@@ -447,6 +494,17 @@ static bool load_md2(rmodel_t *mod, const uint8_t *d, size_t size)
 			if (v > mod->maxs[k])
 				mod->maxs[k] = v;
 		}
+#ifdef BW_LOWMEM
+	{
+		/* each frame has its own scale and origin */
+		float *xf = Mem_Alloc(sizeof(float) * 6 * numframes);
+		for (int i = 0; i < numframes; i++)
+			for (int k = 0; k < 6; k++)
+				xf[i * 6 + k] = rdf(d + ofs_frames + (size_t)i * framesize + k * 4);
+		alias_compact(a, xf);
+		Mem_Free(xf);
+	}
+#endif
 	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
 	mod->alias = a;
 	mod->type = MOD_ALIAS;
@@ -479,7 +537,7 @@ typedef struct iqm_s {
 	/* skinning: up to four joints per vertex */
 	skelmodel_t *skel;
 	uint8_t (*blendidx)[4];
-	float (*blendw)[4];
+	float (*blendw)[4];   /* NULL: each vertex follows blendidx[0] alone */
 	/* studio models: numfamilies x numskinref materials, picked by .skin */
 	material_t **famskins;
 	int numfamilies, numskinref;
@@ -627,6 +685,12 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * q->numindexes), q->indices, GL_STATIC_DRAW);
 		R_SetupVertexAttribs();
 		qglBindVertexArray(0);
+#ifdef BW_LOWMEM
+		/* GL has its own copies; only skinning reads the vertices back */
+		Mem_Free(q->indices), q->indices = NULL;
+		if (!q->skel)
+			Mem_Free(q->verts), q->verts = NULL;
+#endif
 	}
 	mod->iqm = q;
 	mod->type = MOD_IQM;
@@ -679,6 +743,8 @@ static material_t *studio_skin(const char *model, const studio_texture_t *t)
 		if (studio_extsize(t, &ew, &eh) && R_ImageExists(ext))
 			return R_FindMaterial(ext, MATF_MODEL);
 	}
+	if (!t->pixels)
+		return R_FindMaterial(name, MATF_MODEL); /* could not be read back */
 	rgba = Mem_Alloc((size_t)t->width * t->height * 4);
 	for (int i = 0; i < t->width * t->height; i++) {
 		uint8_t c = t->pixels[i];
@@ -763,6 +829,9 @@ static bool load_studio(rmodel_t *mod)
 		else
 			memcpy(rest[j], rel, sizeof(bonemat_t));
 	}
+#ifdef BW_LOWMEM
+	Studio_LoadPixels(mod->name);
+#endif
 	/* skins: family x slot */
 	nskins = st->numskinref * BW_MAX(1, st->numskinfamilies);
 	q->numskinref = st->numskinref;
@@ -778,6 +847,9 @@ static bool load_studio(rmodel_t *mod)
 		}
 		Mem_Free(bytex);
 	}
+#ifdef BW_LOWMEM
+	Studio_DropPixels(mod->name); /* uploaded */
+#endif
 	for (int b = 0; b < st->numbodyparts; b++)
 	for (int s = 0; s < st->bodyparts[b].nummodels; s++) {
 		const studio_submodel_t *sm = &st->bodyparts[b].models[s];
@@ -826,6 +898,17 @@ static bool load_studio(rmodel_t *mod)
 	}
 	q->numverts = nv;
 	q->numindexes = ni;
+	/* the triangle count bounded the vertices; strips and fans share theirs */
+	q->verts = Mem_Realloc(q->verts, sizeof(rvert_t) * (nv + 1));
+	if (q->skel) {
+		q->blendidx = Mem_Realloc(q->blendidx, sizeof(*q->blendidx) * (nv + 1));
+#ifdef BW_LOWMEM
+		/* every studio vertex follows one bone with all its weight */
+		Mem_Free(q->blendw), q->blendw = NULL;
+#else
+		q->blendw = Mem_Realloc(q->blendw, sizeof(*q->blendw) * (nv + 1));
+#endif
+	}
 	{
 		/* face the triangles the way the IQM loader leaves its own: wound
 		 * with their vertex normals, GL's front. Counted, so one odd mesh
@@ -1210,6 +1293,11 @@ static void free_model(rmodel_t *m)
 		alias_t *a = m->alias;
 		Mem_Free(a->poses);
 		Mem_Free(a->normals);
+#ifdef BW_LOWMEM
+		Mem_Free(a->qpos);
+		Mem_Free(a->qnorm);
+		Mem_Free(a->qxform);
+#endif
 		Mem_Free(a->st);
 		Mem_Free(a->remap);
 		Mem_Free(a->indices);
@@ -1406,11 +1494,15 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 		const rvert_t *v = &q->verts[i];
 		rvert_t *o = &out[i];
 		bonemat_t mat;
-		const float *w = q->blendw[i];
 		const uint8_t *b = q->blendidx[i];
 		*o = *v;
-		for (int k = 0; k < 12; k++)
-			mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
+		if (q->blendw) {
+			const float *w = q->blendw[i];
+			for (int k = 0; k < 12; k++)
+				mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
+		} else {
+			memcpy(mat, skin[b[0]], sizeof(mat)); /* one bone, weight 1 */
+		}
 		Bone_Transform(mat, v->xyz, o->xyz);
 		for (int r = 0; r < 3; r++)
 			o->normal[r] = mat[r * 4] * v->normal[0] + mat[r * 4 + 1] * v->normal[1] + mat[r * 4 + 2] * v->normal[2];
@@ -1449,12 +1541,32 @@ static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
 	static int bufsize;
 	int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
 	float lerp = e->lerpfrac;
-	const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
-	const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
 	if (a->numoutverts > bufsize) {
 		bufsize = a->numoutverts;
 		buf = Mem_Realloc(buf, sizeof(rvert_t) * bufsize);
 	}
+#ifdef BW_LOWMEM
+	{
+		const uint8_t *qa = a->qpos + (size_t)p1 * a->numverts * 3, *qb = a->qpos + (size_t)p2 * a->numverts * 3;
+		const int8_t *na = a->qnorm + (size_t)p1 * a->numverts * 3, *nb = a->qnorm + (size_t)p2 * a->numverts * 3;
+		const float *xa = a->qxform + (size_t)p1 * 6, *xb = a->qxform + (size_t)p2 * 6;
+		for (int i = 0; i < a->numoutverts; i++) {
+			int v = a->remap[i];
+			rvert_t *o = &buf[i];
+			for (int k = 0; k < 3; k++) {
+				float pa = qa[v * 3 + k] * xa[k] + xa[3 + k], pb = qb[v * 3 + k] * xb[k] + xb[3 + k];
+				float fa = na[v * 3 + k] * (1.0f / 127), fb = nb[v * 3 + k] * (1.0f / 127);
+				o->xyz[k] = pa + (pb - pa) * lerp;
+				o->normal[k] = fa + (fb - fa) * lerp;
+			}
+			o->st[0] = a->st[i * 2];
+			o->st[1] = a->st[i * 2 + 1];
+			memset(o->color, 255, 4);
+		}
+	}
+#else
+	const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
+	const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
 	/* lerpfrac is how far towards frame2 the entity is */
 	for (int i = 0; i < a->numoutverts; i++) {
 		int v = a->remap[i];
@@ -1467,6 +1579,7 @@ static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
 		o->st[1] = a->st[i * 2 + 1];
 		memset(o->color, 255, 4);
 	}
+#endif
 	return buf;
 }
 
@@ -1842,7 +1955,12 @@ size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris)
 	*verts = *tris = 0;
 	if (m->alias) {
 		const alias_t *a = m->alias;
-		bytes += (size_t)a->numposes * (size_t)a->numverts * 6 * sizeof(float) + (size_t)a->numoutverts * (2 * sizeof(float) + sizeof(int)) +
+#ifdef BW_LOWMEM
+		bytes += (size_t)a->numposes * ((size_t)a->numverts * 6 + 6 * sizeof(float));
+#else
+		bytes += (size_t)a->numposes * (size_t)a->numverts * 6 * sizeof(float);
+#endif
+		bytes += (size_t)a->numoutverts * (2 * sizeof(float) + sizeof(int)) +
 		         (size_t)a->numtris * 3 * sizeof(uint16_t) + (size_t)a->numframes * sizeof(aliasframe_t);
 		*verts = a->numverts;
 		*tris = a->numtris;
