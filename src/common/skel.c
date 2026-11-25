@@ -409,15 +409,17 @@ skelmodel_t *Skel_LoadModel(const char *name)
 	{
 		/* a GoldSrc model is parsed and kept by the studio cache already,
 		   so its file need not be read a second time */
-		size_t l = strlen(name);
-		const studio_model_t *st = l > 4 && !Str_ICmp(name + l - 4, ".mdl") ? Studio_Cached(name) : NULL;
+		const studio_model_t *st = Studio_Peek(name);
 		if (st && st->version == 10 && from_studio(m, st))
 			goto loaded;
 	}
 	d = (uint8_t *)FS_LoadFile(name, &size);
-	ok = d && parse_iqm(m, d, size);
-	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
-		ok = from_studio(m, Studio_Cached(name));
+	if (d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10) {
+		/* only a GoldSrc model goes to the studio cache, which keeps d */
+		ok = from_studio(m, Studio_CacheBuffer(name, d, size));
+		d = NULL;
+	} else
+		ok = d && parse_iqm(m, d, size);
 	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] != 10) {
 		/* a format a plugin turns into an IQM (Source .mdl) */
 		size_t qlen;

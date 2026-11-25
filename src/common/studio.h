@@ -140,6 +140,11 @@ void Studio_Free(studio_model_t *m);
  * by name; NULL if the file is missing or isn't an IDST v10 model. Failures
  * are remembered too, so asking again is cheap. */
 const studio_model_t *Studio_Cached(const char *name);
+/* the cached model if name is cached already and parsed; never reads */
+const studio_model_t *Studio_Peek(const char *name);
+/* Studio_Cached with the file already read: buf (from FS_LoadFile) now
+ * belongs to the cache, which frees it if name was cached before */
+const studio_model_t *Studio_CacheBuffer(const char *name, uint8_t *buf, size_t size);
 #ifdef BW_LOWMEM
 /* the pixels of a cached model's textures are only read to upload them,
  * so low-memory builds cut them off the cached file (the textures' sizes,
