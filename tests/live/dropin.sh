@@ -47,7 +47,8 @@ CLIENTPID=$!
 sleep 10
 curl -s "http://127.0.0.1:$((PORT + 1))/" > "$OUT/status.json" || true
 sleep ${LIVE_TAIL:-25}
-kill $CLIENTPID $HOSTPID $LIVEPID 2>/dev/null || true
+# headless clients don't stop on SIGTERM
+kill -9 $CLIENTPID $HOSTPID $LIVEPID 2>/dev/null || true
 wait 2>/dev/null || true
 
 status=0

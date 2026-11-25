@@ -29,19 +29,22 @@ PORT=${LIVE_PORT:-27960}
 "$LIVE" --bind 127.0.0.1:$PORT --http 127.0.0.1:$((PORT + 1)) > "$OUT/live.log" 2>&1 &
 LIVEPID=$!
 sleep 0.5
-# the host queues first, so it waited longest and hosts
+# the host queues first, so it waited longest and hosts; live_hostcmd keeps
+# its map (the duel playlist's mode names duel_alley)
 "$BUILD/bulwark-ded" -basedir "$OUT" -game game +set name host +set live_punch ${LIVE_PUNCH:-1} +set live_game stiletto \
+	+set live_hostcmd "echo hosting" +set live_match_delay 0 \
 	+set live_onconnect "live_queue duel 5" +live_connect 127.0.0.1:$PORT +maxplayers 4 +map botmap \
 	> "$OUT/host.log" 2>&1 &
 HOSTPID=$!
 sleep 2
 "$BUILD/bulwark" -headless -basedir "$OUT/client" -game game +set name guest +set live_punch ${LIVE_PUNCH:-1} +set live_game stiletto \
-	+set live_onconnect "live_queue duel 6" +live_connect 127.0.0.1:$PORT \
+	+set live_match_delay 0 +set live_onconnect "live_queue duel 6" +live_connect 127.0.0.1:$PORT \
 	> "$OUT/client.log" 2>&1 &
 CLIENTPID=$!
 sleep ${LIVE_WAIT:-15}
 curl -s "http://127.0.0.1:$((PORT + 1))/" > "$OUT/status.json" || true
-kill $CLIENTPID $HOSTPID $LIVEPID 2>/dev/null || true
+# headless clients don't stop on SIGTERM
+kill -9 $CLIENTPID $HOSTPID $LIVEPID 2>/dev/null || true
 wait 2>/dev/null || true
 
 status=0

@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef enum { ROUTE_NONE, ROUTE_TITLE, ROUTE_LOBBY, ROUTE_PAUSE, ROUTE_ARENA, ROUTE_CUSTOM } route_t;
+typedef enum { ROUTE_NONE, ROUTE_TITLE, ROUTE_LOBBY, ROUTE_PAUSE, ROUTE_ARENA, ROUTE_ONLINE, ROUTE_CUSTOM } route_t;
 
 static cvar_t *webcore_menu_url, *webcore_menumap, *webcore_menu_enabled, *webcore_pause_url, *webcore_menu_music;
 static cvar_t *forceqmenu;
@@ -40,6 +40,7 @@ static struct {
 	char url[512];
 	char selector[16]; /* menu_webcore arena <selector> */
 	bool title_pending;
+	char page_pending[512]; /* WC_OpenPage: shown instead of the title once idle */
 	int prevstate;
 	bool backdrop;    /* we started the title's background map */
 	int music_track;  /* -1 menu_boot, then 1, 2, ... */
@@ -179,7 +180,7 @@ static void music_next(void)
 static void music_frame(void)
 {
 	bool want = wc.plugin && webcore_menu_music->ivalue && !in_game() &&
-	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || EM_Active() || idle());
+	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE || EM_Active() || idle());
 	if (want && !S_MusicPlaying()) {
 		wc.music_on = true;
 		music_next();
@@ -254,6 +255,9 @@ static void open_arena(const char *selector)
 	static const char *const fallbacks[][2] = {
 	    {"team", "showTeamSelectionMenu"}, {"class", "showClassSelectionMenu"}, {"hero", "showHeroSelectionMenu"}};
 	const char *fallback = "showClassSelectionMenu";
+	/* a Live set seats its players and picks heroes in its own view */
+	if (SF_SetGame())
+		return;
 	for (size_t i = 0; i < BW_ARRAY_COUNT(fallbacks); i++)
 		if (!Str_ICmp(selector, fallbacks[i][0]))
 			fallback = fallbacks[i][1];
@@ -274,6 +278,8 @@ static void MenuWebcore_f(int argc, const char **argv)
 		open_title();
 	} else if (!Str_ICmp(a, "lobby")) {
 		open_menu("fte://data/web/lobby-menu/index.html", ROUTE_LOBBY);
+	} else if (!Str_ICmp(a, "online")) {
+		open_menu("fte://data/web/online/index.html", ROUTE_ONLINE);
 	} else if (!Str_ICmp(a, "pause")) {
 		open_menu(webcore_pause_url->string, ROUTE_PAUSE);
 	} else if (!Str_ICmp(a, "arena")) {
@@ -281,6 +287,13 @@ static void MenuWebcore_f(int argc, const char **argv)
 	} else if (!open_menu(a, ROUTE_CUSTOM)) {
 		Con_Printf("menu_webcore: can't open %s\n", a);
 	}
+}
+
+/* a page shown out of a game instead of the title (the online hub after a
+ * set): now if nothing is being played, else once the game is left */
+void WC_OpenPage(const char *url)
+{
+	Str_Copy(wc.page_pending, url, sizeof(wc.page_pending));
 }
 
 static void MenuWebcoreTitle_f(int argc, const char **argv) { open_title(); }
@@ -334,6 +347,7 @@ void WC_SetStartsGame(bool starts) { wc.starts_game = starts; }
 void WC_Frame(void)
 {
 	wc.frames++;
+	SF_Frame();
 	if (wc.menu && !UI_IsOpen(wc.menu)) {
 		wc.menu = 0; /* closed with ui_close */
 		wc.route = ROUTE_NONE;
@@ -351,8 +365,20 @@ void WC_Frame(void)
 	}
 	wc.prevstate = cl.state;
 	/* a real game took over: title and lobby pages give way */
-	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY))
+	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE))
 		close_menu();
+	/* the set view seats players and picks heroes: no arena menu over it */
+	if (wc.route == ROUTE_ARENA && SF_SetGame())
+		close_menu();
+	if (wc.page_pending[0] && cl.state == ca_disconnected && !CL_DemoPlaying() && menus_enabled()) {
+		char url[512];
+		Str_Copy(url, wc.page_pending, sizeof(url));
+		wc.page_pending[0] = 0;
+		if (open_menu(url, ROUTE_ONLINE)) {
+			wc.title_pending = false;
+			Con_SetActive(false);
+		}
+	}
 	/* the lobby ended without a game: back to the title */
 	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && idle())
 		open_title();
@@ -532,7 +558,7 @@ const qc_builtin_t cl_webcore_builtins[] = {
 static const char *const cbuf_allowed[] = {
 	"menu_options", "quit", "lobby_create_lan", "lobby_create_online", "menu_webcore_lobby", "menu_lobby_create",
 	"menu_webcore_title", "menu_webcore", "webcore_closemenu", "menu_hostmenu", "menu_changeteam", "menu_callvote",
-	"lobby_close", "disconnect", "ready", "map_restart", "togglemenu", "menu_maps", "menu_newmulti", NULL};
+	"lobby_close", "disconnect", "menu_webcore online", "ready", "map_restart", "togglemenu", "menu_maps", "menu_newmulti", NULL};
 
 static void reply_ok(strbuf_t *out, bool ok, const char *error)
 {
@@ -749,7 +775,7 @@ static void query(int view, const char *req, strbuf_t *out)
 		q_arena_action(req + 13, out);
 	else if (!strncmp(req, "lobby_join:", 11))
 		q_lobby_join(req + 11, out);
-	else
+	else if (!SF_Query(req, out))
 		Lobby_Query(req, out); /* the lobby's requests; anything else replies "" */
 }
 
@@ -822,6 +848,7 @@ void WC_Init(void)
 	Cmd_AddD("menu_lobby_create", MenuLobbyCreate_f, "Create a LAN lobby and show it");
 	Cmd_AddD("webcore_closemenu", CloseMenu_f, "Close the HTML menu page");
 	Cmd_AddD("webcore_query", WebcoreQuery_f, "webcore_query \"<request>\": print the bridge's reply to a page request");
+	SF_Init();
 	UI_SetQueryHandler(query);
 	R_SetPicHook(pic_hook);
 	Plug_SetBuiltinHook(WC_PluginLoad);

@@ -1,0 +1,106 @@
+<!--
+	The online hub (docs/spec/setflow.md): search Bulwark Live for a casual
+	duel, make a private room, train while searching, and see your fighter
+	card. The engine comes back here after a set. Stiletto's look: the
+	title's red wash over #333, standard_07_57 and hooge_05_57.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/online.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/online.js" />
+	</scripts>
+
+	<Panel id="Root" class="root">
+		<Panel class="bg" hittest="false" />
+		<Panel class="bg-red" hittest="false" />
+		<Panel class="stage">
+			<Label class="head" text="ONLINE" hittest="false" />
+			<Label id="Conn" class="conn" text="" hittest="false" />
+
+			<Panel id="Menu" class="menu">
+				<Button id="Item0" class="item is-selected" onactivate="Online.Click(0)" onmouseover="Online.Hover(0)">
+					<Label class="item-name" text="Casual Duel" hittest="false" />
+					<Label class="item-desc" text="1v1  -  first to 2 games  -  rematch after" hittest="false" />
+				</Button>
+				<Button id="Item1" class="item is-off" onactivate="Online.Click(1)" onmouseover="Online.Hover(1)">
+					<Label class="item-name" text="2v2" hittest="false" />
+					<Label class="item-desc" text="Not ready yet" hittest="false" />
+				</Button>
+				<Button id="Item2" class="item" onactivate="Online.Click(2)" onmouseover="Online.Hover(2)">
+					<Label class="item-name" text="Private Room" hittest="false" />
+					<Label class="item-desc" text="Make a room and share its code with a friend" hittest="false" />
+				</Button>
+				<Button id="Item3" class="item" onactivate="Online.Click(3)" onmouseover="Online.Hover(3)">
+					<Label id="TrainName" class="item-name" text="Training" hittest="false" />
+					<Label id="TrainDesc" class="item-desc" text="Practise alone; keeps searching if you are" hittest="false" />
+				</Button>
+				<Button id="Item4" class="item" onactivate="Online.Click(4)" onmouseover="Online.Hover(4)">
+					<Label class="item-name" text="After a set" hittest="false" />
+					<Label id="AfterDesc" class="item-desc" text="" hittest="false" />
+				</Button>
+				<Button id="Item5" class="item" onactivate="Online.Click(5)" onmouseover="Online.Hover(5)">
+					<Label class="item-name" text="Back" hittest="false" />
+					<Label class="item-desc" text="" hittest="false" />
+				</Button>
+			</Panel>
+
+			<!-- your fighter card -->
+			<Panel id="Card" class="card" hittest="false">
+				<Label class="card-head" text="FIGHTER CARD" hittest="false" />
+				<Label id="CardName" class="card-name" text="" hittest="false" />
+				<Panel class="card-stats" hittest="false">
+					<Panel class="stat" hittest="false">
+						<Label id="CardDays" class="stat-num" text="-" hittest="false" />
+						<Label class="stat-label" text="active days" hittest="false" />
+					</Panel>
+					<Panel class="stat" hittest="false">
+						<Label id="CardSets" class="stat-num" text="-" hittest="false" />
+						<Label class="stat-label" text="sets" hittest="false" />
+					</Panel>
+					<Panel class="stat" hittest="false">
+						<Label id="CardWL" class="stat-num" text="-" hittest="false" />
+						<Label class="stat-label" text="won - lost" hittest="false" />
+					</Panel>
+					<Panel class="stat" hittest="false">
+						<Label id="CardDone" class="stat-num" text="-" hittest="false" />
+						<Label class="stat-label" text="sets finished" hittest="false" />
+					</Panel>
+				</Panel>
+				<Label class="card-sub" text="RECENT" hittest="false" />
+				<Panel id="CardForm" class="form" hittest="false" />
+				<Label class="card-sub" text="MOST PLAYED" hittest="false" />
+				<Label id="CardHeroes" class="card-heroes" text="" hittest="false" />
+				<Label id="CardQuits" class="card-quits" text="" hittest="false" />
+			</Panel>
+
+			<Label id="Notice" class="notice hidden" text="" hittest="false" />
+			<Label class="hint" text="Up / Down and Enter  -  Esc to go back" hittest="false" />
+		</Panel>
+
+		<!-- searching -->
+		<Panel id="Ribbon" class="ribbon hidden">
+			<Panel class="ribbon-dot" hittest="false" />
+			<Label id="RibbonText" class="ribbon-text" text="" hittest="false" />
+			<Button class="ribbon-btn" onactivate="Online.Train()">
+				<Label text="TRAIN (T)" hittest="false" />
+			</Button>
+			<Button class="ribbon-btn" onactivate="Online.Cancel()">
+				<Label text="CANCEL (ESC)" hittest="false" />
+			</Button>
+		</Panel>
+
+		<!-- opponent found -->
+		<Panel id="Found" class="found hidden" hittest="false">
+			<Panel class="found-dim" hittest="false" />
+			<Label class="found-title" text="OPPONENT FOUND" hittest="false" />
+			<Panel class="found-band" hittest="false">
+				<Panel id="FoundCard0" class="vs-card vs-left" hittest="false" />
+				<Label class="found-vs" text="VS" hittest="false" />
+				<Panel id="FoundCard1" class="vs-card vs-right" hittest="false" />
+			</Panel>
+			<Label id="FoundSub" class="found-sub" text="Connecting..." hittest="false" />
+		</Panel>
+	</Panel>
+</root>

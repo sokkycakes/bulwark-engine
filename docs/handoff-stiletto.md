@@ -103,6 +103,14 @@ the script as `location.search`.
   warnings are Stiletto content (unknown entity classes, missing
   SoundDefs, `sentences.txt`, `commandmenu.txt`).
 
+- **Online match flow** (docs/spec/setflow.md): Find Match on the title,
+  the online hub with the fighter card, search and train-while-searching,
+  the opponent card, blind hero select, first-to-2 sets with the loser's
+  counterpick, the rematch vote (runbacks), forfeits, and records on Bulwark
+  Live. `tests/live/setflow_ui.py` plays it with two windowed clients and
+  key presses only. Stiletto's side is set play in `rules/arena.qc` (nuclide
+  branch `claude/project-thread-mk4lnf`).
+
 ## Not finished
 
 1. **Online room codes work on the LAN only**, found by discovery; there is
@@ -111,9 +119,9 @@ the script as `location.search`.
 2. **Ragdolls and `brush_*`** are listed above.
 3. **Observed, not investigated:** in the two-client duel both players were
    named "player" although each cfg ran `seta name ...` first (possibly the
-   archived-cvar reset noted below), and the match end showed a dialog
-   ("Stiletto Swift / Proto / Tomboy Princess", OK) whose source and FTE
-   behaviour were not checked.
+   archived-cvar reset noted below). The dialog seen at the match end
+   ("Stiletto Swift / Proto / Tomboy Princess", OK) is Stiletto's message of
+   the day (duel's `motd.LoadDefault`); set play and training skip it.
 
 ## Known limitations, not fixed
 
