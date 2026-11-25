@@ -16,6 +16,7 @@
  *   press <handle> <action>               release <handle> <action>
  *   analog <handle> <action> <x> <y>      origins <action> <origin>...
  *   mode <action> <EInputSourceMode>      wait <frames>
+ *   sleep <milliseconds>
  * and it writes what the program did to MOCK_STEAM_LOG (init, manifest,
  * activate, layer, vibrate, led, binding_panel). MOCK_STEAM_RUNNING=0
  * pretends Steam isn't running.
@@ -28,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 
 #define EXPORT __attribute__((visibility("default")))
@@ -72,6 +74,14 @@ static int nctrls;
 static bool started, input_started;
 static long script_pos;
 static int script_wait; /* RunFrames left before the script goes on */
+static double script_until; /* or the time it goes on at */
+
+static double now_ms(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec * 1000.0 + t.tv_nsec / 1e6;
+}
 static int analog_mode[MAXN];
 static FILE *logf;
 
@@ -263,6 +273,9 @@ static void run_script(void)
 	FILE *f;
 	if (script_wait > 0 && --script_wait > 0)
 		return;
+	if (script_until > 0 && now_ms() < script_until)
+		return;
+	script_until = 0;
 	if (!p || !(f = fopen(p, "r")))
 		return;
 	fseek(f, script_pos, SEEK_SET);
@@ -273,6 +286,9 @@ static void run_script(void)
 		script_pos = ftell(f);
 		if (sscanf(line, "wait %d", &t) == 1) {
 			script_wait = t;
+			break;
+		} else if (sscanf(line, "sleep %d", &t) == 1) {
+			script_until = now_ms() + t;
 			break;
 		} else if (sscanf(line, "mode %63s %d", a, &c) == 2 && (t = find_action(a)) >= 0) {
 			analog_mode[t] = c;

@@ -369,6 +369,48 @@ static void set_env(const char *name, const char *value)
 #endif
 }
 
+static void unset_env(const char *name)
+{
+#ifdef _WIN32
+	SetEnvironmentVariableA(name, NULL);
+	_putenv_s(name, "");
+#else
+	unsetenv(name);
+#endif
+}
+
+/* the app id si_init named, taken back by si_shutdown so that a program this
+ * one starts afterwards (the launcher's game) sees the launch Steam made */
+static struct {
+	bool set;
+	char appid[64], gameid[64];
+	bool had_appid, had_gameid;
+} named;
+
+static void save_env(const char *name, char *out, size_t size, bool *had)
+{
+	const char *v = getenv(name);
+	*had = v != NULL;
+	snprintf(out, size, "%s", v ? v : "");
+}
+
+static void restore_env(const char *name, const char *value, bool had)
+{
+	if (had)
+		set_env(name, value);
+	else
+		unset_env(name);
+}
+
+static void restore_named_app(void)
+{
+	if (!named.set)
+		return;
+	restore_env("SteamAppId", named.appid, named.had_appid);
+	restore_env("SteamGameId", named.gameid, named.had_gameid);
+	named.set = false;
+}
+
 static bool file_exists(const char *path)
 {
 	FILE *f = fopen(path, "rb");
@@ -415,6 +457,9 @@ bool si_init(const si_config_t *cfg)
 	if (!appid && !file_exists("steam_appid.txt") && cfg && cfg->appid) {
 		char id[32];
 		snprintf(id, sizeof(id), "%u", cfg->appid);
+		save_env("SteamAppId", named.appid, sizeof(named.appid), &named.had_appid);
+		save_env("SteamGameId", named.gameid, sizeof(named.gameid), &named.had_gameid);
+		named.set = true;
 		set_env("SteamAppId", id);
 		set_env("SteamGameId", id);
 		appid = cfg->appid;
@@ -486,6 +531,7 @@ fail:
 		memcpy(st.status, status, sizeof(status));
 		st.log = log;
 	}
+	restore_named_app();
 	return false;
 }
 
@@ -500,6 +546,7 @@ void si_shutdown(void)
 	si_dlclose(st.lib);
 	memset(&st, 0, sizeof(st));
 	snprintf(st.status, sizeof(st.status), "off");
+	restore_named_app();
 }
 
 bool si_active(void) { return st.in != NULL; }

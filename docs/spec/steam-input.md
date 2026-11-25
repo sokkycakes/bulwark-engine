@@ -33,6 +33,13 @@ As a non-Steam game, Steam names no app, so Bulwark sets `SteamAppId` to
 While the game runs, Steam shows it as playing Spacewar. With
 `steam_input_appid 0`, only a real Steam launch or `steam_appid.txt` starts
 it.
+`si_shutdown` puts `SteamAppId` and `SteamGameId` back the way Steam left
+them, so a program started afterwards sees the real launch. The playtest
+launcher relies on this before it starts the game.
+
+The playtest launcher (nuclide `Tools/playtest-launcher`) builds copies of
+`steaminput.{c,h}` and `steaminput_origins.h`. Change them here and copy them
+across.
 
 ### Steam's virtual gamepad
 
