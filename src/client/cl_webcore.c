@@ -655,6 +655,72 @@ static bool arena_active(void)
 	return in_game() && v && strstr(v->string, "\"active\":true");
 }
 
+/* a JSON string of getclient (a member, or with key NULL an array
+ * element), escaped as q_gethud escapes */
+static void getclient_str(strbuf_t *out, const char *key, const char *s, bool comma)
+{
+	SB_AppendStr(out, comma ? "," : "");
+	if (key)
+		SB_Printf(out, "\"%s\":", key);
+	SB_AppendStr(out, "\"");
+	for (; s && *s; s++)
+		if (*s == '"' || *s == '\\')
+			SB_Printf(out, "\\%c", *s);
+		else if ((unsigned char)*s >= 0x20)
+			SB_Append(out, s, 1);
+	SB_AppendStr(out, "\"");
+}
+
+/* the client's own state for native menus (the pause page, the hero
+ * picker): connection, the local player's hero pick (userinfo *hero, set
+ * by the rules' Hero_TrySelectEx), the rules in play (serverinfo mode, as
+ * hud.qc reads it), the vote under way (serverinfo vote_cmd, votes_y,
+ * votes_n, written by the server's vote.qc; vote_cmd is empty when none),
+ * and the local player's team (userinfo *team, 0 for none) with the names
+ * of the teams the rules set up (serverinfo team_1 ...): the team rules
+ * start everyone spectating, and a pad player joins through the picker */
+static void q_getclient(strbuf_t *out)
+{
+	char hero[64] = "", mode[64] = "", gametype[64] = "", vote[256] = "", yes[16] = "", no[16] = "", team[16] = "";
+	bool loaded = cl.state >= ca_loading;
+	if (loaded) {
+		CL_PlayerKey(cl.playerslot, "*hero", hero, sizeof(hero));
+		CL_PlayerKey(cl.playerslot, "*team", team, sizeof(team));
+		CL_ServerKey("mode", mode, sizeof(mode));
+		if (!CL_ServerKey("g_gametype", gametype, sizeof(gametype)) || !gametype[0])
+			Str_Copy(gametype, mode, sizeof(gametype));
+		CL_ServerKey("vote_cmd", vote, sizeof(vote));
+		CL_ServerKey("votes_y", yes, sizeof(yes));
+		CL_ServerKey("votes_n", no, sizeof(no));
+	}
+	SB_Printf(out, "{\"state\":%d,\"inGame\":%s", (int)cl.state, in_game() ? "true" : "false");
+	getclient_str(out, "hero", hero, true);
+	getclient_str(out, "mode", mode, true);
+	getclient_str(out, "gametype", gametype, true);
+	getclient_str(out, "vote", vote, true);
+	getclient_str(out, "votesY", yes, true);
+	getclient_str(out, "votesN", no, true);
+	/* the heroes the rules let this team play (Nuclide's serverinfo
+	 * teamclass_<n>, filled by Hero_RegisterRoster; empty in rules with
+	 * no roster), for team 1 while the player has none */
+	{
+		char key[24], roster[512] = "";
+		snprintf(key, sizeof(key), "teamclass_%d", atoi(team) > 0 ? atoi(team) : 1);
+		if (loaded)
+			CL_ServerKey(key, roster, sizeof(roster));
+		getclient_str(out, "roster", roster, true);
+	}
+	SB_Printf(out, ",\"team\":%d,\"teams\":[", atoi(team));
+	for (int i = 1; i <= 4 && loaded; i++) {
+		char key[16], name[64] = "";
+		snprintf(key, sizeof(key), "team_%d", i);
+		if (!CL_ServerKey(key, name, sizeof(name)) || !name[0])
+			break;
+		getclient_str(out, NULL, name, i > 1);
+	}
+	SB_AppendStr(out, "]}");
+}
+
 /* a word of the space-separated list */
 static bool word_in(const char *word, const char *list)
 {
@@ -745,6 +811,8 @@ static void query(int view, const char *req, strbuf_t *out)
 		q_gethud(out);
 	else if (!strcmp(req, "getarena"))
 		q_getarena(out);
+	else if (!strcmp(req, "getclient"))
+		q_getclient(out);
 	else if (!strncmp(req, "arena_action:", 13))
 		q_arena_action(req + 13, out);
 	else if (!strncmp(req, "lobby_join:", 11))
