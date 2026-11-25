@@ -241,11 +241,28 @@ static void start_backdrop(void)
 		Con_DPrintf("webcore: no title map %s\n", path);
 		return;
 	}
+	/* Queued behind whatever is in the command buffer, and checked again
+	 * when it runs: a start-up cfg still in a "wait" ("wait 1200; map lean")
+	 * would otherwise have its game replaced by the backdrop once the cfg
+	 * ran out. */
+	Cbuf_AddText("_webcore_backdrop\n");
+}
+
+static void WebcoreBackdrop_f(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+	const char *map = webcore_menumap->string;
+	if (!*map || wc.route != ROUTE_TITLE || sv.active || cl.state != ca_disconnected)
+		return; /* a game started, or the title closed, meanwhile */
 	wc.backdrop = true;
-	/* as Nuclide's own menu starts it (map_background) */
-	Cbuf_AddText(va("set g_gametype singleplayer\nset sv_playerslots 2\nset coop 1\nset deathmatch 0\n"
-	                "set sv_background 1\nmap %s\n",
-	                map));
+	/* as Nuclide's own menu starts it (map_background), less its two player
+	 * slots: those would carry over to a game started from the console
+	 * after the title (room for one bot); the slot count stays the
+	 * player's maxplayers */
+	Cbuf_InsertText(va("set g_gametype singleplayer\nset coop 1\nset deathmatch 0\n"
+	                   "set sv_background 1\nmap %s\n",
+	                   map));
 }
 
 static bool open_menu(const char *url, route_t route)
@@ -911,6 +928,7 @@ void WC_Init(void)
 	Cmd_AddD("menu_webcore_title", MenuWebcoreTitle_f, "Open the title page");
 	Cmd_AddD("menu_webcore_lobby", MenuWebcoreLobby_f, "Open the lobby page");
 	Cmd_AddD("menu_lobby_create", MenuLobbyCreate_f, "Create a LAN lobby and show it");
+	Cmd_AddD("_webcore_backdrop", WebcoreBackdrop_f, "Start the title backdrop map, if nothing else started meanwhile");
 	Cmd_AddD("webcore_closemenu", CloseMenu_f, "Close the HTML menu page");
 	Cmd_AddD("webcore_query", WebcoreQuery_f, "webcore_query \"<request>\": print the bridge's reply to a page request");
 	SF_Init();

@@ -547,6 +547,16 @@ nothing if a title or lobby page is already up. [INF]
 - The arena route closes on a level change (`cl.spawncount` changes, or the client
   leaves the game); an arena mode on the new level opens it again. Left open, it sat
   over the next mode and took its input. [SRC]
+- The backdrop runs `set g_gametype singleplayer`, `set coop 1`, `set deathmatch 0`,
+  `set sv_background 1`, then `map <webcore_menumap>`. It leaves the player-slot count
+  alone (Nuclide's own `map_background` also sets `sv_playerslots 2`): two slots would
+  carry over to a game typed at the console after the title, leaving room for one bot.
+  [SRC]
+- The backdrop is queued behind whatever is in the command buffer and checked again
+  when it runs: if a server is active or a connection is under way by then, or the
+  title page closed, it is skipped. A start-up cfg still in a `wait` before its own
+  `map` would otherwise have its game replaced by the backdrop once the cfg ran out.
+  [SRC]
 - The test harness disables it with `set webcore_menumap ""`. [SRC]
 - [UNCERTAIN] Whether the backdrop keeps running while the lobby page is shown.
   The lobby is "mapless" meaning no gameplay server or listen server. A purely local
