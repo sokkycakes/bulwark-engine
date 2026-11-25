@@ -787,17 +787,19 @@ void build_batches(View &v)
 PanoramaKey panorama_key(int key)
 {
 	switch (key) {
-	case K_LEFTARROW: return PanoramaKey::ArrowLeft;
-	case K_RIGHTARROW: return PanoramaKey::ArrowRight;
-	case K_UPARROW: return PanoramaKey::ArrowUp;
-	case K_DOWNARROW: return PanoramaKey::ArrowDown;
+	/* the controller maps as in key_name below, so the engine's own focus
+	 * handling (activating the focused control on Enter) works with A */
+	case K_LEFTARROW: case K_GP_DPAD_LEFT: return PanoramaKey::ArrowLeft;
+	case K_RIGHTARROW: case K_GP_DPAD_RIGHT: return PanoramaKey::ArrowRight;
+	case K_UPARROW: case K_GP_DPAD_UP: return PanoramaKey::ArrowUp;
+	case K_DOWNARROW: case K_GP_DPAD_DOWN: return PanoramaKey::ArrowDown;
 	case K_HOME: return PanoramaKey::Home;
 	case K_END: return PanoramaKey::End;
 	case K_BACKSPACE: return PanoramaKey::Backspace;
 	case K_DEL: return PanoramaKey::Delete;
-	case K_ENTER: case K_KP_ENTER: return PanoramaKey::Enter;
+	case K_ENTER: case K_KP_ENTER: case K_GP_A: return PanoramaKey::Enter;
 	case K_TAB: return PanoramaKey::Tab;
-	case K_ESCAPE: return PanoramaKey::Escape;
+	case K_ESCAPE: case K_GP_B: return PanoramaKey::Escape;
 	default: return PanoramaKey::Unknown;
 	}
 }

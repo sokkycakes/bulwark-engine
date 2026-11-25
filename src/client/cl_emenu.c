@@ -592,9 +592,11 @@ static void move_cursor(page_t *p, int dir)
 static bool edit_key(page_t *p, item_t *it, int key, int unicode)
 {
 	size_t n = strlen(editbuf);
-	if (key == K_ENTER || key == K_KP_ENTER)
+	/* a controller can't type, but it must be able to leave the row:
+	 * A keeps the text like Enter, B or Start drops it like Escape */
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_A)
 		finish_edit(p, it);
-	else if (key == K_ESCAPE)
+	else if (key == K_ESCAPE || key == K_GP_B || key == K_GP_MENU)
 		editing = false;
 	else if (key == K_BACKSPACE) {
 		if (n)
@@ -616,7 +618,9 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	item_t *it = p->numitems ? &p->items[p->cursor] : NULL;
 	if (binding && it && it->type == IT_BIND) {
 		binding = false;
-		if (key != K_ESCAPE)
+		/* Escape, or Back/View on a controller, cancels; any other key or
+		 * button (B included, so it can be bound) becomes the binding */
+		if (key != K_ESCAPE && key != K_GP_VIEW)
 			Key_SetBinding(key, it->command);
 		return true;
 	}
@@ -894,7 +898,7 @@ static void pg_keys(page_t *p)
 		{"Quick load", "quickload"}};
 	for (size_t i = 0; i < BW_ARRAY_COUNT(binds); i++)
 		add_bind(p, binds[i][0], binds[i][1]);
-	Str_Copy(p->footer, "Enter, then press the key. Backspace clears", sizeof(p->footer));
+	Str_Copy(p->footer, "Enter, then the key. Esc/Back cancels, Backspace clears", sizeof(p->footer));
 }
 
 static void pg_video(page_t *p)
