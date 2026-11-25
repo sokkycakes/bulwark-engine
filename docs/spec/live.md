@@ -386,7 +386,12 @@ Cvars:
 - `live_punch` (1) tries direct paths. Set it to 0 to relay everything.
 - `live_port` is the local UDP port.
 - These are read-only:
-  - `live_state`: everything as JSON, for menus and QC. Besides the party,
+  - `live_state`: everything as JSON, for menus and QC. `configured` is
+    whether `live_server` names a server (none is deployed for Stiletto's
+    testers: the hub, Find Match and room codes then say "Online services
+    are not connected in this build" instead of waiting). A named server
+    that never answers sets `error` to "no answer from <server>" after 8 s.
+    Besides the party,
     queue and match it carries `guests`, `playlists` (the last
     `playlist_info`, or `[]`), and `error` with `error_seq`, which goes up
     by one with each `error` so a menu shows each one once. `cards` holds

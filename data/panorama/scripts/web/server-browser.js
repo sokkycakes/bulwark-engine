@@ -691,9 +691,24 @@ var Servers = ( function ()
 	}
 
 	var lastPoll = 0;
+	// opened on Internet without asking for it: when no master server answers
+	// (none is deployed for this build, or there's no internet), show the LAN
+	var autoSource = false, fellBack = false, openedAt = Date.now();
+	function fallBack()
+	{
+		if ( !autoSource || fellBack || SOURCES[ source ] !== "internet" || !data || data.masters_answered )
+			return;
+		if ( data.masters && data.refreshing && Date.now() - openedAt < 4000 )
+			return;
+		fellBack = true;
+		setSource( SOURCES.indexOf( "lan" ), false );
+		notice( "No master server answered: showing your network (online services are not connected)", 10 );
+	}
+
 	function poll( now )
 	{
 		data = json( q( "sb_list" ), data );
+		fallBack();
 		rebuild();
 		render();
 		lastPoll = Date.now();
@@ -838,9 +853,17 @@ var Servers = ( function ()
 	makeRows();
 	var startSource = SOURCES.indexOf( params.tab || params.show || "" );
 	source = startSource < 0 ? 0 : startSource;
+	autoSource = startSource < 0;
 	if ( SOURCES[ source ] === "history" ) sort = SORT_PLAYED;
 	refresh( true );
-	if ( params.failed )
+	if ( params.failed && /password/i.test( params.reason || "" ) )
+	{
+		// a server that wants a password asks for it, then joins with it
+		autoSource = false;
+		openDialog( "password", { addr: params.failed, name: params.failed } );
+		notice( "Couldn't join " + params.failed + ": " + friendlyReason( params.reason ), 8 );
+	}
+	else if ( params.failed )
 		notice( "Couldn't join " + params.failed + ": " + friendlyReason( params.reason ), 8 );
 	tick();
 

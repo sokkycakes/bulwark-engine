@@ -1094,6 +1094,19 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 	for (int i = 0; !c && i < svs.maxclients; i++)
 		if (svs.clients[i].state == CS_FREE)
 			c = &svs.clients[i];
+	/* a full server that a bot fills (a game's bot quota, such as Nuclide's
+	 * bot_minClients, or a lobby's "fill") makes room: a bot leaves and the
+	 * player takes its slot; the quota sees one player more and keeps the
+	 * total. sv_botsyield 0 turns this off. */
+	if (!c && Cvar_Value("sv_botsyield")) {
+		for (int i = svs.maxclients - 1; !c && i >= 0; i--) {
+			client_t *o = &svs.clients[i];
+			if (o->state != CS_FREE && o->bot && !o->link) {
+				SV_DropClient(o, "made room for a player");
+				c = o;
+			}
+		}
+	}
 	if (!c) {
 		NET_OutOfBandPrint(NS_SERVER, from, "reject server is full");
 		return;
@@ -2465,6 +2478,7 @@ void SV_InitClients(void)
 	sv_chatfilter = Cvar_Get("sv_chatfilter", "0", 0, "Replace the words in filter.txt in players' chat");
 	sv_port = Cvar_Get("sv_port", "27500", 0, "UDP port for incoming connections");
 	hostname = Cvar_Get("hostname", "Bulwark server", CVAR_SERVERINFO, "Server name shown in browsers");
+	Cvar_Get("sv_botsyield", "1", 0, "1: a player joining a full server takes a bot's slot");
 	SV_InitPMove();
 	Cmd_Add("kick", SV_Kick_f);
 	Cmd_Add("clients", SV_Clients_f);

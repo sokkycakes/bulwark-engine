@@ -36,6 +36,15 @@ var LobbyMenu = (function ()
 
 	function action( name ) { return accepted( query( "lobby_action:" + name ) ); }
 
+	// the engine's reason when it refuses an action ({"ok":false,"error":...})
+	function actionError( name )
+	{
+		var reply = query( "lobby_action:" + name );
+		if ( accepted( reply ) )
+			return "";
+		try { return JSON.parse( reply ).error || "not allowed now"; } catch ( e ) { return "not allowed now"; }
+	}
+
 	function leave()
 	{
 		if ( !action( "close" ) )
@@ -53,6 +62,15 @@ var LobbyMenu = (function ()
 	}
 
 	// UTF-8 hex keeps user text out of console syntax (quotes, semicolons, newlines)
+	function encodeHex( text )
+	{
+		var bytes = unescape( encodeURIComponent( text ) );
+		var out = "";
+		for ( var i = 0; i < bytes.length; i++ )
+			out += ( "0" + bytes.charCodeAt( i ).toString( 16 ) ).slice( -2 );
+		return out;
+	}
+
 	function encodeChat( text )
 	{
 		var bytes = unescape( encodeURIComponent( text ) );
@@ -87,7 +105,8 @@ var LobbyMenu = (function ()
 		( Array.isArray( list ) ? list : [] ).forEach( function ( e )
 		{
 			if ( e && typeof e.id === "string" && e.id && /^[A-Za-z0-9_]+$/.test( e.id ) )
-				out.push( { id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id, available: e.available !== false } );
+				out.push( { id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id, available: e.available !== false,
+					seatbots: e.seatbots === true } );
 		} );
 		return out.length ? out : fallback;
 	}
@@ -124,6 +143,21 @@ var LobbyMenu = (function ()
 		s.canChat = !!data.canChat;
 		s.chat = Array.isArray( data.chat ) ? data.chat : [];
 		s.network = data.network || data.transport || "";
+		// hosting options: engines without them send no "hosting" (the page
+		// then offers the listen server only, as before)
+		s.hosting = data.hosting && typeof data.hosting === "object" ? data.hosting : null;
+		s.hostname = settings.hostname || "";
+		s.maxplayers = settings.maxplayers || s.max;
+		s.bots = settings.bots == null ? 0 : settings.bots;
+		// botsDefault: the rules' own bots (the Bots box is empty)
+		s.botsDefault = settings.botsDefault === true;
+		s.listed = !!settings[ "public" ];
+		s.locked = !!settings.password;
+		s.passwordText = settings.passwordText || "";
+		s.dedicated = s.serverType === "DEDICATED SERVER";
+		s.needPassword = !!data.needPassword;
+		s.joinTarget = data.joinTarget || "";
+		s.warning = data.warning || "";
 		s.mapList = choices( data.maps, FALLBACK_MAPS );
 		s.rulesetList = choices( data.rulesets, FALLBACK_RULESETS );
 		s.receivedAt = Date.now();
@@ -182,6 +216,8 @@ var LobbyMenu = (function ()
 	var lastChatId = 0;
 	var limitTime = "0";
 	var limitFrags = "0";
+	// the server settings dialog's draft
+	var srv = { dedicated: false, fill: false, listed: false };
 
 	function setText( panel, text )
 	{
@@ -217,7 +253,8 @@ var LobbyMenu = (function ()
 
 	function isEntry( panel )
 	{
-		return !!panel && ( panel.id === "ChatInput" || panel.id === "TimeLimit" || panel.id === "FragLimit" );
+		return !!panel && [ "ChatInput", "TimeLimit", "FragLimit", "HostName", "MaxPlayers", "ServerPassword", "BotCount",
+			"JoinPassword" ].indexOf( panel.id ) !== -1;
 	}
 
 	function focus( panel )
@@ -292,10 +329,26 @@ var LobbyMenu = (function ()
 	// --- dialogs ---
 	function OpenDialog( kind )
 	{
-		if ( kind !== "leave" && !snapshot.isHost )
+		if ( kind !== "leave" && kind !== "password" && !snapshot.isHost )
 			return;
 		caller = focused;
 		dialog = kind;
+		if ( kind === "server" )
+		{
+			var s = snapshot;
+			srv.dedicated = s.dedicated;
+			srv.fill = s.bots < 0;
+			srv.listed = s.listed;
+			$( "#HostName" ).text = s.hostname;
+			$( "#MaxPlayers" ).text = String( s.maxplayers );
+			$( "#ServerPassword" ).text = s.passwordText;
+			$( "#BotCount" ).text = s.botsDefault ? "" : String( s.bots < 0 ? 0 : s.bots );
+		}
+		if ( kind === "password" )
+		{
+			$( "#JoinPassword" ).text = "";
+			$( "#JoinPasswordMask" ).text = "";
+		}
 		if ( kind === "options" )
 		{
 			limitTime = String( snapshot.timelimit === "" ? 0 : snapshot.timelimit );
@@ -306,6 +359,8 @@ var LobbyMenu = (function ()
 		render();
 		if ( kind === "leave" )
 			focus( $( "#BtnCancelLeave" ) );
+		else if ( kind === "password" )
+			focus( $( "#JoinPassword" ) );
 		else
 		{
 			var list = controls();
@@ -413,7 +468,10 @@ var LobbyMenu = (function ()
 			ids.push( "BtnSettingsBack" );
 		}
 		else if ( dialog === "server" )
-			ids = [ "BtnListenServer", "BtnDedicatedServer", "BtnSettingsBack" ];
+			ids = [ "BtnListenServer", "BtnDedicatedServer", "HostName", "MaxPlayers", "ServerPassword", "BotCount",
+				"BtnBotFill", "BtnPublic", "BtnApplyServer", "BtnSettingsBack" ];
+		else if ( dialog === "password" )
+			ids = [ "JoinPassword", "BtnJoinPassword", "BtnPasswordLeave" ];
 		else if ( dialog === "options" )
 			ids = [ "BtnOptionsReady", "TimeLimit", "FragLimit", "BtnApplyLimits", "BtnSettingsBack" ];
 		else
@@ -451,7 +509,9 @@ var LobbyMenu = (function ()
 		var key = e.key;
 		if ( key === "Escape" )
 		{
-			if ( dialog )
+			if ( dialog === "password" )
+				Leave();
+			else if ( dialog )
 				CloseDialog( true );
 			else
 				OpenDialog( "leave" );
@@ -601,7 +661,12 @@ var LobbyMenu = (function ()
 		{
 			settings.SetHasClass( "kind-" + kind, dialog === kind );
 		} );
-		setText( $( "#SettingsTitle" ), { map: "Choose map", ruleset: "Choose ruleset", server: "Server type", options: "Lobby options" }[ dialog ] || "" );
+		setText( $( "#SettingsTitle" ), { map: "Choose map", ruleset: "Choose ruleset", server: "Server settings", options: "Lobby options" }[ dialog ] || "" );
+		renderServer( s );
+		$( "#PasswordPrompt" ).SetHasClass( "is-open", dialog === "password" );
+		setText( $( "#PasswordText" ), ( s.joinTarget || "This lobby" ) + " needs a password." +
+			( s.error && !/needs a password/i.test( s.error ) ? " (" + s.error + ")" : "" ) );
+		setEnabled( $( "#BtnJoinPassword" ), $( "#JoinPassword" ).text !== "" );
 		for ( var i = 0; i < MAPS.length; i++ )
 		{
 			var b = $( "#" + choiceId( "map", MAPS[ i ].id ) );
@@ -635,7 +700,15 @@ var LobbyMenu = (function ()
 		var guestLocked = s.active && !s.isHost;
 
 		// losing host authority closes any settings dialog
-		if ( !s.isHost && dialog && dialog !== "leave" )
+		if ( !s.isHost && dialog && dialog !== "leave" && dialog !== "password" )
+			dialog = "";
+		// the host asked this guest for a password
+		if ( s.needPassword && dialog !== "password" && dialog !== "leave" )
+		{
+			OpenDialog( "password" );
+			return;
+		}
+		if ( !s.needPassword && dialog === "password" )
 			dialog = "";
 
 		// a new session starts with an empty draft
@@ -651,6 +724,7 @@ var LobbyMenu = (function ()
 		setText( $( "#LblSummaryLine0" ), s.ruleset ? rulesetTitle( s.ruleset ) : "Waiting for settings" );
 		setText( $( "#LblSummaryLine1" ), s.timelimit !== "" ? ( Number( s.timelimit ) ? s.timelimit + " minute time limit" : "No time limit" ) : "" );
 		setText( $( "#LblSummaryLine2" ), s.fraglimit !== "" ? ( Number( s.fraglimit ) ? s.fraglimit + " frag limit" : "No frag limit" ) : "" );
+		setText( $( "#LblSummaryLine3" ), s.active && s.hosting ? serverSummary( s ) : "" );
 		setText( $( "#ImgLevelImage" ), mapTitle( s.map ) );
 
 		// LobbyMenu
@@ -695,7 +769,7 @@ var LobbyMenu = (function ()
 		// footer and status
 		setEnabled( $( "#BtnLeaveLobby" ), s.canLeave );
 		var status = $( "#StatusLine" );
-		setText( status, s.error || connectionError || notice || ( s.phase === "JOINING" || s.phase === "CLOSING" ? s.status : "" ) );
+		setText( status, s.error || connectionError || notice || ( s.phase === "JOINING" || s.phase === "CLOSING" ? s.status : "" ) || s.warning );
 		status.SetHasClass( "error", !!s.error );
 
 		renderDialogs();
@@ -708,6 +782,130 @@ var LobbyMenu = (function ()
 			if ( s.active && ( !focused || !focused.IsValid() || !focused.enabled ) )
 				focus( $( s.isHost ? "#BtnLobbyOptions" : "#BtnStart" ) );
 		}
+	}
+
+	// --- server settings (the Server type row) ---
+	function serverSummary( s )
+	{
+		var bits = [ s.hostname || "Server", s.maxplayers + " players" ];
+		if ( s.bots < 0 ) bits.push( "bots fill" );
+		else if ( s.bots ) bits.push( s.bots + " bot" + ( s.bots > 1 ? "s" : "" ) );
+		if ( s.locked ) bits.push( "password" );
+		if ( s.listed ) bits.push( "public" );
+		return bits.join( " · " );
+	}
+
+	// rules that fill their own seats with bots (scripts/lobby.txt "seatbots")
+	function seatBots( s )
+	{
+		for ( var i = 0; i < s.rulesetList.length; i++ )
+			if ( s.rulesetList[ i ].id === s.ruleset )
+				return !!s.rulesetList[ i ].seatbots;
+		return false;
+	}
+
+	function canDedicated( s )
+	{
+		return !!s.hosting && Array.isArray( s.hosting.serverTypes ) && s.hosting.serverTypes.indexOf( "dedicated" ) !== -1;
+	}
+
+	function serverDraftError()
+	{
+		var max = $( "#MaxPlayers" ).text, bots = $( "#BotCount" ).text;
+		var seats = snapshot.hosting && snapshot.hosting.maxSeats || 16;
+		if ( !/^\d{1,2}$/.test( max ) || Number( max ) < 1 || Number( max ) > seats )
+			return "Max players is 1 to " + seats;
+		if ( Number( max ) < snapshot.players.length )
+			return "There are already " + snapshot.players.length + " players in the lobby";
+		if ( !srv.fill && bots !== "" && ( !/^\d{1,2}$/.test( bots ) || Number( bots ) > Number( max ) - snapshot.players.length ) )
+			return "Bots: 0 to " + Math.max( 0, Number( max ) - snapshot.players.length ) + " (free player slots), or Fill";
+		if ( /["\\;]/.test( $( "#HostName" ).text + $( "#ServerPassword" ).text ) )
+			return "Names and passwords can't have quotes, backslashes or semicolons";
+		return "";
+	}
+
+	function renderServer( s )
+	{
+		var on = s.canConfigure && !!s.hosting;
+		$( "#BtnListenServer" ).SetHasClass( "is-pressed", !srv.dedicated );
+		$( "#BtnDedicatedServer" ).SetHasClass( "is-pressed", srv.dedicated );
+		setEnabled( $( "#BtnListenServer" ), on );
+		setEnabled( $( "#BtnDedicatedServer" ), on && canDedicated( s ) );
+		[ "HostName", "MaxPlayers", "ServerPassword" ].forEach( function ( id ) { setEnabled( $( "#" + id ), on ); } );
+		setEnabled( $( "#BotCount" ), on && !srv.fill );
+		$( "#BtnBotFill" ).SetHasClass( "is-pressed", srv.fill );
+		setEnabled( $( "#BtnBotFill" ), on );
+		$( "#BtnPublic" ).SetHasClass( "is-pressed", srv.listed );
+		setText( $( "#PublicLabel" ), srv.listed ? "On" : "Off" );
+		setEnabled( $( "#BtnPublic" ), on );
+		setText( $( "#MaxPlayersUnit" ), "1 - " + ( s.hosting && s.hosting.maxSeats || 16 ) );
+		var err = dialog === "server" ? serverDraftError() : "";
+		var note = !s.hosting ? "A player hosts this match. Dedicated server hosting is not available in this lobby."
+			: err ? err
+			: srv.dedicated ? "Starts bulwark-ded on this computer and joins it. It keeps running after you leave (ded_stop stops it)."
+			: "Your game hosts the match: it ends when you leave.";
+		if ( !err && srv.listed )
+			note += " Public: listed on the master servers (sv_public 1).";
+		var nobots = dialog === "server" && !srv.fill && $( "#BotCount" ).text === "";
+		if ( !err && seatBots( s ) )
+			note += " " + rulesetTitle( s.ruleset ) + " seats its own bots" + ( nobots ? "." : " (0 turns them off, empty leaves them on)." );
+		else if ( !err && nobots )
+			note += " Bots: empty leaves them to the game (no bots of the lobby's own).";
+		else if ( !err && srv.fill )
+			note += " Bots fill every free player slot.";
+		setText( $( "#ServerNote" ), note );
+		$( "#ServerNote" ).SetHasClass( "error", !!err );
+		setEnabled( $( "#BtnApplyServer" ), on && !err );
+	}
+
+	function ServerChanged() { renderServer( snapshot ); }
+
+	function ApplyServer()
+	{
+		var err = serverDraftError();
+		if ( err )
+		{
+			notice = err;
+			render();
+			return;
+		}
+		var name = "setserver:" + ( srv.dedicated ? "dedicated" : "listen" ) + ":" + Number( $( "#MaxPlayers" ).text ) + ":" +
+			( srv.fill ? "fill" : $( "#BotCount" ).text === "" ? "" : Number( $( "#BotCount" ).text ) ) + ":" + ( srv.listed ? 1 : 0 ) + ":" +
+			encodeHex( $( "#HostName" ).text.trim() ) + ":" + encodeHex( $( "#ServerPassword" ).text );
+		var why = actionError( name );
+		if ( why )
+		{
+			notice = "Server settings: " + why;
+			render();
+			return;
+		}
+		notice = "Updating lobby…";
+		$.Schedule( 0.05, refresh );
+		CloseDialog( false );
+	}
+
+	// --- a guest's password ---
+	function PasswordChanged()
+	{
+		var text = $( "#JoinPassword" ).text;
+		setText( $( "#JoinPasswordMask" ), new Array( text.length + 1 ).join( "*" ) );
+		setEnabled( $( "#BtnJoinPassword" ), text !== "" );
+	}
+
+	function SubmitPassword()
+	{
+		var text = $( "#JoinPassword" ).text;
+		if ( !text )
+			return;
+		menuSound( "confirm" );
+		var why = actionError( "joinpass:" + encodeHex( text ) );
+		notice = why ? "Unable to join: " + why : "Joining…";
+		if ( !why )
+		{
+			dialog = "";
+			$.Schedule( 0.05, refresh );
+		}
+		render();
 	}
 
 	// --- chat ---
@@ -816,8 +1014,18 @@ var LobbyMenu = (function ()
 		bindControl( $( "#ChatInput" ), null );
 		bindControl( $( "#BtnSendChat" ), SendChat );
 		bindControl( $( "#BtnLeaveLobby" ), function () { OpenDialog( "leave" ); } );
-		bindControl( $( "#BtnListenServer" ), function () { CloseDialog( true ); } );
-		bindControl( $( "#BtnDedicatedServer" ), null );
+		bindControl( $( "#BtnListenServer" ), function () { srv.dedicated = false; menuSound( "navigate" ); renderServer( snapshot ); } );
+		bindControl( $( "#BtnDedicatedServer" ), function () { srv.dedicated = true; menuSound( "navigate" ); renderServer( snapshot ); } );
+		bindControl( $( "#HostName" ), null );
+		bindControl( $( "#MaxPlayers" ), null );
+		bindControl( $( "#ServerPassword" ), null );
+		bindControl( $( "#BotCount" ), null );
+		bindControl( $( "#BtnBotFill" ), function () { srv.fill = !srv.fill; menuSound( "navigate" ); renderServer( snapshot ); } );
+		bindControl( $( "#BtnPublic" ), function () { srv.listed = !srv.listed; menuSound( "navigate" ); renderServer( snapshot ); } );
+		bindControl( $( "#BtnApplyServer" ), ApplyServer );
+		bindControl( $( "#JoinPassword" ), null );
+		bindControl( $( "#BtnJoinPassword" ), SubmitPassword );
+		bindControl( $( "#BtnPasswordLeave" ), Leave );
 		bindControl( $( "#BtnOptionsReady" ), toggleReady );
 		bindControl( $( "#TimeLimit" ), null );
 		bindControl( $( "#FragLimit" ), null );
@@ -838,6 +1046,9 @@ var LobbyMenu = (function ()
 		SendChat: SendChat,
 		DraftChanged: DraftChanged,
 		LimitsChanged: LimitsChanged,
+		ServerChanged: ServerChanged,
+		PasswordChanged: PasswordChanged,
+		SubmitPassword: SubmitPassword,
 		State: function () { return { dialog: dialog, focused: focused ? focused.id : "", selected: selected, snapshot: snapshot }; }
 	};
 })();

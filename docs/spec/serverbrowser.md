@@ -77,7 +77,14 @@ Top to bottom, on the hub's look (#2a2a2a, red wash, Stiletto's fonts):
   History), Mode (All or a mode the list has), Empty / Full / Locked servers
   (Show or Hide).
 - Connect on a locked server asks for its password first (typed text shows
-  as `*`); a full or other-version server says so instead of trying.
+  as `*`); a full or other-version server says so instead of trying. A
+  server that turns a join away for its password (one joined by address, or
+  whose lock the list didn't know) brings the page back with the password
+  dialog open for that address.
+- Opened without a `tab`, the page starts on Internet; when no master server
+  answers (none is deployed for Stiletto's testers yet, or there is no
+  internet) it moves to LAN after the refresh, or after 4 s, and says why
+  ("online services are not connected"). Asking for a tab keeps it.
 
 Controls. The controller moves between four rows, top to bottom: toolbar,
 sort row, list, bottom band. Up from the first server goes to the sort row,

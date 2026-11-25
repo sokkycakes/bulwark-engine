@@ -95,6 +95,7 @@ static struct {
 	struct sockaddr_in pub;
 	bool connected;
 	double last_hello, last_welcome, hello_sent;
+	bool welcomed_once, noanswer_noted;
 	int rtt_ms;
 	char guests[MAX_GUESTS][64];
 	int nguests;
@@ -383,7 +384,8 @@ static void json_str(strbuf_t *sb, const char *s)
 static void update_state(void)
 {
 	strbuf_t sb = {0};
-	SB_Printf(&sb, "{\"connected\":%s,\"id\":%u,\"public\":", L.connected ? "true" : "false", L.id);
+	SB_Printf(&sb, "{\"connected\":%s,\"configured\":%s,\"id\":%u,\"public\":", L.connected ? "true" : "false",
+	          live_server && live_server->string[0] ? "true" : "false", L.id);
 	json_str(&sb, L.connected ? addr_str(&L.pub) : "");
 	SB_Printf(&sb, ",\"rtt\":%d,\"party\":", L.rtt_ms);
 	if (L.in_party) {
@@ -836,6 +838,7 @@ static void from_server(int type, rbuf_t *r)
 		L.id = id;
 		L.pub = pub;
 		L.connected = true;
+		L.welcomed_once = true;
 		L.last_welcome = now();
 		update_state();
 		if (first)
@@ -1176,6 +1179,14 @@ void Live_Frame(void)
 	double t = now();
 	if (L.have_server && t - L.last_hello >= 5.0)
 		send_hello();
+	/* never welcomed: tell the menus once, instead of "connecting..." for ever */
+	if (L.have_server && !L.connected && !L.welcomed_once && !L.noanswer_noted && t - L.last_welcome > 8.0) {
+		L.noanswer_noted = true;
+		snprintf(L.error, sizeof(L.error), "no answer from %s", live_server->string);
+		L.error_seq++;
+		Con_Printf("^3live: %s\n", L.error);
+		update_state();
+	}
 	if (L.connected && t - L.last_welcome > 20.0) {
 		Con_Printf("^3live: lost contact with the server; still trying\n");
 		L.connected = false;
@@ -1264,6 +1275,7 @@ size_t Live_GetLobby(void *buf, size_t bufsize, uint32_t *from)
 }
 
 bool Live_Connected(void) { return L.connected; }
+bool Live_Configured(void) { return live_server && live_server->string[0]; }
 uint32_t Live_MyId(void) { return L.connected ? L.id : 0; }
 const char *Live_PartyCode(void) { return L.in_party ? L.code : ""; }
 uint32_t Live_PartyLeader(void) { return L.in_party ? L.leader : 0; }
@@ -1304,6 +1316,7 @@ static void Connect_f(int argc, const char **argv)
 	memcpy(&L.server.sin_addr, a.ip, 4);
 	L.server.sin_port = htons(a.port);
 	L.have_server = true;
+	L.noanswer_noted = false;
 	if (!L.token)
 		L.token = load_token();
 	L.last_welcome = now();

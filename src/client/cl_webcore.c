@@ -438,7 +438,7 @@ void WC_Frame(void)
 		}
 	}
 	/* the lobby ended without a game: back to the title */
-	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && idle())
+	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && !Lobby_AskingPassword() && idle())
 		open_title();
 	if (wc.title_pending && !wc.menu && idle() && !Lobby_Active() && menus_enabled() && wc.startup_done) {
 		wc.title_pending = false;

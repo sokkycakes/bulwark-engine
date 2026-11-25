@@ -25,6 +25,8 @@ void Live_Frame(void);
 void Live_SetGameProbe(bool (*probe)(void));
 
 bool Live_Connected(void);
+/* a Bulwark Live server is named (live_server); none is deployed by default */
+bool Live_Configured(void);
 uint32_t Live_MyId(void);
 /* the party's room code, "" when not in a party */
 const char *Live_PartyCode(void);

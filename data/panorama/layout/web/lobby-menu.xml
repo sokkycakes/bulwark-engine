@@ -22,6 +22,7 @@
 					<Label id="LblSummaryLine0" class="summary-line" text="Waiting for settings" />
 					<Label id="LblSummaryLine1" class="summary-line" text="" />
 					<Label id="LblSummaryLine2" class="summary-line" text="" />
+					<Label id="LblSummaryLine3" class="summary-line" text="" />
 				</Panel>
 				<Label id="ImgLevelImage" class="map-title" text="Waiting…" />
 			</Panel>
@@ -98,14 +99,47 @@
 					<Label id="SettingsTitle" class="dialog-title" text="Lobby options" />
 					<Panel id="MapChoices" class="choice-list" />
 					<Panel id="RulesetChoices" class="choice-list" />
-					<Panel id="ServerChoices" class="choice-list">
-						<Button id="BtnListenServer" class="ui-button choice is-pressed" tabindex="-1">
-							<Label text="Listen server" />
+					<!-- the server the lobby starts: type, name, seats, password, bots, listing -->
+					<Panel id="ServerChoices" class="choice-list server-settings">
+						<Panel class="limit-row server-row">
+							<Label class="limit-label" text="Server type" />
+							<Button id="BtnListenServer" class="ui-button toggle is-pressed" tabindex="-1">
+								<Label text="Listen" />
+							</Button>
+							<Button id="BtnDedicatedServer" class="ui-button toggle" tabindex="-1">
+								<Label text="Dedicated" />
+							</Button>
+						</Panel>
+						<Panel class="limit-row server-row">
+							<Label class="limit-label" text="Server name" />
+							<TextEntry id="HostName" class="limit-input wide-input" tabindex="-1" maxchars="63" ontextentrychange="LobbyMenu.ServerChanged()" />
+						</Panel>
+						<Panel class="limit-row server-row">
+							<Label class="limit-label" text="Max players" />
+							<TextEntry id="MaxPlayers" class="limit-input" tabindex="-1" maxchars="2" ontextentrychange="LobbyMenu.ServerChanged()" />
+							<Label id="MaxPlayersUnit" class="limit-unit wide-unit" text="1 - 16" />
+						</Panel>
+						<Panel class="limit-row server-row">
+							<Label class="limit-label" text="Password" />
+							<TextEntry id="ServerPassword" class="limit-input wide-input" tabindex="-1" maxchars="63" ontextentrychange="LobbyMenu.ServerChanged()" />
+						</Panel>
+						<Panel class="limit-row server-row">
+							<Label class="limit-label" text="Bots" />
+							<TextEntry id="BotCount" class="limit-input" tabindex="-1" maxchars="2" ontextentrychange="LobbyMenu.ServerChanged()" />
+							<Button id="BtnBotFill" class="ui-button toggle after-input" tabindex="-1">
+								<Label text="Fill" />
+							</Button>
+						</Panel>
+						<Panel class="limit-row server-row">
+							<Label class="limit-label" text="Public listing" />
+							<Button id="BtnPublic" class="ui-button toggle" tabindex="-1">
+								<Label id="PublicLabel" text="Off" />
+							</Button>
+						</Panel>
+						<Label id="ServerNote" class="dialog-text server-note" text="" />
+						<Button id="BtnApplyServer" class="ui-button choice" tabindex="-1">
+							<Label text="Apply" />
 						</Button>
-						<Button id="BtnDedicatedServer" class="ui-button choice" tabindex="-1" enabled="false">
-							<Label text="Dedicated server" />
-						</Button>
-						<Label class="dialog-text" text="A player hosts this match. Dedicated server hosting is not available in this lobby." />
 					</Panel>
 					<Panel id="OptionsContent" class="options-content">
 						<Label id="SessionDetails" class="dialog-text" text="" />
@@ -129,6 +163,26 @@
 					</Panel>
 					<Button id="BtnSettingsBack" class="ui-button dialog-back" tabindex="-1">
 						<Label text="Back" />
+					</Button>
+				</Panel>
+			</Panel>
+
+			<!-- a guest the host asked for a password: type it and join again -->
+			<Panel id="PasswordPrompt" class="dialog-backdrop">
+				<Panel class="dialog-panel leave-dialog">
+					<Label class="dialog-title" text="Password" />
+					<Label id="PasswordText" class="dialog-text" text="This lobby needs a password." />
+					<Panel class="password-field">
+						<TextEntry id="JoinPassword" class="limit-input password-input" tabindex="-1" maxchars="63"
+							oninputsubmit="LobbyMenu.SubmitPassword()" ontextentrychange="LobbyMenu.PasswordChanged()" />
+						<!-- the typed text is hidden: stars show instead -->
+						<Label id="JoinPasswordMask" class="password-mask" text="" hittest="false" />
+					</Panel>
+					<Button id="BtnJoinPassword" class="ui-button choice" tabindex="-1">
+						<Label text="Join" />
+					</Button>
+					<Button id="BtnPasswordLeave" class="ui-button choice" tabindex="-1">
+						<Label text="Leave" />
 					</Button>
 				</Panel>
 			</Panel>
