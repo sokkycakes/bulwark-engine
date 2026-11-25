@@ -502,6 +502,13 @@
 	flow-children: down;
 	visibility: collapse;
 }
+/* the engine's map list can be long: scroll past about ten choices */
+.choice-list
+{
+	height: fit-children;
+	max-height: 640px;
+	overflow: squish scroll;
+}
 .kind-map #MapChoices,
 .kind-ruleset #RulesetChoices,
 .kind-server #ServerChoices,

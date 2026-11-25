@@ -65,14 +65,32 @@ var LobbyMenu = (function ()
 	}
 
 	// --- model.js ---
-	var MAPS = [
-		{ id: "envtest", name: "Env Test" }, { id: "lean", name: "Lean Test" },
-		{ id: "arch_testbed", name: "Arch Testbed" }, { id: "arch_crux_test", name: "Arch Crux Test" }
+	// The engine sends the game's lists in getlobby ("maps", "rulesets", from
+	// scripts/lobby.txt and the maps that are shipped); these are the page's
+	// own, used when it doesn't (kept in step with the HTML page's model.js)
+	var FALLBACK_MAPS = [
+		{ id: "duel_alley", name: "Duel Alley" }, { id: "arch_testbed", name: "Arch Testbed" },
+		{ id: "arch_crux_test", name: "Arch Crux Test" }, { id: "envtest", name: "Env Test" },
+		{ id: "lean", name: "Lean Test" }
 	];
-	var RULESETS = [
+	var FALLBACK_RULESETS = [
 		{ id: "DUEL", name: "Duel" }, { id: "DEATHMATCH", name: "Deathmatch" },
-		{ id: "TEAMDM", name: "Team Deathmatch" }, { id: "DOMINATION", name: "Domination" }
+		{ id: "TEAMDM", name: "Team Deathmatch" }, { id: "DOMINATION", name: "Domination" },
+		{ id: "FREEZETAG", name: "Freeze Tag" }, { id: "ARCHSTILETTO", name: "Archstiletto" }
 	];
+	var MAPS = FALLBACK_MAPS;
+	var RULESETS = FALLBACK_RULESETS;
+
+	function choices( list, fallback )
+	{
+		var out = [];
+		( Array.isArray( list ) ? list : [] ).forEach( function ( e )
+		{
+			if ( e && typeof e.id === "string" && e.id && /^[A-Za-z0-9_]+$/.test( e.id ) )
+				out.push( { id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id, available: e.available !== false } );
+		} );
+		return out.length ? out : fallback;
+	}
 
 	function normalize( data )
 	{
@@ -106,6 +124,8 @@ var LobbyMenu = (function ()
 		s.canChat = !!data.canChat;
 		s.chat = Array.isArray( data.chat ) ? data.chat : [];
 		s.network = data.network || data.transport || "";
+		s.mapList = choices( data.maps, FALLBACK_MAPS );
+		s.rulesetList = choices( data.rulesets, FALLBACK_RULESETS );
 		s.receivedAt = Date.now();
 		return s;
 	}
@@ -133,6 +153,14 @@ var LobbyMenu = (function ()
 			if ( MAPS[ i ].id === id )
 				return MAPS[ i ].name;
 		return id || "Waiting…";
+	}
+
+	function rulesetTitle( id )
+	{
+		for ( var i = 0; i < RULESETS.length; i++ )
+			if ( RULESETS[ i ].id === id )
+				return RULESETS[ i ].name;
+		return id;
 	}
 
 	// --- page state (main.jsx) ---
@@ -583,7 +611,7 @@ var LobbyMenu = (function ()
 		for ( var j = 0; j < RULESETS.length; j++ )
 		{
 			var r = $( "#" + choiceId( "ruleset", RULESETS[ j ].id ) );
-			setEnabled( r, s.canConfigure );
+			setEnabled( r, s.canConfigure && RULESETS[ j ].available !== false );
 			r.SetHasClass( "is-pressed", s.ruleset === RULESETS[ j ].id );
 		}
 		setText( $( "#SessionDetails" ), ( s.network || "Local" ) + " lobby · " + s.players.length + " / " + s.max + " players" );
@@ -617,8 +645,10 @@ var LobbyMenu = (function ()
 			$( "#ChatInput" ).text = "";
 		}
 
+		syncChoices( s );
+
 		// MapPreview
-		setText( $( "#LblSummaryLine0" ), s.ruleset || "Waiting for settings" );
+		setText( $( "#LblSummaryLine0" ), s.ruleset ? rulesetTitle( s.ruleset ) : "Waiting for settings" );
 		setText( $( "#LblSummaryLine1" ), s.timelimit !== "" ? ( Number( s.timelimit ) ? s.timelimit + " minute time limit" : "No time limit" ) : "" );
 		setText( $( "#LblSummaryLine2" ), s.fraglimit !== "" ? ( Number( s.fraglimit ) ? s.fraglimit + " frag limit" : "No frag limit" ) : "" );
 		setText( $( "#ImgLevelImage" ), mapTitle( s.map ) );
@@ -630,7 +660,7 @@ var LobbyMenu = (function ()
 		setEnabled( $( "#BtnChangeRuleset" ), s.canConfigure && !!s.uiVersion );
 		setEnabled( $( "#BtnChangeMap" ), s.canConfigure );
 		setEnabled( $( "#BtnServerType" ), !!( s.active && s.isHost ) );
-		setText( $( "#RulesetValue" ), s.ruleset || "—" );
+		setText( $( "#RulesetValue" ), s.ruleset ? rulesetTitle( s.ruleset ) : "—" );
 		setText( $( "#MapValue" ), mapTitle( s.map ) );
 		setText( $( "#ServerTypeValue" ), s.serverType );
 		var start = $( "#BtnStart" );
@@ -748,15 +778,31 @@ var LobbyMenu = (function ()
 		{
 			var b = $.CreatePanel( "Button", parent, choiceId( kind, item.id ), { class: "ui-button choice" } );
 			b.SetAttributeString( "tabindex", "-1" );
-			$.CreatePanel( "Label", b, "", { text: item.name } );
+			// a ruleset whose progs aren't shipped can't run: shown, but not offered
+			$.CreatePanel( "Label", b, "", { text: item.available === false ? item.name + " (not in this build)" : item.name } );
 			bindControl( b, function () { choose( ( kind === "map" ? "setmap:" : "setruleset:" ) + item.id ); } );
 		} );
 	}
 
-	function init()
+	// rebuilds the dialogs' buttons when the engine's lists change
+	var choicesKey = "";
+	function syncChoices( s )
 	{
+		var key = JSON.stringify( [ s.mapList, s.rulesetList ] );
+		if ( key === choicesKey )
+			return;
+		choicesKey = key;
+		MAPS = s.mapList;
+		RULESETS = s.rulesetList;
+		$( "#MapChoices" ).RemoveAndDeleteChildren();
+		$( "#RulesetChoices" ).RemoveAndDeleteChildren();
 		buildChoices( "map", MAPS, "MapChoices" );
 		buildChoices( "ruleset", RULESETS, "RulesetChoices" );
+	}
+
+	function init()
+	{
+		syncChoices( snapshot );
 		for ( var i = 0; i < ROWS.length; i++ )
 		{
 			( function ( index )

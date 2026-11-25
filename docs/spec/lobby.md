@@ -32,8 +32,8 @@ reference engine's was never documented.
 | `lobby_port` | 27501 | the host's UDP port |
 | `lobby_readytime` | 5 | countdown seconds once everyone is ready |
 | `lobby_maxplayers` | 16 | seats |
-| `lobby_defaultmap` | envtest | |
-| `lobby_defaultruleset` | DUEL | |
+| `lobby_defaultmap` | (empty) | when set, the map every new lobby picks; empty picks the ruleset's own map (below) |
+| `lobby_defaultruleset` | DUEL | the rules a new lobby picks, when they can run (below) |
 | `lobby_snapshot` | | the state as JSON (read-only); also written to `lobby_snapshot.json` in the working directory while `developer` is on |
 
 The legacy mirrors `lobby_room_code`, `lobby_host_name`, `lobby_state_str`,
@@ -41,6 +41,38 @@ The legacy mirrors `lobby_room_code`, `lobby_host_name`, `lobby_state_str`,
 `lobby_player4_name` (with a `[READY] ` prefix) are kept for menus written
 against them. MenuQC can add rulesets with `lobby_registermode(id, name,
 start_cmds)` and `lobby_addteam(...)`.
+
+## Maps and rulesets
+
+The game names what its host can pick in `scripts/lobby.txt`, one per line
+(`//` comments):
+
+```
+map <id> "<title>"
+ruleset <ID> "<title>" [<map the ruleset picks>]
+```
+
+- A listed map is offered only when `maps/<id>.bsp` (or `.scene`) is in the
+  game. With no file, or no listed map present, every `maps/*.bsp` is offered
+  under its own name.
+- With no `ruleset` lines the built-in rulesets are offered: DUEL "Duel",
+  DEATHMATCH "Deathmatch", TEAMDM "Team Deathmatch", DOMINATION
+  "Domination", FREEZETAG "Freeze Tag", ARCHSTILETTO "Archstiletto".
+  Rulesets MenuQC registers are added to either list.
+- A ruleset runs from `progs/<id in lower case>.dat` (Nuclide). When that
+  file isn't in the game the ruleset is still listed but can't be picked
+  (`available: false`; `lobby_set ruleset` and `setruleset:` refuse it), since
+  a Nuclide server without its rules progs spawns nobody. A game with none of
+  these progs (not Nuclide) runs every ruleset alike.
+- A new lobby picks `lobby_defaultruleset`, or the first listed ruleset that
+  can run when it can't, and then `lobby_defaultmap` when set, else that
+  ruleset's map, else the first listed map. Until the host picks a map,
+  switching ruleset also switches to the new ruleset's map (Duel picks
+  `duel_alley` in Stiletto).
+- The lists are read when a lobby is created (and again when the search path
+  changes), and `getlobby` carries them as `maps` (`[{id, name}]`) and
+  `rulesets` (`[{id, name, map, available}]`). The lobby page shows them and
+  falls back to its own lists when they are missing.
 
 ## Rules
 
