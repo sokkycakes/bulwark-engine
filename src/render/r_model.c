@@ -8,6 +8,9 @@
 #include "../common/studio.h"
 
 #include <math.h>
+#ifdef __SSE__
+#include <xmmintrin.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -522,6 +525,7 @@ typedef struct {
 	 * geomset a custom skin selects), -1 for meshes always drawn */
 	int geomgroup, geomvalue;
 	char name[64]; /* the surface a custom skin's "replace" names */
+	int firstvert, numverts; /* the vertices its triangles use; 0 verts: unknown */
 } iqmmesh_t;
 
 typedef struct iqm_s {
@@ -538,6 +542,11 @@ typedef struct iqm_s {
 	skelmodel_t *skel;
 	uint8_t (*blendidx)[4];
 	float (*blendw)[4];   /* NULL: each vertex follows blendidx[0] alone */
+	float (*rest)[8];     /* position, 0, unit normal, 0; verts holds the skinned ones */
+	void *restmem;        /* rest, before aligning it for SSE loads */
+	float *lastskin;      /* the skinning matrices verts were last skinned with */
+	int lastlo, lasthi;   /* and the vertices that were */
+	uint32_t lastshown;   /* and which meshes those were */
 	/* studio models: numfamilies x numskinref materials, picked by .skin */
 	material_t **famskins;
 	int numfamilies, numskinref;
@@ -626,7 +635,7 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	for (uint32_t m = 0; m < num_meshes; m++) {
 		const uint8_t *me = d + ofs_meshes + m * 24;
 		uint32_t mat = (uint32_t)rd32(me + 4), ft = (uint32_t)rd32(me + 16), nt = (uint32_t)rd32(me + 20);
-		uint32_t mname = (uint32_t)rd32(me);
+		uint32_t mname = (uint32_t)rd32(me), fv = (uint32_t)rd32(me + 8), nv = (uint32_t)rd32(me + 12);
 		const char *matname = mat < num_text ? text + mat : "";
 		char path[192];
 		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
@@ -645,6 +654,14 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 			nt = num_tris - ft;
 		q->meshes[m].firstindex = (int)ft * 3;
 		q->meshes[m].numindexes = (int)nt * 3;
+		/* a range that doesn't hold all its triangles' vertices is ignored */
+		if (fv < num_verts && nv <= num_verts - fv) {
+			bool inside = true;
+			for (uint32_t i = ft * 3; i < (ft + nt) * 3 && inside; i++)
+				inside = q->indices[i] >= fv && q->indices[i] < fv + nv;
+			if (inside)
+				q->meshes[m].firstvert = (int)fv, q->meshes[m].numverts = (int)nv;
+		}
 	}
 	finish_iqm(mod, q);
 	return true;
@@ -673,6 +690,26 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 		}
 	if (!num_verts)
 		memset(mod->mins, 0, sizeof(mod->mins)), memset(mod->maxs, 0, sizeof(mod->maxs));
+	if (q->skel) {
+		/* the rest pose apart, with unit normals: skinning then need not
+		 * renormalise what a rigid bone moves */
+		bool single = true;
+		q->restmem = Mem_Alloc(sizeof(*q->rest) * (num_verts + 1) + 16);
+		q->rest = (float(*)[8])(((uintptr_t)q->restmem + 15) & ~(uintptr_t)15);
+		for (int i = 0; i < num_verts; i++) {
+			float n[3];
+			VectorCopy(q->verts[i].normal, n);
+			if (VectorNormalize(n) == 0)
+				VectorCopy(q->verts[i].normal, n);
+			VectorCopy(q->verts[i].xyz, q->rest[i]);
+			VectorCopy(n, q->rest[i] + 4);
+			VectorCopy(n, q->verts[i].normal);
+			if (q->blendw)
+				single = single && q->blendw[i][0] == 1 && !q->blendw[i][1] && !q->blendw[i][2] && !q->blendw[i][3];
+		}
+		if (single)
+			Mem_Free(q->blendw), q->blendw = NULL; /* every vertex follows one bone */
+	}
 	if (R_Active() && num_verts) {
 		qglGenVertexArrays(1, &q->vao);
 		qglGenBuffers(1, &q->vbo);
@@ -797,7 +834,10 @@ static bool load_studio(rmodel_t *mod)
 	iqm_t *q;
 	bonemat_t *rest;
 	float *trs;
-	int maxverts = 0, nv = 0, ni = 0, nm = 0, nskins;
+	int maxverts = 0, nv = 0, ni = 0, nm = 0, nskins, hashsize = 1;
+	/* strip and fan corners repeat vertices: within a mesh, a vertex is
+	 * made once for each vertex, normal and texture coordinate it pairs */
+	struct weld { uint64_t key; int vert, mesh; } *weld;
 	if (!st)
 		return false;
 	for (int b = 0; b < st->numbodyparts; b++)
@@ -808,6 +848,9 @@ static bool load_studio(rmodel_t *mod)
 				nm++;
 			}
 		}
+	while (hashsize < maxverts * 2)
+		hashsize <<= 1;
+	weld = Mem_Alloc(sizeof(*weld) * hashsize);
 	q = Mem_Alloc(sizeof(*q));
 	q->skel = Skel_LoadModel(mod->name);
 	q->verts = Mem_Alloc(sizeof(rvert_t) * (maxverts + 1));
@@ -866,34 +909,49 @@ static bool load_studio(rmodel_t *mod)
 			Str_Copy(out->name, t ? t->name : "", sizeof(out->name));
 			out->material = slot >= 0 && slot < q->numskinref ? q->famskins[slot] : R_FindMaterial("$default", MATF_MODEL);
 			out->firstindex = ni;
+			out->firstvert = nv;
 			/* strips (n > 0) and fans (n < 0) of n vertices, until 0 */
 			for (;;) {
-				int n = (int16_t)(p[0] | p[1] << 8), first = nv, fan = n < 0;
+				int n = (int16_t)(p[0] | p[1] << 8), fan = n < 0;
+				uint32_t corner[3] = {0, 0, 0};
 				p += 2;
 				if (!n)
 					break;
 				n = abs(n);
 				for (int i = 0; i < n; i++, p += 8) {
-					uint8_t bone;
-					studio_vert(sm, rest, t, p, &q->verts[nv], &bone);
-					if (q->skel) {
-						q->blendidx[nv][0] = bone;
-						q->blendw[nv][0] = 1;
+					uint64_t key = (uint64_t)rd32(p) | (uint64_t)(uint32_t)rd32(p + 4) << 32;
+					uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 32) & (uint32_t)(hashsize - 1);
+					uint32_t v;
+					while (weld[h].mesh == q->nummeshes && weld[h].key != key)
+						h = (h + 1) & (uint32_t)(hashsize - 1);
+					if (weld[h].mesh == q->nummeshes) {
+						v = (uint32_t)weld[h].vert;
+					} else {
+						uint8_t bone;
+						studio_vert(sm, rest, t, p, &q->verts[nv], &bone);
+						if (q->skel) {
+							q->blendidx[nv][0] = bone;
+							q->blendw[nv][0] = 1;
+						}
+						weld[h].key = key, weld[h].vert = nv, weld[h].mesh = q->nummeshes;
+						v = (uint32_t)nv++;
 					}
-					nv++;
-				}
-				for (int i = 2; i < n; i++) {
-					uint32_t a, b2, c = (uint32_t)(first + i);
-					if (fan)
-						a = (uint32_t)first, b2 = (uint32_t)(first + i - 1);
-					else if (i & 1)
-						a = (uint32_t)(first + i - 1), b2 = (uint32_t)(first + i - 2);
-					else
-						a = (uint32_t)(first + i - 2), b2 = (uint32_t)(first + i - 1);
-					q->indices[ni++] = a, q->indices[ni++] = b2, q->indices[ni++] = c;
+					/* corner: the first vertex, the one two back and the one before */
+					if (i >= 2) {
+						if (fan)
+							q->indices[ni++] = corner[0], q->indices[ni++] = corner[2], q->indices[ni++] = v;
+						else if (i & 1)
+							q->indices[ni++] = corner[2], q->indices[ni++] = corner[1], q->indices[ni++] = v;
+						else
+							q->indices[ni++] = corner[1], q->indices[ni++] = corner[2], q->indices[ni++] = v;
+					}
+					if (i == 0)
+						corner[0] = v;
+					corner[1] = corner[2], corner[2] = v;
 				}
 			}
 			out->numindexes = ni - out->firstindex;
+			out->numverts = nv - out->firstvert;
 		}
 	}
 	q->numverts = nv;
@@ -931,11 +989,12 @@ static bool load_studio(rmodel_t *mod)
 				q->indices[i + 1] = q->indices[i + 2];
 				q->indices[i + 2] = tmp;
 			}
-		Con_DPrintf("%s: studio model, %d triangles, %d bones, %d sequences\n", mod->name, ni / 3, st->numbones,
-		            st->numseqs);
+		Con_DPrintf("%s: studio model, %d triangles, %d vertices, %d bones, %d sequences\n", mod->name, ni / 3, nv,
+		            st->numbones, st->numseqs);
 	}
 	Mem_Free(trs);
 	Mem_Free(rest);
+	Mem_Free(weld);
 	finish_iqm(mod, q);
 	return true;
 }
@@ -1320,6 +1379,8 @@ static void free_model(rmodel_t *m)
 			Mem_Free(q->anims);
 		Mem_Free(q->blendidx);
 		Mem_Free(q->blendw);
+		Mem_Free(q->restmem);
+		Mem_Free(q->lastskin);
 		Mem_Free(q->famskins);
 		Mem_Free(q);
 	}
@@ -1452,27 +1513,111 @@ float R_FrameDuration(rmodel_t *m, int frame)
 
 /* --- drawing ---------------------------------------------------------------- */
 
+/* whether mesh i of q draws for e: a studio body part shows one of its
+ * sub-models, the one a custom skin's geomset picks */
+static bool mesh_shown(const iqm_t *q, const rentity_t *e, int i)
+{
+	const iqmmesh_t *me = &q->meshes[i];
+	return me->numindexes && (me->geomgroup < 0 || R_SkinGeomset(e->customskin, me->geomgroup) == me->geomvalue);
+}
+
+/* a bone's skinning matrix by columns, for vertices that follow it alone:
+ * the three axes and the origin, then the axes over the bone's uniform
+ * scale, for normals that stay unit length; the fourth lanes are 0 */
+typedef struct {
+	float col[4][4];
+	float ncol[3][4];
+} skinbone_t;
+
+/* rest vertices lo..hi-1 of q moved by the bones into q->verts. Each
+ * vertex follows one bone (q->blendw is NULL) through sb when every bone is
+ * rigid; otherwise the bones' weighted matrices from skin move it and
+ * normals are renormalised. Both add up in the same order, so the SSE path
+ * gives the plain C one's results */
+static void skin_verts(iqm_t *q, const bonemat_t *skin, const skinbone_t *sb, int lo, int hi)
+{
+	const float(*rest)[8] = q->rest;
+	const uint8_t(*bi)[4] = q->blendidx;
+	const float(*bw)[4] = q->blendw;
+	rvert_t *out = q->verts;
+	if (sb && !bw) {
+		for (int i = lo; i < hi; i++) {
+			const skinbone_t *b = &sb[bi[i][0]];
+			const float *r = rest[i];
+			float *o = out[i].xyz, *on = out[i].normal;
+#ifdef __SSE__
+			__m128 p = _mm_load_ps(r), nv = _mm_load_ps(r + 4), v;
+			v = _mm_add_ps(_mm_mul_ps(_mm_load_ps(b->col[0]), _mm_shuffle_ps(p, p, 0x00)),
+			               _mm_mul_ps(_mm_load_ps(b->col[1]), _mm_shuffle_ps(p, p, 0x55)));
+			v = _mm_add_ps(v, _mm_mul_ps(_mm_load_ps(b->col[2]), _mm_shuffle_ps(p, p, 0xAA)));
+			v = _mm_add_ps(v, _mm_load_ps(b->col[3]));
+			_mm_storel_pi((__m64 *)o, v);
+			_mm_store_ss(o + 2, _mm_movehl_ps(v, v));
+			v = _mm_add_ps(_mm_mul_ps(_mm_load_ps(b->ncol[0]), _mm_shuffle_ps(nv, nv, 0x00)),
+			               _mm_mul_ps(_mm_load_ps(b->ncol[1]), _mm_shuffle_ps(nv, nv, 0x55)));
+			v = _mm_add_ps(v, _mm_mul_ps(_mm_load_ps(b->ncol[2]), _mm_shuffle_ps(nv, nv, 0xAA)));
+			_mm_storel_pi((__m64 *)on, v);
+			_mm_store_ss(on + 2, _mm_movehl_ps(v, v));
+#else
+			for (int k = 0; k < 3; k++) {
+				o[k] = b->col[0][k] * r[0] + b->col[1][k] * r[1] + b->col[2][k] * r[2] + b->col[3][k];
+				on[k] = b->ncol[0][k] * r[4] + b->ncol[1][k] * r[5] + b->ncol[2][k] * r[6];
+			}
+#endif
+		}
+		return;
+	}
+	for (int i = lo; i < hi; i++) {
+		const float *r = rest[i];
+		float *o = out[i].xyz, *on = out[i].normal, l;
+		float x = r[0], y = r[1], z = r[2], nx = r[4], ny = r[5], nz = r[6];
+		bonemat_t mat;
+		const float *m = mat;
+		const uint8_t *b = bi[i];
+		if (bw) {
+			/* the weighted sum of the bones' matrices */
+			const float *w = bw[i];
+			for (int k = 0; k < 12; k++)
+				mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
+		} else {
+			m = skin[b[0]];
+		}
+		o[0] = m[0] * x + m[1] * y + m[2] * z + m[3];
+		o[1] = m[4] * x + m[5] * y + m[6] * z + m[7];
+		o[2] = m[8] * x + m[9] * y + m[10] * z + m[11];
+		on[0] = m[0] * nx + m[1] * ny + m[2] * nz;
+		on[1] = m[4] * nx + m[5] * ny + m[6] * nz;
+		on[2] = m[8] * nx + m[9] * ny + m[10] * nz;
+		l = on[0] * on[0] + on[1] * on[1] + on[2] * on[2];
+		if (l > 0) {
+			l = 1 / sqrtf(l);
+			on[0] *= l, on[1] *= l, on[2] *= l;
+		}
+	}
+}
+
 /* poses a skeletal IQM for e and uploads the skinned vertices: the bones
  * come from the entity's skeleton object when it has one, otherwise from
- * its frame fields */
+ * its frame fields. Only the meshes e shows are skinned, and nothing is
+ * redone when the pose and meshes are the ones the vertices already hold. */
 static void skin_iqm(iqm_t *q, rentity_t *e)
 {
 	static bonemat_t *bones, *skin;
+	static void *sbmem;
+	static skinbone_t *cols;
 	static int maxbones;
-	static rvert_t *out;
-	static int maxverts;
 	skelmodel_t *m = q->skel, *sm;
 	const float(*sb)[12];
-	bool absolute;
-	int n = m->numjoints;
+	bool absolute, rigid = true, bymesh = true;
+	int n = m->numjoints, lo = q->numverts, hi = 0, end = 0;
+	uint32_t shown = 0;
 	if (n > maxbones) {
 		maxbones = n;
 		bones = Mem_Realloc(bones, sizeof(bonemat_t) * n);
 		skin = Mem_Realloc(skin, sizeof(bonemat_t) * n);
-	}
-	if (q->numverts > maxverts) {
-		maxverts = q->numverts;
-		out = Mem_Realloc(out, sizeof(rvert_t) * maxverts);
+		Mem_Free(sbmem);
+		sbmem = Mem_Alloc(sizeof(skinbone_t) * n + 16);
+		cols = (skinbone_t *)(((uintptr_t)sbmem + 15) & ~(uintptr_t)15);
 	}
 	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
 		int k = BW_MIN(n, sm->numjoints);
@@ -1490,26 +1635,75 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	}
 	for (int j = 0; j < n; j++)
 		Bone_Multiply(skin[j], bones[j], m->invbind[j]);
-	for (int i = 0; i < q->numverts; i++) {
-		const rvert_t *v = &q->verts[i];
-		rvert_t *o = &out[i];
-		bonemat_t mat;
-		const uint8_t *b = q->blendidx[i];
-		*o = *v;
-		if (q->blendw) {
-			const float *w = q->blendw[i];
-			for (int k = 0; k < 12; k++)
-				mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
-		} else {
-			memcpy(mat, skin[b[0]], sizeof(mat)); /* one bone, weight 1 */
+
+	/* the vertices of the meshes that draw, when the meshes say which and
+	 * don't overlap; otherwise all of them */
+	for (int i = 0; i < q->nummeshes; i++) {
+		const iqmmesh_t *me = &q->meshes[i];
+		if (!mesh_shown(q, e, i))
+			continue;
+		shown = shown * 31 + (uint32_t)i + 1;
+		if (!me->numverts || me->firstvert < end) {
+			bymesh = false;
+			break;
 		}
-		Bone_Transform(mat, v->xyz, o->xyz);
-		for (int r = 0; r < 3; r++)
-			o->normal[r] = mat[r * 4] * v->normal[0] + mat[r * 4 + 1] * v->normal[1] + mat[r * 4 + 2] * v->normal[2];
-		VectorNormalize(o->normal);
+		end = me->firstvert + me->numverts;
+		lo = BW_MIN(lo, me->firstvert);
+		hi = BW_MAX(hi, end);
 	}
+	if (!bymesh)
+		lo = 0, hi = q->numverts;
+	if (hi <= lo)
+		return;
+
+	if (q->lastskin && q->lastshown == shown && q->lastlo == lo && q->lasthi == hi &&
+	    !memcmp(q->lastskin, skin, sizeof(bonemat_t) * n))
+		goto upload; /* the same pose again: an outline, a still model */
+	if (!q->lastskin)
+		q->lastskin = Mem_Alloc(sizeof(bonemat_t) * n);
+	memcpy(q->lastskin, skin, sizeof(bonemat_t) * n);
+	q->lastshown = shown, q->lastlo = lo, q->lasthi = hi;
+
+	/* a bone that only rotates, maybe with a uniform scale s, turns unit
+	 * normals into normals of length s: its rotation over s keeps them unit */
+	for (int j = 0; j < n && rigid; j++) {
+		const float *a = skin[j];
+		float c0 = a[0] * a[0] + a[4] * a[4] + a[8] * a[8], c1 = a[1] * a[1] + a[5] * a[5] + a[9] * a[9];
+		float c2 = a[2] * a[2] + a[6] * a[6] + a[10] * a[10];
+		float d01 = a[0] * a[1] + a[4] * a[5] + a[8] * a[9], d02 = a[0] * a[2] + a[4] * a[6] + a[8] * a[10];
+		float d12 = a[1] * a[2] + a[5] * a[6] + a[9] * a[10], inv;
+		if (!(c0 > 1e-12f) || fabsf(c1 - c0) > 1e-4f * c0 || fabsf(c2 - c0) > 1e-4f * c0 ||
+		    fabsf(d01) > 1e-4f * c0 || fabsf(d02) > 1e-4f * c0 || fabsf(d12) > 1e-4f * c0) {
+			rigid = false;
+			break;
+		}
+		inv = 1 / sqrtf(c0);
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 4; c++)
+				cols[j].col[c][r] = a[r * 4 + c];
+			for (int c = 0; c < 3; c++)
+				cols[j].ncol[c][r] = a[r * 4 + c] * inv;
+		}
+	}
+	if (!bymesh) {
+		skin_verts(q, skin, rigid ? cols : NULL, lo, hi);
+	} else {
+		/* mesh by mesh, leaving out the sub-models that don't draw */
+		for (int i = 0; i < q->nummeshes; i++)
+			if (mesh_shown(q, e, i))
+				skin_verts(q, skin, rigid ? cols : NULL, q->meshes[i].firstvert,
+				           q->meshes[i].firstvert + q->meshes[i].numverts);
+	}
+upload:
 	qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
-	qglBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(sizeof(rvert_t) * q->numverts), out);
+#ifdef BW_XBOX
+	/* new storage (the stream ring) rather than an update of part of the
+	 * old, which the GPU may still be reading and which would be copied */
+	qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * hi), q->verts, GL_STREAM_DRAW);
+#else
+	qglBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(sizeof(rvert_t) * lo), (GLsizeiptr)(sizeof(rvert_t) * (hi - lo)),
+	                 q->verts + lo);
+#endif
 }
 
 /* the pose an animation frame shows at a time into it */
@@ -1641,6 +1835,31 @@ static void bind_material(const glprog_t *p, material_t *mat, float alpha, bool 
 	(void)alpha;
 }
 
+/* whether a model is wholly outside the view's sides, tested in its own
+ * space against the planes of its clip matrix. An alias model's bounds hold
+ * every pose; a skeletal one's hold the rest pose only, so they are grown
+ * by the model's size each way for the poses that reach further. */
+static bool model_offscreen(const rmodel_t *m, const float *mvp)
+{
+	float mins[3], maxs[3], grow = 0;
+	if (m->type == MOD_IQM && m->iqm->skel)
+		for (int k = 0; k < 3; k++)
+			grow = BW_MAX(grow, m->maxs[k] - m->mins[k]);
+	for (int k = 0; k < 3; k++)
+		mins[k] = m->mins[k] - grow, maxs[k] = m->maxs[k] + grow;
+	for (int i = 0; i < 4; i++) {
+		/* left, right, bottom, top: w + x, w - x, w + y, w - y */
+		float pl[4], sign = (i & 1) ? -1.0f : 1.0f;
+		for (int k = 0; k < 4; k++)
+			pl[k] = mvp[k * 4 + 3] + sign * mvp[k * 4 + i / 2];
+		if (pl[0] * (pl[0] > 0 ? maxs[0] : mins[0]) + pl[1] * (pl[1] > 0 ? maxs[1] : mins[1]) +
+		        pl[2] * (pl[2] > 0 ? maxs[2] : mins[2]) + pl[3] <
+		    0)
+			return true;
+	}
+	return false;
+}
+
 void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 {
 	rmodel_t *m = e->model;
@@ -1676,6 +1895,8 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	}
 	if ((e->alpha < 1 || (e->renderflags & 8)) != translucentpass)
 		return;
+	if (!viewmodel && model_offscreen(m, mvp))
+		return; /* no skinning or lerping for what can't be seen */
 	if (depthhack)
 		qglDepthRange(0, 0.3);
 	if (e->mirrored)
@@ -1704,8 +1925,7 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
-			if (q->meshes[i].geomgroup >= 0 &&
-			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
+			if (!mesh_shown(q, e, i))
 				continue; /* another sub-model of this body part */
 			if (!e->forceshader && q->famskins && e->skin > 0 && e->skin < q->numfamilies &&
 			    q->meshes[i].skinref >= 0 && q->meshes[i].skinref < q->numskinref)
@@ -1769,10 +1989,7 @@ static void outline_geometry(rentity_t *e)
 		iqm_t *q = m->iqm;
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
-			if (q->meshes[i].geomgroup >= 0 &&
-			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
-				continue;
-			if (!q->meshes[i].numindexes || q->meshes[i].material->nodraw)
+			if (!mesh_shown(q, e, i) || q->meshes[i].material->nodraw)
 				continue;
 			qglDrawElements(GL_TRIANGLES, q->meshes[i].numindexes, GL_UNSIGNED_INT,
 			                (void *)(sizeof(uint32_t) * (size_t)q->meshes[i].firstindex));
