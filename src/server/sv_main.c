@@ -1121,6 +1121,16 @@ void SV_Init(void)
 	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
 	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
+	/* the Quake game-rule cvars a server game reads; registered so that
+	 * "timelimit 10" or "deathmatch 1" typed at the console sets them
+	 * instead of being an unknown command passed on to the server */
+	Cvar_Get("deathmatch", "0", 0, "Deathmatch rules for games that read it");
+	Cvar_Get("coop", "0", 0, "Co-operative rules for games that read it");
+	Cvar_Get("teamplay", "0", 0, "Team play for games that read it");
+	Cvar_Get("skill", "1", 0, "Difficulty for games that read it");
+	Cvar_Get("timelimit", "0", CVAR_SERVERINFO, "Minutes until the match ends, 0 for none");
+	Cvar_Get("fraglimit", "0", CVAR_SERVERINFO, "Score that ends the match, 0 for none");
+	Cvar_Get("samelevel", "0", 0, "Stay on the same map when the match ends");
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);
 	SV_InitClients();
