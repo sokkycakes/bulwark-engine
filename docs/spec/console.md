@@ -1,6 +1,6 @@
 # Console commands
 
-Bulwark has 707 console commands and about 380 cvars (`cmdlist` and
+Bulwark has 708 console commands and about 380 cvars (`cmdlist` and
 `cvarlist` show them; `help <name>` and `find <text>` explain one). Every
 one of FTEQW's 593 console commands exists in Bulwark (checked against
 FTE's own `cmdlist`), along with Source's entity commands. The game
@@ -204,6 +204,36 @@ edit heights by writing section files.
   `autotrack`.
 - **Downloads and media:** `download`, `dlsize`, `skipdl`, `finishdl`,
   `curl`, `capture*`, `playfilm`, `playvideo`, `cinematic`, `media_*`.
+
+## Player setup and the game's display settings
+
+The Options page (`menu_options`, which the title page's Settings opens)
+starts with two pages for the game:
+
+- **Player setup** (`menu_setup`): name and team; the model
+  (`_cl_playermodel`, sent as the `model` user info key: "Each hero's own"
+  or a folder under `models/player/` that has `<name>/<name>.mdl`); the
+  upper and lower colours; the tint strength; and the spray. Each colour
+  has a typed value with a swatch (`0xRRGGBB`, `#RRGGBB`, `RRGGBB` or
+  `R G B`), presets, and hue (0-350), saturation and brightness (0-100)
+  sliders, and is written back as `0xRRGGBB`, FTE's 24-bit form. A Quake
+  palette row (0-13) is shown as its colour and left alone until it is
+  changed. The hue a slider set is remembered while the colour is grey or
+  black, which have no hue of their own. A preview row shows both colours
+  and the tints the game draws from them. The spray is chosen from the
+  images under `logos/` (under 64 KiB) with a preview; choosing one sets
+  `_cl_playerspray` and sends it as the `spray` user info blob
+  (`setinfoblob`), with `spraytype` 1 for `.bmp` and `spraycolor`.
+- **Crosshair, weapon view and HUD** (`menu_view`): the crosshair cvars
+  (shape, size, opacity, colour), `r_viewmodel_fov`, `cg_viewmodelScale`,
+  `cg_viewmodelMotionScale`, `cg_viewmodelLag`, `cg_hudAspect`,
+  `cg_damageShake` and `cg_playerColorTint`. Nuclide also registers
+  `cg_viewmodelFov`, `cg_viewmodelFlip`, `cg_viewmodelOffset` and
+  `cg_viewmodelPass`, but its client never reads them, so the page leaves
+  them out.
+
+A setting a game made with `set` in its default configs is marked to be
+saved once a menu page changes it, as if it had been made with `seta`.
 
 ## Who may run what
 
@@ -598,6 +628,7 @@ held and the matching `-` command when it's let go.
 | `menu_teamplay_weapons` | Open the engine's Weapons menu |
 | `menu_textures` | Open the engine's Textures menu |
 | `menu_video` | Open the engine's Video menu |
+| `menu_view` | Open the engine's Crosshair, weapon view and HUD menu |
 | `menu_webcore` | menu_webcore [title|lobby|pause|arena <team|class|hero>|<url>]: open an HTML menu page (see webcore.md) |
 | `menu_webcore_lobby` | Open the lobby page |
 | `menu_webcore_title` | Open the title page |

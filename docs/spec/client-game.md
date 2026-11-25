@@ -127,3 +127,26 @@ direction" in sound.md); 0 plays it everywhere. A WAV
 - When the command line starts a game, the menu progs load only once that
   game is running. Their init then sees `clientstate()` as 2 and doesn't
   queue the background map in front of the game.
+- `setproperty(VF_DRAWCROSSHAIR, 1)` makes `renderscene` end with the
+  engine's crosshair over that view, as FTE does; `clearscene` turns it
+  off again. Nuclide sets it in `ncView::SetupView` and leaves the
+  crosshair to the engine. It is drawn from FTE's cvars: `crosshair` picks
+  the shape (0 none, 1 plus, 2 open plus, 3 dot, 4 open plus and dot,
+  5 ring, 6 corners; the shapes are Bulwark's own, FTE's numbering of its
+  own images differs), `crosshairsize` its half-width in virtual pixels
+  (default 8), `crosshaircolor` its colour as `"R G B"` in 0-255 or
+  `0xRRGGBB` (FTE accepts both), `crosshairalpha` its opacity,
+  `crosshairimage` a picture to draw instead, and `cl_crossx`/`cl_crossy`
+  move it off centre.
+
+## Player colours
+
+`topcolor` and `bottomcolor` are user info keys. Stiletto writes them in
+FTE's 24-bit form, `0xRRGGBB` (Quake's palette rows 0-13 still work). Its
+hero models have no remappable shirt and pants textures, so neither FTE
+nor Bulwark can show them through a colormap; the game shows them as a
+`colormod` tint instead (upper colour on the hero, lower on what they
+carry, `cg_playerColorTint` sets the strength), which Bulwark applies to
+every model type. Team modes write the team colour into both keys and give
+the player's own back afterwards (Nuclide's `Colors_SetTeam`).
+
