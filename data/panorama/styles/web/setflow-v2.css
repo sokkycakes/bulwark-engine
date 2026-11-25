@@ -1,0 +1,347 @@
+/* Hero select laid out loosely after Deadlock's pre-alpha hero select, in
+   Stiletto's look (#333, red, standard_07_57 / hooge_05_57). Loaded after
+   setflow.css; only the select screen (.select.v2) changes. Horizontal
+   positions are percentages of the view so wide and 4:3 views both work;
+   vertical ones are on the 1080-line view. */
+
+.v2-dim
+{
+	background-color: gradient( linear, 0% 0%, 100% 0%, from( #141414f4 ), color-stop( 0.38, #1a1a1ad0 ), color-stop( 0.62, #1a1a1ad0 ), to( #141414f4 ) );
+}
+
+.v2-mode
+{
+	x: 3%;
+	y: 100px;
+	font-family: "hooge_05_57";
+	font-size: 24px;
+	color: #bfbfbf;
+}
+
+.v2-badge
+{
+	x: 50%;
+	margin-left: -260px;
+	y: 96px;
+	width: 520px;
+	height: 58px;
+	background-color: #8a0f12;
+	border: 3px solid #e0262b;
+}
+.v2-badge-text
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 30px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+
+.v2-timer
+{
+	x: 90%;
+	y: 86px;
+	width: 8%;
+	text-align: right;
+	font-size: 84px;
+	color: #e0262b;
+}
+.v2-timer.low { color: #ffffff; }
+
+/* left: the hero */
+.v2-info
+{
+	x: 6%;
+	y: 240px;
+	width: 30%;
+	flow-children: down;
+}
+.v2-name
+{
+	width: 100%;
+	font-size: 120px;
+	letter-spacing: -5px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.v2-line
+{
+	margin-top: 4px;
+	font-size: 36px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #e0262b;
+}
+.v2-blurb
+{
+	margin-top: 22px;
+	width: 100%;
+	font-family: "hooge_05_57";
+	font-size: 24px;
+	line-height: 34px;
+	color: #c8c8c8;
+}
+.v2-kit
+{
+	margin-top: 40px;
+	width: 100%;
+	height: 170px;
+	flow-children: right;
+}
+.kit
+{
+	width: 120px;
+	height: 170px;
+	margin-right: 18px;
+	flow-children: down;
+}
+.kit-disc
+{
+	horizontal-align: center;
+	width: 104px;
+	height: 104px;
+	border-radius: 52px;
+	background-color: #d9d4ca;
+	border: 3px solid #ffffff;
+}
+.kit.none .kit-disc { background-color: #3a3a3a; border: 3px solid #4a4a4a; }
+.kit-glyph
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 21px;
+	letter-spacing: -1px;
+	color: #333333;
+}
+.kit.none .kit-glyph { color: #6d6d6d; }
+.kit-key
+{
+	horizontal-align: center;
+	margin-top: -14px;
+	width: 30px;
+	height: 26px;
+	background-color: #d9d4ca;
+	border-radius: 6px;
+}
+.kit-key Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-family: "hooge_05_57";
+	font-size: 16px;
+	color: #333333;
+}
+.kit-name
+{
+	horizontal-align: center;
+	margin-top: 8px;
+	font-family: "hooge_05_57";
+	font-size: 17px;
+	color: #bfbfbf;
+	text-align: center;
+}
+
+/* middle: the hero, large (Stiletto has no portrait or showcase art yet,
+   so the hero's initial and name stand in for the model) */
+.v2-stage
+{
+	x: 37%;
+	width: 26%;
+	y: 170px;
+	height: 590px;
+}
+.v2-stage-glow
+{
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 0%, 0% 100%, from( #8a0f1200 ), color-stop( 0.55, #8a0f1260 ), to( #8a0f12c0 ) );
+	border-bottom: 6px solid #e0262b;
+}
+.v2-stage-initial
+{
+	horizontal-align: center;
+	y: 0px;
+	font-size: 520px;
+	letter-spacing: -20px;
+	color: #ffffff22;
+	text-transform: uppercase;
+}
+.v2-stage-name
+{
+	y: 420px;
+	width: 100%;
+	text-align: center;
+	font-size: 64px;
+	letter-spacing: -2px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.v2-stage-hp
+{
+	horizontal-align: center;
+	y: 510px;
+	height: 30px;
+	flow-children: right;
+}
+.hp-pip
+{
+	width: 26px;
+	height: 26px;
+	margin-right: 8px;
+	background-color: #e0262b;
+	border: 2px solid #ffffff;
+}
+
+/* right: help */
+.v2-help
+{
+	x: 70%;
+	y: 200px;
+	width: 26%;
+	height: 430px;
+	padding: 30px 30px 30px 30px;
+	background-color: #2a2a2af0;
+	border-top: 6px solid #e0262b;
+	flow-children: down;
+}
+.v2-help-head
+{
+	margin-top: 6px;
+	font-size: 32px;
+	letter-spacing: -1px;
+	color: #ffffff;
+}
+.v2-help-text
+{
+	margin-top: 10px;
+	width: 100%;
+	font-family: "hooge_05_57";
+	font-size: 20px;
+	line-height: 28px;
+	color: #bfbfbf;
+}
+.v2-help-rule
+{
+	margin-top: 22px;
+	margin-bottom: 12px;
+	width: 100%;
+	height: 2px;
+	background-color: #4a4a4a;
+}
+.v2-opp
+{
+	margin-top: 8px;
+	width: 100%;
+	font-size: 28px;
+	text-transform: uppercase;
+	color: #bfbfbf;
+}
+.v2-opp.ready { color: #e0262b; }
+
+/* bottom: lock in */
+.v2-confirm
+{
+	x: 50%;
+	margin-left: -170px;
+	y: 776px;
+	width: 340px;
+	height: 92px;
+	background-color: #ebe6dc;
+	border: 3px solid #ffffff;
+}
+.v2-confirm Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 46px;
+	letter-spacing: -1.5px;
+	color: #333333;
+}
+.v2-confirm:hover { background-color: #ffffff; }
+.select.v2.is-locked .v2-confirm { background-color: #4a4a4a; border: 3px solid #6d6d6d; }
+.select.v2.is-locked .v2-confirm Label { color: #bfbfbf; }
+
+/* the roster strip */
+.v2-strip
+{
+	horizontal-align: center;
+	y: 888px;
+	height: 120px;
+	flow-children: right;
+}
+.v2-strip .tile
+{
+	width: 132px;
+	height: 112px;
+	margin-right: 6px;
+	background-color: #333333;
+	border: 3px solid #4a4a4a;
+	flow-children: down;
+}
+.v2-strip .tile:hover { border: 3px solid #bfbfbf; }
+.v2-strip .tile.is-cursor { border: 3px solid #ffffff; background-color: #4a4a4a; }
+.v2-strip .tile.is-picked { border: 3px solid #e0262b; background-color: #8a0f12; }
+.v2-strip .tile.is-picked.is-cursor { border: 3px solid #ffffff; }
+.v2-strip .tile.is-off { opacity: 0.35; }
+.tile-initial
+{
+	horizontal-align: center;
+	margin-top: 2px;
+	font-size: 64px;
+	color: #ffffff;
+	text-transform: uppercase;
+}
+.tile-name
+{
+	horizontal-align: center;
+	font-family: "hooge_05_57";
+	font-size: 15px;
+	color: #bfbfbf;
+	text-transform: uppercase;
+}
+.v2-strip .tile.is-picked .tile-name { color: #ffffff; }
+.tile-hp
+{
+	x: 6px;
+	y: 4px;
+	font-family: "hooge_05_57";
+	font-size: 13px;
+	color: #e0262b;
+}
+.v2-strip .tile.is-picked .tile-hp { color: #ffffff; }
+
+/* footer: keys */
+.v2-footer
+{
+	y: 1028px;
+	horizontal-align: center;
+	height: 40px;
+	flow-children: right;
+}
+.v2-key-group
+{
+	margin-left: 30px;
+	margin-right: 30px;
+	height: 40px;
+	flow-children: right;
+}
+.v2-key
+{
+	vertical-align: center;
+	padding: 4px 10px 4px 10px;
+	background-color: #d9d4ca;
+	font-family: "hooge_05_57";
+	font-size: 16px;
+	color: #333333;
+}
+.v2-key-text
+{
+	vertical-align: center;
+	margin-left: 12px;
+	font-family: "hooge_05_57";
+	font-size: 20px;
+	color: #bfbfbf;
+}

@@ -21,7 +21,7 @@
 #define SETFLOW_URL "fte://data/web/setflow/index.html"
 #define ONLINE_URL "fte://data/web/online/index.html"
 
-static cvar_t *set_after, *setflow_enabled, *setflow_training_map;
+static cvar_t *set_after, *setflow_enabled, *setflow_training_map, *setflow_layout;
 
 /* the serverinfo keys the view reads, kept while in a set game because
  * serverinfo is cleared on disconnect */
@@ -168,7 +168,9 @@ static void view_frame(void)
 		return;
 	}
 	if (!sf.view) {
-		sf.view = UI_Open("layout/web/setflow.xml", 0);
+		sf.view = UI_Open(setflow_layout->string, 0);
+		if (!sf.view)
+			sf.view = UI_Open("layout/web/setflow.xml", 0);
 		sf.view_input = false;
 		if (!sf.view)
 			return;
@@ -501,6 +503,8 @@ void SF_Init(void)
 	set_after = Cvar_Get("set_after", "search", CVAR_ARCHIVE,
 	                     "After leaving a Live set: search (queue the same playlist again) or menu");
 	setflow_enabled = Cvar_Get("setflow_enabled", "1", 0, "Show the set view in Live set games");
+	setflow_layout = Cvar_Get("setflow_layout", "layout/web/setflow-v2.xml", CVAR_ARCHIVE,
+	                          "The set view's layout: setflow-v2.xml (Deadlock-style hero select) or setflow.xml");
 	setflow_training_map = Cvar_Get("setflow_training_map", "duel_alley", CVAR_ARCHIVE,
 	                                "Map played while searching for a match");
 }

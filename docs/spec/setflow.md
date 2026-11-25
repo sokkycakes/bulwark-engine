@@ -19,7 +19,13 @@ the glue to Bulwark Live live in the engine.
    the ribbon over the game.
 4. **Opponent found**: both fighter cards, VS, for `live_match_delay` (3) s.
    No decline. Then the host loads the map and the other player connects.
-5. **Hero select** (SELECT): a blind pick with a 20 s timer. Neither side sees
+5. **Hero select** (SELECT), laid out loosely after Deadlock's pre-alpha
+   hero select (`layout/web/setflow-v2.xml`; `setflow_layout` switches back
+   to the grid in `setflow.xml`): the hero's name, line, blurb and kit on
+   the left, the hero large in the middle (its initial and HP until Stiletto
+   has showcase art), how the pick works and the opponent's status on the
+   right, the roster strip with Lock In along the bottom, key hints below.
+   It is a blind pick with a 20 s timer. Neither side sees
    the other's hero until both lock in (or the timer locks them: anyone
    without a hero gets a random one). Then the reveal, 2.5 s.
 6. **Games**: each game is best of 3 rounds, a game ends early on a majority.
