@@ -365,6 +365,39 @@ static void fuse_statements(qcprogs_t *p)
 #undef OPAT
 }
 
+/* what a call to f needs, worked out once: the parameters it copies in
+ * (a negative count means varargs; any that would run past the globals
+ * are left out), and whether it is a plain field getter */
+static void call_shape(qcprogs_t *p, qcfunc_t *f)
+{
+	int n = f->d.numparms, o = f->d.parm_start, i;
+	const qcstatement_t *s;
+	if (n < 0)
+		n = -n - 1;
+	if (n > MAX_PARMS)
+		n = MAX_PARMS;
+	for (i = 0; i < n; i++) {
+		if (o + f->d.parm_size[i] > p->globalslots)
+			break;
+		o += f->d.parm_size[i];
+	}
+	f->callparms = i;
+	f->getter = 0;
+	if (f->d.first_statement <= 0 || f->d.first_statement + 1 >= p->numstatements || f->d.numparms != 0 ||
+	    f->d.locals > 8 || f->d.parm_start < RESERVED_OFS)
+		return;
+	s = p->statements + f->d.first_statement;
+	/* the temporary and the three words RETURN copies from it must not
+	 * be the return value itself */
+	if (QC_PlainOp(s[1].op) != OP_RETURN || s[1].a != s[0].c || s[0].c < RESERVED_OFS ||
+	    (int64_t)s[0].c + 3 > p->globalslots)
+		return;
+	if (loadf1(QC_PlainOp(s[0].op)))
+		f->getter = 1;
+	else if (QC_PlainOp(s[0].op) == OP_LOADF_V)
+		f->getter = 3;
+}
+
 static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t size)
 {
 	progs_header_t *h = &p->hdr;
@@ -490,6 +523,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 			Con_Printf("%s: function %s locals exceed the globals\n", name, p->functions[i].name);
 			return false;
 		}
+		call_shape(p, &p->functions[i]);
 	}
 	if (p->stmt32) {
 		/* TODO: 32-bit statements can name any global, so operands need a

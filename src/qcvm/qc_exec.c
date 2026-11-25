@@ -50,33 +50,25 @@ void QC_RunError(qcvm_t *vm, const char *fmt, ...)
 char qc_tracefilter[64];
 bool qc_profiling;
 
-/* word copies for the calling convention: most are one or three words,
- * which a library call would cost more than */
+/* word copies for the calling convention: most are a few words, which a
+ * library call would cost more than. A plain loop rather than a switch
+ * into an unrolled copy, as an indirect jump is the dearest thing an
+ * emulated CPU does (xemu) and a mispredicted one on a Pentium III. */
 static inline void copy_words(qcval_t *d, const qcval_t *s, int n)
 {
-	if (n > 16) {
-		memcpy(d, s, sizeof(qcval_t) * (size_t)n);
-		return;
+	for (; n >= 4; n -= 4, d += 4, s += 4) {
+		qcval_t w0 = s[0], w1 = s[1], w2 = s[2], w3 = s[3];
+		d[0] = w0; d[1] = w1; d[2] = w2; d[3] = w3;
 	}
-	switch (n) {
-	case 16: d[15] = s[15]; /* fall through */
-	case 15: d[14] = s[14]; /* fall through */
-	case 14: d[13] = s[13]; /* fall through */
-	case 13: d[12] = s[12]; /* fall through */
-	case 12: d[11] = s[11]; /* fall through */
-	case 11: d[10] = s[10]; /* fall through */
-	case 10: d[9] = s[9]; /* fall through */
-	case 9: d[8] = s[8]; /* fall through */
-	case 8: d[7] = s[7]; /* fall through */
-	case 7: d[6] = s[6]; /* fall through */
-	case 6: d[5] = s[5]; /* fall through */
-	case 5: d[4] = s[4]; /* fall through */
-	case 4: d[3] = s[3]; /* fall through */
-	case 3: d[2] = s[2]; /* fall through */
-	case 2: d[1] = s[1]; /* fall through */
-	case 1: d[0] = s[0]; /* fall through */
-	default: break;
-	}
+	for (; n > 0; n--)
+		*d++ = *s++;
+}
+
+/* three words that may overlap, as memmove would copy them */
+static inline void copy3(qcval_t *d, const qcval_t *s)
+{
+	qcval_t w0 = s[0], w1 = s[1], w2 = s[2];
+	d[0] = w0; d[1] = w1; d[2] = w2;
 }
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -89,7 +81,7 @@ static QC_ALWAYS_INLINE void enter_function(qcvm_t *vm, int fnum, int returnto, 
 {
 	qcfunc_t *f = &vm->functions[fnum];
 	int locals = f->d.locals;
-	int numparms = f->d.numparms;
+	int numparms = f->callparms;
 	qcval_t *g = vm->globals;
 	qcframe_t *fr;
 
@@ -115,17 +107,13 @@ static QC_ALWAYS_INLINE void enter_function(qcvm_t *vm, int fnum, int returnto, 
 	vm->localstack_used += locals;
 
 	/* copy arguments into the parameter locals */
-	if (numparms < 0)
-		numparms = -numparms - 1;
-	if (numparms > MAX_PARMS)
-		numparms = MAX_PARMS;
 	{
 		int o = f->d.parm_start;
 		for (int i = 0; i < numparms; i++) {
 			int sz = f->d.parm_size[i];
-			if (o + sz > vm->globalslots)
-				break;
-			copy_words(g + o, g + OFS_PARM(i), sz);
+			/* last word first, as before, should bad progs overlap them */
+			for (int k = sz - 1; k >= 0; k--)
+				g[o + k] = g[OFS_PARM(i) + k];
 			o += sz;
 		}
 	}
@@ -969,9 +957,9 @@ dispatch:
 		if (op >= OP_CALL1H) {
 			vm->argc = (int)(op - OP_CALL1H) + 1;
 			/* the first two arguments travel in the b and c operands */
-			memmove(G + OFS_PARM(0), b, sizeof(qcval_t) * 3);
+			copy3(G + OFS_PARM(0), b);
 			if (vm->argc >= 2)
-				memmove(G + OFS_PARM(1), c, sizeof(qcval_t) * 3);
+				copy3(G + OFS_PARM(1), c);
 		} else {
 			vm->argc = (int)(op - OP_CALL0);
 		}
@@ -986,6 +974,31 @@ dispatch:
 			QC_SwitchProgs(vm, pn);
 		}
 		f = &vm->functions[fnum];
+		/* "return self.field": the frame would only save and restore the
+		 * locals around one load, so do just that */
+		if (f->getter && pn == caller && !(vm->debug_hooks || qc_profiling || qc_tracefilter[0]) &&
+		    vm->depth < QC_MAX_DEPTH) {
+			const qcstatement_t *gs = stmts + f->d.first_statement;
+			int32_t e = G[gs->a].i, fo = G[gs->b].i;
+			uint32_t w = (uint32_t)f->getter;
+			if ((uint32_t)e < es.count && (uint32_t)fo <= es.words - w) {
+				const qcval_t *p = (const qcval_t *)(es.base + ((size_t)(uint32_t)e * es.words + (uint32_t)fo) * 4);
+				qcval_t saved[8], *t = G + gs->c;
+				int locals = f->d.locals, ps = f->d.parm_start;
+				copy_words(saved, G + ps, locals);
+				t[0] = p[0];
+				if (w == 3) {
+					t[1] = p[1];
+					t[2] = p[2];
+				}
+				G[OFS_RETURN] = t[0];
+				G[OFS_RETURN + 1] = t[1];
+				G[OFS_RETURN + 2] = t[2];
+				copy_words(G + ps, saved, locals);
+				st = stmts + s;
+				NEXT();
+			}
+		}
 		if (f->builtin) {
 			vm->extra->calling_builtin = fnum;
 			if (vm->profiling) {

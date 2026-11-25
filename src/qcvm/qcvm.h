@@ -38,6 +38,10 @@ typedef struct {
 	const char *file;
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
+	int callparms; /* how many parameters a call copies in (see enter_function) */
+	/* 1 or 3: the body is only "return self.field" of that many words,
+	 * which a call can do without a frame; 0 otherwise */
+	int getter;
 	uint64_t profile; /* statements run in this function while qc_profiling */
 	/* profile_ssqc and friends */
 	uint64_t prof_statements, prof_calls;
