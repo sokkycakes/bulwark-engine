@@ -1114,9 +1114,12 @@ static void list_player_model(const char *name, const char *searchpath, void *ct
 	add_option(it, dir, dir);
 }
 
+#define SPRAY_MAX_BYTES 7680 /* leaves room for the other user info keys */
+
 static void list_spray(const char *name, const char *searchpath, void *ctx)
 {
-	static const char *const exts[] = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".webp"};
+	/* only what R_Picture (and so the game's spray decal) can decode: no .webp */
+	static const char *const exts[] = {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
 	item_t *it = ctx;
 	const char *dot = strrchr(name, '.');
 	size_t size = 0;
@@ -1130,8 +1133,11 @@ static void list_spray(const char *name, const char *searchpath, void *ctx)
 			return;
 	void *d = FS_LoadFile(name, &size);
 	Mem_Free(d);
-	if (size > 65536)
-		return; /* too big for a user info blob */
+	/* the blob counts towards the server's user info limit: FTE's default
+	 * sv_userinfo_bytelimit is 8192 bytes for every key together, so a
+	 * larger image would be refused there and nobody would see the spray */
+	if (size > SPRAY_MAX_BYTES)
+		return;
 	add_option(it, name + 6, name); /* past "logos/" */
 }
 
@@ -1143,19 +1149,24 @@ static void spray_changed(const char *value)
 {
 	const char *dot = strrchr(value, '.');
 	Cbuf_AddText(va("setinfoblob spray \"%s\"\nsetinfo spraytype %d\n", value, dot && !Str_ICmp(dot, ".bmp") ? 1 : 0));
-	if (!Cvar_String("spraycolor")[0])
+	/* spraycolor is a user info key: setinfo keeps those as CVAR_USERINFO
+	 * cvars, which is also what the game's getlocaluserinfo reads */
+	const cvar_t *sc = Cvar_Find("spraycolor");
+	if (!sc || !(sc->flags & CVAR_USERINFO) || !sc->string[0])
 		Cbuf_AddText("setinfo spraycolor \"1 1 1\"\n");
 }
 
 static void pg_setup(page_t *p)
 {
 	item_t *it;
-	Cvar_Get("_cl_playermodel", "", CVAR_ARCHIVE, "The player model choice (models/player/<name>/), sent as the model user info key");
+	/* cg_heroModel, not _cl_playermodel: older Stiletto builds archived
+	 * _cl_playermodel as alice2 in every config */
+	Cvar_Get("cg_heroModel", "", CVAR_ARCHIVE, "The player model choice (models/player/<name>/), sent as the model user info key");
 	Cvar_Get("_cl_playerspray", "", CVAR_ARCHIVE, "The spray image (under logos/), sent as the spray user info blob");
 	Cvar_Get("cg_playerColorTint", "0.5", CVAR_ARCHIVE, "How strongly the game tints heroes with player colours, 0-1");
 	add_edit(p, "Name", "name");
 	add_edit(p, "Team", "team");
-	it = add_combo(p, "Model", "_cl_playermodel", "Each hero's own", "", NULL);
+	it = add_combo(p, "Model", "cg_heroModel", "Each hero's own", "", NULL);
 	FS_List("models/player/*/*.mdl", true, list_player_model, it);
 	it->changed = model_changed;
 	add_header(p, "Upper colour: tints the hero (team modes use the team's)");
@@ -1166,7 +1177,7 @@ static void pg_setup(page_t *p)
 	it = add_text(p, "Preview");
 	it->draw = draw_color_preview;
 	it->rows = 3;
-	add_header(p, "Spray (the Spray key, impulse 201)");
+	add_header(p, "Spray (impulse 201): png/jpg/tga/bmp, 7.5 KB at most");
 	it = add_combo(p, "Image", "_cl_playerspray", NULL);
 	FS_List("logos/*", true, list_spray, it);
 	it->changed = spray_changed;

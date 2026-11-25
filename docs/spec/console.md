@@ -211,7 +211,8 @@ The Options page (`menu_options`, which the title page's Settings opens)
 starts with two pages for the game:
 
 - **Player setup** (`menu_setup`): name and team; the model
-  (`_cl_playermodel`, sent as the `model` user info key: "Each hero's own"
+  (`cg_heroModel`, sent as the `model` user info key; not `_cl_playermodel`,
+  which older Stiletto configs hold as `alice2`: "Each hero's own"
   or a folder under `models/player/` that has `<name>/<name>.mdl`); the
   upper and lower colours; the tint strength; and the spray. Each colour
   has a typed value with a swatch (`0xRRGGBB`, `#RRGGBB`, `RRGGBB` or
@@ -221,7 +222,9 @@ starts with two pages for the game:
   changed. The hue a slider set is remembered while the colour is grey or
   black, which have no hue of their own. A preview row shows both colours
   and the tints the game draws from them. The spray is chosen from the
-  images under `logos/` (under 64 KiB) with a preview; choosing one sets
+  images under `logos/` that the renderer can decode (png, jpg, tga, bmp;
+  no webp) and that fit a server's user info limit (at most 7680 bytes,
+  under FTE's default `sv_userinfo_bytelimit` of 8192) with a preview; choosing one sets
   `_cl_playerspray` and sends it as the `spray` user info blob
   (`setinfoblob`), with `spraytype` 1 for `.bmp` and `spraycolor`.
 - **Crosshair, weapon view and HUD** (`menu_view`): the crosshair cvars
