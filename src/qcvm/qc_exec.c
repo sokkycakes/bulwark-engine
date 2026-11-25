@@ -732,8 +732,13 @@ dispatch:
 	OPCODE(OP_RSHIFT_U64I) { OPS; st64(c, (int64_t)((uint64_t)ld64(a) >> (b->i & 63))); NEXT(); }
 	OPCODE(OP_LE_I64) { OPS; c->i = ld64(a) <= ld64(b); NEXT(); }
 	OPCODE(OP_LT_I64) { OPS; c->i = ld64(a) < ld64(b); NEXT(); }
-	OPCODE(OP_EQ_I64) { OPS; c->i = ld64(a) == ld64(b); NEXT(); }
-	OPCODE(OP_NE_I64) { OPS; c->i = ld64(a) != ld64(b); NEXT(); }
+	/* FTEQCC types these results as 64-bit: "if (x != y)" on two int64s
+	 * tests the result with a second NE_I64 against a 64-bit zero, which
+	 * reads both words. Writing only the low one left the high word as
+	 * whatever the temp held before (Nuclide's FindXRInput then never
+	 * matched and spawned three new NSXRInput entities each respawn). */
+	OPCODE(OP_EQ_I64) { OPS; st64(c, ld64(a) == ld64(b)); NEXT(); }
+	OPCODE(OP_NE_I64) { OPS; st64(c, ld64(a) != ld64(b)); NEXT(); }
 	OPCODE(OP_LE_U64) { OPS; c->i = (uint64_t)ld64(a) <= (uint64_t)ld64(b); NEXT(); }
 	OPCODE(OP_LT_U64) { OPS; c->i = (uint64_t)ld64(a) < (uint64_t)ld64(b); NEXT(); }
 	OPCODE(OP_CONV_UI64) { OPS; st64(c, (int64_t)a->u); NEXT(); }
