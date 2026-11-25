@@ -144,6 +144,20 @@ else()
 	set(bw_desktop_default ON)
 endif()
 option(BULWARK_UI_PANORAMA "Panorama UI views (PanoramaEngine, C++20)" ${bw_desktop_default})
+# the native C UI (src/ui/ui_native.c): Stiletto's HUD and menus drawn
+# straight through the 2D API, for the Xbox where PanoramaEngine costs
+# about 3.5 MB of XBE. The 3DS can opt in; the DS keeps hud_nds.c.
+if(NXDK)
+	set(bw_native_default ON)
+else()
+	set(bw_native_default OFF)
+endif()
+option(BULWARK_UI_NATIVE "Native C UI (Stiletto HUD and menus) instead of PanoramaEngine" ${bw_native_default})
+if(BULWARK_UI_NATIVE AND BULWARK_UI_PANORAMA)
+	# one ui.h backend per build, and QuickJS comes with PanoramaEngine
+	set(BULWARK_UI_PANORAMA OFF)
+	set(BULWARK_SCRIPT_JS OFF)
+endif()
 option(BULWARK_SCRIPT_JS "JavaScript scripting (needs BULWARK_UI_PANORAMA for QuickJS)" ${bw_desktop_default})
 if(BULWARK_SCRIPT_JS AND NOT BULWARK_UI_PANORAMA)
 	message(WARNING "BULWARK_SCRIPT_JS needs PanoramaEngine's QuickJS: turned off")
@@ -307,6 +321,22 @@ if(BULWARK_UI_PANORAMA)
 		src/ui/ui_panorama.cpp
 		src/ui/ui_qc.c)
 	target_link_libraries(bwui PUBLIC bwserver PRIVATE PanoramaEngine)
+elseif(BULWARK_UI_NATIVE)
+	add_library(bwui STATIC
+		src/ui/ui_native.c
+		src/ui/uin_draw.c
+		src/ui/uin_atlas.c
+		src/ui/uin_hud.c
+		src/ui/uin_title.c
+		src/ui/uin_lobby.c
+		src/ui/uin_pause.c
+		src/ui/uin_hero.c
+		src/ui/uin_misc.c
+		src/ui/ui_qc.c)
+	target_link_libraries(bwui PUBLIC bwserver)
+	# PUBLIC: the client (cl_input.c, cl_lobby.c, later cl_menu.c and
+	# cl_emenu.c) links bwui and sees it too
+	target_compile_definitions(bwui PUBLIC BW_UI_NATIVE=1)
 else()
 	add_library(bwui STATIC
 		src/ui/ui_null.c

@@ -439,7 +439,13 @@ static void publish(void)
 
 /* --- modes ---------------------------------------------------------------------------- */
 
+#ifdef BW_UI_NATIVE
+/* the native lobby offers last man standing too: Stiletto ships
+ * progs/lastmanstanding.dat but registers no lobby modes of its own */
+static const char *const builtin_rulesets[] = {"DUEL", "DEATHMATCH", "TEAMDM", "DOMINATION", "LASTMANSTANDING", NULL};
+#else
 static const char *const builtin_rulesets[] = {"DUEL", "DEATHMATCH", "TEAMDM", "DOMINATION", NULL};
+#endif
 
 static const lobbymode_t *find_mode(const char *id)
 {

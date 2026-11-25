@@ -491,7 +491,13 @@ static void stick_nav(int axis, float value)
 		stick_held[axis] = 0;
 		IN_KeyEvent(keys[axis][held > 0], false, 0);
 	}
+#ifdef BW_UI_NATIVE
+	/* the native UI hands settings to the engine's menus (menu_options),
+	 * which a pad-only console must reach with the stick too */
+	if (dir && (UI_WantsInput() || EM_Active())) {
+#else
 	if (dir && UI_WantsInput()) {
+#endif
 		stick_held[axis] = dir;
 		IN_KeyEvent(keys[axis][dir > 0], true, 0);
 	}
