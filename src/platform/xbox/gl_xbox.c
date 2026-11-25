@@ -399,6 +399,10 @@ static inline void put1(uint32_t method, uint32_t v)
 	P += 2;
 }
 
+/* bumped by anything that changes what set_fixed_state and set_program
+ * send, so that draws in a row with nothing changed between them skip both */
+static uint32_t state_gen = 1;
+
 /* the hardware's state as last sent, to send only what changes */
 #define NREGS (0x2000 / 4)
 static uint32_t hwval[NREGS];
@@ -463,6 +467,7 @@ static void push_matrix(uint32_t method, mcache_t *c, const float *m)
 
 static void invalidate_hw(void)
 {
+	state_gen++;
 	memset(hwvalid, 0, sizeof(hwvalid));
 	mc_composite.valid = mc_modelview.valid = mc_invmv.valid = false;
 	for (int i = 0; i < 4; i++)
@@ -1149,6 +1154,7 @@ static void BWGLAPI xb_glGenTextures(GLsizei n, GLuint *ids)
 
 static void BWGLAPI xb_glDeleteTextures(GLsizei n, const GLuint *ids)
 {
+	state_gen++;
 	for (int i = 0; i < n; i++) {
 		xtex_t *t = get_texs(ids[i]);
 		if (!t)
@@ -1168,6 +1174,7 @@ static void BWGLAPI xb_glActiveTexture(GLenum unit) { st.unit = BW_CLAMP((int)un
 
 static void BWGLAPI xb_glBindTexture(GLenum target, GLuint id)
 {
+	state_gen++;
 	if (target == GL_TEXTURE_CUBE_MAP)
 		st.texcube[st.unit] = id;
 	else
@@ -1184,6 +1191,7 @@ static xtex_t *bound_tex(GLenum target)
 static void BWGLAPI xb_glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLint border,
                                     GLenum fmt, GLenum type, const void *pixels)
 {
+	state_gen++;
 	xtex_t *t = bound_tex(target);
 	uint8_t *expanded = NULL;
 	const uint8_t *rgba = pixels;
@@ -1244,6 +1252,7 @@ static void write_rect(xtex_t *t, const uint8_t *rgba, int pitch, int x0, int y0
 static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h,
                                        GLenum fmt, GLenum type, const void *pixels)
 {
+	state_gen++;
 	xtex_t *t = bound_tex(target);
 	const uint8_t *src = pixels;
 	uint8_t *expanded = NULL;
@@ -1289,6 +1298,7 @@ static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLin
 
 static void BWGLAPI xb_glTexParameteri(GLenum target, GLenum pname, GLint v)
 {
+	state_gen++;
 	xtex_t *t = bound_tex(target);
 	if (!t)
 		return;
@@ -1303,6 +1313,7 @@ static void BWGLAPI xb_glTexParameteri(GLenum target, GLenum pname, GLint v)
 
 static void BWGLAPI xb_glTexParameterf(GLenum target, GLenum pname, GLfloat v)
 {
+	state_gen++;
 	if (pname == GL_TEXTURE_MAX_ANISOTROPY)
 		return; /* gl_xbox_aniso decides */
 	xb_glTexParameteri(target, pname, (GLint)v);
@@ -1310,6 +1321,7 @@ static void BWGLAPI xb_glTexParameterf(GLenum target, GLenum pname, GLfloat v)
 
 static void BWGLAPI xb_glGenerateMipmap(GLenum target)
 {
+	state_gen++;
 	xtex_t *t = bound_tex(target);
 	if (t)
 		generate_mips(t);
@@ -1569,6 +1581,7 @@ static GLuint BWGLAPI xb_glCreateProgram(void)
 
 static void BWGLAPI xb_glDeleteProgram(GLuint id)
 {
+	state_gen++;
 	xprog_t *p = get_progs(id);
 	if (p)
 		p->used = false;
@@ -1587,6 +1600,7 @@ static void BWGLAPI xb_glBindAttribLocation(GLuint p, GLuint i, const GLchar *na
 /* which of the renderer's programs this is, from its GLSL (r_gl.c) */
 static void BWGLAPI xb_glLinkProgram(GLuint id)
 {
+	state_gen++;
 	xprog_t *p = get_progs(id);
 	xshader_t *vs, *fs;
 	if (!p)
@@ -1622,7 +1636,7 @@ static void BWGLAPI xb_glGetProgramInfoLog(GLuint id, GLsizei max, GLsizei *len,
 		*len = (GLsizei)strlen(log);
 }
 
-static void BWGLAPI xb_glUseProgram(GLuint id) { st.prog = id; }
+static void BWGLAPI xb_glUseProgram(GLuint id) { state_gen++; st.prog = id; }
 
 static GLint BWGLAPI xb_glGetUniformLocation(GLuint prog, const GLchar *name)
 {
@@ -1637,6 +1651,7 @@ static xprog_t *cur_prog(void) { return get_progs(st.prog); }
 
 static void set_uniform(GLint loc, int n, const float *v)
 {
+	state_gen++;
 	xprog_t *p = cur_prog();
 	if (!p || loc <= 0)
 		return;
@@ -1690,6 +1705,7 @@ static void BWGLAPI xb_glUniform4fv(GLint l, GLsizei n, const GLfloat *v)
 
 static void BWGLAPI xb_glUniformMatrix4fv(GLint l, GLsizei n, GLboolean tr, const GLfloat *v)
 {
+	state_gen++;
 	xprog_t *p = cur_prog();
 	(void)n, (void)tr;
 	if (!p)
@@ -1704,6 +1720,7 @@ static void BWGLAPI xb_glUniformMatrix4fv(GLint l, GLsizei n, GLboolean tr, cons
 
 static void BWGLAPI xb_glEnable(GLenum cap)
 {
+	state_gen++;
 	switch (cap) {
 	case GL_BLEND: st.blend = true; break;
 	case GL_DEPTH_TEST: st.depthtest = true; break;
@@ -1716,6 +1733,7 @@ static void BWGLAPI xb_glEnable(GLenum cap)
 
 static void BWGLAPI xb_glDisable(GLenum cap)
 {
+	state_gen++;
 	switch (cap) {
 	case GL_BLEND: st.blend = false; break;
 	case GL_DEPTH_TEST: st.depthtest = false; break;
@@ -1726,16 +1744,25 @@ static void BWGLAPI xb_glDisable(GLenum cap)
 	}
 }
 
-static void BWGLAPI xb_glBlendFunc(GLenum s, GLenum d) { st.bsrc = st.bsrca = s, st.bdst = st.bdsta = d; }
+static void BWGLAPI xb_glBlendFunc(GLenum s, GLenum d) { state_gen++; st.bsrc = st.bsrca = s, st.bdst = st.bdsta = d; }
 static void BWGLAPI xb_glBlendFuncSeparate(GLenum s, GLenum d, GLenum sa, GLenum da)
 {
+	state_gen++;
 	st.bsrc = s, st.bdst = d, st.bsrca = sa, st.bdsta = da;
 }
-static void BWGLAPI xb_glDepthFunc(GLenum f) { st.depthfunc = f; }
-static void BWGLAPI xb_glDepthMask(GLboolean f) { st.depthmask = f; }
-static void BWGLAPI xb_glDepthRange(double n, double f) { st.depthnear = (float)n, st.depthfar = (float)f; }
-static void BWGLAPI xb_glCullFace(GLenum m) { st.cullface = m; }
-static void BWGLAPI xb_glPolygonOffset(GLfloat factor, GLfloat units) { st.offsetfactor = factor, st.offsetunits = units; }
+static void BWGLAPI xb_glDepthFunc(GLenum f) { state_gen++; st.depthfunc = f; }
+static void BWGLAPI xb_glDepthMask(GLboolean f) { state_gen++; st.depthmask = f; }
+static void BWGLAPI xb_glDepthRange(double n, double f)
+{
+	state_gen++;
+	st.depthnear = (float)n, st.depthfar = (float)f;
+}
+static void BWGLAPI xb_glCullFace(GLenum m) { state_gen++; st.cullface = m; }
+static void BWGLAPI xb_glPolygonOffset(GLfloat factor, GLfloat units)
+{
+	state_gen++;
+	st.offsetfactor = factor, st.offsetunits = units;
+}
 static void BWGLAPI xb_glLineWidth(GLfloat w) { (void)w; }
 static void BWGLAPI xb_glPixelStorei(GLenum p, GLint v) { (void)p, (void)v; }
 
@@ -1748,17 +1775,20 @@ static void BWGLAPI xb_glFinish(void)
 
 static void BWGLAPI xb_glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a)
 {
+	state_gen++;
 	st.colormask = (r ? NV097_SET_COLOR_MASK_RED_WRITE_ENABLE : 0) | (g ? NV097_SET_COLOR_MASK_GREEN_WRITE_ENABLE : 0) |
 	               (b ? NV097_SET_COLOR_MASK_BLUE_WRITE_ENABLE : 0) | (a ? NV097_SET_COLOR_MASK_ALPHA_WRITE_ENABLE : 0);
 }
 
 static void BWGLAPI xb_glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
 {
+	state_gen++;
 	st.vp[0] = x, st.vp[1] = y, st.vp[2] = w, st.vp[3] = h;
 }
 
 static void BWGLAPI xb_glScissor(GLint x, GLint y, GLsizei w, GLsizei h)
 {
+	state_gen++;
 	st.sc[0] = x, st.sc[1] = y, st.sc[2] = w, st.sc[3] = h;
 }
 
@@ -2238,11 +2268,15 @@ static void index_range(int count, const uint32_t *idx32, const uint16_t *idx16,
 }
 
 /* the dwords put_indices may write */
-static size_t index_words(int count, bool wide) { return (wide ? (size_t)count : (size_t)count / 2 + 1) + (size_t)count / 2047 + 2; }
+static size_t index_words(int count, bool wide)
+{
+	return (wide ? (size_t)count : (size_t)count / 2 + 1) + (size_t)count / 2047 + 2;
+}
 
 /* the commands that send indices, rebased to lo: 16 bits each when the
  * range allows, two a word, an odd last one alone */
-static uint32_t *put_indices(uint32_t *p, int count, const uint32_t *idx32, const uint16_t *idx16, uint32_t lo, bool wide)
+static uint32_t *put_indices(uint32_t *p, int count, const uint32_t *idx32, const uint16_t *idx16, uint32_t lo,
+                             bool wide)
 {
 	if (!wide) {
 		int pairs = count / 2, i = 0;
@@ -2320,7 +2354,8 @@ static iseg_t *find_seg(xbuf_t *b, size_t ofs, int count, const uint32_t *idx32,
 }
 
 /* eb: the element buffer the indices are in, at byte ofs, or NULL */
-static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *idx16, int first, xbuf_t *eb, size_t ofs)
+static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *idx16, int first, xbuf_t *eb,
+                 size_t ofs)
 {
 	vsrc_t src[NATTRS];
 	bool ring, wide = false;
@@ -2343,8 +2378,16 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 		return;
 
 	pb_open(600 + (seg || !(idx32 || idx16) ? (size_t)count / 256 : index_words(count, wide)));
-	set_fixed_state();
-	if (!set_program()) {
+	static uint32_t drawn_gen;
+	static int drawn_aniso;
+	static bool drawn_ok;
+	int aniso = gl_xbox_aniso ? gl_xbox_aniso->ivalue : 0;
+	if (state_gen != drawn_gen || aniso != drawn_aniso) {
+		set_fixed_state();
+		drawn_ok = set_program();
+		drawn_gen = state_gen, drawn_aniso = aniso;
+	}
+	if (!drawn_ok) {
 		pb_close();
 		return;
 	}
@@ -2379,7 +2422,10 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 		tris_this_frame += mode == GL_TRIANGLES ? count / 3 : count - 2;
 }
 
-static void BWGLAPI xb_glDrawArrays(GLenum mode, GLint first, GLsizei count) { draw(mode, count, NULL, NULL, first, NULL, 0); }
+static void BWGLAPI xb_glDrawArrays(GLenum mode, GLint first, GLsizei count)
+{
+	draw(mode, count, NULL, NULL, first, NULL, 0);
+}
 
 static void BWGLAPI xb_glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *ofs,
                                                 GLint basevertex)
