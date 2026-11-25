@@ -314,6 +314,7 @@ bool WC_KeyEvent(int key, bool down, int unicode);
 void WC_SetStartsGame(bool starts);
 void WC_ClientGameShutdown(void);
 void WC_OpenPage(const char *url);
+bool WC_OnBackdrop(void); /* the title's background map runs: not a game to play */
 
 /* cl_setflow.c: the match flow around Bulwark Live sets */
 void SF_Init(void);
@@ -321,6 +322,16 @@ void SF_Frame(void);
 bool SF_Query(const char *req, strbuf_t *out);
 bool SF_InRunningSet(void);
 bool SF_SetGame(void); /* in a Live set game or the training map: no team or hero menus */
+
+/* cl_localplay.c: Local Play, split screen games on this computer
+ * (docs/spec/localplay.md) */
+#define LP_URL "fte://data/web/local/index.html"
+void LP_Init(void);
+void LP_Frame(void);
+bool LP_Query(const char *req, strbuf_t *out);
+bool LP_Active(void); /* the game running was started from Local Play */
+int LP_Players(void); /* the local players (seats in use) */
+bool SF_HidesHeroMenu(void); /* cl_setflow.c: each local player picks in the set view instead */
 extern const qc_builtin_t cl_webcore_builtins[];
 void CL_HostcacheRefresh(bool purge);
 int CL_HostcacheCount(void);

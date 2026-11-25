@@ -1,0 +1,70 @@
+<!--
+	Local Play (docs/spec/localplay.md): split screen games on this screen.
+	Up to four players join with their own controller (Start, or A on a
+	controller nobody has), then pick the mode, map, set length and how the
+	screen splits, and start. The engine comes back here when the game ends,
+	with the same players. Stiletto's look, as the online hub: the title's red
+	wash over #333, standard_07_57 and hooge_05_57.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/local.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/local.js" />
+	</scripts>
+
+	<Panel id="Root" class="root">
+		<Panel class="bg" hittest="false" />
+		<Panel class="bg-red" hittest="false" />
+		<Panel class="stage">
+			<Label class="head" text="LOCAL PLAY" hittest="false" />
+			<Label class="sub" text="Split screen: everyone plays on this screen with their own controller" hittest="false" />
+
+			<!-- the four players; the script fills them in -->
+			<Panel id="Seats" class="seats" />
+
+			<!-- settings: Up / Down to choose, Left / Right to change -->
+			<Panel id="Rows" class="rows">
+				<Button id="Row0" class="row is-selected" onactivate="Local.Click(0)" onmouseover="Local.Hover(0)">
+					<Label class="row-name" text="Mode" hittest="false" />
+					<Label class="row-arrow row-left" text="&lt;" hittest="false" />
+					<Label id="Val0" class="row-value" text="" hittest="false" />
+					<Label class="row-arrow row-right" text="&gt;" hittest="false" />
+					<Label id="Desc0" class="row-desc" text="" hittest="false" />
+				</Button>
+				<Button id="Row1" class="row" onactivate="Local.Click(1)" onmouseover="Local.Hover(1)">
+					<Label class="row-name" text="Map" hittest="false" />
+					<Label class="row-arrow row-left" text="&lt;" hittest="false" />
+					<Label id="Val1" class="row-value" text="" hittest="false" />
+					<Label class="row-arrow row-right" text="&gt;" hittest="false" />
+					<Label id="Desc1" class="row-desc" text="" hittest="false" />
+				</Button>
+				<Button id="Row2" class="row" onactivate="Local.Click(2)" onmouseover="Local.Hover(2)">
+					<Label id="Name2" class="row-name" text="Set" hittest="false" />
+					<Label class="row-arrow row-left" text="&lt;" hittest="false" />
+					<Label id="Val2" class="row-value" text="" hittest="false" />
+					<Label class="row-arrow row-right" text="&gt;" hittest="false" />
+					<Label id="Desc2" class="row-desc" text="" hittest="false" />
+				</Button>
+				<Button id="Row3" class="row" onactivate="Local.Click(3)" onmouseover="Local.Hover(3)">
+					<Label class="row-name" text="Screen" hittest="false" />
+					<Label class="row-arrow row-left" text="&lt;" hittest="false" />
+					<Label id="Val3" class="row-value" text="" hittest="false" />
+					<Label class="row-arrow row-right" text="&gt;" hittest="false" />
+					<Label id="Desc3" class="row-desc" text="" hittest="false" />
+				</Button>
+			</Panel>
+
+			<Label id="Problem" class="problem" text="" hittest="false" />
+			<Button id="Row4" class="btn-start" onactivate="Local.Click(4)" onmouseover="Local.Hover(4)">
+				<Label text="START" hittest="false" />
+			</Button>
+			<Button id="Back" class="btn-back" onactivate="Local.Back()">
+				<Label text="BACK" hittest="false" />
+			</Button>
+
+			<Label class="hint" text="Up / Down choose   -   Left / Right change   -   A or Enter: start   -   B or Esc: back   -   Start on another controller: join, B: leave" hittest="false" />
+		</Panel>
+	</Panel>
+</root>

@@ -52,6 +52,10 @@ static struct {
 	bool searching_after; /* set_after search: queue once Live has us back */
 	bool training;        /* the map we run is a training map while searching */
 	bool prevstate_training;
+	char seat_hero[MAX_SEATS][33]; /* local players' picks, as my_hero */
+	bool local_game;               /* the set game is played by several local players */
+	bool pick_game;                /* a Local Play game without sets: each player picks a hero once */
+	bool picked[MAX_SEATS];        /* ... and who has */
 } sf = {.serial = -1, .prevstate = ca_disconnected, .last_me = -1};
 
 static bool in_game(void) { return cl.state == ca_active; }
@@ -88,17 +92,50 @@ static int word_int(const char *s, int n, int dflt)
 	return dflt;
 }
 
-/* this player's slot in the set, from arena_ents, or -1 */
-static int my_slot(void)
+/* a split screen seat's player entity and slot (cl holds the active seat's) */
+static int seat_ent(int k) { return k == cl.seat ? cl.playerent : cl_seats[k].playerent; }
+static int seat_pslot(int k) { return k == cl.seat ? cl.playerslot : cl_seats[k].playerslot; }
+
+/* a seat's slot in the set, from arena_ents, or -1 */
+static int seat_slot(int k)
 {
 	char ents[64];
+	int ent = seat_ent(k);
 	key("arena_ents", ents, sizeof(ents));
 	for (int i = 0; i < 2; i++) {
 		int e = word_int(ents, i, 0);
-		if (e && e == cl.playerent)
+		if (e && e == ent)
 			return i;
 	}
 	return -1;
+}
+
+/* this player's slot in the set, or -1 */
+static int my_slot(void) { return seat_slot(0); }
+
+/* several players on this screen: each picks and votes in their own part
+ * of the view (Local Play, docs/spec/localplay.md) */
+static bool local_seats(void) { return CL_NumSeats() > 1; }
+
+/* a Local Play game for several players that isn't a set (free for all):
+ * the view gives each player a hero pick when it starts, in place of the
+ * game's own hero menu, which only the first player could use */
+static bool pick_game(void) { return sf.pick_game && in_game() && !sf.set_game && LP_Players() > 1; }
+
+static bool pick_pending(void)
+{
+	if (!pick_game())
+		return false;
+	for (int k = 0; k < MAX_SEATS; k++)
+		if (CL_SeatPlaying(k) && !sf.picked[k])
+			return true;
+	return false;
+}
+
+/* the game's hero menu, while each player picks in the set view instead */
+bool SF_HidesHeroMenu(void)
+{
+	return (sf.pick_game || LP_Active()) && LP_Players() > 1 && !sf.set_game && cl.state != ca_disconnected;
 }
 
 static bool set_game_now(void)
@@ -138,27 +175,32 @@ static void close_view(void)
 static bool view_wants_input(void)
 {
 	char state[32], locks[32], votes[32];
-	int me;
 	if (sf.leaving)
 		return false;
+	if (pick_pending())
+		return true;
 	if (!sf.set_game)
-		return false;
-	me = my_slot();
-	if (me < 0)
 		return false;
 	key("arena_state", state, sizeof(state));
 	key("arena_lock", locks, sizeof(locks));
 	key("arena_vote", votes, sizeof(votes));
-	if (!strcmp(state, "SELECT"))
-		return word_int(locks, me, 0) == 0;
-	if (!strcmp(state, "SET END"))
-		return word_int(votes, me, 0) == 0;
+	/* anyone on this screen with something to choose */
+	for (int k = 0; k < (local_seats() ? MAX_SEATS : 1); k++) {
+		int me = k == 0 || CL_SeatPlaying(k) ? seat_slot(k) : -1;
+		if (me < 0)
+			continue;
+		if (!strcmp(state, "SELECT") && word_int(locks, me, 0) == 0)
+			return true;
+		if (!strcmp(state, "SET END") && word_int(votes, me, 0) == 0)
+			return true;
+	}
 	return false;
 }
 
 static void view_frame(void)
 {
-	bool want = setflow_enabled->ivalue && in_game() && (sf.set_game || sf.leaving || live_queued() || sf.training);
+	bool want = setflow_enabled->ivalue && in_game() &&
+	            (sf.set_game || sf.leaving || live_queued() || sf.training || pick_pending());
 	if (sf.view && !UI_IsOpen(sf.view)) {
 		sf.view = 0;
 		sf.view_input = false;
@@ -174,8 +216,9 @@ static void view_frame(void)
 			return;
 	}
 	bool input = view_wants_input();
-	if (input != sf.view_input) {
-		UI_SetFlags(sf.view, input ? UI_INPUT : 0);
+	int flags = input ? UI_INPUT | (local_seats() ? UI_SEATS : 0) : 0;
+	if (flags != UI_Flags(sf.view)) {
+		UI_SetFlags(sf.view, flags);
 		sf.view_input = input;
 	}
 }
@@ -201,6 +244,11 @@ static void after_set(bool may_search)
 	/* local games after this one aren't sets */
 	if (Cvar_Find("arena_setFirstTo"))
 		Cvar_Set("arena_setFirstTo", "0");
+	/* a Local Play set goes back to Local Play (cl_localplay.c) */
+	bool local = sf.local_game;
+	sf.local_game = false;
+	if (LP_Active() || local)
+		return;
 	if (may_search && !Str_ICmp(set_after->string, "search") && sf.playlist[0]) {
 		sf.searching_after = true;
 		WC_OpenPage(ONLINE_URL "?search=1");
@@ -219,10 +267,12 @@ static void state_frame(void)
 			sf.serial = serial;
 			sf.leaving = false;
 			sf.my_hero[0] = 0;
+			memset(sf.seat_hero, 0, sizeof(sf.seat_hero));
 			cvar_t *pl = Cvar_Find("live_match_playlist");
 			Str_Copy(sf.playlist, pl && pl->string[0] ? pl->string : "duel", sizeof(sf.playlist));
 		}
 		sf.set_game = sf.was_set_game = true;
+		sf.local_game = local_seats() || LP_Active();
 		sf.training = false;
 		for (size_t i = 0; i < NKEYS; i++)
 			key(arena_keys[i], sf.last[i], sizeof(sf.last[i]));
@@ -257,6 +307,14 @@ static void state_frame(void)
 	} else {
 		sf.set_game = false;
 	}
+
+	/* a Local Play game without sets started: everyone picks again */
+	if (LP_Active() && cl.state == ca_active && !sf.set_game && !sf.pick_game) {
+		sf.pick_game = true;
+		memset(sf.picked, 0, sizeof(sf.picked));
+	}
+	if (cl.state == ca_disconnected)
+		sf.pick_game = false;
 
 	/* the set game ended */
 	if (sf.prevstate != ca_disconnected && cl.state == ca_disconnected && sf.was_set_game) {
@@ -348,18 +406,53 @@ static void q_getflow(strbuf_t *out)
 	SB_Printf(out, ",\"match_age\":%.1f", sf.match_seen ? Sys_Seconds() - sf.match_seen_at : 1e6);
 	SB_AppendStr(out, ",\"live\":");
 	SB_AppendStr(out, live_state());
-	SB_AppendStr(out, "}");
+	/* the players on this screen: their slot in the set and where their
+	 * view is, as fractions of the screen */
+	bool picking = pick_pending();
+	SB_Printf(out, ",\"local\":%s,\"localplay\":%s,\"pick\":%s,\"seats\":[",
+	          (live_arena && local_seats()) || picking ? "true" : "false", LP_Active() ? "true" : "false",
+	          picking ? "true" : "false");
+	if ((live_arena && local_seats()) || picking) {
+		bool first = true;
+		for (int k = 0; k < MAX_SEATS; k++) {
+			float r[4];
+			char hero[64] = "";
+			if (!CL_SeatPlaying(k))
+				continue;
+			CL_SeatRect(k, r);
+			if (seat_pslot(k) >= 0)
+				CL_PlayerKey(seat_pslot(k), "*hero", hero, sizeof(hero));
+			SB_Printf(out, "%s{\"seat\":%d,\"slot\":%d,\"done\":%s,\"rect\":[%.4f,%.4f,%.4f,%.4f],\"hero\":",
+			          first ? "" : ",", k, seat_slot(k), sf.picked[k] ? "true" : "false", r[0], r[1], r[2], r[3]);
+			json_str(out, hero[0] ? hero : k ? sf.seat_hero[k] : sf.my_hero);
+			SB_AppendStr(out, ",\"name\":");
+			if (seat_pslot(k) >= 0)
+				CL_PlayerKey(seat_pslot(k), "name", hero, sizeof(hero));
+			json_str(out, hero);
+			SB_AppendStr(out, "}");
+			first = false;
+		}
+	}
+	SB_AppendStr(out, "]}");
 }
 
-static bool hero_ok(const char *id)
+static bool hero_id_ok(const char *id)
 {
-	char ids[1024];
 	size_t n = strlen(id);
 	if (!n || n > 32)
 		return false;
 	for (const char *p = id; *p; p++)
 		if (!isalnum((unsigned char)*p) && *p != '_')
 			return false;
+	return true;
+}
+
+static bool hero_ok(const char *id)
+{
+	char ids[1024];
+	size_t n = strlen(id);
+	if (!hero_id_ok(id))
+		return false;
 	key("arena_heroes", ids, sizeof(ids));
 	for (const char *p = ids; *p;) {
 		while (*p == ' ')
@@ -389,7 +482,20 @@ static bool playlist_ok(const char *p)
 static void q_flow(const char *a, strbuf_t *out)
 {
 	const char *arg = strchr(a, ':');
-	char verb[32];
+	char verb[32], as[8] = "";
+	int seat = 0;
+	/* p<n>:<verb>...: for local player n (split screen) */
+	if (a[0] == 'p' && a[1] >= '1' && a[1] <= '0' + MAX_SEATS && a[2] == ':') {
+		seat = a[1] - '1';
+		if (seat > 0 && (!CL_SeatPlaying(seat) || (!local_seats() && !pick_game()))) {
+			SB_AppendStr(out, "{\"ok\":false}");
+			return;
+		}
+		if (seat > 0)
+			snprintf(as, sizeof(as), "p%d ", seat + 1);
+		a += 3;
+		arg = strchr(a, ':');
+	}
 	size_t n = arg ? (size_t)(arg - a) : strlen(a);
 	if (n >= sizeof(verb))
 		n = sizeof(verb) - 1;
@@ -425,20 +531,29 @@ static void q_flow(const char *a, strbuf_t *out)
 		sf.training = true;
 		Cbuf_AddText(va("set arena_setFirstTo 0\nset g_nomotd 1\nset g_gametype duel\nset deathmatch 1\nset coop 0\nset sv_background 0\nmap %s\n",
 		                setflow_training_map->string));
+	} else if (!strcmp(verb, "lock") && pick_game() && !sf.set_game) {
+		/* a free for all: the hero applies at once */
+		if (strncmp(arg, "hero_", 5) || !hero_id_ok(arg) || sf.picked[seat]) {
+			ok = false;
+		} else {
+			Str_Copy(seat ? sf.seat_hero[seat] : sf.my_hero, arg, sizeof(sf.my_hero));
+			Cbuf_AddText(va("%scmd selecthero %s\n", as, arg));
+			sf.picked[seat] = true;
+		}
 	} else if (!strcmp(verb, "pick") || !strcmp(verb, "lock")) {
 		if (!sf.set_game || !hero_ok(arg)) {
 			ok = false;
 		} else {
-			Str_Copy(sf.my_hero, arg, sizeof(sf.my_hero));
-			Cbuf_AddText(va("cmd selecthero %s\n", arg));
+			Str_Copy(seat ? sf.seat_hero[seat] : sf.my_hero, arg, sizeof(sf.my_hero));
+			Cbuf_AddText(va("%scmd selecthero %s\n", as, arg));
 			if (!strcmp(verb, "lock"))
-				Cbuf_AddText("cmd lockhero\n");
+				Cbuf_AddText(va("%scmd lockhero\n", as));
 		}
 	} else if (!strcmp(verb, "rematch") || !strcmp(verb, "rematch_hero") || !strcmp(verb, "leave")) {
 		if (!sf.set_game)
 			ok = false;
 		else
-			Cbuf_AddText(va("cmd set_%s\n", verb));
+			Cbuf_AddText(va("%scmd set_%s\n", as, verb));
 	} else if (!strcmp(verb, "after")) {
 		if (!strcmp(arg, "search") || !strcmp(arg, "menu"))
 			Cvar_Set("set_after", arg);

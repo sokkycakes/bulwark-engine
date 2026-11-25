@@ -1,0 +1,262 @@
+/* Local Play: the view is 1080 lines high, content sits on a 1440 x 1080
+   stage centred across the width (as the online hub). */
+
+.root
+{
+	width: 100%;
+	height: 100%;
+	font-family: "standard_07_57";
+	color: #ffffff;
+	overflow: noclip;
+}
+.hidden { visibility: collapse; }
+
+.bg { width: 100%; height: 100%; background-color: #2a2a2a; }
+.bg-red
+{
+	width: 100%;
+	height: 100%;
+	background-color: gradient( linear, 0% 0%, 100% 100%, from( #69000290 ), color-stop( 0.55, #69000220 ), to( #00000000 ) );
+}
+
+.stage
+{
+	width: 1440px;
+	height: 1080px;
+	x: 50%;
+	margin-left: -720px;
+	overflow: noclip;
+}
+
+.head
+{
+	x: 80px;
+	y: 60px;
+	font-size: 96px;
+	letter-spacing: -4px;
+	color: #ffffff;
+}
+.sub
+{
+	x: 84px;
+	y: 170px;
+	font-family: "hooge_05_57";
+	font-size: 20px;
+	color: #9d9d9d;
+}
+
+/* --- the players ------------------------------------------------------------------ */
+
+.seats
+{
+	x: 80px;
+	y: 220px;
+	width: 1280px;
+	height: 290px;
+	flow-children: right;
+}
+.seat
+{
+	width: 305px;
+	height: 280px;
+	margin-right: 20px;
+	background-color: #333333d0;
+	border: 3px solid #4a4a4a;
+}
+.seat.is-last { margin-right: 0px; }
+.seat.is-on { background-color: #333333; border: 3px solid #e0262b; }
+.seat.is-joining { border: 3px solid #bfbfbf; }
+.seat-tag
+{
+	x: 0px;
+	y: 0px;
+	width: 88px;
+	height: 72px;
+	background-color: #4a4a4a;
+}
+.seat.is-on .seat-tag { background-color: #e0262b; }
+.seat-tag Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 48px;
+	color: #ffffff;
+}
+.seat-state
+{
+	x: 104px;
+	y: 22px;
+	width: 180px;
+	font-family: "hooge_05_57";
+	font-size: 18px;
+	text-transform: uppercase;
+	color: #9d9d9d;
+}
+.seat.is-on .seat-state { color: #e0262b; }
+.seat-name
+{
+	x: 20px;
+	y: 104px;
+	width: 265px;
+	font-size: 40px;
+	letter-spacing: -1.5px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.seat-dev
+{
+	x: 22px;
+	y: 160px;
+	width: 265px;
+	font-family: "hooge_05_57";
+	font-size: 18px;
+	color: #bfbfbf;
+	text-overflow: shrink;
+}
+.seat-join
+{
+	x: 20px;
+	y: 110px;
+	width: 265px;
+	text-align: center;
+	font-size: 30px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #6d6d6d;
+}
+.seat-hint
+{
+	x: 20px;
+	y: 236px;
+	width: 265px;
+	font-family: "hooge_05_57";
+	font-size: 15px;
+	color: #6d6d6d;
+	text-overflow: shrink;
+}
+
+/* --- settings ------------------------------------------------------------------------ */
+
+.rows
+{
+	x: 80px;
+	y: 540px;
+	width: 1280px;
+	flow-children: down;
+}
+.row
+{
+	width: 1280px;
+	height: 72px;
+	margin-bottom: 10px;
+	background-color: #333333d0;
+	border-left: 6px solid #4a4a4a;
+}
+.row.is-selected { background-color: #bfbfbf; border-left: 6px solid #e0262b; }
+.row.is-off { opacity: 0.35; }
+.row-name
+{
+	x: 24px;
+	vertical-align: center;
+	width: 260px;
+	font-size: 34px;
+	letter-spacing: -1.5px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.row.is-selected .row-name { color: #333333; }
+.row-value
+{
+	x: 340px;
+	vertical-align: center;
+	width: 420px;
+	text-align: center;
+	font-size: 34px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.row.is-selected .row-value { color: #8a0f12; }
+.row-arrow
+{
+	vertical-align: center;
+	width: 40px;
+	text-align: center;
+	font-size: 34px;
+	color: #6d6d6d;
+}
+.row.is-selected .row-arrow { color: #333333; }
+.row-left { x: 300px; }
+.row-right { x: 760px; }
+.row-desc
+{
+	x: 830px;
+	vertical-align: center;
+	width: 430px;
+	font-family: "hooge_05_57";
+	font-size: 17px;
+	color: #9d9d9d;
+	text-overflow: shrink;
+}
+.row.is-selected .row-desc { color: #333333; }
+
+.problem
+{
+	x: 80px;
+	y: 890px;
+	width: 1280px;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 20px;
+	color: #e0262b;
+}
+.btn-start
+{
+	x: 50%;
+	margin-left: -220px;
+	y: 920px;
+	width: 440px;
+	height: 76px;
+	background-color: #8a0f12;
+	border: 3px solid #e0262b;
+}
+.btn-start Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 44px;
+	letter-spacing: -1px;
+	color: #ffffff;
+}
+.btn-start.is-selected { background-color: #e0262b; border: 3px solid #ffffff; }
+.btn-start:disabled { opacity: 0.35; }
+.btn-back
+{
+	x: 80px;
+	y: 928px;
+	width: 200px;
+	height: 60px;
+	background-color: #333333d0;
+	border: 3px solid #4a4a4a;
+}
+.btn-back:hover { background-color: #bfbfbf; border: 3px solid #ffffff; }
+.btn-back Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 28px;
+	color: #d0d0d0;
+}
+.btn-back:hover Label { color: #333333; }
+
+.hint
+{
+	y: 1020px;
+	width: 100%;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 16px;
+	color: #6d6d6d;
+}

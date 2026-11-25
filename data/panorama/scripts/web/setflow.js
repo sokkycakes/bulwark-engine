@@ -1,6 +1,10 @@
 // The in-game set view (layout/web/setflow.xml). Everything it shows comes
 // from fte_query("getflow"): the arena director's serverinfo keys, this
 // player's slot and Live's state. Choices go back as fte_query("flow:...").
+// With several players on this screen (f.local, Local Play) each one picks
+// a hero and votes on a card over their own view, with their own
+// controller: a key event's "seat" says whose it is, and their choices go
+// back as fte_query("flow:p<n>:...").
 var SetFlow = ( function ()
 {
 	var HEROES = {
@@ -70,8 +74,16 @@ var SetFlow = ( function ()
 		show( "#Strip", on );
 		if ( !on )
 			return;
-		$( "#StripName1" ).text = names[ 0 ] + ( f.me === 0 ? "  (you)" : "" );
-		$( "#StripName2" ).text = ( f.me === 1 ? "(you)  " : "" ) + names[ 1 ];
+		if ( f.local )
+		{
+			$( "#StripName1" ).text = slotTag( 0 ) + names[ 0 ];
+			$( "#StripName2" ).text = names[ 1 ] + slotTag( 1, true );
+		}
+		else
+		{
+			$( "#StripName1" ).text = names[ 0 ] + ( f.me === 0 ? "  (you)" : "" );
+			$( "#StripName2" ).text = ( f.me === 1 ? "(you)  " : "" ) + names[ 1 ];
+		}
 		pips( $( "#StripPips1" ), st.wins[ 0 ], st.firstTo );
 		pips( $( "#StripPips2" ), st.wins[ 1 ], st.firstTo );
 		$( "#StripGame" ).text = st.game > 0 ? "Game " + st.game : "Set";
@@ -201,12 +213,14 @@ var SetFlow = ( function ()
 		var log = words( f.arena.set_log );
 		var last = log.length ? log[ log.length - 1 ] : "";
 		var title = winner >= 0 && names[ winner ] ? names[ winner ] + " wins game " + st.game : "Game " + st.game + " over";
-		if ( f.me >= 0 && winner === f.me )
+		if ( f.me >= 0 && winner === f.me && !f.local )
 			title = "You win game " + st.game;
 		$( "#GameEndTitle" ).text = title;
 		var sub = "Rounds " + last + "   -   set " + st.wins[ 0 ] + " - " + st.wins[ 1 ];
 		var decided = st.wins[ 0 ] >= st.firstTo || st.wins[ 1 ] >= st.firstTo;
-		if ( !decided && f.me >= 0 )
+		if ( !decided && f.local && winner >= 0 )
+			sub += "   -   " + names[ 1 - winner ] + " may change hero";
+		else if ( !decided && f.me >= 0 )
 			sub += winner === f.me ? "   -   opponent may change hero" : "   -   you may change hero";
 		$( "#GameEndSub" ).text = sub;
 	}
@@ -306,7 +320,312 @@ var SetFlow = ( function ()
 	function leavingScreen()
 	{
 		$( "#LeavingTitle" ).text = f.notice || "The set is over";
-		$( "#LeavingSub" ).text = f.after === "search" ? "Searching again..." : "Back to the online menu...";
+		$( "#LeavingSub" ).text = f.local || f.localplay ? "Back to Local Play..." :
+			f.after === "search" ? "Searching again..." : "Back to the online menu...";
+	}
+
+	// --- several players on this screen (Local Play) --------------------------------------
+
+	var lc = {};        // per seat: { cursor, picked, vote }
+	var layerKey = "";  // what the cards were built for
+	var cards = {};     // seat -> { panel, tiles[], ... }
+
+	function isRevealed()
+	{
+		return num( f.arena.lock, 0 ) && num( f.arena.lock, 1 ) && f.arena.hero1 && f.arena.hero2;
+	}
+
+	function seatOfSlot( slot )
+	{
+		var seats = f.seats || [];
+		for ( var i = 0; i < seats.length; i++ )
+			if ( seats[ i ].slot === slot )
+				return seats[ i ];
+		return null;
+	}
+
+	function slotTag( slot, after )
+	{
+		var se = seatOfSlot( slot );
+		if ( !se )
+			return "";
+		return after ? "  P" + ( se.seat + 1 ) : "P" + ( se.seat + 1 ) + "  ";
+	}
+
+	// a free for all on this screen: each player picks a hero once, when it starts
+	function pickMode() { return !!( f && f.pick && !f.setgame ); }
+
+	function seatInfo( seat )
+	{
+		var seats = f.seats || [];
+		for ( var i = 0; i < seats.length; i++ )
+			if ( seats[ i ].seat === seat )
+				return seats[ i ];
+		return null;
+	}
+
+	function lstate( seat )
+	{
+		if ( !lc[ seat ] )
+			lc[ seat ] = { cursor: 0, picked: "", vote: 0 };
+		return lc[ seat ];
+	}
+
+	function localReset( s )
+	{
+		for ( var k in lc )
+		{
+			if ( s === "SELECT" )
+			{
+				var se = seatInfo( parseInt( k, 10 ) );
+				lc[ k ].picked = se ? se.hero || "" : "";
+				var at = heroIds.indexOf( lc[ k ].picked );
+				if ( at >= 0 )
+					lc[ k ].cursor = at;
+			}
+			if ( s === "SET END" )
+				lc[ k ].vote = 0;
+		}
+	}
+
+	function seatFlow( seat, verb ) { return flow( "p" + ( seat + 1 ) + ":" + verb ); }
+
+	function pct( v ) { return ( v * 100 ).toFixed( 3 ) + "%"; }
+
+	// a card over the seat's view, inset a little; the top row of views
+	// leaves room for the set strip
+	function cardStyle( r )
+	{
+		var top = r[ 1 ] < 0.01 ? 0.085 : 0.012;
+		return "x: " + pct( r[ 0 ] + 0.012 ) + "; y: " + pct( r[ 1 ] + top ) + "; width: " + pct( r[ 2 ] - 0.024 ) +
+			"; height: " + pct( r[ 3 ] - top - 0.012 ) + ";";
+	}
+
+	function cardHead( panel, se )
+	{
+		var head = $.CreatePanel( "Panel", panel, "", { class: "lcard-head", hittest: "false" } );
+		var tag = $.CreatePanel( "Panel", head, "", { class: "lcard-tag", hittest: "false" } );
+		$.CreatePanel( "Label", tag, "", { text: "P" + ( se.seat + 1 ), hittest: "false" } );
+		var c = { panel: panel };
+		c.name = $.CreatePanel( "Label", head, "", { class: "lcard-name", text: names[ se.slot ] || "", hittest: "false" } );
+		c.timer = $.CreatePanel( "Label", head, "", { class: "lcard-timer", text: "", hittest: "false" } );
+		return c;
+	}
+
+	function buildSelectCard( layer, se )
+	{
+		var panel = $.CreatePanel( "Panel", layer, "", { class: "lcard", style: cardStyle( se.rect ) } );
+		var c = cardHead( panel, se );
+		c.tiles = [];
+		// 4 x 2 tiles between the head (13%) and the foot (from 80%)
+		heroIds.forEach( function ( id, i )
+		{
+			var col = i % 4, row = Math.floor( i / 4 );
+			var t = $.CreatePanel( "Button", panel, "", { class: "ltile", style:
+				"x: " + ( 3 + col * 23.75 ) + "%; y: " + ( 15 + row * 32 ) + "%; width: 22.5%; height: 30%;" } );
+			$.CreatePanel( "Label", t, "", { class: "ltile-name", text: heroName( id ), hittest: "false" } );
+			$.CreatePanel( "Label", t, "", { class: "ltile-role", text: heroRole( id ), hittest: "false" } );
+			t.SetPanelEvent( "onactivate", function () { localPick( se.seat, i, true ); } );
+			c.tiles.push( t );
+		} );
+		c.pick = $.CreatePanel( "Label", panel, "", { class: "lcard-pick", style: "y: 82%;", text: "", hittest: "false" } );
+		c.status = $.CreatePanel( "Label", panel, "", { class: "lcard-status", style: "y: 84%;", text: "", hittest: "false" } );
+		return c;
+	}
+
+	function buildVoteCard( layer, se )
+	{
+		var panel = $.CreatePanel( "Panel", layer, "", { class: "lcard", style: cardStyle( se.rect ) } );
+		var c = cardHead( panel, se );
+		c.result = $.CreatePanel( "Label", panel, "", { class: "lcard-result", style: "y: 17%;", text: "", hittest: "false" } );
+		c.sub = $.CreatePanel( "Label", panel, "", { class: "lcard-sub", style: "y: 36%;", text: "", hittest: "false" } );
+		c.votes = [];
+		[ "REMATCH", "NEW HERO", "LEAVE" ].forEach( function ( label, i )
+		{
+			var b = $.CreatePanel( "Button", panel, "", { class: "btn lvote", style:
+				"x: " + ( 4 + i * 31 ) + "%; y: 50%; width: 30%; height: 20%;" } );
+			$.CreatePanel( "Label", b, "", { text: label, hittest: "false" } );
+			b.SetPanelEvent( "onactivate", function () { localVote( se.seat, i ); } );
+			c.votes.push( b );
+		} );
+		c.status = $.CreatePanel( "Label", panel, "", { class: "lcard-sub", style: "y: 75%;", text: "", hittest: "false" } );
+		$.CreatePanel( "Label", panel, "", { class: "lcard-hint", style: "y: 88%;",
+			text: "Left / Right and A or Enter", hittest: "false" } );
+		return c;
+	}
+
+	function timerText( c )
+	{
+		var t = parseInt( f.arena.deadline, 10 );
+		c.timer.text = isNaN( t ) ? "" : String( t );
+		c.timer.SetHasClass( "low", !isNaN( t ) && t <= 5 );
+	}
+
+	function paintSelectCard( c, se, st )
+	{
+		var ls = lstate( se.seat );
+		var ffa = pickMode();
+		var locked = ffa ? !!se.done : !!num( f.arena.lock, se.slot );
+		var counter = !ffa && st.game > 1 && st.counterSide > 0;
+		var canPick = ( ffa || se.slot >= 0 ) && !locked;
+		if ( !ls.picked && se.hero )
+			ls.picked = se.hero;
+		c.name.text = ffa ? se.name || "P" + ( se.seat + 1 ) : names[ se.slot ] || "";
+		if ( ffa )
+			c.timer.text = "";
+		else
+			timerText( c );
+		c.tiles.forEach( function ( t, i )
+		{
+			var id = heroIds[ i ];
+			t.SetHasClass( "is-cursor", i === ls.cursor && canPick );
+			t.SetHasClass( "is-picked", id === ls.picked );
+			t.SetHasClass( "is-off", !canPick && id !== ls.picked );
+		} );
+		c.pick.text = heroName( canPick ? heroIds[ ls.cursor ] : ls.picked ) || "-";
+		c.panel.SetHasClass( "is-done", locked );
+		if ( locked )
+			c.status.text = ffa ? "Locked in - waiting for the others" :
+				counter && st.counterSide !== se.slot + 1 ? "Hero stays" : "Locked in";
+		else if ( counter && st.counterSide === se.slot + 1 )
+			c.status.text = "Counterpick: A / Enter";
+		else
+			c.status.text = "A / Enter: lock in";
+	}
+
+	function paintVoteCard( c, se, st )
+	{
+		var ls = lstate( se.seat );
+		var mine = num( f.arena.vote, se.slot );
+		var other = num( f.arena.vote, 1 - se.slot );
+		var forfeit = st.result === 2;
+		var won = st.winnerSide === se.slot + 1;
+		c.name.text = names[ se.slot ] || "";
+		timerText( c );
+		c.result.text = st.winnerSide ? ( won ? "You win the set" : "You lose the set" ) : "Set over";
+		c.result.SetHasClass( "win", won );
+		var log = words( f.arena.set_log );
+		c.sub.text = st.wins[ 0 ] + " - " + st.wins[ 1 ] + ( log.length ? "   -   games " + log.join( "  " ) : "" );
+		c.votes.forEach( function ( b, i )
+		{
+			b.SetHasClass( "is-selected", i === ls.vote && !mine );
+			b.SetHasClass( "is-chosen", mine === i + 1 );
+			b.enabled = !mine && !forfeit;
+		} );
+		c.panel.SetHasClass( "is-done", !!mine );
+		var otherName = names[ 1 - se.slot ] || "";
+		var ot = forfeit ? "Leaving the set..." : mine ? "You chose: " + VOTE_TEXT[ mine ] : "";
+		if ( !forfeit && other )
+			ot += ( ot ? "   -   " : "" ) + ( other === 3 ? otherName + " is leaving" :
+				otherName + " wants a rematch" + ( other === 2 ? " (new hero)" : "" ) );
+		c.status.text = ot;
+	}
+
+	function localLayer( kind, st )
+	{
+		var layer = $( "#LocalLayer" );
+		var seats = ( f && f.local && f.seats ) || [];
+		show( "#LocalLayer", !!kind && seats.length > 0 );
+		var key = kind ? kind + "|" + heroIds.join( "," ) + "|" + seats.map( function ( se )
+		{
+			return se.seat + ":" + se.slot + ":" + se.rect.join( "," );
+		} ).join( ";" ) : "";
+		if ( key !== layerKey )
+		{
+			layerKey = key;
+			layer.RemoveAndDeleteChildren();
+			cards = {};
+			seats.forEach( function ( se )
+			{
+				if ( !kind || ( se.slot < 0 && !pickMode() ) )
+					return;
+				cards[ se.seat ] = kind === "select" ? buildSelectCard( layer, se ) : buildVoteCard( layer, se );
+			} );
+		}
+		seats.forEach( function ( se )
+		{
+			var c = cards[ se.seat ];
+			if ( !c )
+				return;
+			if ( kind === "select" )
+				paintSelectCard( c, se, st );
+			else if ( kind === "vote" )
+				paintVoteCard( c, se, st );
+		} );
+	}
+
+	function localPick( seat, i, andLock )
+	{
+		var se = seatInfo( seat );
+		if ( !se || !heroIds[ i ] )
+			return;
+		if ( pickMode() ? se.done : ( se.slot < 0 || f.arena.state !== "SELECT" || num( f.arena.lock, se.slot ) ) )
+			return;
+		var ls = lstate( seat );
+		ls.cursor = i;
+		ls.picked = heroIds[ i ];
+		if ( pickMode() && !andLock )
+		{
+			sound( SND_NAV );
+			render();
+			return;
+		}
+		seatFlow( seat, ( andLock ? "lock:" : "pick:" ) + ls.picked );
+		sound( andLock ? SND_OK : SND_NAV );
+		render();
+	}
+
+	function localVote( seat, i )
+	{
+		var se = seatInfo( seat );
+		if ( !se || se.slot < 0 || f.arena.state !== "SET END" || num( f.arena.vote, se.slot ) )
+			return;
+		lstate( seat ).vote = i;
+		seatFlow( seat, VOTE_CMDS[ i ] );
+		sound( SND_OK );
+		render();
+	}
+
+	function localKey( e )
+	{
+		var seat = typeof e.seat === "number" && e.seat >= 0 ? e.seat : 0;
+		var se = seatInfo( seat );
+		if ( !se || ( se.slot < 0 && !pickMode() ) )
+			return;
+		var k = e.key || "", b = String( e.bind || "" ).toUpperCase(), s = f.arena.state;
+		var left = k === "ArrowLeft" || k === "a" || k === "A" || b === "GP_DPAD_LEFT";
+		var right = k === "ArrowRight" || k === "d" || k === "D" || b === "GP_DPAD_RIGHT";
+		var up = k === "ArrowUp" || k === "w" || k === "W" || b === "GP_DPAD_UP";
+		var down = k === "ArrowDown" || k === "s" || k === "S" || b === "GP_DPAD_DOWN";
+		var ok = k === "Enter" || k === " " || b === "GP_A";
+		var ls = lstate( seat );
+		var selecting = pickMode() ? !se.done : s === "SELECT" && !num( f.arena.lock, se.slot );
+		if ( selecting && heroIds.length )
+		{
+			var n = heroIds.length, c = ls.cursor;
+			if ( right ) c = ( c + 1 ) % n;
+			else if ( left ) c = ( c + n - 1 ) % n;
+			else if ( down ) c = ( c + 4 ) % n;
+			else if ( up ) c = ( c + n - 4 ) % n;
+			else if ( ok ) { localPick( seat, ls.cursor, true ); return; }
+			else return;
+			if ( c !== ls.cursor )
+			{
+				ls.cursor = c;
+				ls.picked = heroIds[ c ];
+				if ( !pickMode() )
+					seatFlow( seat, "pick:" + ls.picked );
+				sound( SND_NAV );
+				render();
+			}
+		}
+		else if ( s === "SET END" && !num( f.arena.vote, se.slot ) )
+		{
+			if ( right ) { ls.vote = Math.min( 2, ls.vote + 1 ); sound( SND_NAV ); render(); }
+			else if ( left ) { ls.vote = Math.max( 0, ls.vote - 1 ); sound( SND_NAV ); render(); }
+			else if ( ok ) localVote( seat, ls.vote );
+			else if ( k === "1" || k === "2" || k === "3" ) localVote( seat, parseInt( k, 10 ) - 1 );
+		}
 	}
 
 	// --- frame -----------------------------------------------------------------------------
@@ -322,6 +641,8 @@ var SetFlow = ( function ()
 		var ids = words( f.arena.heroes );
 		if ( ids.length )
 			heroIds = ids;
+		else if ( !heroIds.length )
+			heroIds = Object.keys( HEROES );
 		if ( s !== lastState || st.game !== lastGame )
 		{
 			if ( s === "SELECT" )
@@ -332,6 +653,7 @@ var SetFlow = ( function ()
 			}
 			if ( s === "SET END" )
 				voteCursor = 0;
+			localReset( s );
 			lastState = s;
 			lastGame = st.game;
 		}
@@ -341,14 +663,30 @@ var SetFlow = ( function ()
 		var inSet = f.setgame && !leaving;
 		show( "#Select", false );
 		show( "#Reveal", false );
+		var localCards = "";
 		if ( inSet && s === "SELECT" )
+		{
 			selectScreen( st );
+			if ( f.local && !isRevealed() )
+			{
+				show( "#Select", false );
+				localCards = "select";
+			}
+		}
+		if ( pickMode() && !leaving )
+			localCards = "select";
 		show( "#GameEnd", inSet && s === "MATCH END" );
 		if ( inSet && s === "MATCH END" )
 			gameEndScreen( st );
-		show( "#SetEnd", inSet && s === "SET END" );
+		show( "#SetEnd", inSet && s === "SET END" && !f.local );
 		if ( inSet && s === "SET END" )
-			setEndScreen( st );
+		{
+			if ( f.local )
+				localCards = "vote";
+			else
+				setEndScreen( st );
+		}
+		localLayer( localCards, st );
 		if ( leaving )
 			leavingScreen();
 		ribbon();
@@ -366,6 +704,11 @@ var SetFlow = ( function ()
 	{
 		if ( !e || !e.down || !f )
 			return;
+		if ( f.local )
+		{
+			localKey( e );
+			return;
+		}
 		var k = e.key, s = f.arena.state;
 		if ( s === "SELECT" && !myLock() )
 		{

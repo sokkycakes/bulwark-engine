@@ -3,7 +3,7 @@
 // Keys come as Bulwark "key" events, mouse through onactivate / onmouseover.
 var TitleMenu = (function ()
 {
-	var COUNT = 6;
+	var COUNT = 7;
 	// classic Quake menu sounds, as the page plays them
 	var SND_NAV = "misc/menu1";
 	var SND_OK = "misc/menu2";
@@ -246,21 +246,26 @@ var TitleMenu = (function ()
 		}
 		if ( selected === 1 )
 		{
-			openJoin( true );
+			leaveTitle( "menu_webcore local" );
 			return;
 		}
 		if ( selected === 2 )
+		{
+			openJoin( true );
+			return;
+		}
+		if ( selected === 3 )
 		{
 			localsound( SND_OK );
 			openJoin( false );
 			return;
 		}
-		if ( selected === 3 )
+		if ( selected === 4 )
 		{
 			leaveTitle( "menu_webcore servers" );
 			return;
 		}
-		leaveTitle( selected === 4 ? "menu_options" : "quit" );
+		leaveTitle( selected === 5 ? "menu_options" : "quit" );
 	}
 
 	function createLobby( online )
@@ -397,20 +402,22 @@ var TitleMenu = (function ()
 	{
 		if ( !e || !e.down )
 			return;
-		var key = e.key;
+		var key = e.key, bind = String( e.bind || "" ).toUpperCase();
 		if ( transitioning )
 			return;
 		if ( joinOpen )
 		{
-			if ( key === "Escape" )
+			if ( key === "Escape" || bind === "GP_B" )
 				closeJoin();
 			return;
 		}
-		if ( key === "ArrowUp" || key === "w" || key === "W" )
+		// controllers: the d-pad (and the left stick, which the engine
+		// turns into d-pad presses) and A
+		if ( key === "ArrowUp" || key === "w" || key === "W" || bind === "GP_DPAD_UP" )
 			select( selected - 1 );
-		else if ( key === "ArrowDown" || key === "s" || key === "S" )
+		else if ( key === "ArrowDown" || key === "s" || key === "S" || bind === "GP_DPAD_DOWN" )
 			select( selected + 1 );
-		else if ( key === "Enter" || key === " " )
+		else if ( key === "Enter" || key === " " || bind === "GP_A" )
 			activate();
 		else if ( key === "WheelDown" )
 			select( selected + 1 );

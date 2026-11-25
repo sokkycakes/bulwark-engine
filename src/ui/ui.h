@@ -19,7 +19,8 @@ extern "C" {
 
 enum {
 	UI_INPUT = 1, /* the view takes keyboard and mouse input */
-	UI_EMBED = 2  /* not drawn with the others: UI_DrawAt puts it where it is wanted */
+	UI_EMBED = 2, /* not drawn with the others: UI_DrawAt puts it where it is wanted */
+	UI_SEATS = 4  /* with UI_INPUT: also takes split screen guests' keys in a game */
 };
 
 /* scripts reach the engine through Bulwark.Send(action, arg); "cmd" runs a
@@ -57,6 +58,11 @@ void UI_Post(int view, const char *event, const char *json);
 void UI_Eval(int view, const char *js);
 
 bool UI_WantsInput(void);
+bool UI_WantsSeatInput(void); /* the input view takes guests' keys (UI_SEATS) */
+/* who the next key events come from: the device (0 keyboard and mouse,
+ * 1.. a controller slot + 1) and its split screen seat (-1 none); key
+ * events tell scripts as "device" and "seat" */
+void UI_SetKeySource(int device, int seat);
 bool UI_KeyEvent(int key, bool down, int unicode); /* true when a view used it */
 void UI_MouseMove(float x, float y);                /* window pixels */
 
