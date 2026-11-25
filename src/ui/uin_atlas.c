@@ -34,7 +34,7 @@
 #pragma GCC diagnostic pop
 #endif
 
-#define ATLAS_VERSION 2
+#define ATLAS_VERSION 3 /* 3: CFF FontMatrix slant */
 #define MAX_GLYPHS 1400
 #define MAX_KERNS 8192
 #define MAX_FAMILIES 24
@@ -305,6 +305,124 @@ static fontfile_t *face_font(fontset_t *fs, int face, bool runtime, char *path, 
 	return NULL;
 }
 
+/* --- slanted CFF faces --------------------------------------------------------------------
+ * A CFF font can keep upright outlines and slant them with its FontMatrix
+ * (HelveticaNeue97BlackCondensedOblique.otf: [a 0 c d 0 0], c/a the
+ * slant). stb_truetype ignores the matrix and draws such a face upright, so
+ * the baker slants the outline itself. TrueType outlines are drawn as
+ * they are. */
+
+/* a CFF real operand (b0 30): packed decimal nibbles */
+static double cff_real(stbtt__buf *b)
+{
+	char txt[32];
+	int n = 0;
+	stbtt__buf_skip(b, 1);
+	while (b->cursor < b->size) {
+		int v = stbtt__buf_get8(b);
+		for (int k = 0; k < 2; k++) {
+			int nib = k ? v & 15 : v >> 4;
+			if (nib == 15 || n >= (int)sizeof(txt) - 3) {
+				txt[n] = 0;
+				return atof(txt);
+			}
+			if (nib <= 9)
+				txt[n++] = (char)('0' + nib);
+			else if (nib == 10)
+				txt[n++] = '.';
+			else if (nib == 11 || nib == 12) {
+				txt[n++] = 'e';
+				if (nib == 12)
+					txt[n++] = '-';
+			} else if (nib == 14)
+				txt[n++] = '-';
+		}
+	}
+	txt[n] = 0;
+	return atof(txt);
+}
+
+/* the x slant (x' = x + slant y, font units) of a CFF face's FontMatrix */
+static float cff_slant(const stbtt_fontinfo *info)
+{
+	stbtt__buf b = info->cff, top, m;
+	double v[6];
+	int n = 0;
+	if (!b.data || b.size < 4)
+		return 0;
+	stbtt__buf_skip(&b, 2);
+	stbtt__buf_seek(&b, stbtt__buf_get8(&b)); /* past the header */
+	stbtt__cff_get_index(&b);                 /* names */
+	top = stbtt__cff_get_index(&b);
+	if (stbtt__cff_index_count(&top) < 1)
+		return 0;
+	top = stbtt__cff_index_get(top, 0);
+	m = stbtt__dict_get(&top, 0x100 | 7); /* FontMatrix, operator 12 7 */
+	while (n < 6 && m.cursor < m.size)
+		v[n++] = stbtt__buf_peek8(&m) == 30 ? cff_real(&m) : (double)(int)stbtt__cff_int(&m);
+	if (n < 6 || v[0] == 0 || v[3] == 0)
+		return 0;
+	return fabs(v[2] / v[0]) > 0.001 ? (float)(v[2] / v[0]) : 0;
+}
+
+/* the glyph's outline, slanted: free it with stbtt_FreeShape */
+static int slanted_shape(const stbtt_fontinfo *info, int g, float slant, stbtt_vertex **pv)
+{
+	int n = stbtt_GetGlyphShape(info, g, pv);
+	for (int i = 0; i < n; i++) {
+		stbtt_vertex *v = &(*pv)[i];
+		v->x = (stbtt_vertex_type)floorf(v->x + slant * v->y + 0.5f);
+		v->cx = (stbtt_vertex_type)floorf(v->cx + slant * v->cy + 0.5f);
+		v->cx1 = (stbtt_vertex_type)floorf(v->cx1 + slant * v->cy1 + 0.5f);
+	}
+	return n;
+}
+
+/* as stbtt_GetGlyphBitmapBox, of the slanted outline (control points
+ * included: a box at most a little large) */
+static void slanted_box(const stbtt_fontinfo *info, int g, float slant, float s, int *x0, int *y0, int *x1, int *y1)
+{
+	stbtt_vertex *v;
+	int n = slanted_shape(info, g, slant, &v);
+	float lx = 1e9f, ly = 1e9f, hx = -1e9f, hy = -1e9f;
+	for (int i = 0; i < n; i++) {
+		lx = BW_MIN(lx, (float)BW_MIN(v[i].x, v[i].type == STBTT_vline || v[i].type == STBTT_vmove ? v[i].x : v[i].cx));
+		hx = BW_MAX(hx, (float)BW_MAX(v[i].x, v[i].type == STBTT_vline || v[i].type == STBTT_vmove ? v[i].x : v[i].cx));
+		ly = BW_MIN(ly, (float)BW_MIN(v[i].y, v[i].type == STBTT_vline || v[i].type == STBTT_vmove ? v[i].y : v[i].cy));
+		hy = BW_MAX(hy, (float)BW_MAX(v[i].y, v[i].type == STBTT_vline || v[i].type == STBTT_vmove ? v[i].y : v[i].cy));
+		if (v[i].type == STBTT_vcubic) {
+			lx = BW_MIN(lx, (float)v[i].cx1), hx = BW_MAX(hx, (float)v[i].cx1);
+			ly = BW_MIN(ly, (float)v[i].cy1), hy = BW_MAX(hy, (float)v[i].cy1);
+		}
+	}
+	stbtt_FreeShape(info, v);
+	if (n <= 0) {
+		*x0 = *y0 = *x1 = *y1 = 0;
+		return;
+	}
+	*x0 = (int)floorf(lx * s);
+	*y0 = (int)floorf(-hy * s);
+	*x1 = (int)ceilf(hx * s);
+	*y1 = (int)ceilf(-ly * s);
+}
+
+/* as stbtt_MakeGlyphBitmap, of the slanted outline; x0 y0 its box's corner */
+static void slanted_bitmap(const stbtt_fontinfo *info, int g, float slant, float s, uint8_t *out, int w, int h, int x0,
+                           int y0)
+{
+	stbtt_vertex *v;
+	stbtt__bitmap bm;
+	int n = slanted_shape(info, g, slant, &v);
+	bm.pixels = out;
+	bm.w = w;
+	bm.h = h;
+	bm.stride = w;
+	memset(out, 0, (size_t)w * h);
+	if (n > 0)
+		stbtt_Rasterize(&bm, 0.35f, v, n, s, s, 0, 0, x0, y0, 1, NULL);
+	stbtt_FreeShape(info, v);
+}
+
 /* --- packing ---------------------------------------------------------------------------- */
 
 enum { IT_WHITE, IT_GLYPH, IT_REGION };
@@ -554,11 +672,12 @@ static bool bake(int h, bool runtime, pages_t *out)
 		item_t *sorted[MAX_ITEMS];
 		sky_t sky[MAX_SKY];
 		float scales[UIN_NUM_FACES];
+		float slants[UIN_NUM_FACES];
 		fontfile_t *fonts[UIN_NUM_FACES];
 	} *wk = Mem_Alloc(sizeof(*wk));
 	fontset_t *fs = &wk->fs;
 	item_t *items = wk->items, **sorted = wk->sorted;
-	float *scales = wk->scales;
+	float *scales = wk->scales, *slants = wk->slants;
 	fontfile_t **fonts = wk->fonts;
 	int nitems = 0;
 	double t0 = Sys_Seconds(), t_metrics, t_pack, t_glyphs = 0, t_images = 0;
@@ -590,6 +709,7 @@ static bool bake(int h, bool runtime, pages_t *out)
 		if (!ff)
 			continue;
 		s = scales[f] = stbtt_ScaleForMappingEmToPixels(&ff->info, face->px);
+		slants[f] = cff_slant(&ff->info);
 		stbtt_GetFontVMetrics(&ff->info, &asc, &desc, &gap);
 		/* the em box, split as the font splits ascent and descent */
 		face->ascent = asc - desc > 0 ? face->px * asc / (float)(asc - desc) : face->px * 0.8f;
@@ -606,7 +726,10 @@ static bool bake(int h, bool runtime, pages_t *out)
 				Con_Printf("^3ui: atlas glyph table full at %s\n", d->name);
 				break;
 			}
-			stbtt_GetGlyphBitmapBox(&ff->info, g, s, s, &x0, &y0, &x1, &y1);
+			if (slants[f])
+				slanted_box(&ff->info, g, slants[f], s, &x0, &y0, &x1, &y1);
+			else
+				stbtt_GetGlyphBitmapBox(&ff->info, g, s, s, &x0, &y0, &x1, &y1);
 			stbtt_GetGlyphHMetrics(&ff->info, g, &adv, &lsb);
 			if (stbtt_IsGlyphEmpty(&ff->info, g))
 				x0 = y0 = x1 = y1 = 0;
@@ -711,7 +834,10 @@ static bool bake(int h, bool runtime, pages_t *out)
 			uint8_t *ink = Mem_Alloc((size_t)iw * ih);
 			int g = stbtt_FindGlyphIndex(&ff->info, gl->cp);
 			float s = scales[gl->face];
-			stbtt_MakeGlyphBitmap(&ff->info, ink, iw, ih, iw, s, s, g);
+			if (slants[gl->face])
+				slanted_bitmap(&ff->info, g, slants[gl->face], s, ink, iw, ih, gl->xoff + o, gl->yoff + o);
+			else
+				stbtt_MakeGlyphBitmap(&ff->info, ink, iw, ih, iw, s, s, g);
 			if (d->flags & UF_PIXEL)
 				for (int q = 0; q < iw * ih; q++)
 					ink[q] = ink[q] >= 128 ? 255 : 0;
