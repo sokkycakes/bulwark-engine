@@ -37,9 +37,12 @@
  * - Vertex buffers live in contiguous memory too. Streamed ones come from a
  *   ring that alternates halves every frame; storage the GPU may still read
  *   is freed two frames later.
- * - Indices are sent inline in the command stream, 16 bits each when the
- *   draw's vertex range allows it (the vertex arrays are rebased to the
- *   draw's lowest index).
+ * - Indices are sent in the command stream, 16 bits each when the draw's
+ *   vertex range allows it (the vertex arrays are rebased to the draw's
+ *   lowest index). A static index buffer's runs are made into commands in
+ *   GPU memory once and called from the stream; streamed ones go inline.
+ * - The command stream is a ring the CPU keeps a frame ahead of the GPU in,
+ *   handed to the GPU in batches (see pb_kick).
  *
  * Not supported: framebuffer objects (CheckFramebufferStatus says
  * incomplete), so the renderer draws straight to the screen. */

@@ -323,8 +323,16 @@ desktop:
   contiguous memory. Mipmaps are made on the CPU. World textures are 16-bit
   unless `gl_xbox_texquality 1`. 2D pictures are always 32-bit.
 - **Vertices:** streamed vertex data comes from a ring that alternates
-  halves each frame. Indices go inline in the command stream, 16 bits each
-  where the draw allows it.
+  halves each frame. Skinned models stream only positions and normals; the
+  rest of their vertices stays in GPU memory. Static index buffers become
+  command runs in GPU memory the first time they are drawn, which the
+  stream calls; streamed indices go inline, 16 bits each where the draw
+  allows it.
+- **Command stream:** a ring the CPU writes a frame ahead of the GPU in.
+  It is handed to the GPU every 32 KB and before any wait for it, since
+  each hand-over flushes the write-combine buffers. `gl_xbox_stats` also
+  prints the hand-overs, the time spent waiting for the GPU, and how much
+  a frame streams.
 
 ### Sound
 
