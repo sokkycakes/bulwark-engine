@@ -144,7 +144,7 @@
 }
 
 /* middle: the hero, large (Stiletto has no portrait or showcase art yet,
-   so the hero's initial and name stand in for the model) */
+   so the hero's initial stands in for the model) */
 .v2-stage
 {
 	x: 37%;
@@ -167,17 +167,6 @@
 	letter-spacing: -20px;
 	color: #ffffff22;
 	text-transform: uppercase;
-}
-.v2-stage-name
-{
-	y: 420px;
-	width: 100%;
-	text-align: center;
-	font-size: 64px;
-	letter-spacing: -2px;
-	text-transform: uppercase;
-	color: #ffffff;
-	text-overflow: shrink;
 }
 
 /* right: help */

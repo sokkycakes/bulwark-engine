@@ -58,7 +58,6 @@
 			<Panel class="v2-stage" hittest="false">
 				<Panel class="v2-stage-glow" hittest="false" />
 				<Label id="StageInitial" class="v2-stage-initial" text="" hittest="false" />
-				<Label id="StageName" class="v2-stage-name" text="" hittest="false" />
 			</Panel>
 
 			<!-- right: how this pick works -->

@@ -22,7 +22,7 @@ the glue to Bulwark Live live in the engine.
 5. **Hero select** (SELECT), laid out loosely after Deadlock's pre-alpha
    hero select (`layout/web/setflow-v2.xml`; `setflow_layout` switches back
    to the grid in `setflow.xml`): the hero's name, line, blurb and kit on
-   the left, the hero large in the middle (its initial and name until Stiletto
+   the left, the hero large in the middle (its initial until Stiletto
    has showcase art), how the pick works and the opponent's status on the
    right, the roster strip with Lock In along the bottom, key hints below.
    It is a blind pick with a 20 s timer. Neither side sees

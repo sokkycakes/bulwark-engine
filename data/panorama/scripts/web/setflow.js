@@ -171,7 +171,6 @@ var SetFlow = ( function ()
 			$.CreatePanel( "Label", c, "", { class: "kit-name", text: name || "none", hittest: "false" } );
 		} );
 		$( "#StageInitial" ).text = heroName( id ).charAt( 0 );
-		$( "#StageName" ).text = heroName( id );
 	}
 
 	function moveCursor( i, snd )
