@@ -30,6 +30,12 @@ add_compile_options("SHELL:-include ${BW_XBOX_DIR}/compat/bw_xbox.h")
 # nxdk-cc passes -fno-builtin; give memcpy, sqrtf and friends back to the
 # optimiser. The Pentium III has SSE (single precision): use it for floats.
 add_compile_options(-fbuiltin -mfpmath=sse -Wno-unused-function)
+# nxdk's toolchain leaves the per-configuration flags empty, so without this
+# every file builds at -O0: the engine ran several times slower for it
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+	add_compile_options(-O2)
+	add_compile_definitions(NDEBUG)
+endif()
 
 set(BW_XBOX_LIBS
 	${NXDK_DIR}/lib/libSDL2.lib
