@@ -12,7 +12,7 @@ else. It needs Xvfb running on --display, or a real display.
 
 Checks: the master lists our game's servers only, the bridge's sb_list and
 sb_details carry the rows, players and rules, the page joins a server with
-GP_A, a locked server bounces a wrong password back to the browser with the
+its search and GP_A, the title menu opens it, a locked server bounces a wrong password back to the browser with the
 reason and lets the right one in, favorites and history are kept.
 """
 import argparse
@@ -116,9 +116,10 @@ def main():
         cdir = os.path.join(B, "sbtest-client")
         shutil.rmtree(cdir, ignore_errors=True)
         os.makedirs(cdir)
-        # the page lists by ping, so the test picks rows by filters instead:
-        # Mode is the first chip; the locked server is the only deathmatch
-        # one without bots, so "Empty: Hide" then Mode leaves predictable rows
+        # the page lists by ping, so the test finds rows with the search
+        # field instead: Up twice from the first row reaches the toolbar,
+        # whose search field is selected, A starts typing and A again
+        # leaves it with the one matching row selected
         cfg = f"""
 set net_master1 127.0.0.1:{mport}
 set name "SBTester"
@@ -131,67 +132,77 @@ in 6.5 sb_query sb_details:{bots}
 in 7.5 echo SBDETAILS
 in 7.6 sb_query sb_details:{bots}
 in 8 sb_query sb_favorite:{bots}
-in 8.5 menu_webcore servers
+// the title menu's fourth item, Find Servers, opens the browser
+in 8.3 menu_webcore_title
+in 9.3 ui_key DOWNARROW
+in 9.5 ui_key DOWNARROW
+in 9.7 ui_key DOWNARROW
+in 9.9 ui_key ENTER
 in 11 screenshot sbtest_list
-// deathmatch only, empty ones hidden: the bots server is the one row
 in 11.5 ui_key GP_DPAD_UP
-in 11.7 ui_key GP_A
-in 12 ui_key GP_DPAD_RIGHT
-in 12.2 ui_key GP_A
-in 12.4 ui_key GP_DPAD_DOWN
-in 12.8 screenshot sbtest_bots_only
-in 13 ui_key GP_A
+in 11.7 ui_key GP_DPAD_UP
+in 12.0 ui_key GP_A
+in 12.2 ui_key b
+in 12.3 ui_key o
+in 12.4 ui_key t
+in 12.5 ui_key s
+in 12.8 ui_key GP_A
+in 13.2 screenshot sbtest_bots_only
+in 13.5 ui_key GP_A
 in 19 screenshot sbtest_ingame
 in 19.5 echo SBSTATE1
 in 19.6 sb_query sb_list
 in 20.5 disconnect
 in 22 menu_webcore servers
-// deathmatch, sorted by name: Bots, Locked
-in 25.0 ui_key GP_DPAD_UP
-in 25.2 ui_key GP_A
-in 25.4 ui_key GP_DPAD_RIGHT
-in 25.5 ui_key GP_DPAD_RIGHT
-in 25.6 ui_key GP_DPAD_RIGHT
-in 25.7 ui_key GP_DPAD_RIGHT
-in 25.9 ui_key GP_A
-in 26.1 ui_key GP_A
-in 26.3 ui_key GP_DPAD_DOWN
-in 26.5 ui_key HOME
-in 26.7 ui_key GP_DPAD_DOWN
-in 27.0 screenshot sbtest_locked_wrong
-in 27.2 ui_key GP_A
-in 27.8 ui_key x
-in 27.9 ui_key x
-in 28.2 screenshot sbtest_password
-in 28.5 ui_key GP_A
-in 33 screenshot sbtest_refused
-in 34.0 ui_key GP_DPAD_UP
-in 34.2 ui_key GP_A
-in 34.4 ui_key GP_DPAD_RIGHT
-in 34.5 ui_key GP_DPAD_RIGHT
-in 34.6 ui_key GP_DPAD_RIGHT
-in 34.7 ui_key GP_DPAD_RIGHT
-in 34.9 ui_key GP_A
-in 35.1 ui_key GP_A
-in 35.3 ui_key GP_DPAD_DOWN
-in 35.5 ui_key HOME
-in 35.7 ui_key GP_DPAD_DOWN
-in 36.0 screenshot sbtest_locked_right
-in 36.2 ui_key GP_A
-in 36.8 ui_key h
-in 36.9 ui_key u
-in 37.0 ui_key n
-in 37.1 ui_key t
-in 37.2 ui_key e
-in 37.3 ui_key r
-in 37.4 ui_key 2
-in 37.7 ui_key GP_A
-in 44 screenshot sbtest_locked_ingame
-in 44.5 echo SBSTATE2
-in 44.6 sb_query sb_list
-in 45 echo SBCVARS
-in 45.1 cvarlist sb_
-in 46 quit
+in 25.0 ui_key GP_VIEW
+in 25.4 screenshot sbtest_filters
+in 25.8 ui_key GP_B
+in 26.2 ui_key GP_B
+// closing the filter menu left the filter button selected: Right to search
+in 27.2 ui_key GP_DPAD_UP
+in 27.35 ui_key GP_DPAD_UP
+in 27.5 ui_key GP_DPAD_RIGHT
+in 27.7 ui_key GP_A
+in 28.0 ui_key l
+in 28.1 ui_key o
+in 28.2 ui_key c
+in 28.3 ui_key k
+in 28.4 ui_key e
+in 28.5 ui_key d
+in 28.9 ui_key GP_A
+in 29.2 screenshot sbtest_locked_wrong
+in 29.4 ui_key GP_A
+in 29.8 ui_key x
+in 29.9 ui_key x
+in 30.2 screenshot sbtest_password
+in 30.5 ui_key GP_A
+in 36 screenshot sbtest_refused
+in 38.6 ui_key GP_DPAD_UP
+in 38.7 ui_key GP_DPAD_UP
+in 38.8 ui_key GP_A
+in 39.0 ui_key l
+in 39.1 ui_key o
+in 39.2 ui_key c
+in 39.3 ui_key k
+in 39.4 ui_key e
+in 39.5 ui_key d
+in 39.9 ui_key GP_A
+in 40.2 screenshot sbtest_locked_right
+in 40.4 ui_key GP_A
+in 40.8 ui_key h
+in 40.9 ui_key u
+in 41.0 ui_key n
+in 41.1 ui_key t
+in 41.2 ui_key e
+in 41.3 ui_key r
+in 41.4 ui_key 2
+in 41.7 ui_key GP_A
+in 48 screenshot sbtest_locked_ingame
+in 48.5 echo SBSTATE2
+in 48.6 sb_query sb_list
+in 49 echo SBCVARS
+in 49.1 cvarlist sb_
+in 50 quit
 """
         open(os.path.join(cdir, "sbtest.cfg"), "w").write(cfg)
         env = dict(os.environ, DISPLAY=a.display)

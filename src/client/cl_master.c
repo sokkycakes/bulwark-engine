@@ -1053,6 +1053,33 @@ static json_t *sb_players(const host_t *h)
 	return arr;
 }
 
+/* a picture of the map for the list: levelshots/<map>, else the map's
+ * overview, else "" (looked up once per map name) */
+static const char *sb_mapshot(const char *map)
+{
+	static struct { char map[64]; char path[96]; } cache[32];
+	static int next;
+	static const char *const tries[] = { "levelshots/%s.png", "levelshots/%s.jpg", "levelshots/%s.tga",
+	                                     "overviews/%s.png" };
+	if (!map[0] || strlen(map) >= sizeof(cache[0].map) || strchr(map, '/') || strchr(map, '\\') || strstr(map, ".."))
+		return "";
+	for (int i = 0; i < 32; i++)
+		if (!strcmp(cache[i].map, map))
+			return cache[i].path;
+	int slot = next++ % 32;
+	snprintf(cache[slot].map, sizeof(cache[slot].map), "%s", map);
+	cache[slot].path[0] = 0;
+	for (size_t i = 0; i < sizeof(tries) / sizeof(tries[0]); i++) {
+		char path[96];
+		snprintf(path, sizeof(path), tries[i], map);
+		if (FS_FileExists(path)) {
+			snprintf(cache[slot].path, sizeof(cache[slot].path), "%s", path);
+			break;
+		}
+	}
+	return cache[slot].path;
+}
+
 static json_t *sb_row(const host_t *h)
 {
 	char tmp[256];
@@ -1061,6 +1088,7 @@ static json_t *sb_row(const host_t *h)
 	JSON_SetString(o, "addr", addr);
 	JSON_SetString(o, "name", h->name[0] ? h->name : addr);
 	JSON_SetString(o, "map", h->map);
+	JSON_SetString(o, "shot", sb_mapshot(h->map));
 	JSON_SetString(o, "game", h->game);
 	JSON_SetString(o, "mod", h->mod);
 	JSON_SetString(o, "gametype", ikey(h->info, "g_gametype", tmp, sizeof(tmp)));

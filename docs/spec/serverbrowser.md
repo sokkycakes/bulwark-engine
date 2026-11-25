@@ -2,8 +2,8 @@
 
 Stiletto's server browser on Bulwark: a Panorama page that lists the servers
 the master servers know, the ones on the LAN, favourites and history, and
-joins one. It is a row in the online hub ("Server Browser", above Back) and
-opens with `menu_webcore servers`.
+joins one. It is "Find Servers" on the title menu (title-menu-v2, between
+Join Lobby and Settings) and opens with `menu_webcore servers`.
 
 | Piece | Where |
 |---|---|
@@ -11,6 +11,7 @@ opens with `menu_webcore servers`.
 | Engine side of the page's requests | `src/client/cl_master.c`, "the server browser page's requests" |
 | What servers answer | `src/server/sv_master.c` (`build_info`, `getstatus`) |
 | Route, `menu_webcore servers` | `src/client/cl_webcore.c` (`ROUTE_SERVERS`) |
+| Title menu item | `data/panorama/{layout,scripts,styles}/web/title-menu-v2.*` |
 | Master server | `services/master/bwmaster.py` |
 | Tests | `tests/serverbrowser/master_test.py` (master alone), `tests/serverbrowser/run.py` (end to end) |
 
@@ -53,69 +54,48 @@ speak it too.
 starting with `_`, at most about 1 KB) after those keys, then one line per
 player: `frags ping "name"` (ping 0 for bots).
 
-## The page's requests
-
-Through the webcore bridge (`fte_query`). `sb_query "<request>"` prints the
-reply in the console, for tests.
-
-| Request | Reply |
-|---|---|
-| `sb_refresh[:internet\|lan\|favorites\|history]` | `ok`. Forgets that list's servers and asks again: the masters, a LAN broadcast, or each saved address. No tab means all four. |
-| `sb_list` | `{game, protocol, masters, masters_answered, pending, refreshing, connected, server, other_games, servers:[row...]}`. Only servers that answered, and only `com_protocolname`'s game (`sb_list:all` includes the rest; `other_games` counts them). |
-| `sb_details:<addr>` | a row plus `ok`, `answered`, `player_list:[{name, frags, ping, bot}]`, `rules:{...}`. Asks the server again if its status is over 5 s old. |
-| `sb_ping:<addr>` | `ok` and asks again |
-| `sb_connect:<addr>[ <password>]` | `{ok}`. Sets the `password` userinfo cvar (empty when none) and runs `connect`. |
-| `sb_favorite:<addr>` | toggles; `{ok, favorite, addr}` |
-| `sb_add:<addr>` | adds a favourite |
-| `sb_clearhistory` | `ok` |
-
-A row: `addr, name, map, game, mod, gametype, state, engine, players` (humans),
-`bots, max, ping, protocol, password, compatible, internet, lan, favorite, history`.
-
-Addresses must be 1-64 characters from `[A-Za-z0-9._:-[]]` and resolve to
-an IPv4 or IPv6 address; they are stored as `ip:port`.
-
-Cvars: `sb_favorites` and `sb_history` (archived, space-separated `ip:port`,
-history newest first), `sb_history_max` (30), `password` (userinfo).
-Every `connect` to an IP address goes into the history, whatever started it.
-
-### When a join fails
-
-After `sb_connect` the engine watches the connection. If it ends before the
-game is up (refused, no answer), it prints `server browser: couldn't join
-<addr> (<reason>)` and opens
-`server-browser/index.html?failed=<addr>&reason=<reason>`; the page shows
-the reason in words ("wrong or missing password", "the server is full").
-Once the game is up the page closes itself.
-
 ## The page
 
-- Tabs: Internet, LAN, Favorites, History. History is sorted newest first
-  unless another sort is picked.
-- Filters (a row of chips above the list): Mode (All or a mode the list
-  has), hide empty, hide full, hide locked, Sort (ping, players, name, map).
-  Servers on another protocol always sort last and can't be joined.
-- The list shows 11 rows and scrolls with the selection; the right panel
-  shows the selected server's mode, map, players with scores, Stiletto's
-  arena state and flags.
-- Join: a locked server asks for its password first (typed text shows as
-  `*`); a full or other-version server says so instead of trying.
-- Connect to address: a dialog that joins any `host[:port]`.
+Top to bottom, on the hub's look (#2a2a2a, red wash, Stiletto's fonts):
 
-Controls; the hint bar shows whichever was used last:
+- **Title band:** FIND SERVERS, and at the right what is listed (source,
+  master servers that answered, how many servers match).
+- **Toolbar:** the filter button, a search field (matches server name, map,
+  mode and address; every typed word must match), refresh.
+- **Sort row:** SORT BY: Name, Map, Players, Latency (the default), Last
+  Played (newest join first; the default on History). Servers on another
+  protocol always sort last and can't be joined.
+- **The list:** one column of 8 two-line rows that scrolls with the
+  selection. Line 1 is the server name; line 2 is tags: mode, Stiletto's
+  arena state, Password, Favorite, LAN, You're here, Different version. On
+  the right: the bot count with a bot icon, the map name over its picture,
+  and a last column with latency bars and ping over players `n/max` (red
+  when full).
+- **Bottom band:** Close, Address (a dialog that joins any `host[:port]`),
+  the smaller actions (Refresh, Favorite, Filters, source), Connect.
+- **Filter menu** (from the filter button): Show (Internet, LAN, Favorites,
+  History), Mode (All or a mode the list has), Empty / Full / Locked servers
+  (Show or Hide).
+- Connect on a locked server asks for its password first (typed text shows
+  as `*`); a full or other-version server says so instead of trying.
+
+Controls. The controller moves between four rows, top to bottom: toolbar,
+sort row, list, bottom band. Up from the first server goes to the sort row,
+Down from the last to the bottom band, Left / Right move along a row.
 
 | Action | Controller | Keyboard | Mouse |
 |---|---|---|---|
-| Move | D-pad / left stick | arrows, W / S | wheel |
+| Move | D-pad / left stick | arrows, W / S | wheel scrolls the list |
 | Page | LT / RT | PgUp / PgDn, Home / End | |
-| Join | A | Enter, Space | click the selected row |
-| Back (hub, or pause in a game) | B | Esc | Back hint |
-| Tabs | LB / RB | Q / E, Left / Right | click a tab |
-| Filters | Up from the first row, Left / Right, A | same with Enter | click a chip |
-| Refresh | X | R, F5 | Refresh hint |
+| Connect | A on a server, or the Connect button | Enter, Space | click the selected row, Connect |
+| Close (title, or pause in a game) | B | Esc | Close |
+| Search | A on the search field (needs a keyboard to type); A, B or Down leaves it | `/` | click the field |
+| Sort | A on a sort label | | click a label |
+| Filter menu | View, or A on the filter button; Up / Down, Left / Right or A changes, B closes | O | filter button |
+| Source (Internet, LAN, Favorites, History) | LB / RB | Q / E | Show in the filter menu |
+| Refresh | X | R, F5 | refresh button |
 | Favourite | Y | F | Favorite hint |
-| Sort | View | O | Sort chip |
-| Address | Menu | C | Address hint |
+| Address | Menu | C | Address |
 
 Controller keys reach the page as the engine's key names (`e.bind` is
 `GP_A`, `GP_DPAD_UP`...); `ui_key GP_A` sends the same event, which is how

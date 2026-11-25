@@ -2,7 +2,7 @@
 // (Live's state is in it), actions through "flow:..." and allowlisted cbuf:.
 var Online = ( function ()
 {
-	var COUNT = 7;
+	var COUNT = 6;
 	var SND_NAV = "misc/menu1", SND_OK = "misc/menu2", SND_BACK = "misc/menu3";
 	var HERO_NAMES = { hero_archstiletto: "Archstiletto", hero_motionblue: "Motionblue", hero_skipstream: "Skipstream" };
 	var selected = 0;
@@ -85,12 +85,6 @@ var Online = ( function ()
 				sound( SND_NAV );
 				break;
 			case 5:
-				sound( SND_OK );
-				if ( searching() )
-					flow( "cancel" );
-				cbuf( "menu_webcore servers" );
-				break;
-			case 6:
 				back();
 				break;
 		}

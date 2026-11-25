@@ -1,10 +1,12 @@
 <!--
 	Stiletto's server browser (docs/spec/serverbrowser.md): the servers the
-	master servers know, the ones on the LAN, favourites and history. Opened
-	from the online hub ("menu_webcore servers"). Same look as the hub
-	(online.xml): the title's red wash over #333, standard_07_57 and
-	hooge_05_57, on a 1440 x 1080 stage. Keys, mouse and controller all
-	work; the hint bar shows the glyphs for whichever was used last.
+	master servers know, the ones on the LAN, favourites and history.
+	Opened with "menu_webcore servers". Top to bottom: the title band, a
+	toolbar (filters, search, refresh), a sort row, one column of two-line
+	server rows, and a bottom band with Close, Address and Connect. The look
+	is the hub's: #2a2a2a under a red wash, standard_07_57 and hooge_05_57,
+	#e0262b accents, on a 1440 x 1080 stage. Keys, mouse and controller all
+	work.
 -->
 <root>
 	<styles>
@@ -17,57 +19,64 @@
 	<Panel id="Root" class="root">
 		<Panel class="bg" hittest="false" />
 		<Panel class="bg-red" hittest="false" />
+		<Panel class="topband" hittest="false" />
+		<Panel class="bottomband" hittest="false" />
+
 		<Panel class="stage">
-			<Label class="head" text="SERVERS" hittest="false" />
+			<Label class="head" text="FIND SERVERS" hittest="false" />
 			<Label id="Status" class="status" text="" hittest="false" />
 
-			<!-- tabs: LB / RB, Q / E, or click -->
-			<Panel class="tabs">
-				<Label id="TabPrev" class="tab-key" text="LB" hittest="false" />
-				<Button id="Tab0" class="tab is-selected" onactivate="Servers.Tab(0)">
-					<Label text="Internet" hittest="false" />
+			<!-- filters, search, refresh -->
+			<Panel class="toolbar">
+				<Button id="Tool0" class="tool-btn" onactivate="Servers.Tool(0)" onmouseover="Servers.Hover('toolbar', 0)">
+					<Panel class="ico-filter" hittest="false">
+						<Panel class="ico-filter-line l0" hittest="false" />
+						<Panel class="ico-filter-knob k0" hittest="false" />
+						<Panel class="ico-filter-line l1" hittest="false" />
+						<Panel class="ico-filter-knob k1" hittest="false" />
+						<Panel class="ico-filter-line l2" hittest="false" />
+						<Panel class="ico-filter-knob k2" hittest="false" />
+					</Panel>
 				</Button>
-				<Button id="Tab1" class="tab" onactivate="Servers.Tab(1)">
-					<Label text="LAN" hittest="false" />
+				<Button id="Tool1" class="search" onactivate="Servers.Tool(1)" onmouseover="Servers.Hover('toolbar', 1)">
+					<Panel class="ico-search" hittest="false">
+						<Panel class="ico-search-ring" hittest="false" />
+						<Panel class="ico-search-handle" hittest="false" />
+					</Panel>
+					<TextEntry id="Search" class="search-entry" text="" maxchars="40" oninputsubmit="Servers.SearchDone()" />
+					<Label id="SearchHint" class="search-hint" text="Search by server, map or mode" hittest="false" />
 				</Button>
-				<Button id="Tab2" class="tab" onactivate="Servers.Tab(2)">
-					<Label text="Favorites" hittest="false" />
-				</Button>
-				<Button id="Tab3" class="tab" onactivate="Servers.Tab(3)">
-					<Label text="History" hittest="false" />
-				</Button>
-				<Label id="TabNext" class="tab-key" text="RB" hittest="false" />
-			</Panel>
-
-			<!-- filters: Up from the first row, Left / Right, A to change -->
-			<Panel id="Filters" class="filters">
-				<Button id="Filter0" class="chip" onactivate="Servers.Filter(0)" onmouseover="Servers.HoverFilter(0)">
-					<Label id="FilterText0" text="Mode: All" hittest="false" />
-				</Button>
-				<Button id="Filter1" class="chip" onactivate="Servers.Filter(1)" onmouseover="Servers.HoverFilter(1)">
-					<Label id="FilterText1" text="Empty: Show" hittest="false" />
-				</Button>
-				<Button id="Filter2" class="chip" onactivate="Servers.Filter(2)" onmouseover="Servers.HoverFilter(2)">
-					<Label id="FilterText2" text="Full: Show" hittest="false" />
-				</Button>
-				<Button id="Filter3" class="chip" onactivate="Servers.Filter(3)" onmouseover="Servers.HoverFilter(3)">
-					<Label id="FilterText3" text="Locked: Show" hittest="false" />
-				</Button>
-				<Button id="Filter4" class="chip" onactivate="Servers.Filter(4)" onmouseover="Servers.HoverFilter(4)">
-					<Label id="FilterText4" text="Sort: Ping" hittest="false" />
+				<Button id="Tool2" class="tool-btn" onactivate="Servers.Tool(2)" onmouseover="Servers.Hover('toolbar', 2)">
+					<Panel class="ico-refresh" hittest="false">
+						<Panel class="ico-refresh-ring" hittest="false" />
+						<Panel class="ico-refresh-gap" hittest="false" />
+						<Panel class="ico-refresh-tip" hittest="false" />
+					</Panel>
 				</Button>
 			</Panel>
 
-			<!-- the list -->
+			<!-- sort row -->
+			<Panel class="sortrow">
+				<Label class="sort-label" text="SORT BY:" hittest="false" />
+				<Button id="Sort0" class="sort" onactivate="Servers.Sort(0)" onmouseover="Servers.Hover('sort', 0)">
+					<Label text="NAME" hittest="false" />
+				</Button>
+				<Button id="Sort1" class="sort" onactivate="Servers.Sort(1)" onmouseover="Servers.Hover('sort', 1)">
+					<Label text="MAP" hittest="false" />
+				</Button>
+				<Button id="Sort2" class="sort" onactivate="Servers.Sort(2)" onmouseover="Servers.Hover('sort', 2)">
+					<Label text="PLAYERS" hittest="false" />
+				</Button>
+				<Button id="Sort3" class="sort" onactivate="Servers.Sort(3)" onmouseover="Servers.Hover('sort', 3)">
+					<Label text="LATENCY" hittest="false" />
+				</Button>
+				<Button id="Sort4" class="sort" onactivate="Servers.Sort(4)" onmouseover="Servers.Hover('sort', 4)">
+					<Label text="LAST PLAYED" hittest="false" />
+				</Button>
+			</Panel>
+
+			<!-- the list: rows are made by the script -->
 			<Panel class="list">
-				<Panel class="cols" hittest="false">
-					<Label class="col c-lock" text="" hittest="false" />
-					<Label class="col c-name" text="NAME" hittest="false" />
-					<Label class="col c-mode" text="MODE" hittest="false" />
-					<Label class="col c-map" text="MAP" hittest="false" />
-					<Label class="col c-players" text="PLAYERS" hittest="false" />
-					<Label class="col c-ping" text="PING" hittest="false" />
-				</Panel>
 				<Panel id="Rows" class="rows" />
 				<Label id="Empty" class="empty" text="" hittest="false" />
 				<Panel id="ScrollTrack" class="scroll-track" hittest="false">
@@ -75,39 +84,46 @@
 				</Panel>
 			</Panel>
 
-			<!-- the selected server -->
-			<Panel id="Detail" class="detail" hittest="false">
-				<Label class="detail-head" text="SERVER" hittest="false" />
-				<Label id="DName" class="detail-name" text="" hittest="false" />
-				<Label id="DAddr" class="detail-addr" text="" hittest="false" />
-				<Panel class="detail-stats" hittest="false">
-					<Panel class="dstat" hittest="false">
-						<Label id="DMode" class="dstat-num" text="-" hittest="false" />
-						<Label class="dstat-label" text="mode" hittest="false" />
-					</Panel>
-					<Panel class="dstat" hittest="false">
-						<Label id="DMap" class="dstat-num" text="-" hittest="false" />
-						<Label class="dstat-label" text="map" hittest="false" />
-					</Panel>
-					<Panel class="dstat" hittest="false">
-						<Label id="DPlayers" class="dstat-num" text="-" hittest="false" />
-						<Label class="dstat-label" text="players" hittest="false" />
-					</Panel>
-					<Panel class="dstat" hittest="false">
-						<Label id="DPing" class="dstat-num" text="-" hittest="false" />
-						<Label class="dstat-label" text="ping" hittest="false" />
-					</Panel>
-				</Panel>
-				<Label id="DState" class="detail-state" text="" hittest="false" />
-				<Label class="detail-sub" text="PLAYERS" hittest="false" />
-				<Panel id="DPlayerList" class="detail-players" hittest="false" />
-				<Label id="DFlags" class="detail-flags" text="" hittest="false" />
+			<!-- the filter menu, under the filter button -->
+			<Panel id="FilterMenu" class="fmenu hidden">
+				<Button id="FRow0" class="frow" onactivate="Servers.FilterRow(0)" onmouseover="Servers.Hover('popup', 0)">
+					<Label class="frow-name" text="SHOW" hittest="false" />
+					<Label id="FVal0" class="frow-val" text="" hittest="false" />
+				</Button>
+				<Button id="FRow1" class="frow" onactivate="Servers.FilterRow(1)" onmouseover="Servers.Hover('popup', 1)">
+					<Label class="frow-name" text="MODE" hittest="false" />
+					<Label id="FVal1" class="frow-val" text="" hittest="false" />
+				</Button>
+				<Button id="FRow2" class="frow" onactivate="Servers.FilterRow(2)" onmouseover="Servers.Hover('popup', 2)">
+					<Label class="frow-name" text="EMPTY SERVERS" hittest="false" />
+					<Label id="FVal2" class="frow-val" text="" hittest="false" />
+				</Button>
+				<Button id="FRow3" class="frow" onactivate="Servers.FilterRow(3)" onmouseover="Servers.Hover('popup', 3)">
+					<Label class="frow-name" text="FULL SERVERS" hittest="false" />
+					<Label id="FVal3" class="frow-val" text="" hittest="false" />
+				</Button>
+				<Button id="FRow4" class="frow" onactivate="Servers.FilterRow(4)" onmouseover="Servers.Hover('popup', 4)">
+					<Label class="frow-name" text="LOCKED SERVERS" hittest="false" />
+					<Label id="FVal4" class="frow-val" text="" hittest="false" />
+				</Button>
 			</Panel>
 
 			<Label id="Notice" class="notice hidden" text="" hittest="false" />
 
-			<!-- what the buttons do; glyphs or keys, whichever was used last -->
-			<Panel id="Hints" class="hints" />
+			<!-- bottom band -->
+			<Button id="Bottom0" class="bbtn b-close" onactivate="Servers.BottomBtn(0)" onmouseover="Servers.Hover('bottom', 0)">
+				<Label id="BKey0" class="bkey gp-b" text="B" hittest="false" />
+				<Label class="btext" text="CLOSE" hittest="false" />
+			</Button>
+			<Button id="Bottom1" class="bbtn b-address" onactivate="Servers.BottomBtn(1)" onmouseover="Servers.Hover('bottom', 1)">
+				<Label id="BKey1" class="bkey" text="MENU" hittest="false" />
+				<Label class="btext" text="ADDRESS" hittest="false" />
+			</Button>
+			<Panel id="Hints" class="hints" hittest="false" />
+			<Button id="Bottom2" class="bbtn b-connect" onactivate="Servers.BottomBtn(2)" onmouseover="Servers.Hover('bottom', 2)">
+				<Label id="BKey2" class="bkey gp-a" text="A" hittest="false" />
+				<Label class="btext" text="CONNECT" hittest="false" />
+			</Button>
 		</Panel>
 
 		<!-- password / address entry -->
@@ -118,7 +134,7 @@
 				<Label id="DialogText" class="dialog-text" text="" />
 				<Panel class="dialog-field">
 					<TextEntry id="DialogEntry" class="dialog-entry" text="" maxchars="64" oninputsubmit="Servers.DialogOk()" />
-					<!-- a password shows as dots: the entry's own text is hidden -->
+					<!-- a password shows as stars: the entry's own text is hidden -->
 					<Label id="DialogMask" class="dialog-mask" text="" hittest="false" />
 				</Panel>
 				<Panel class="dialog-row">

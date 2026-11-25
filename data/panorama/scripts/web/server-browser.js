@@ -1,32 +1,39 @@
 // The server browser (layout/web/server-browser.xml). Data from the engine's
-// "sb_..." requests (docs/spec/serverbrowser.md); the page filters, sorts
-// and scrolls. Keys, mouse and controller: every action has all three.
+// "sb_..." requests (docs/spec/serverbrowser.md); the page searches, filters,
+// sorts and scrolls. Keys, mouse and controller: every action has all three.
+//
+// Controller zones, top to bottom: the toolbar (filters, search, refresh),
+// the sort row, the list, the bottom band (close, address, connect). The
+// filter menu opens over the list from the filter button.
 var Servers = ( function ()
 {
 	var SND_NAV = "misc/menu1", SND_OK = "misc/menu2", SND_BACK = "misc/menu3";
-	var TABS = [ "internet", "lan", "favorites", "history" ];
-	var TAB_NAMES = [ "Internet", "LAN", "Favorites", "History" ];
-	var SORTS = [ "Ping", "Players", "Name", "Map" ];
-	var VISIBLE = 11;
-	var FILTERS = 5;
+	var SOURCES = [ "internet", "lan", "favorites", "history" ];
+	var SOURCE_NAMES = [ "Internet", "LAN", "Favorites", "History" ];
+	var SORTS = [ "name", "map", "players", "latency", "played" ];
+	var SORT_LATENCY = 3, SORT_PLAYED = 4;
+	var VISIBLE = 8;
+	var FROWS = 5;
+	var ZONES = [ "toolbar", "sort", "list", "bottom" ];
+	var ZONE_SIZE = { toolbar: 3, sort: 5, bottom: 3, popup: FROWS };
 	var MODE_NAMES = { duel: "Duel", deathmatch: "Deathmatch", teamdm: "Team DM", domination: "Domination",
 		lastmanstanding: "Last Man", invasion: "Invasion", singleplayer: "Co-op", dm_lobby: "Lobby" };
 	var STATE_NAMES = { WARMUP: "Waiting for fighters", COUNTDOWN: "Starting", LIVE: "Fight in progress",
 		ROUND_END: "Between rounds", MATCH_END: "Set over", INTERMISSION: "Between maps" };
 
-	var tab = 0;
-	var zone = "list";          // "list" or "filters"
-	var filterSel = 0;
+	var source = 0;
+	var zone = "list";          // a ZONES entry, or "popup" while the filter menu is open
+	var zoneSel = { toolbar: 1, sort: SORT_LATENCY, bottom: 2, popup: 0 };
 	var mode = "";              // "" = all
 	var hideEmpty = false, hideFull = false, hideLocked = false;
-	var sort = 0;
+	var sort = SORT_LATENCY;
+	var search = "", typing = false;
 	var data = null;
-	var shown = [];             // the filtered, sorted rows
+	var shown = [];             // the searched, filtered, sorted rows
 	var selAddr = "";
 	var sel = 0, top = 0;
 	var rowPanels = [];
 	var lastRowsKey = "";
-	var details = null, detailsAddr = "", detailsAt = 0;
 	var dialog = null;          // { kind: "password" | "address", addr, name, btn }
 	var joining = null;
 	var gamepad = false;
@@ -44,6 +51,7 @@ var Servers = ( function ()
 	function sound( s ) { q( "localsound:" + s ); }
 	function show( id, on ) { $( id ).SetHasClass( "hidden", !on ); }
 	function json( raw, def ) { try { var v = JSON.parse( raw || "" ); return v === null ? def : v; } catch ( e ) { return def; } }
+	function popupOpen() { return zone === "popup"; }
 
 	function parseQuery()
 	{
@@ -62,7 +70,7 @@ var Servers = ( function ()
 
 	function modeName( m )
 	{
-		if ( !m ) return "-";
+		if ( !m ) return "";
 		if ( MODE_NAMES[ m ] ) return MODE_NAMES[ m ];
 		return m.charAt( 0 ).toUpperCase() + m.slice( 1 );
 	}
@@ -88,9 +96,9 @@ var Servers = ( function ()
 
 	// --- the list ---------------------------------------------------------
 
-	function inTab( s )
+	function inSource( s )
 	{
-		switch ( TABS[ tab ] )
+		switch ( SOURCES[ source ] )
 		{
 			case "internet": return s.internet;
 			case "lan": return s.lan;
@@ -100,27 +108,38 @@ var Servers = ( function ()
 		return true;
 	}
 
+	function isFull( s ) { return s.max && s.players + s.bots >= s.max; }
+
 	function passes( s )
 	{
-		if ( !inTab( s ) ) return false;
+		if ( !inSource( s ) ) return false;
 		if ( mode && s.gametype !== mode ) return false;
 		if ( hideEmpty && s.players + s.bots === 0 ) return false;
-		if ( hideFull && s.max && s.players + s.bots >= s.max ) return false;
+		if ( hideFull && isFull( s ) ) return false;
 		if ( hideLocked && s.password ) return false;
+		if ( search )
+		{
+			var hay = ( s.name + " " + s.map + " " + modeName( s.gametype ) + " " + s.addr ).toLowerCase();
+			var words = search.toLowerCase().split( /\s+/ );
+			for ( var i = 0; i < words.length; i++ )
+				if ( words[ i ] && hay.indexOf( words[ i ] ) < 0 ) return false;
+		}
 		return true;
 	}
+
+	function played( s ) { var i = history.indexOf( s.addr ); return i < 0 ? 1e6 : i; }
+	function cmpText( a, b ) { a = a.toLowerCase(); b = b.toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; }
 
 	function compare( a, b )
 	{
 		// servers that can't be joined go last
 		if ( a.compatible !== b.compatible ) return a.compatible ? -1 : 1;
-		if ( TABS[ tab ] === "history" && sort === 0 )
-			return history.indexOf( a.addr ) - history.indexOf( b.addr );
 		switch ( SORTS[ sort ] )
 		{
-			case "Players": return ( b.players - a.players ) || ( a.ping - b.ping );
-			case "Name": return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0;
-			case "Map": return a.map < b.map ? -1 : a.map > b.map ? 1 : a.ping - b.ping;
+			case "name": return cmpText( a.name, b.name ) || a.ping - b.ping;
+			case "map": return cmpText( a.map, b.map ) || a.ping - b.ping;
+			case "players": return ( b.players + b.bots - a.players - a.bots ) || ( a.ping - b.ping );
+			case "played": return ( played( a ) - played( b ) ) || ( a.ping - b.ping );
 		}
 		return a.ping - b.ping;
 	}
@@ -148,29 +167,61 @@ var Servers = ( function ()
 
 	function pingClass( p ) { return p < 60 ? "good" : p < 140 ? "ok" : "bad"; }
 
+	function el( type, parent, cls, extra )
+	{
+		var o = { class: cls, hittest: "false" };
+		for ( var k in extra || {} ) o[ k ] = extra[ k ];
+		return $.CreatePanel( type, parent, "", o );
+	}
+
 	function makeRows()
 	{
 		var parent = $( "#Rows" );
 		for ( var i = 0; i < VISIBLE; i++ )
 		{
-			var r = $.CreatePanel( "Button", parent, "Row" + i, { class: "row" + ( i % 2 ? " odd" : "" ) } );
-			var cells = {};
-			[ "lock", "name", "mode", "map", "players", "ping" ].forEach( function ( c )
-			{
-				cells[ c ] = $.CreatePanel( "Label", r, "", { class: "c-" + c, text: "", hittest: "false" } );
-			} );
+			var r = $.CreatePanel( "Button", parent, "Row" + i, { class: "row" } );
+			var c = {};
+			c.shot = el( "Image", r, "r-shot" );
+			c.fade = el( "Panel", r, "r-shot-fade" );
+			c.name = el( "Label", r, "r-name", { text: "" } );
+			c.tags = el( "Panel", r, "r-tags" );
+			c.bots = el( "Panel", r, "r-bots" );
+			var bot = el( "Panel", c.bots, "ico-bot" );
+			el( "Panel", bot, "ico-bot-ant" );
+			el( "Panel", bot, "ico-bot-head" );
+			el( "Panel", bot, "ico-bot-eye e0" );
+			el( "Panel", bot, "ico-bot-eye e1" );
+			c.botsNum = el( "Label", c.bots, "r-bots-num", { text: "" } );
+			c.map = el( "Label", r, "r-map", { text: "" } );
+			c.net = el( "Panel", r, "r-net" );
+			var bars = el( "Panel", c.net, "ico-bars" );
+			c.bars = [ el( "Panel", bars, "bar b0" ), el( "Panel", bars, "bar b1" ), el( "Panel", bars, "bar b2" ) ];
+			c.ping = el( "Label", c.net, "r-ping", { text: "" } );
+			c.players = el( "Label", c.net, "r-players", { text: "" } );
 			( function ( slot )
 			{
 				r.SetPanelEvent( "onactivate", function () { clickRow( slot ); } );
-				r.SetPanelEvent( "onmouseover", function () { } );
 			} )( i );
-			rowPanels.push( { panel: r, cells: cells } );
+			rowPanels.push( { panel: r, cells: c, shot: null, tagsKey: "" } );
 		}
+	}
+
+	function tagsFor( s )
+	{
+		var t = [];
+		if ( s.gametype ) t.push( [ "t-mode", modeName( s.gametype ) ] );
+		if ( STATE_NAMES[ s.state ] ) t.push( [ "", STATE_NAMES[ s.state ] ] );
+		if ( s.password ) t.push( [ "t-lock", "Password" ] );
+		if ( s.favorite ) t.push( [ "t-fav", "Favorite" ] );
+		if ( s.lan ) t.push( [ "t-lan", "LAN" ] );
+		if ( data && data.server === s.addr ) t.push( [ "t-here", "You're here" ] );
+		if ( !s.compatible ) t.push( [ "t-old", "Different version (" + s.protocol + ")" ] );
+		return t;
 	}
 
 	function renderRows()
 	{
-		var key = top + "|" + sel + "|" + zone + "|" + JSON.stringify( shown.slice( top, top + VISIBLE ) );
+		var key = top + "|" + sel + "|" + zone + "|" + ( data && data.server ) + "|" + JSON.stringify( shown.slice( top, top + VISIBLE ) );
 		if ( key === lastRowsKey )
 			return;
 		lastRowsKey = key;
@@ -181,21 +232,35 @@ var Servers = ( function ()
 			if ( !s )
 				continue;
 			var c = rp.cells;
-			c.lock.text = ( s.password ? "LOCK" : "" ) + ( s.favorite && !s.password ? "FAV" : "" );
 			c.name.text = s.name;
-			c.mode.text = modeName( s.gametype );
-			c.map.text = s.map || "-";
-			c.players.text = s.players + ( s.bots ? "+" + s.bots : "" ) + " / " + s.max;
+			var tags = tagsFor( s ), tk = JSON.stringify( tags );
+			if ( tk !== rp.tagsKey )
+			{
+				rp.tagsKey = tk;
+				c.tags.RemoveAndDeleteChildren();
+				tags.forEach( function ( t ) { el( "Label", c.tags, "tag " + t[ 0 ], { text: t[ 1 ] } ); } );
+			}
+			c.bots.SetHasClass( "hidden", !s.bots );
+			c.botsNum.text = String( s.bots );
+			c.map.text = s.map || "";
+			var shot = s.shot ? "file://{game}/" + s.shot : "";
+			if ( shot !== rp.shot )
+			{
+				rp.shot = shot;
+				if ( shot ) c.shot.SetImage( shot );
+				c.shot.SetHasClass( "hidden", !shot );
+			}
+			var pc = pingClass( s.ping ), lit = pc === "good" ? 3 : pc === "ok" ? 2 : 1;
+			[ "good", "ok", "bad" ].forEach( function ( k ) { c.net.SetHasClass( k, k === pc ); } );
+			for ( var b = 0; b < 3; b++ ) c.bars[ b ].SetHasClass( "lit", b < lit );
 			c.ping.text = String( s.ping );
-			c.ping.SetHasClass( "good", pingClass( s.ping ) === "good" );
-			c.ping.SetHasClass( "ok", pingClass( s.ping ) === "ok" );
-			c.ping.SetHasClass( "bad", pingClass( s.ping ) === "bad" );
-			rp.panel.SetHasClass( "full", s.max && s.players + s.bots >= s.max );
+			c.players.text = ( s.players + s.bots ) + "/" + s.max;
+			rp.panel.SetHasClass( "full", !!isFull( s ) );
 			rp.panel.SetHasClass( "bad-version", !s.compatible );
-			rp.panel.SetHasClass( "is-selected", zone === "list" && top + i === sel );
+			rp.panel.SetHasClass( "is-selected", ( zone === "list" || zone === "bottom" || zone === "popup" ) && top + i === sel );
 		}
 		// scroll bar
-		var track = 550;
+		var track = 680;
 		var thumb = shown.length > VISIBLE ? Math.max( 40, track * VISIBLE / shown.length ) : track;
 		var at = shown.length > VISIBLE ? ( track - thumb ) * top / ( shown.length - VISIBLE ) : 0;
 		$( "#ScrollThumb" ).style.height = thumb.toFixed( 0 ) + "px";
@@ -206,7 +271,8 @@ var Servers = ( function ()
 	function emptyText()
 	{
 		var busy = data && data.refreshing;
-		switch ( TABS[ tab ] )
+		if ( search && countIn( null ) ) return "Nothing matches \"" + search + "\"";
+		switch ( SOURCES[ source ] )
 		{
 			case "internet":
 				if ( busy ) return "Asking the master servers...";
@@ -228,15 +294,15 @@ var Servers = ( function ()
 
 	function countIn( flag )
 	{
-		return ( data && data.servers || [] ).filter( function ( s ) { return s[ flag ]; } ).length;
+		return ( data && data.servers || [] ).filter( function ( s ) { return flag ? s[ flag ] : inSource( s ); } ).length;
 	}
 
 	function renderStatus()
 	{
 		var st = $( "#Status" );
-		var total = ( data && data.servers || [] ).filter( inTab ).length;
-		var bits = [ TAB_NAMES[ tab ] ];
-		if ( TABS[ tab ] === "internet" && data )
+		var total = countIn( null );
+		var bits = [ SOURCE_NAMES[ source ] ];
+		if ( SOURCES[ source ] === "internet" && data )
 			bits.push( data.masters_answered + " of " + data.masters + " master server" + ( data.masters === 1 ? "" : "s" ) );
 		bits.push( shown.length + ( shown.length !== total ? " of " + total : "" ) + " server" + ( total === 1 ? "" : "s" ) );
 		if ( data && data.refreshing )
@@ -246,7 +312,7 @@ var Servers = ( function ()
 		$( "#Empty" ).text = shown.length ? "" : emptyText();
 	}
 
-	// --- filters ----------------------------------------------------------
+	// --- toolbar, sort row, filter menu, bottom band -----------------------
 
 	function modesSeen()
 	{
@@ -256,19 +322,35 @@ var Servers = ( function ()
 		return Object.keys( seen ).sort();
 	}
 
-	function renderFilters()
+	function filtersOn() { return !!mode || hideEmpty || hideFull || hideLocked; }
+
+	function renderBars()
 	{
-		$( "#FilterText0" ).text = "Mode: " + ( mode ? modeName( mode ) : "All" );
-		$( "#FilterText1" ).text = "Empty: " + ( hideEmpty ? "Hide" : "Show" );
-		$( "#FilterText2" ).text = "Full: " + ( hideFull ? "Hide" : "Show" );
-		$( "#FilterText3" ).text = "Locked: " + ( hideLocked ? "Hide" : "Show" );
-		$( "#FilterText4" ).text = "Sort: " + ( TABS[ tab ] === "history" && sort === 0 ? "Recent" : SORTS[ sort ] );
-		var on = [ !!mode, hideEmpty, hideFull, hideLocked, sort !== 0 ];
-		for ( var i = 0; i < FILTERS; i++ )
+		var i;
+		for ( i = 0; i < 3; i++ )
+			$( "#Tool" + i ).SetHasClass( "is-selected", zone === "toolbar" && zoneSel.toolbar === i );
+		$( "#Tool0" ).SetHasClass( "is-on", filtersOn() || popupOpen() );
+		$( "#Tool1" ).SetHasClass( "typing", typing );
+		show( "#SearchHint", !typing && !String( $( "#Search" ).text || "" ) );
+		for ( i = 0; i < SORTS.length; i++ )
 		{
-			$( "#Filter" + i ).SetHasClass( "is-on", on[ i ] );
-			$( "#Filter" + i ).SetHasClass( "is-selected", zone === "filters" && i === filterSel );
+			$( "#Sort" + i ).SetHasClass( "is-on", sort === i );
+			$( "#Sort" + i ).SetHasClass( "is-selected", zone === "sort" && zoneSel.sort === i );
 		}
+		var vals = [ SOURCE_NAMES[ source ], mode ? modeName( mode ) : "All", hideEmpty ? "Hide" : "Show",
+			hideFull ? "Hide" : "Show", hideLocked ? "Hide" : "Show" ];
+		var on = [ source !== 0, !!mode, hideEmpty, hideFull, hideLocked ];
+		show( "#FilterMenu", popupOpen() );
+		for ( i = 0; i < FROWS; i++ )
+		{
+			$( "#FVal" + i ).text = vals[ i ];
+			$( "#FRow" + i ).SetHasClass( "is-on", on[ i ] );
+			$( "#FRow" + i ).SetHasClass( "is-selected", popupOpen() && zoneSel.popup === i );
+		}
+		for ( i = 0; i < 3; i++ )
+			$( "#Bottom" + i ).SetHasClass( "is-selected", zone === "bottom" && zoneSel.bottom === i );
+		var s = selected();
+		$( "#Bottom2" ).SetHasClass( "disabled", !s || !s.compatible || !!isFull( s ) );
 	}
 
 	function changeFilter( i, dir )
@@ -276,15 +358,15 @@ var Servers = ( function ()
 		dir = dir || 1;
 		switch ( i )
 		{
-			case 0:
+			case 0: setSource( source + dir ); return;
+			case 1:
 				var list = [ "" ].concat( modesSeen() );
 				var at = list.indexOf( mode );
 				mode = list[ ( at + dir + list.length ) % list.length ];
 				break;
-			case 1: hideEmpty = !hideEmpty; break;
-			case 2: hideFull = !hideFull; break;
-			case 3: hideLocked = !hideLocked; break;
-			case 4: sort = ( sort + dir + SORTS.length ) % SORTS.length; break;
+			case 2: hideEmpty = !hideEmpty; break;
+			case 3: hideFull = !hideFull; break;
+			case 4: hideLocked = !hideLocked; break;
 		}
 		sound( SND_NAV );
 		lastRowsKey = "";
@@ -292,80 +374,88 @@ var Servers = ( function ()
 		render();
 	}
 
+	function setSort( i )
+	{
+		sort = ( i + SORTS.length ) % SORTS.length;
+		sound( SND_NAV );
+		lastRowsKey = "";
+		rebuild();
+		render();
+	}
+
+	function openPopup()
+	{
+		if ( popupOpen() ) { closePopup(); return; }
+		stopTyping();
+		zone = "popup";
+		sound( SND_OK );
+		lastRowsKey = "";
+		render();
+	}
+
+	function closePopup()
+	{
+		if ( !popupOpen() ) return;
+		zone = "toolbar";
+		zoneSel.toolbar = 0;
+		sound( SND_BACK );
+		lastRowsKey = "";
+		render();
+	}
+
+	function startTyping()
+	{
+		if ( popupOpen() ) closePopup();
+		typing = true;
+		zone = "toolbar";
+		zoneSel.toolbar = 1;
+		$( "#Search" ).SetFocus();
+		sound( SND_NAV );
+		render();
+	}
+
+	function stopTyping()
+	{
+		if ( !typing ) return;
+		typing = false;
+		$.GetContextPanel().SetFocus();
+		render();
+	}
+
+	function readSearch()
+	{
+		var t = String( $( "#Search" ).text || "" ).replace( /^\s+|\s+$/g, "" );
+		if ( t === search ) return false;
+		search = t;
+		sel = 0;
+		top = 0;
+		selAddr = "";
+		lastRowsKey = "";
+		rebuild();
+		return true;
+	}
+
 	// --- the selected server ---------------------------------------------
 
 	function selected() { return shown[ sel ] || null; }
 
-	function renderDetail()
-	{
-		var s = selected();
-		show( "#Detail", !!s );
-		if ( !s )
-			return;
-		if ( detailsAddr !== s.addr || Date.now() - detailsAt > 2000 )
-		{
-			detailsAddr = s.addr;
-			detailsAt = Date.now();
-			details = json( q( "sb_details:" + s.addr ), null );
-		}
-		var d = details && details.ok && details.addr === s.addr ? details : null;
-		$( "#DName" ).text = s.name;
-		$( "#DAddr" ).text = s.addr + ( s.engine ? "  -  " + s.engine.toLowerCase() : "" );
-		$( "#DMode" ).text = modeName( s.gametype );
-		$( "#DMap" ).text = s.map || "-";
-		$( "#DPlayers" ).text = s.players + ( s.bots ? "+" + s.bots : "" ) + " / " + s.max;
-		$( "#DPing" ).text = s.ping + " ms";
-		var rules = d && d.rules ? d.rules : {};
-		var state = STATE_NAMES[ s.state ] || ( s.state ? s.state.toLowerCase() : "" );
-		if ( rules.arena_p1 && rules.arena_p2 )
-			state = rules.arena_p1 + "  vs  " + rules.arena_p2 + ( state ? "  -  " + state : "" );
-		else if ( rules.arena_round )
-			state = rules.arena_round + ( state ? "  -  " + state : "" );
-		$( "#DState" ).text = state;
-		var pl = $( "#DPlayerList" );
-		pl.RemoveAndDeleteChildren();
-		var players = d && d.player_list ? d.player_list : [];
-		players.sort( function ( a, b ) { return b.frags - a.frags; } );
-		if ( !players.length )
-			$.CreatePanel( "Label", pl, "", { class: "pl-none", text: d ? "Nobody's here yet" : "Asking...", hittest: "false" } );
-		players.slice( 0, 9 ).forEach( function ( p )
-		{
-			var row = $.CreatePanel( "Panel", pl, "", { class: "pl", hittest: "false" } );
-			$.CreatePanel( "Label", row, "", { class: "pl-name", text: p.name || "?", hittest: "false" } );
-			$.CreatePanel( "Label", row, "", { class: "pl-score", text: String( p.frags ), hittest: "false" } );
-			$.CreatePanel( "Label", row, "", { class: "pl-ping", text: p.bot ? "BOT" : p.ping + " ms", hittest: "false" } );
-		} );
-		if ( players.length > 9 )
-			$.CreatePanel( "Label", pl, "", { class: "pl-none", text: "and " + ( players.length - 9 ) + " more", hittest: "false" } );
-		var flags = [];
-		if ( s.password ) flags.push( "Password" );
-		if ( s.favorite ) flags.push( "Favorite" );
-		if ( s.lan ) flags.push( "LAN" );
-		if ( !s.compatible ) flags.push( "Different version (" + s.protocol + ")" );
-		if ( data && data.server === s.addr ) flags.push( "You're here" );
-		$( "#DFlags" ).text = flags.join( "  -  " );
-	}
-
-	// --- hints ------------------------------------------------------------
+	// --- hints: the smaller actions, between Address and Connect ------------
 
 	var hintKey = "";
 	function renderHints()
 	{
-		var list;
-		if ( dialog )
-			list = [ [ "A", "Enter", "OK", dialogOk ], [ "B", "Esc", "Cancel", closeDialog ] ];
-		else
-			list = [
-				[ "A", "Enter", "Join", join ],
-				[ "B", "Esc", "Back", back ],
-				[ "X", "R", "Refresh", refresh ],
-				[ "Y", "F", selected() && selected().favorite ? "Unfavorite" : "Favorite", toggleFavorite ],
-				[ "LB RB", "Q E", "Tab", null ],
-				[ "LT RT", "PgUp PgDn", "Page", null ],
-				[ "View", "O", "Sort", function () { changeFilter( 4, 1 ); } ],
-				[ "Up", "Up", "Filters", null ],
-				[ "Menu", "C", "Address", openAddress ]
-			];
+		$( "#BKey0" ).text = gamepad ? "B" : "ESC";
+		$( "#BKey0" ).SetHasClass( "gp-b", gamepad );
+		$( "#BKey1" ).text = gamepad ? "MENU" : "C";
+		$( "#BKey2" ).text = gamepad ? "A" : "ENTER";
+		$( "#BKey2" ).SetHasClass( "gp-a", gamepad );
+		var s = selected();
+		var list = [
+			[ "X", "R", "Refresh", function () { refresh(); } ],
+			[ "Y", "F", s && s.favorite ? "Unfavorite" : "Favorite", toggleFavorite ],
+			[ "VIEW", "O", "Filters", openPopup ],
+			[ "LB RB", "Q E", SOURCE_NAMES[ source ], function () { setSource( source + 1 ); } ]
+		];
 		var key = gamepad + JSON.stringify( list.map( function ( h ) { return h[ 2 ]; } ) );
 		if ( key === hintKey )
 			return;
@@ -376,35 +466,33 @@ var Servers = ( function ()
 		{
 			var b = $.CreatePanel( "Button", parent, "", { class: "hint" } );
 			var k = gamepad ? h[ 0 ] : h[ 1 ];
-			var cls = "hint-key" + ( gamepad && /^[ABXY]$/.test( k ) ? " gp-" + k.toLowerCase() : "" );
+			var cls = "hint-key" + ( gamepad && /^[XY]$/.test( k ) ? " gp-" + k.toLowerCase() : "" );
 			$.CreatePanel( "Label", b, "", { class: cls, text: k, hittest: "false" } );
 			$.CreatePanel( "Label", b, "", { class: "hint-text", text: h[ 2 ], hittest: "false" } );
-			if ( h[ 3 ] )
-				b.SetPanelEvent( "onactivate", function () { $.GetContextPanel().SetFocus(); h[ 3 ](); } );
+			b.SetPanelEvent( "onactivate", function () { $.GetContextPanel().SetFocus(); h[ 3 ](); } );
 		} );
-		$( "#TabPrev" ).text = gamepad ? "LB" : "Q";
-		$( "#TabNext" ).text = gamepad ? "RB" : "E";
 	}
 
 	// --- actions ----------------------------------------------------------
 
-	function setTab( t, snd )
+	function setSource( t, snd )
 	{
-		t = ( t + TABS.length ) % TABS.length;
+		source = ( t + SOURCES.length ) % SOURCES.length;
 		if ( snd !== false ) sound( SND_NAV );
-		tab = t;
-		for ( var i = 0; i < TABS.length; i++ )
-			$( "#Tab" + i ).SetHasClass( "is-selected", i === tab );
+		// History lists newest first unless another sort was picked
+		if ( SOURCES[ source ] === "history" && sort === SORT_LATENCY ) sort = SORT_PLAYED;
+		else if ( SOURCES[ source ] !== "history" && sort === SORT_PLAYED ) sort = SORT_LATENCY;
 		sel = 0;
 		top = 0;
 		selAddr = "";
+		lastRowsKey = "";
 		refresh( true );
 	}
 
 	function refresh( quiet )
 	{
 		if ( quiet !== true ) sound( SND_OK );
-		q( "sb_refresh:" + TABS[ tab ] );
+		q( "sb_refresh:" + SOURCES[ source ] );
 		history = String( q( "cvar:sb_history" ) || "" ).split( " " ).filter( function ( x ) { return x; } );
 		poll( true );
 	}
@@ -422,8 +510,10 @@ var Servers = ( function ()
 
 	function clickRow( slot )
 	{
+		stopTyping();
 		$.GetContextPanel().SetFocus();
 		if ( dialog || joining ) return;
+		if ( popupOpen() ) { closePopup(); return; }
 		var i = top + slot;
 		if ( !shown[ i ] ) return;
 		zone = "list";
@@ -449,7 +539,7 @@ var Servers = ( function ()
 			notice( "That server runs a different version (" + s.protocol + ", you have " + ( data ? data.protocol : "?" ) + ")" );
 			return;
 		}
-		if ( s.max && s.players + s.bots >= s.max )
+		if ( isFull( s ) )
 		{
 			sound( SND_BACK );
 			notice( s.name + " is full" );
@@ -498,10 +588,29 @@ var Servers = ( function ()
 		sound( SND_BACK );
 		if ( data && data.connected )
 			cbuf( "menu_webcore" );            // the pause page
-		else if ( params.from === "title" )
-			cbuf( "menu_webcore_title" );
-		else
+		else if ( params.from === "online" )
 			cbuf( "menu_webcore online" );
+		else
+			cbuf( "menu_webcore_title" );
+	}
+
+	function activate( z, i )
+	{
+		switch ( z )
+		{
+			case "toolbar":
+				if ( i === 0 ) openPopup();
+				else if ( i === 1 ) startTyping();
+				else refresh();
+				break;
+			case "sort": setSort( i ); break;
+			case "popup": changeFilter( i, 1 ); break;
+			case "bottom":
+				if ( i === 0 ) back();
+				else if ( i === 1 ) openAddress();
+				else join();
+				break;
+		}
 	}
 
 	// --- the dialog -------------------------------------------------------
@@ -520,7 +629,7 @@ var Servers = ( function ()
 		show( "#Dialog", true );
 		sound( SND_OK );
 		$( "#DialogEntry" ).SetFocus();
-		renderHints();
+		render();
 	}
 
 	function closeDialog()
@@ -530,7 +639,7 @@ var Servers = ( function ()
 		show( "#Dialog", false );
 		sound( SND_BACK );
 		$.GetContextPanel().SetFocus();
-		renderHints();
+		render();
 	}
 
 	function hoverDialog( i )
@@ -571,9 +680,8 @@ var Servers = ( function ()
 	function render()
 	{
 		renderRows();
-		renderFilters();
+		renderBars();
 		renderStatus();
-		renderDetail();
 		renderHints();
 		if ( noticeUntil && Date.now() > noticeUntil )
 		{
@@ -595,6 +703,8 @@ var Servers = ( function ()
 	{
 		if ( dialog && dialog.kind === "password" )
 			$( "#DialogMask" ).text = new Array( String( $( "#DialogEntry" ).text || "" ).length + 1 ).join( "*" );
+		if ( readSearch() )
+			render();
 		if ( Date.now() - lastPoll > 300 )
 			poll();
 		else if ( noticeUntil && Date.now() > noticeUntil )
@@ -609,6 +719,14 @@ var Servers = ( function ()
 		$.Schedule( 0.1, tick );
 	}
 
+	function setZone( z )
+	{
+		zone = z;
+		sound( SND_NAV );
+		lastRowsKey = "";
+		render();
+	}
+
 	function onKey( e )
 	{
 		if ( !e || !e.down )
@@ -621,13 +739,14 @@ var Servers = ( function ()
 			renderHints();
 			renderStatus();
 		}
-		var typing = !!dialog;
-		var up = k === "ArrowUp" || b === "GP_DPAD_UP" || b === "MWHEELUP" || k === "WheelUp" || ( !typing && ( k === "w" || k === "W" ) );
-		var down = k === "ArrowDown" || b === "GP_DPAD_DOWN" || b === "MWHEELDOWN" || k === "WheelDown" || ( !typing && ( k === "s" || k === "S" ) );
+		var text = !!dialog || typing;
+		var up = k === "ArrowUp" || b === "GP_DPAD_UP" || b === "MWHEELUP" || k === "WheelUp" || ( !text && ( k === "w" || k === "W" ) );
+		var down = k === "ArrowDown" || b === "GP_DPAD_DOWN" || b === "MWHEELDOWN" || k === "WheelDown" || ( !text && ( k === "s" || k === "S" ) );
 		var left = k === "ArrowLeft" || b === "GP_DPAD_LEFT";
 		var right = k === "ArrowRight" || b === "GP_DPAD_RIGHT";
 		var ok = k === "Enter" || b === "GP_A";
 		var cancel = k === "Escape" || b === "GP_B";
+		var wheel = b === "MWHEELUP" || b === "MWHEELDOWN" || k === "WheelUp" || k === "WheelDown";
 		if ( joining )
 		{
 			if ( cancel )
@@ -639,10 +758,6 @@ var Servers = ( function ()
 			}
 			return;
 		}
-		// Tab moves Panorama's focus to a button, which Enter would then
-		// press as well: keys only go through this handler
-		if ( !dialog )
-			$.GetContextPanel().SetFocus();
 		if ( dialog )
 		{
 			if ( cancel ) closeDialog();
@@ -650,59 +765,114 @@ var Servers = ( function ()
 			else if ( b === "GP_DPAD_LEFT" || b === "GP_DPAD_RIGHT" ) { hoverDialog( dialog.btn ? 0 : 1 ); sound( SND_NAV ); }
 			return;
 		}
+		// typing in the search field: the entry has the keys; these leave it
+		if ( typing )
+		{
+			if ( ok || cancel || down || b === "GP_DPAD_UP" )
+			{
+				stopTyping();
+				zone = "list";
+				lastRowsKey = "";
+				render();
+			}
+			return;
+		}
+		// Tab moves Panorama's focus to a button, which Enter would then
+		// press as well: keys only go through this handler
+		$.GetContextPanel().SetFocus();
+		// the wheel always scrolls the list
+		if ( wheel ) { if ( zone !== "popup" ) zone = "list"; move( up ? -1 : 1 ); return; }
 		var lk = k.length === 1 ? k.toLowerCase() : "";
-		if ( b === "GP_LSHOULDER" || lk === "q" ) { setTab( tab - 1 ); return; }
-		if ( b === "GP_RSHOULDER" || lk === "e" ) { setTab( tab + 1 ); return; }
+		if ( b === "GP_LSHOULDER" || lk === "q" ) { setSource( source - 1 ); return; }
+		if ( b === "GP_RSHOULDER" || lk === "e" ) { setSource( source + 1 ); return; }
 		if ( b === "GP_X" || lk === "r" || b === "F5" ) { refresh(); return; }
 		if ( b === "GP_Y" || lk === "f" ) { toggleFavorite(); return; }
 		if ( b === "GP_MENU" || b === "GP_START" || lk === "c" ) { openAddress(); return; }
-		if ( b === "GP_VIEW" || b === "GP_BACK" || lk === "o" ) { changeFilter( 4, 1 ); return; }
+		if ( b === "GP_VIEW" || b === "GP_BACK" || lk === "o" ) { openPopup(); return; }
+		if ( lk === "/" ) { startTyping(); return; }
+		if ( zone === "popup" )
+		{
+			if ( cancel ) closePopup();
+			else if ( up ) { zoneSel.popup = ( zoneSel.popup + FROWS - 1 ) % FROWS; sound( SND_NAV ); render(); }
+			else if ( down ) { zoneSel.popup = ( zoneSel.popup + 1 ) % FROWS; sound( SND_NAV ); render(); }
+			else if ( left ) changeFilter( zoneSel.popup, -1 );
+			else if ( right || ok || k === " " ) changeFilter( zoneSel.popup, 1 );
+			return;
+		}
 		if ( cancel )
 		{
-			if ( zone === "filters" ) { zone = "list"; sound( SND_NAV ); render(); return; }
+			if ( zone !== "list" ) { setZone( "list" ); return; }
 			back();
 			return;
 		}
-		if ( zone === "filters" )
+		if ( zone === "list" )
 		{
-			if ( left ) { filterSel = ( filterSel + FILTERS - 1 ) % FILTERS; sound( SND_NAV ); render(); }
-			else if ( right ) { filterSel = ( filterSel + 1 ) % FILTERS; sound( SND_NAV ); render(); }
-			else if ( down ) { zone = "list"; sound( SND_NAV ); lastRowsKey = ""; render(); }
-			else if ( ok || k === " " ) changeFilter( filterSel, 1 );
+			if ( up )
+			{
+				if ( sel === 0 || !shown.length ) { zoneSel.sort = sort; setZone( "sort" ); }
+				else move( -1 );
+			}
+			else if ( down )
+			{
+				if ( sel >= shown.length - 1 ) setZone( "bottom" );
+				else move( 1 );
+			}
+			else if ( b === "GP_LTRIGGER" || b === "PGUP" ) move( -VISIBLE );
+			else if ( b === "GP_RTRIGGER" || b === "PGDN" ) move( VISIBLE );
+			else if ( b === "HOME" ) move( -shown.length );
+			else if ( b === "END" ) move( shown.length );
+			else if ( ok || k === " " ) join();
 			return;
 		}
-		if ( up )
-		{
-			if ( sel === 0 || !shown.length ) { zone = "filters"; sound( SND_NAV ); lastRowsKey = ""; render(); }
-			else move( -1 );
-		}
-		else if ( down ) move( 1 );
-		else if ( b === "GP_LTRIGGER" || b === "PGUP" ) move( -VISIBLE );
-		else if ( b === "GP_RTRIGGER" || b === "PGDN" ) move( VISIBLE );
-		else if ( b === "HOME" ) move( -shown.length );
-		else if ( b === "END" ) move( shown.length );
-		else if ( left ) setTab( tab - 1 );
-		else if ( right ) setTab( tab + 1 );
-		else if ( ok || k === " " ) join();
+		// toolbar, sort row, bottom band: Left / Right along it, Up / Down between
+		var n = ZONE_SIZE[ zone ];
+		if ( left ) { zoneSel[ zone ] = ( zoneSel[ zone ] + n - 1 ) % n; sound( SND_NAV ); render(); }
+		else if ( right ) { zoneSel[ zone ] = ( zoneSel[ zone ] + 1 ) % n; sound( SND_NAV ); render(); }
+		else if ( up ) { if ( zone !== "toolbar" ) setZone( zone === "sort" ? "toolbar" : "list" ); }
+		else if ( down ) { if ( zone !== "bottom" ) setZone( zone === "toolbar" ? "sort" : "list" ); }
+		else if ( ok || k === " " ) activate( zone, zoneSel[ zone ] );
 	}
 
 	Bulwark.On( "key", onKey );
 
 	makeRows();
-	var startTab = TABS.indexOf( params.tab || "" );
-	if ( startTab < 0 ) startTab = 0;
-	tab = startTab;
-	for ( var i = 0; i < TABS.length; i++ )
-		$( "#Tab" + i ).SetHasClass( "is-selected", i === tab );
+	var startSource = SOURCES.indexOf( params.tab || params.show || "" );
+	source = startSource < 0 ? 0 : startSource;
+	if ( SOURCES[ source ] === "history" ) sort = SORT_PLAYED;
 	refresh( true );
 	if ( params.failed )
 		notice( "Couldn't join " + params.failed + ": " + friendlyReason( params.reason ), 8 );
 	tick();
 
+	function mouse( z, i )
+	{
+		stopTyping();
+		$.GetContextPanel().SetFocus();
+		if ( dialog || joining ) return false;
+		if ( z !== "popup" && z !== "toolbar" && popupOpen() ) zone = "list";
+		zone = z;
+		zoneSel[ z ] = i;
+		return true;
+	}
+
 	return {
-		Tab: function ( i ) { $.GetContextPanel().SetFocus(); if ( !dialog && !joining ) setTab( i ); },
-		Filter: function ( i ) { $.GetContextPanel().SetFocus(); if ( dialog || joining ) return; zone = "filters"; filterSel = i; changeFilter( i, 1 ); },
-		HoverFilter: function ( i ) { if ( zone === "filters" ) { filterSel = i; renderFilters(); } },
+		Tool: function ( i )
+		{
+			if ( i === 1 ) { if ( !dialog && !joining ) startTyping(); return; }
+			var wasPopup = popupOpen();
+			if ( !mouse( "toolbar", i ) ) return;
+			if ( i === 0 ) { if ( wasPopup ) zone = "popup"; openPopup(); }
+			else refresh();
+		},
+		Sort: function ( i ) { if ( mouse( "sort", i ) ) setSort( i ); },
+		FilterRow: function ( i ) { if ( mouse( "popup", i ) ) changeFilter( i, 1 ); },
+		BottomBtn: function ( i ) { if ( mouse( "bottom", i ) ) activate( "bottom", i ); },
+		Hover: function ( z, i )
+		{
+			// the mouse only moves the controller's highlight inside the zone it is in
+			if ( z === zone && !typing ) { zoneSel[ z ] = i; renderBars(); }
+		},
+		SearchDone: function () { stopTyping(); zone = "list"; lastRowsKey = ""; render(); },
 		DialogOk: function () { dialogOk(); },
 		CloseDialog: function () { closeDialog(); },
 		HoverDialog: function ( i ) { hoverDialog( i ); }

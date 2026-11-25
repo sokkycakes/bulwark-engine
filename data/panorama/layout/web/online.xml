@@ -41,10 +41,6 @@
 					<Label id="AfterDesc" class="item-desc" text="" hittest="false" />
 				</Button>
 				<Button id="Item5" class="item" onactivate="Online.Click(5)" onmouseover="Online.Hover(5)">
-					<Label class="item-name" text="Server Browser" hittest="false" />
-					<Label class="item-desc" text="Pick a server from the list and join it" hittest="false" />
-				</Button>
-				<Button id="Item6" class="item" onactivate="Online.Click(6)" onmouseover="Online.Hover(6)">
 					<Label class="item-name" text="Back" hittest="false" />
 					<Label class="item-desc" text="" hittest="false" />
 				</Button>
