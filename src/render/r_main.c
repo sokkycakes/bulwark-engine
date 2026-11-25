@@ -192,8 +192,7 @@ void R_EndFrame(void)
 		size_t need = (size_t)r_pwidth * r_pheight * 3;
 		if (need > pxsize)
 			px = Mem_Realloc(px, pxsize = need);
-		qglPixelStorei(GL_PACK_ALIGNMENT, 1);
-		qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+		GL_ReadRGB(0, 0, r_pwidth, r_pheight, px);
 		grab_fn(px, r_pwidth, r_pheight);
 	}
 	VID_Swap();
@@ -222,8 +221,7 @@ static void take_screenshot(const char *name)
 	char rel[600], path[1024];
 	uint8_t *px = Mem_Alloc((size_t)r_pwidth * r_pheight * 3);
 	FILE *f;
-	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
-	qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+	GL_ReadRGB(0, 0, r_pwidth, r_pheight, px);
 	/* "*" numbers the shot; "*jpg" and the like pick the format too */
 	const char *ext = name[0] == '*' && name[1] ? name + 1 : r_screenshot_format->string;
 	if (!Str_ICmp(ext, "jpeg"))
@@ -265,8 +263,7 @@ static void capture_jpeg(r_capture_fn fn)
 {
 	strbuf_t sb = {0};
 	uint8_t *px = Mem_Alloc((size_t)r_pwidth * r_pheight * 3);
-	qglPixelStorei(GL_PACK_ALIGNMENT, 1);
-	qglReadPixels(0, 0, r_pwidth, r_pheight, GL_RGB, GL_UNSIGNED_BYTE, px);
+	GL_ReadRGB(0, 0, r_pwidth, r_pheight, px);
 	stbi_flip_vertically_on_write(1);
 	stbi_write_jpg_to_func(sb_write, &sb, r_pwidth, r_pheight, 3, px, 70);
 	Mem_Free(px);

@@ -135,6 +135,8 @@ void GL_SetCull(bool cull);
 void GL_BindTexture(int unit, GLenum target, GLuint tex);
 void GL_SetCoverageAlpha(bool on);
 void GL_DeleteTextures(int n, const GLuint *tex);
+/* glReadPixels as tightly packed RGB (WebGL 2 reads only RGBA) */
+void GL_ReadRGB(int x, int y, int w, int h, void *px);
 
 /* --- models -------------------------------------------------------------- */
 

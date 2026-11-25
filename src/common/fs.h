@@ -15,6 +15,11 @@ const char *FS_BaseDir(void);
  * searched after every game directory; NULL picks the default */
 void FS_SetEngineDir(const char *path);
 const char *FS_EngineDir(void);
+/* a directory for the player's files (-userdir; /user in a browser): every
+ * write goes to <userdir>/<top game dir>/, and <userdir>/<game dir>/ is
+ * searched before each game dir. Empty: writes go into the game dir. */
+void FS_SetUserDir(const char *path);
+const char *FS_UserDir(void);
 void FS_Restart(void); /* rescan packages */
 /* changes whenever the search path does (game directories, packages), so
    results derived from it can tell they are stale */

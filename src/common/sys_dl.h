@@ -7,7 +7,8 @@
 #ifndef BW_SYS_DL_H
 #define BW_SYS_DL_H
 
-#if defined(__3DS__) || defined(__NDS__)
+/* the browser build links its plugins in (BW_LINKED_PLUGINS, plugin.c) */
+#if defined(__3DS__) || defined(__NDS__) || defined(__EMSCRIPTEN__)
 #define BW_NO_DLOPEN 1
 #endif
 

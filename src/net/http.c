@@ -118,7 +118,11 @@ static bool load_curl(void)
 	return curl.ok;
 }
 
+#ifdef __EMSCRIPTEN__
+bool HTTP_HaveTLS(void) { return true; } /* the browser's */
+#else
 bool HTTP_HaveTLS(void) { return load_curl(); }
+#endif
 
 static size_t curl_write(char *data, size_t size, size_t n, void *ctx)
 {
@@ -439,6 +443,9 @@ static bool fetch_plain(http_t *h)
 	return false;
 }
 
+#ifdef __EMSCRIPTEN__
+__attribute__((unused))
+#endif
 static void *worker(void *ctx)
 {
 	http_t *h = ctx;
@@ -471,6 +478,132 @@ static void *worker(void *ctx)
 	return NULL;
 }
 
+#ifdef __EMSCRIPTEN__
+/* --- the browser's fetch ----------------------------------------------------
+ * A page can't open sockets, and has no threads to wait on them: requests go
+ * through the browser's own fetch, http and https alike, and finish in the
+ * page's event loop between frames. Other sites answer only when their CORS
+ * headers allow this page. */
+#include <emscripten/fetch.h>
+
+typedef struct {
+	emscripten_fetch_t *fetch;
+	char **headers; /* name, value, ..., NULL */
+} webreq_t;
+static webreq_t *webreq(http_t *h) { return (webreq_t *)h->f; }
+
+static void web_finish(emscripten_fetch_t *fetch, bool ok)
+{
+	http_t *h = fetch->userData;
+	if (!h)
+		return;
+	h->code = fetch->status;
+	if (ok && fetch->numBytes && !h->cancel) {
+		if (h->savepath) {
+			FILE *f = fopen(h->savepath, "wb");
+			if (!f || fwrite(fetch->data, 1, (size_t)fetch->numBytes, f) != (size_t)fetch->numBytes) {
+				snprintf(h->error, sizeof(h->error), "can't write %s", h->savepath);
+				ok = false;
+			}
+			if (f)
+				fclose(f);
+		} else {
+			SB_Append(&h->body, fetch->data, (size_t)fetch->numBytes);
+		}
+		h->got = (size_t)fetch->numBytes;
+	}
+	if (!ok && !h->error[0])
+		snprintf(h->error, sizeof(h->error), fetch->status ? "HTTP %d" : "the browser refused the request (network or CORS)",
+		         fetch->status);
+	if (h->cancel && !h->error[0])
+		Str_Copy(h->error, "cancelled", sizeof(h->error));
+	/* like the desktop client, an answer with any status is a finished
+	 * request; only a failed transfer fails */
+	h->state = (ok || fetch->status) && !h->cancel && !(h->savepath && h->error[0]) ? HTTP_DONE : HTTP_FAILED;
+	webreq(h)->fetch = NULL;
+	emscripten_fetch_close(fetch);
+}
+static void web_ok(emscripten_fetch_t *fetch) { web_finish(fetch, true); }
+static void web_fail(emscripten_fetch_t *fetch) { web_finish(fetch, false); }
+static void web_progress(emscripten_fetch_t *fetch)
+{
+	http_t *h = fetch->userData;
+	if (h) {
+		h->got = (size_t)fetch->dataOffset + (size_t)fetch->numBytes;
+		h->total = (size_t)fetch->totalBytes;
+	}
+}
+
+static http_t *start(http_t *h)
+{
+	emscripten_fetch_attr_t attr;
+	webreq_t *w = Mem_Alloc(sizeof(*w));
+	int n = 0;
+	h->f = (FILE *)w; /* the browser writes nothing as it goes: the file is written at the end */
+	h->state = HTTP_RUNNING;
+	emscripten_fetch_attr_init(&attr);
+	Str_Copy(attr.requestMethod, h->method ? h->method : "GET", sizeof(attr.requestMethod));
+	attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
+	attr.onsuccess = web_ok;
+	attr.onerror = web_fail;
+	attr.onprogress = web_progress;
+	attr.userData = h;
+	/* "Name: value\r\n" lines, and the body's type */
+	for (const char *l = h->headers; l && *l; n++)
+		l = strchr(l, '\n') ? strchr(l, '\n') + 1 : l + strlen(l);
+	w->headers = Mem_Alloc(sizeof(char *) * (size_t)(n * 2 + 3));
+	n = 0;
+	for (const char *l = h->headers; l && *l;) {
+		const char *end = strchr(l, '\n') ? strchr(l, '\n') : l + strlen(l);
+		const char *colon = memchr(l, ':', (size_t)(end - l));
+		if (colon) {
+			const char *v = colon + 1;
+			const char *ve = end;
+			while (v < ve && *v == ' ')
+				v++;
+			while (ve > v && (ve[-1] == '\r' || ve[-1] == ' '))
+				ve--;
+			w->headers[n] = Mem_Alloc((size_t)(colon - l) + 1);
+			memcpy(w->headers[n], l, (size_t)(colon - l));
+			w->headers[n++][colon - l] = 0;
+			w->headers[n] = Mem_Alloc((size_t)(ve - v) + 1);
+			memcpy(w->headers[n], v, (size_t)(ve - v));
+			w->headers[n++][ve - v] = 0;
+		}
+		l = *end ? end + 1 : end;
+	}
+	if (h->reqbody) {
+		w->headers[n++] = Mem_Strdup("Content-Type");
+		w->headers[n++] = Mem_Strdup(h->ctype);
+		attr.requestData = h->reqbody;
+		attr.requestDataSize = h->reqlen;
+	}
+	w->headers[n] = NULL;
+	attr.requestHeaders = (const char *const *)w->headers;
+	w->fetch = emscripten_fetch(&attr, h->url);
+	if (!w->fetch) {
+		Str_Copy(h->error, "the browser couldn't start the request", sizeof(h->error));
+		h->state = HTTP_FAILED;
+	}
+	return h;
+}
+
+static void web_free(http_t *h)
+{
+	webreq_t *w = webreq(h);
+	if (!w)
+		return;
+	if (w->fetch) {
+		w->fetch->userData = NULL;
+		emscripten_fetch_close(w->fetch);
+	}
+	for (int i = 0; w->headers && w->headers[i]; i++)
+		Mem_Free(w->headers[i]);
+	Mem_Free(w->headers);
+	Mem_Free(w);
+	h->f = NULL;
+}
+#else
 static http_t *start(http_t *h)
 {
 	h->state = HTTP_RUNNING;
@@ -481,6 +614,7 @@ static http_t *start(http_t *h)
 	}
 	return h;
 }
+#endif
 
 http_t *HTTP_Get(const char *url, const char *savepath)
 {
@@ -532,8 +666,12 @@ void HTTP_Free(http_t *h)
 	if (!h)
 		return;
 	h->cancel = true;
+#ifdef __EMSCRIPTEN__
+	web_free(h);
+#else
 	if (h->thread)
 		pthread_join(h->thread, NULL);
+#endif
 	SB_Free(&h->body);
 	Mem_Free(h->savepath);
 	Mem_Free(h->method);

@@ -1183,10 +1183,12 @@ static void discover(double wait)
 	memset(&to, 0, sizeof(to));
 	to.sin_family = AF_INET;
 	to.sin_port = htons((uint16_t)lobby_port->ivalue);
+#ifndef __EMSCRIPTEN__ /* a page can't broadcast, and its sockets reach only WebSocket servers */
 	to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 	send_to(&to, j);
 	to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	send_to(&to, j);
+#endif
 	JSON_Free(j);
 	/* replies land in found[] while the session looks idle */
 	L.phase = LOBBY_IDLE;

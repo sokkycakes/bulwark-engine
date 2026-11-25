@@ -51,8 +51,14 @@ static bool print_replies; /* the console asked, so answers are printed */
 static double lan_sent, lan_sent_wall;
 static cvar_t *net_master[NUM_MASTERS];
 
+#ifdef __EMSCRIPTEN__
+/* a page reaches only WebSocket servers: no master server speaks that, so
+ * there are no defaults (net_master1.. can still name one that does) */
+static const char *const default_masters[] = {NULL};
+#else
 static const char *const default_masters[] = {"master.frag-net.com:27950", "dpmaster.deathmask.net:27950",
                                               "dpmaster.tchr.no:27950", NULL};
+#endif
 
 static void CL_InitServerBrowser(void);
 
@@ -178,6 +184,7 @@ static void ask_lan(void)
 {
 	netadr_t a;
 	snprintf(lan_challenge, sizeof(lan_challenge), "%08x", (unsigned)rand());
+#ifndef __EMSCRIPTEN__ /* a page can't broadcast: only its own listen server is found */
 	NET_EnableBroadcast();
 	memset(&a, 0, sizeof(a));
 	a.type = NA_IP4;
@@ -187,6 +194,7 @@ static void ask_lan(void)
 		a.port = (uint16_t)p;
 		NET_OutOfBandPrint(NS_CLIENT, &a, "getinfo %s", lan_challenge);
 	}
+#endif
 	lan_sent = cl.realtime;
 	lan_sent_wall = Sys_Seconds();
 	/* a server in this process answers over loopback */
