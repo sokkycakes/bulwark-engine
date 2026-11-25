@@ -200,7 +200,7 @@ static bool Host_Frame(void)
 			speeds_since = t0;
 		if (++speeds_frames, t4 - speeds_since >= 1) {
 			double n = speeds_frames;
-			Con_Printf("host_speeds: %d fps, ms/frame %.2f tot %.2f server %.2f client %.2f gfx %.2f snd\n", speeds_frames,
+			Con_Printf("host_speeds: %d fps, %.2f ms/frame: server %.2f client %.2f gfx %.2f snd %.2f\n", speeds_frames,
 			           (t4 - speeds_since) * 1000 / n, speeds_sv * 1000 / n, speeds_cl * 1000 / n, speeds_gfx * 1000 / n,
 			           speeds_snd * 1000 / n);
 			speeds_sv = speeds_cl = speeds_gfx = speeds_snd = 0;

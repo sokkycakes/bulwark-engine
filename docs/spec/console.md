@@ -320,7 +320,9 @@ of it, and say so when used:
 - **`dtls_*`**: Bulwark has no DTLS, so there are no certificates to
   manage.
 - **`host_speeds 1`** prints once a second (not every frame) the average
-  milliseconds a frame spends in the server, client, drawing and sound.
+  milliseconds a frame spends in the server, client, drawing and sound,
+  each label before its value:
+  `host_speeds: 50 fps, 20.27 ms/frame: server 0.00 client 0.01 gfx 20.24 snd 0.01`.
   **`gl_clear`** is accepted and does nothing: Bulwark clears the frame
   anyway.
 - **Plugins** are Bulwark's own (`bwplug_<name>.so` with `bwplug_init`,

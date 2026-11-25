@@ -71,10 +71,10 @@ typedef struct {
 static rawstream_t rawstreams[S_MAX_STREAMS];
 static float duck = 1; /* game sound scale while a voice talks */
 /* the whole mix while the window is in the background: s_inactive (FTE's
- * name, snd_inactive is its other name) 1 keeps playing as FTE does by
+ * name; snd_inactive is another name for the same cvar) 1 keeps playing as FTE does by
  * default, 0 mutes, and a value between lowers it to that scale */
 static float inactive_gain = 1;
-static cvar_t *s_inactive, *snd_inactive;
+static cvar_t *s_inactive;
 
 /* --- channels ----------------------------------------------------------------- */
 
@@ -302,7 +302,7 @@ void S_Update(const float *origin, const float *forward, const float *right, con
 	master_volume = BW_MAX(0.0f, s_volume->value);
 	dsp_level = S_DSPVolume();
 	music_volume = BW_MAX(0.0f, s_bgmvolume->value);
-	inactive_gain = VID_Focused() ? 1.0f : BW_CLAMP(BW_MIN(s_inactive->value, snd_inactive->value), 0.0f, 1.0f);
+	inactive_gain = VID_Focused() ? 1.0f : BW_CLAMP(s_inactive->value, 0.0f, 1.0f);
 	for (int i = 0; i < MAX_CHANNELS; i++)
 		if (channel_live(&channels[i]))
 			spatialise(&channels[i]);
@@ -858,7 +858,7 @@ void S_Init(bool headless)
 	s_refdist = Cvar_Get("snd_refdist", "36", 0, "Reference distance for snd_refdb");
 	s_show = Cvar_Get("snd_show", "0", 0, "Print how many sounds are playing");
 	s_inactive = Cvar_Get("s_inactive", "1", CVAR_ARCHIVE, "Play sound while the window is in the background (alt-tabbed): 1 yes, 0 mute, between lowers it");
-	snd_inactive = Cvar_Get("snd_inactive", "1", CVAR_ARCHIVE, "Same as s_inactive (FTE has both names); the lower of the two applies");
+	Cvar_AddAlias("snd_inactive", s_inactive); /* FTE's other name for the same cvar */
 	Cmd_Add("music", Music_f);
 	Cmd_Add("stopmusic", StopMusic_f);
 	Cmd_Add("play", Play_f);

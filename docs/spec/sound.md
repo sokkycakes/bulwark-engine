@@ -55,8 +55,9 @@ played everywhere.
 
 While the window lacks focus or is minimised (alt-tab), the whole mix,
 voice chat included, is scaled by `s_inactive`. FTE's name for it is
-`s_inactive`, and `snd_inactive` is its other name; Bulwark has both, and
-the lower one applies. 1, the default as on FTE (checked: fteqw64 reports
+`s_inactive`, and `snd_inactive` is another name for the same cvar, as on
+FTE: either name reads and sets one value, so the last one set wins, and
+only `s_inactive` is saved to the config. 1, the default as on FTE (checked: fteqw64 reports
 `s_inactive` "1"), keeps playing. 0 mutes, and a value between lowers the
 sound to that scale. It takes effect at once, with no `snd_restart`.
 `soundinfo` prints whether the window is in the background and the scale.
