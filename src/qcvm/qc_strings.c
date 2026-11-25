@@ -33,6 +33,58 @@ static uint32_t live, threshold = 8192;
 
 static uint32_t text_len(const char *text) { return ((const uint32_t *)(const void *)text)[-1]; }
 
+/* Most strings are short and live a few frames, so they come from free
+ * lists of fixed-size blocks in one region instead of malloc and free each
+ * time (the Xbox's C library allocator is slow). The region is bounded and
+ * strings that don't fit it go to malloc. A block's size class follows
+ * from the length stored at its start. */
+#define POOL_CLASSES 4
+#ifdef BW_LOWMEM
+#define POOL_BYTES (2u << 20)
+#else
+#define POOL_BYTES (8u << 20)
+#endif
+static char *pool, *pool_next;
+static void *pool_free[POOL_CLASSES]; /* each free block holds the next */
+
+static int pool_class(size_t bytes)
+{
+	return bytes <= 16 ? 0 : bytes <= 32 ? 1 : bytes <= 64 ? 2 : bytes <= 128 ? 3 : -1;
+}
+
+static uint32_t *block_alloc(size_t bytes)
+{
+	int k = pool_class(bytes);
+	void *b;
+	if (k >= 0 && pool_free[k]) {
+		b = pool_free[k];
+		pool_free[k] = *(void **)b;
+		return b;
+	}
+	if (k >= 0) {
+		size_t size = (size_t)16 << k;
+		if (!pool)
+			pool = pool_next = Mem_Realloc(NULL, POOL_BYTES);
+		if ((size_t)(pool + POOL_BYTES - pool_next) >= size) {
+			b = pool_next;
+			pool_next += size;
+			return b;
+		}
+	}
+	return Mem_Realloc(NULL, bytes);
+}
+
+static void block_free(uint32_t *block)
+{
+	int k = pool_class(sizeof(uint32_t) + block[0] + 1);
+	if (!pool || (uintptr_t)block - (uintptr_t)pool >= POOL_BYTES) {
+		Mem_Free(block);
+		return;
+	}
+	*(void **)(void *)block = pool_free[k];
+	pool_free[k] = block;
+}
+
 int QC_LiveStrings(void) { return (int)live; }
 
 const char *QC_GetString(qcvm_t *vm, string_t s)
@@ -46,6 +98,18 @@ const char *QC_GetString(qcvm_t *vm, string_t s)
 	if (!u || u >= nstrs || !strs[u])
 		return "";
 	return strs[u];
+}
+
+/* the interpreter's string ==, with both lookups inline (QC can write a
+ * NUL into a string, so the stored lengths cannot settle it) */
+bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b)
+{
+	const char *x, *y;
+	if (a == b)
+		return true;
+	x = QC_GetString(vm, a);
+	y = QC_GetString(vm, b);
+	return x[0] == y[0] && !strcmp(x, y);
 }
 
 char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len)
@@ -97,7 +161,7 @@ string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len)
 		slot = nstrs++;
 		freescan = nstrs;
 	}
-	block = Mem_Alloc(sizeof(uint32_t) + len + 1);
+	block = block_alloc(sizeof(uint32_t) + len + 1);
 	block[0] = (uint32_t)len;
 	strs[slot] = (char *)(block + 1);
 	memcpy(strs[slot], s, len);
@@ -186,7 +250,7 @@ void QC_CollectGarbage(qcvm_t *vm, bool force)
 				top = slot;
 			continue;
 		}
-		Mem_Free((uint32_t *)(void *)strs[slot] - 1);
+		block_free((uint32_t *)(void *)strs[slot] - 1);
 		strs[slot] = NULL;
 		if (slot < freescan)
 			freescan = slot;

@@ -351,6 +351,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	}
 #endif
 	p->statements = Mem_Alloc(sizeof(qcstatement_t) * (h->numstatements + 1));
+	int badops = 0;
 	for (int i = 0; i < h->numstatements; i++) {
 		const uint8_t *d = p->image + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
 		qcstatement_t *st = &p->statements[i];
@@ -364,6 +365,29 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 			st->a = d[2] | (d[3] << 8);
 			st->b = d[4] | (d[5] << 8);
 			st->c = d[6] | (d[7] << 8);
+		}
+		/* the interpreter dispatches through a table with a slot for
+		 * every opcode it knows; anything beyond fails when it runs */
+		if (st->op >= OP_NUMOPS) {
+			if (!badops++)
+				Con_Printf("%s: statement %d has unknown opcode %u\n", name, i, (unsigned)st->op);
+			st->op = QCOP_BAD;
+		}
+	}
+	if (badops > 1)
+		Con_Printf("%s: %d statements have unknown opcodes\n", name, badops);
+	/* running off the end of the code stops with an error */
+	p->statements[h->numstatements].op = QCOP_END;
+	for (int i = 0; i + 1 < h->numstatements; i++) {
+		qcstatement_t *x = &p->statements[i], *y = x + 1;
+		if (y->op != OP_IFNOT || y->a != x->c)
+			continue;
+		switch (x->op) {
+		case OP_NE_F: x->op = QCOP_NEF_IFNOT; break;
+		case OP_EQ_F: x->op = QCOP_EQF_IFNOT; break;
+		case OP_EQ_S: x->op = QCOP_EQS_IFNOT; break;
+		case OP_LT_I: x->op = QCOP_LTI_IFNOT; break;
+		default: break;
 		}
 	}
 
@@ -637,8 +661,13 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 
 	vm->localstack_size = 1 << 16;
 	vm->localstack = Mem_Alloc(sizeof(qcval_t) * vm->localstack_size);
-	/* random() differs from run to run, as in Quake engines seeded from the clock */
-	vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ ((uint64_t)Sys_Milliseconds() * 0x2545f4914f6cdd1dull);
+	/* random() differs from run to run, as in Quake engines seeded from the
+	 * clock, unless pr_seed fixes it (for repeatable benchmarks and tests) */
+	{
+		cvar_t *seed = Cvar_Find("pr_seed");
+		uint64_t s = seed && seed->ivalue ? (uint64_t)(uint32_t)seed->ivalue : (uint64_t)Sys_Milliseconds();
+		vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ (s * 0x2545f4914f6cdd1dull);
+	}
 
 	activate(vm, 0);
 	resolve_fields(vm);
@@ -745,7 +774,7 @@ void QC_Free(qcvm_t *vm)
 
 /* --- parameters ------------------------------------------------------ */
 
-qcval_t *QC_Parm(qcvm_t *vm, int n)
+qcval_t *QC_ParmExt(qcvm_t *vm, int n)
 {
 	static qcval_t zero[3];
 	if (n < MAX_PARMS)

@@ -171,21 +171,37 @@ size_t Str_Cat(char *dst, const char *src, size_t dstsize)
 	return l + Str_Copy(dst + l, src, dstsize - l);
 }
 
+/* tolower as the C locale the engine runs in has it; folding only on a
+ * mismatch keeps the equal-byte path free of calls */
+static inline int ascii_lower(int c) { return (unsigned)c - 'A' < 26u ? c + ('a' - 'A') : c; }
+
 int Str_ICmp(const char *a, const char *b)
 {
 	for (;; a++, b++) {
-		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
-		if (ca != cb || !ca)
-			return ca - cb;
+		int ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if (ca != cb) {
+			ca = ascii_lower(ca);
+			cb = ascii_lower(cb);
+			if (ca != cb)
+				return ca - cb;
+		}
+		if (!ca)
+			return 0;
 	}
 }
 
 int Str_NICmp(const char *a, const char *b, size_t n)
 {
 	for (; n; n--, a++, b++) {
-		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
-		if (ca != cb || !ca)
-			return ca - cb;
+		int ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if (ca != cb) {
+			ca = ascii_lower(ca);
+			cb = ascii_lower(cb);
+			if (ca != cb)
+				return ca - cb;
+		}
+		if (!ca)
+			return 0;
 	}
 	return 0;
 }

@@ -1081,6 +1081,7 @@ void QC_ExtraFree(qcvm_t *vm)
 		strbuf_free(&x->strbufs[i]);
 	Mem_Free(x->strbufs);
 	Mem_Free(x->tokens.buf);
+	Mem_Free(x->tokens.src);
 }
 
 /* --- FTE_MULTIPROGS ------------------------------------------------------- */

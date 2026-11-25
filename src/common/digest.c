@@ -6,15 +6,24 @@
 #include "common.h"
 #include "digest.h"
 
+/* Nuclide hashes entity class names with this every frame, so a byte at a
+ * time from a table rather than a bit at a time */
+static uint16_t crc16_table[256];
+
 uint16_t Digest_CRC16(const void *data, size_t len)
 {
 	const uint8_t *p = data;
 	uint16_t crc = 0xffff;
-	while (len--) {
-		crc ^= (uint16_t)(*p++ << 8);
-		for (int b = 0; b < 8; b++)
-			crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+	if (!crc16_table[1]) {
+		for (int i = 0; i < 256; i++) {
+			uint16_t c = (uint16_t)(i << 8);
+			for (int b = 0; b < 8; b++)
+				c = (c & 0x8000) ? (uint16_t)((c << 1) ^ 0x1021) : (uint16_t)(c << 1);
+			crc16_table[i] = c;
+		}
 	}
+	while (len--)
+		crc = (uint16_t)((crc << 8) ^ crc16_table[(crc >> 8) ^ *p++]);
 	return crc;
 }
 
@@ -181,7 +190,10 @@ bool Digest_Hex(const char *algo, const void *data, size_t len, char *out, size_
 		return false;
 	if (outsize < n * 2 + 1)
 		return false;
-	for (size_t i = 0; i < n; i++)
-		snprintf(out + i * 2, 3, "%02x", buf[i]);
+	for (size_t i = 0; i < n; i++) {
+		out[i * 2] = "0123456789abcdef"[buf[i] >> 4];
+		out[i * 2 + 1] = "0123456789abcdef"[buf[i] & 15];
+	}
+	out[n * 2] = 0;
 	return true;
 }

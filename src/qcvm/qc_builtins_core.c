@@ -907,6 +907,7 @@ static void tokens_reset(qcvm_t *vm)
 {
 	vm->extra->tokens.count = 0;
 	vm->extra->tokens.buflen = 0;
+	vm->extra->tokens.src_valid = false;
 }
 
 static void token_add(qcvm_t *vm, const char *src, const char *s, size_t n, const char *start, const char *end)
@@ -986,6 +987,16 @@ static void bi_tokenize(qcvm_t *vm)
 static void bi_tokenize_console(qcvm_t *vm)
 {
 	const char *src = QC_PSTR(vm, 0), *p = src;
+	qc_tokens_t *t = &vm->extra->tokens;
+	size_t srclen = strlen(src);
+	if (t->src_valid && srclen == t->srclen && !memcmp(src, t->src, srclen)) {
+		/* the same text as last time splits the same way: only the
+		 * strings argv() made need making again, as they would be */
+		for (int i = 0; i < t->count; i++)
+			t->argv[i] = 0;
+		QC_ReturnFloat(vm, (float)t->count);
+		return;
+	}
 	tokens_reset(vm);
 	for (;;) {
 		const char *start;
@@ -1012,7 +1023,15 @@ static void bi_tokenize_console(qcvm_t *vm)
 			p++;
 		token_add(vm, src, start, (size_t)(p - start), start, p);
 	}
-	QC_ReturnFloat(vm, (float)vm->extra->tokens.count);
+	if (srclen + 1 > t->srccap) {
+		t->srccap = srclen + 1 > 256 ? srclen + 1 : 256;
+		Mem_Free(t->src);
+		t->src = Mem_Alloc(t->srccap);
+	}
+	memcpy(t->src, src, srclen + 1);
+	t->srclen = srclen;
+	t->src_valid = true;
+	QC_ReturnFloat(vm, (float)t->count);
 }
 
 static void bi_tokenizebyseparator(qcvm_t *vm)
@@ -1330,8 +1349,8 @@ static void bi_wasfreed(qcvm_t *vm)
 
 static int next_live(qcvm_t *vm, int e)
 {
-	if (e < 0)
-		e = 0; /* bad progs: start from the world rather than read before it */
+	if (e < -1)
+		e = -1; /* bad progs: as from -1, which finds the world, rather than read before it */
 	for (e++; e < vm->num_edicts; e++)
 		if (!vm->edicts[e].free)
 			return e;
@@ -1365,15 +1384,13 @@ static void bi_findfloat(qcvm_t *vm)
 {
 	int e = QC_PENT(vm, 0), f = QC_PINT(vm, 1);
 	int32_t match = QC_PINT(vm, 2);
-	/* games walk every entity with this each frame (Nuclide's StartFrame),
-	   so the scan steps through the field directly */
-	if (f >= 0 && f < vm->edict_words) {
-		const qcval_t *v = QC_EdictFields(vm, 0) + f;
-		size_t stride = (size_t)vm->edict_words;
-		if (e < 0)
-			e = 0;
-		for (e++; e < vm->num_edicts; e++)
-			if (v[(size_t)e * stride].i == match && !vm->edicts[e].free) {
+	/* e == -1 takes the slow loop, which returns world straight away */
+	if (e >= 0 && f >= 0 && f < vm->edict_words) {
+		/* Nuclide runs this hundreds of times a frame over every entity:
+		 * walk the field with a stride rather than a lookup per entity */
+		const qcval_t *v = QC_EdictFields(vm, 0) + f + (size_t)(e + 1) * vm->edict_words;
+		for (e++; e < vm->num_edicts; e++, v += vm->edict_words)
+			if (v->i == match && !vm->edicts[e].free) {
 				QC_ReturnInt(vm, e);
 				return;
 			}

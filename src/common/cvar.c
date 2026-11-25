@@ -10,22 +10,27 @@ static cvar_t *cvar_list;
 
 cvar_t *Cvar_First(void) { return cvar_list; }
 
-/* names hash case-blind: the games look cvars up by name every frame
- * (QC's cvar()), and there are a couple of thousand of them */
-#define CVAR_HASH 1024
-static cvar_t *cvar_hash[CVAR_HASH];
+/* Games read cvars by name every frame (QC's cvar() and cvar_set()), and
+ * with a couple of thousand of them a list walk costs tens of microseconds
+ * on small machines, so lookups go through a hash of the lowercased name. */
+#define CVAR_HASH_SIZE 1024
+static cvar_t *cvar_hash[CVAR_HASH_SIZE];
 
-static unsigned cvar_hashname(const char *name)
+static unsigned cvar_hash_name(const char *s)
 {
 	unsigned h = 2166136261u;
-	for (; *name; name++)
-		h = (h ^ (unsigned)tolower((unsigned char)*name)) * 16777619u;
-	return h & (CVAR_HASH - 1);
+	for (; *s; s++) {
+		unsigned c = (unsigned char)*s;
+		if (c - 'A' < 26u)
+			c += 'a' - 'A';
+		h = (h ^ c) * 16777619u;
+	}
+	return h & (CVAR_HASH_SIZE - 1);
 }
 
 cvar_t *Cvar_Find(const char *name)
 {
-	for (cvar_t *v = cvar_hash[cvar_hashname(name)]; v; v = v->hnext)
+	for (cvar_t *v = cvar_hash[cvar_hash_name(name)]; v; v = v->hashnext)
 		if (!Str_ICmp(v->name, name))
 			return v;
 	return NULL;
@@ -81,8 +86,8 @@ cvar_t *Cvar_Get(const char *name, const char *defvalue, int flags, const char *
 	v->next = cvar_list;
 	cvar_list = v;
 	{
-		unsigned h = cvar_hashname(v->name);
-		v->hnext = cvar_hash[h];
+		unsigned h = cvar_hash_name(v->name);
+		v->hashnext = cvar_hash[h];
 		cvar_hash[h] = v;
 	}
 	return v;
