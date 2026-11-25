@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "server"]
+members = ["core", "server", "steam", "steam-mock"]
 # The SpacetimeDB module builds on its own for wasm32 (see stdb/README.md),
 # so it isn't a workspace member.
 exclude = ["stdb"]
