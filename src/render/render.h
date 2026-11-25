@@ -93,6 +93,24 @@ void R_MainView(float origin[3], float forward[3]);
 /* $r_editlights_current_* macros (r_editlights); NULL for other names */
 const char *R_EditLightsMacro(const char *name);
 
+/* model shots (r_modelshot.c): a model drawn on its own, lit by a studio
+ * light on a transparent background, into the image named name (the UI
+ * shows it as "$rt:name"). Framed on the model by measuring where it draws;
+ * portrait frames head and shoulders. Each call draws it again (call it
+ * every frame for a live one, between R_BeginFrame and R_EndFrame). The
+ * image exists from the first call, blank while there is no window. */
+typedef struct {
+	const char *model;
+	const char *anim; /* sequence or frame name or number; NULL for the model's idle */
+	float time;       /* seconds into it */
+	float yaw;        /* the model's turn; 0 faces the camera */
+	int width, height;
+	bool portrait;
+} r_modelshot_t;
+bool R_ModelShot(const char *name, const r_modelshot_t *s);
+bool R_ModelShotExists(const char *name);
+void R_InitModelShots(void);
+
 /* modelviewer and mapedit (r_viewer.c): while active they take keys and the mouse */
 bool V_Active(void);
 bool V_KeyEvent(int key, bool down);

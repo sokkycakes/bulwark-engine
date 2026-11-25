@@ -387,6 +387,7 @@ bool R_Init(bool headless)
 	R_InitTools();
 	R_InitRTLights();
 	V_Init();
+	R_InitModelShots();
 	R_InitScene();
 	r_active = false;
 	if (!headless && VID_Active()) {

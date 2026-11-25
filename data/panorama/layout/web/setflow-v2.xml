@@ -54,10 +54,13 @@
 				<Panel id="Kit" class="v2-kit" hittest="false" />
 			</Panel>
 
-			<!-- middle: the hero, large -->
+			<!-- middle: the hero, large: its model, drawn live by the engine
+			     into $rt:heropreview (src/client/cl_setflow.c); the initial
+			     shows only for a hero without a model -->
 			<Panel class="v2-stage" hittest="false">
 				<Panel class="v2-stage-glow" hittest="false" />
 				<Label id="StageInitial" class="v2-stage-initial" text="" hittest="false" />
+				<Image id="StageModel" class="v2-stage-model" src="$rt:heropreview" scaling="stretch-to-fit-preserve-aspect" hittest="false" />
 			</Panel>
 
 			<!-- right: how this pick works -->
@@ -97,6 +100,9 @@
 		<Panel id="Reveal" class="screen reveal hidden" hittest="false">
 			<Panel class="dim" hittest="false" />
 			<Panel class="reveal-band" hittest="false">
+				<!-- each hero's portrait, a shot of its model -->
+				<Panel id="RevealPic1" class="reveal-pic reveal-pic-left hidden" hittest="false" />
+				<Panel id="RevealPic2" class="reveal-pic reveal-pic-right hidden" hittest="false" />
 				<Panel class="reveal-side reveal-left" hittest="false">
 					<Label id="RevealHero1" class="reveal-hero" text="" hittest="false" />
 					<Label id="RevealName1" class="reveal-name" text="" hittest="false" />
@@ -161,6 +167,9 @@
 				<Label id="LeavingSub" class="banner-sub" text="" hittest="false" />
 			</Panel>
 		</Panel>
+
+		<!-- the splitscreen players' own panels -->
+		<Panel id="LocalLayer" class="local-layer hidden" />
 
 		<!-- bottom: searching while training -->
 		<Panel id="Ribbon" class="ribbon hidden" hittest="false">

@@ -288,6 +288,7 @@ add_library(bwclient STATIC
 	src/render/r_part.c
 	src/render/r_pcf.c
 	src/render/r_tools.c
+	src/render/r_modelshot.c
 	src/render/r_rtlights.c
 	src/render/r_skin.c
 	src/render/r_svg.c

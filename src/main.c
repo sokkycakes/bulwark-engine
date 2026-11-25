@@ -234,6 +234,7 @@ int main(int argc, char **argv)
 		Lobby_Frame();
 		WC_Frame();
 		R_BeginFrame();
+		SF_Render();
 		{
 			int w, h;
 			R_GetSize(&w, &h);

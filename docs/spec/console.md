@@ -634,6 +634,7 @@ held and the matching `-` command when it's let go.
 | `mod_terrain_save` | Writes the current terrain's heights out as section files. |
 | `mod_texturelist` | mod_texturelist [filter]: the world's materials and surface counts |
 | `mod_usetexture` | mod_usetexture <material>: put a material on the world surface in view |
+| `modelshot` | Draws a model on its own into an image file: modelshot <model> <file.png> [width] [height] [portrait] [anim] [yaw] |
 | `modelviewer` | Shows a model on its own: modelviewer <MODELNAME> [SKINFILE] [ANIMATIONFILE] |
 | `+movedown` / `-movedown` | Swim or fly down |
 | `+moveleft` / `-moveleft` | Strafe left |

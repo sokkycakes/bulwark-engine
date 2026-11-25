@@ -1478,7 +1478,11 @@ static void set_model_lighting(const glprog_t *p, rentity_t *e)
 	if (e->model)
 		for (int k = 0; k < 3; k++)
 			c[k] += (e->model->mins[k] + e->model->maxs[k]) * 0.5f;
-	if ((e->renderflags & 1) || r_fullbright->ivalue) { /* RF_VIEWMODEL lights from the view position */
+	if (r_scene.isolated) {
+		VectorCopy(r_scene.isolight[0], amb);
+		VectorCopy(r_scene.isolight[1], dif);
+		VectorCopy(r_scene.isolight[2], dir);
+	} else if ((e->renderflags & 1) || r_fullbright->ivalue) { /* RF_VIEWMODEL lights from the view position */
 		R_LightPoint(r_scene.origin, amb, dif, dir);
 	} else {
 		R_LightPoint(c, amb, dif, dir);

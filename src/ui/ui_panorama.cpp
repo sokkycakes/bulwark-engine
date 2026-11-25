@@ -564,7 +564,8 @@ std::string image_path(std::string src)
 		while (!src.empty() && (src.back() == '"' || src.back() == '\''))
 			src.pop_back();
 	}
-	if (src.rfind("data:", 0) == 0)
+	/* data: urls, and $rt:name: an image the engine draws (model shots) */
+	if (src.rfind("data:", 0) == 0 || src.rfind("$rt:", 0) == 0)
 		return src;
 	if (src.rfind("file://", 0) == 0)
 		src = src.substr(7);
@@ -635,6 +636,10 @@ PanoramaTextureId texture_for(const std::string &path, float &w, float &h)
 		int iw = 0, ih = 0;
 		std::string src = path.rfind("data:", 0) == 0 ? data_url_image(path) : path;
 		PanoramaTextureId id = src.empty() ? 0 : backend.load_texture(src, iw, ih);
+		if (!id && path.rfind("$rt:", 0) == 0) {
+			w = h = 0;
+			return 0; /* not made yet: looked up again next time */
+		}
 		if (!id)
 			Con_Printf("^3ui: couldn't load image %s\n", path.c_str());
 		it = cache.emplace(path, std::make_pair(id, std::make_pair(iw, ih))).first;
@@ -653,6 +658,23 @@ bool resolve_images(PanoramaNode &node)
 	if (src != node.attributes.end() && !src->second.empty() && node.tag_lower == "image") {
 		float w, h;
 		PanoramaTextureId id = texture_for(image_path(src->second), w, h);
+		/* scaling="..." as Valve's Image panels take it */
+		auto sc = node.attributes.find("scaling");
+		PanoramaImageScaling scaling = PanoramaImageScaling::Stretch;
+		if (sc != node.attributes.end()) {
+			if (sc->second == "stretch-to-fit-preserve-aspect")
+				scaling = PanoramaImageScaling::StretchPreserveAspect;
+			else if (sc->second == "stretch-to-fit-x-preserve-aspect")
+				scaling = PanoramaImageScaling::StretchXPreserveAspect;
+			else if (sc->second == "stretch-to-fit-y-preserve-aspect")
+				scaling = PanoramaImageScaling::StretchYPreserveAspect;
+			else if (sc->second == "none")
+				scaling = PanoramaImageScaling::None;
+		}
+		if (scaling != node.paint_texture_scaling) {
+			node.paint_texture_scaling = scaling;
+			changed = true;
+		}
 		if (id != node.paint_texture) {
 			node.paint_texture = id;
 			node.paint_texture_natural_width = w;

@@ -319,6 +319,7 @@ void WC_OpenPage(const char *url);
 void SF_Init(void);
 void SF_Frame(void);
 bool SF_Query(const char *req, strbuf_t *out);
+void SF_Render(void); /* the hero pictures, after R_BeginFrame */
 bool SF_InRunningSet(void);
 bool SF_SetGame(void); /* in a Live set game or the training map: no team or hero menus */
 extern const qc_builtin_t cl_webcore_builtins[];

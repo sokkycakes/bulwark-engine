@@ -22,9 +22,12 @@ the glue to Bulwark Live live in the engine.
 5. **Hero select** (SELECT), laid out loosely after Deadlock's pre-alpha
    hero select (`layout/web/setflow-v2.xml`; `setflow_layout` switches back
    to the grid in `setflow.xml`): the hero's name, line, blurb and kit on
-   the left, the hero large in the middle (its initial until Stiletto
-   has showcase art), how the pick works and the opponent's status on the
-   right, the roster strip with Lock In along the bottom, key hints below.
+   the left, the hero large in the middle, how the pick works and the
+   opponent's status on the right, the roster strip with Lock In along the
+   bottom, key hints below. The middle is the hero's model, posed in its
+   idle and drawn live into a render target (`$rt:heropreview`), and the
+   roster tiles and the reveal show portraits shot from each model
+   (`$rt:portrait_<hero>`); see Hero pictures below.
    It is a blind pick with a 20 s timer. Neither side sees
    the other's hero until both lock in (or the timer locks them: anyone
    without a hero gets a random one). Then the reveal, 2.5 s.
@@ -100,3 +103,31 @@ disconnect).
 `setflow_ui.py` in `tests/live` runs two windowed clients on their own Xvfb
 displays through all of this with key presses only (xdotool), and takes a
 screenshot of each screen.
+
+## Hero pictures
+
+Stiletto has no portrait art: the select makes its pictures from the
+heroes' models, the way FTE menus show a player model through a render
+target. The engine draws a model on its own (`R_ModelShot`,
+`src/render/r_modelshot.c`) into a named image, which the UI shows with
+`src="$rt:<name>"`:
+
+- `flow:preview:<hero>` sets the hero on the stage; while the select is
+  up, `$rt:heropreview` (512 x 608) is drawn again every frame, the model
+  playing its idle, turned 20 degrees. The reply says whether the hero has
+  a model (`{"ok":true,"model":true}`); without one the stage shows the
+  hero's initial.
+- `flow:portraits:<hero>,<hero>,...` makes `$rt:portrait_<hero>`
+  (264 x 224, head and shoulders) for each and draws them over the next
+  frames, once. The reply lists those that have a model
+  (`{"ok":true,"have":[...]}`).
+
+The model and its idle come from the hero's entityDef
+(`decls/def/heroes/<hero>.def`, `model` and `act_idle`, following
+`inherit`). A `$MACRO` frame or a name the model lacks falls back to the
+model's idle1, idle, stand1 or stand, then frame 0. Framing is measured,
+not configured: the model is drawn small, the box its pixels cover is
+found, and the camera moves onto it (a portrait frames the top of that
+box, centred on the head). The light is a fixed studio light, not the
+map's, on a transparent background. `modelshot <model> <file.png> [w] [h]
+[portrait] [anim] [yaw]` writes the same shot to a file.

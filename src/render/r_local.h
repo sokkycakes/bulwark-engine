@@ -21,6 +21,7 @@ typedef struct image_s {
 	int width, height;
 	bool alpha;   /* has transparent pixels */
 	bool missing; /* no file was found: the checker texture stands in */
+	bool flipy;   /* a render target: its rows run bottom up */
 	struct image_s *next;
 } image_t;
 
@@ -342,6 +343,11 @@ typedef struct {
 	bool skyroom;
 	float skyroom_origin[3];
 	bool noskyroom; /* set while drawing the skyroom itself */
+	/* a model shot (r_modelshot.c): only the scene's entities, lit by the
+	   light below rather than the world's, on a transparent background,
+	   leaving particles, polygons and the main view alone */
+	bool isolated;
+	float isolight[3][3]; /* ambient, diffuse, direction */
 } rscene_t;
 
 /* the fog for the view being drawn: rgb and density */

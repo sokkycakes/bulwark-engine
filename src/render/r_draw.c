@@ -887,7 +887,7 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 		v[i].xyz[0] = in[i].x;
 		v[i].xyz[1] = in[i].y;
 		v[i].st[0] = in[i].s;
-		v[i].st[1] = in[i].t;
+		v[i].st[1] = img->flipy ? 1 - in[i].t : in[i].t;
 		memcpy(v[i].color, in[i].rgba, 4);
 	}
 	R_UseProgram(PROG_2D);

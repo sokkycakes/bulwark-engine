@@ -9,7 +9,9 @@
 #include "console.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/fs.h"
 #include "../net/live.h"
+#include "../render/render.h"
 #include "../server/sv_local.h"
 #include "../ui/ui.h"
 
@@ -125,6 +127,157 @@ static const char *live_state(void)
 
 static bool live_queued(void) { return strstr(live_state(), "\"queue\":{") != NULL; }
 
+/* --- hero pictures ----------------------------------------------------------------
+ * Shots of each hero's model (r_modelshot.c), the way FTE menus show a
+ * player model through a render target: the select's stage shows the hero
+ * under the cursor, posed in its idle and drawn again every frame
+ * ($rt:heropreview), and the roster tiles show portraits drawn once
+ * ($rt:portrait_<hero>). The model and its idle come from the hero's
+ * entityDef (decls/def/heroes/<hero>.def, following "inherit"). */
+
+#define PREVIEW_W 512
+#define PREVIEW_H 608
+#define PORTRAIT_W 264
+#define PORTRAIT_H 224
+#define MAX_HEROPICS 24
+
+typedef struct {
+	char id[33];
+	char model[128], anim[64];
+	bool looked; /* the def was read */
+	bool drawn;  /* its portrait */
+	bool want;   /* asked for a portrait */
+} heropic_t;
+
+static heropic_t heropics[MAX_HEROPICS];
+static char preview_id[33];
+static double preview_start;
+
+/* the block of entityDef name in the file at path, or NULL (Mem_Free it) */
+static char *def_block(const char *path, const char *name)
+{
+	char tok[256], *data = FS_LoadFile(path, NULL), *out = NULL;
+	const char *p = data;
+	if (!data)
+		return NULL;
+	while ((p = COM_Parse(p, tok, sizeof(tok)))) {
+		if (Str_ICmp(tok, "entityDef"))
+			continue;
+		if (!(p = COM_Parse(p, tok, sizeof(tok))))
+			break;
+		if (Str_ICmp(tok, name))
+			continue;
+		{
+			const char *start = strchr(p, '{'), *end = start ? strchr(start, '}') : NULL;
+			if (start && end) {
+				out = Mem_Alloc((size_t)(end - start) + 1);
+				memcpy(out, start + 1, (size_t)(end - start - 1));
+			}
+		}
+		break;
+	}
+	Mem_Free(data);
+	return out;
+}
+
+/* looks up key in entityDef name, then in what it inherits */
+static bool def_key(const char *name, const char *k, char *val, size_t n, int depth)
+{
+	static const char *const files[] = {"decls/def/heroes/%s.def", "decls/def/%s.def", "decls/def/player.def",
+	                                    "decls/def/heroes.def"};
+	char path[128], tok[256], key_[64], inherit[64] = "";
+	char *block = NULL;
+	bool found = false;
+	if (depth > 4)
+		return false;
+	for (size_t i = 0; i < sizeof(files) / sizeof(files[0]) && !block; i++) {
+		snprintf(path, sizeof(path), files[i], name);
+		block = def_block(path, name);
+	}
+	if (!block)
+		return false;
+	for (const char *p = block; (p = COM_Parse(p, key_, sizeof(key_)));) {
+		if (!(p = COM_Parse(p, tok, sizeof(tok))))
+			break;
+		if (!Str_ICmp(key_, k)) {
+			Str_Copy(val, tok, n);
+			found = true;
+		} else if (!Str_ICmp(key_, "inherit")) {
+			Str_Copy(inherit, tok, sizeof(inherit));
+		}
+	}
+	Mem_Free(block);
+	return found || (inherit[0] && def_key(inherit, k, val, n, depth + 1));
+}
+
+static bool id_ok(const char *id)
+{
+	size_t n = strlen(id);
+	if (!n || n > 32)
+		return false;
+	for (const char *p = id; *p; p++)
+		if (!isalnum((unsigned char)*p) && *p != '_')
+			return false;
+	return true;
+}
+
+static heropic_t *heropic(const char *id)
+{
+	heropic_t *h = NULL;
+	if (!id_ok(id))
+		return NULL;
+	for (int i = 0; i < MAX_HEROPICS && !h; i++)
+		if (!heropics[i].id[0] || !strcmp(heropics[i].id, id))
+			h = &heropics[i];
+	if (!h)
+		return NULL;
+	if (!h->looked) {
+		Str_Copy(h->id, id, sizeof(h->id));
+		h->looked = true;
+		def_key(id, "model", h->model, sizeof(h->model), 0);
+		def_key(id, "act_idle", h->anim, sizeof(h->anim), 0);
+		/* "a,b": the first */
+		if (strchr(h->anim, ','))
+			*strchr(h->anim, ',') = 0;
+	}
+	return h;
+}
+
+static void shot(const char *name, const heropic_t *h, float time, float yaw, int w, int hgt, bool portrait)
+{
+	r_modelshot_t s = {0};
+	s.model = h ? h->model : NULL;
+	s.anim = h ? h->anim : NULL;
+	s.time = time;
+	s.yaw = yaw;
+	s.width = w;
+	s.height = hgt;
+	s.portrait = portrait;
+	R_ModelShot(name, &s);
+}
+
+/* between R_BeginFrame and the client game's frame: draws the pictures */
+void SF_Render(void)
+{
+	char state[32];
+	int drawn = 0;
+	if (!R_Active())
+		return;
+	for (int i = 0; i < MAX_HEROPICS && drawn < 2; i++) {
+		heropic_t *h = &heropics[i];
+		if (!h->want || h->drawn)
+			continue;
+		h->drawn = true;
+		shot(va("portrait_%s", h->id), h, 0, 15, PORTRAIT_W, PORTRAIT_H, true);
+		drawn++;
+	}
+	key("arena_state", state, sizeof(state));
+	if (preview_id[0] && sf.view && !strcmp(state, "SELECT")) {
+		heropic_t *h = heropic(preview_id);
+		shot("heropreview", h, (float)(Sys_Seconds() - preview_start), 20, PREVIEW_W, PREVIEW_H, false);
+	}
+}
+
 /* --- the view --------------------------------------------------------------------- */
 
 static void close_view(void)
@@ -168,6 +321,9 @@ static void view_frame(void)
 		return;
 	}
 	if (!sf.view) {
+		/* the stage's picture exists before the layout looks it up */
+		shot("heropreview", NULL, 0, 0, PREVIEW_W, PREVIEW_H, false);
+		preview_id[0] = 0;
 		sf.view = UI_Open(setflow_layout->string, 0);
 		if (!sf.view)
 			sf.view = UI_Open("layout/web/setflow.xml", 0);
@@ -453,6 +609,41 @@ static void q_flow(const char *a, strbuf_t *out)
 		Cbuf_AddText("disconnect\n");
 	} else if (!strcmp(verb, "card")) {
 		Cbuf_AddText(va("live_card %u\n", (unsigned)strtoul(arg, NULL, 10)));
+	} else if (!strcmp(verb, "preview")) {
+		/* the hero the select's stage shows ("" for none); says whether
+		 * it has a model to show */
+		heropic_t *h = *arg ? heropic(arg) : NULL;
+		if (*arg && !h) {
+			ok = false;
+		} else {
+			if (strcmp(preview_id, arg)) {
+				Str_Copy(preview_id, arg, sizeof(preview_id));
+				preview_start = Sys_Seconds();
+			}
+			SB_Printf(out, "{\"ok\":true,\"model\":%s}", h && h->model[0] && R_Active() ? "true" : "false");
+			return;
+		}
+	} else if (!strcmp(verb, "portraits")) {
+		/* id,id,...: their portraits ($rt:portrait_<id>) exist from now on
+		 * and are drawn over the next frames; lists those with a model */
+		char ids[512], *p, *e;
+		bool first = true;
+		Str_Copy(ids, arg, sizeof(ids));
+		SB_AppendStr(out, "{\"ok\":true,\"have\":[");
+		for (p = ids; p && *p; p = e) {
+			heropic_t *h;
+			if ((e = strchr(p, ',')))
+				*e++ = 0;
+			if (!(h = heropic(p)) || !h->model[0] || !R_Active())
+				continue;
+			h->want = true;
+			if (!h->drawn)
+				shot(va("portrait_%s", h->id), NULL, 0, 0, PORTRAIT_W, PORTRAIT_H, true);
+			SB_Printf(out, "%s\"%s\"", first ? "" : ",", h->id);
+			first = false;
+		}
+		SB_AppendStr(out, "]}");
+		return;
 	} else if (!strcmp(verb, "dismiss")) {
 		sf.notice[0] = 0;
 		sf.notice_seq++;

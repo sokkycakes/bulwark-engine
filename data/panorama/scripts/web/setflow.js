@@ -111,11 +111,20 @@ var SetFlow = ( function ()
 		gridKey = key;
 		var grid = $( "#HeroGrid" );
 		grid.RemoveAndDeleteChildren();
+		// portraits: shots of each hero's model the engine draws ($rt:portrait_<id>)
+		var have = {};
+		if ( V2 )
+		{
+			try { ( JSON.parse( flow( "portraits:" + heroIds.join( "," ) ) || "{}" ).have || [] ).forEach( function ( h ) { have[ h ] = true; } ); }
+			catch ( e ) {}
+		}
 		heroIds.forEach( function ( id, i )
 		{
 			if ( V2 )
 			{
-				var t = $.CreatePanel( "Button", grid, "Hero" + i, { class: "tile" } );
+				var t = $.CreatePanel( "Button", grid, "Hero" + i, { class: "tile" + ( have[ id ] ? " has-portrait" : "" ) } );
+				if ( have[ id ] )
+					$.CreatePanel( "Image", t, "", { class: "tile-portrait", src: "$rt:portrait_" + id, scaling: "stretch-to-fit-preserve-aspect", hittest: "false" } );
 				$.CreatePanel( "Label", t, "", { class: "tile-initial", text: heroName( id ).charAt( 0 ), hittest: "false" } );
 				$.CreatePanel( "Label", t, "", { class: "tile-name", text: heroName( id ), hittest: "false" } );
 				$.CreatePanel( "Label", t, "", { class: "tile-hp", text: ( HP[ id ] || 4 ) + " HP", hittest: "false" } );
@@ -171,6 +180,30 @@ var SetFlow = ( function ()
 			$.CreatePanel( "Label", c, "", { class: "kit-name", text: name || "none", hittest: "false" } );
 		} );
 		$( "#StageInitial" ).text = heroName( id ).charAt( 0 );
+		// the stage shows the hero's model, drawn live by the engine ($rt:heropreview)
+		var r = null;
+		try { r = JSON.parse( flow( "preview:" + ( id || "" ) ) || "null" ); } catch ( e ) {}
+		$( "#StageModel" ).GetParent().SetHasClass( "has-model", !!( r && r.model ) );
+	}
+
+	// the reveal's portraits (setflow-v2.xml): made again only when the heroes change
+	var revealKey = "";
+	function revealPics( h1, h2 )
+	{
+		if ( !$( "#RevealPic1" ) || revealKey === h1 + " " + h2 )
+			return;
+		revealKey = h1 + " " + h2;
+		var have = {};
+		try { ( JSON.parse( flow( "portraits:" + h1 + "," + h2 ) || "{}" ).have || [] ).forEach( function ( h ) { have[ h ] = true; } ); }
+		catch ( e ) {}
+		[ h1, h2 ].forEach( function ( id, i )
+		{
+			var box = $( "#RevealPic" + ( i + 1 ) );
+			box.RemoveAndDeleteChildren();
+			box.SetHasClass( "hidden", !have[ id ] );
+			if ( have[ id ] )
+				$.CreatePanel( "Image", box, "", { class: "reveal-pic-img", src: "$rt:portrait_" + id, scaling: "stretch-to-fit-preserve-aspect", hittest: "false" } );
+		} );
 	}
 
 	function moveCursor( i, snd )
@@ -224,6 +257,8 @@ var SetFlow = ( function ()
 			$( "#RevealName1" ).text = names[ 0 ];
 			$( "#RevealName2" ).text = names[ 1 ];
 			$( "#RevealGame" ).text = "Game " + st.game + "  -  first to " + st.firstTo;
+			if ( V2 )
+				revealPics( f.arena.hero1, f.arena.hero2 );
 			return;
 		}
 		buildGrid();

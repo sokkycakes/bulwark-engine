@@ -243,6 +243,7 @@ void R_ClearScene(void)
 	r_scene.drawworld = true;
 	r_scene.perspective = true;
 	r_scene.skyroom = false;
+	r_scene.isolated = false;
 	r_scene.viewentity = cl.playerent;
 	memset(r_scene.origin, 0, sizeof(r_scene.origin));
 	memset(r_scene.angles, 0, sizeof(r_scene.angles));
@@ -623,11 +624,11 @@ void R_RenderScene(void)
 	qglDepthFunc(GL_LEQUAL);
 	qglClear(GL_DEPTH_BUFFER_BIT);
 	if (!r_scene.drawworld || !r_world.loaded) {
-		qglClearColor(0, 0, 0, 1);
+		qglClearColor(0, 0, 0, r_scene.isolated ? 0 : 1);
 		qglClear(GL_COLOR_BUFFER_BIT);
 	}
 
-	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight && !R_ToolsRedrawing()) {
+	if (r_scene.vw * r_scene.vh >= 0.5f * r_vwidth * r_vheight && !R_ToolsRedrawing() && !r_scene.isolated) {
 		float fx, fy;
 		compute_fov(&fx, &fy);
 		VectorCopy(r_scene.origin, r_scene.mainorigin);
@@ -640,10 +641,12 @@ void R_RenderScene(void)
 		r_scene.mainvp[2] = r_scene.vw, r_scene.mainvp[3] = r_scene.vh;
 		r_scene.havemain = true;
 	}
-	R_UpdateParticles();
-	R_AddRTLights();
-	R_AddQCLights();
-	R_AddParticleLights();
+	if (!r_scene.isolated) {
+		R_UpdateParticles();
+		R_AddRTLights();
+		R_AddQCLights();
+		R_AddParticleLights();
+	}
 	Mat4_Identity(model);
 	/* the skyroom first, seen through the sky: then the sky itself isn't drawn */
 	if (r_scene.skyroom && r_scene.drawworld && r_world.loaded && r_drawworld->ivalue && r_world.numsubmodels) {
@@ -693,13 +696,15 @@ void R_RenderScene(void)
 			R_DrawModelEntity(sorted[i], true);
 		R_DrawOutlines();
 	}
-	R_DrawParticles();
-	R_DrawClipBrushes();
-	r_stats.polys = numpolys;
-	R_DrawPolygons(false);
-	numpolys = 0;
-	numpolyverts = 0;
-	poly_start = 0;
+	if (!r_scene.isolated) {
+		R_DrawParticles();
+		R_DrawClipBrushes();
+		r_stats.polys = numpolys;
+		R_DrawPolygons(false);
+		numpolys = 0;
+		numpolyverts = 0;
+		poly_start = 0;
+	}
 
 	if (r_speeds->ivalue)
 		Con_Printf("view %dx%d at %.0f %.0f %.0f (%.0f %.0f): %d world surfaces, %d culled, %d entities, %d polys, %d particles%s\n", w,
