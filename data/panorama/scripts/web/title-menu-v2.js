@@ -3,7 +3,7 @@
 // Keys come as Bulwark "key" events, mouse through onactivate / onmouseover.
 var TitleMenu = (function ()
 {
-	var COUNT = 5;
+	var COUNT = 6;
 	// classic Quake menu sounds, as the page plays them
 	var SND_NAV = "misc/menu1";
 	var SND_OK = "misc/menu2";
@@ -255,7 +255,12 @@ var TitleMenu = (function ()
 			openJoin( false );
 			return;
 		}
-		leaveTitle( selected === 3 ? "menu_options" : "quit" );
+		if ( selected === 3 )
+		{
+			leaveTitle( "menu_webcore servers" );
+			return;
+		}
+		leaveTitle( selected === 4 ? "menu_options" : "quit" );
 	}
 
 	function createLobby( online )

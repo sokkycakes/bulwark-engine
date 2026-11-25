@@ -73,7 +73,7 @@
 .focus-bar
 {
 	x: 5.6641%;
-	y: 65.7552%;
+	y: 62.6302%;
 	width: 38.9648%;
 	height: 3.125%;
 	background-color: #bfbfbf;
@@ -81,10 +81,11 @@
 	transition-duration: 0.1s;
 	transition-timing-function: cubic-bezier( 0.2, 0.8, 0.2, 1 );
 }
-.sel-1 .focus-bar { y: 68.8802%; }
-.sel-2 .focus-bar { y: 72.0052%; }
-.sel-3 .focus-bar { y: 75.1302%; }
-.sel-4 .focus-bar { y: 78.125%; }
+.sel-1 .focus-bar { y: 65.7552%; }
+.sel-2 .focus-bar { y: 68.8802%; }
+.sel-3 .focus-bar { y: 72.0052%; }
+.sel-4 .focus-bar { y: 75.1302%; }
+.sel-5 .focus-bar { y: 78.125%; }
 
 .menu-item
 {
@@ -92,11 +93,12 @@
 	width: 38.9648%;
 	height: 3.125%;
 }
-.item-0 { y: 65.7552%; }
-.item-1 { y: 68.8802%; }
-.item-2 { y: 72.0052%; }
-.item-3 { y: 75.1302%; }
-.item-4 { y: 78.125%; }
+.item-0 { y: 62.6302%; }
+.item-1 { y: 65.7552%; }
+.item-2 { y: 68.8802%; }
+.item-3 { y: 72.0052%; }
+.item-4 { y: 75.1302%; }
+.item-5 { y: 78.125%; }
 
 .menu-item Label
 {
