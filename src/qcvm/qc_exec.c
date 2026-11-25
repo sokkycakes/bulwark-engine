@@ -209,7 +209,11 @@ static inline qcval_t *global_index(qcvm_t *vm, int64_t idx, int words)
 	return vm->globals + idx;
 }
 
-static inline bool str_eq(qcvm_t *vm, int32_t a, int32_t b) { return a == b || QC_StringsEqual(vm, a, b); }
+static inline bool str_eq(qcvm_t *vm, int32_t a, int32_t b)
+{
+	int q = QC_StringsEqualQuick(a, b);
+	return q >= 0 ? q : QC_StringsEqual(vm, a, b);
+}
 
 static inline bool str_empty(qcvm_t *vm, int32_t s) { return !s || !*QC_GetString(vm, s); }
 
@@ -972,10 +976,15 @@ dispatch:
 			vm->argc = (int)(op - OP_CALL0);
 		}
 		vm->xstatement = s;
-		if (pn >= vm->numprogs || fnum <= 0 || fnum >= vm->progs[pn].numfunctions)
-			QC_RunError(vm, "call to %s function (%d)", target ? "invalid" : "NULL", target);
-		if (pn != caller)
+		/* most calls stay in the running progs, whose function count is at hand */
+		if (pn == caller) {
+			if ((unsigned)fnum - 1u >= (unsigned)vm->numfunctions - 1u)
+				QC_RunError(vm, "call to %s function (%d)", target ? "invalid" : "NULL", target);
+		} else {
+			if (pn >= vm->numprogs || fnum <= 0 || fnum >= vm->progs[pn].numfunctions)
+				QC_RunError(vm, "call to %s function (%d)", target ? "invalid" : "NULL", target);
 			QC_SwitchProgs(vm, pn);
+		}
 		f = &vm->functions[fnum];
 		if (f->builtin) {
 			vm->extra->calling_builtin = fnum;

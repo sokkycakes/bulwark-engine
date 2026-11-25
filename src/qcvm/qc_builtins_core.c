@@ -384,8 +384,20 @@ static void bi_digest_hex(qcvm_t *vm)
 {
 	strbuf_t sb = {0};
 	char hex[65];
-	concat_args(vm, 1, &sb);
-	if (Digest_Hex(QC_PSTR(vm, 0), sb.data, sb.len, hex, sizeof(hex)))
+	const char *data;
+	size_t len;
+	bool ok;
+	/* Nuclide hashes one class name at a time, hundreds a frame */
+	if (vm->argc == 2) {
+		data = QC_PSTR(vm, 1);
+		len = strlen(data);
+	} else {
+		concat_args(vm, 1, &sb);
+		data = sb.data;
+		len = sb.len;
+	}
+	ok = Digest_Hex(QC_PSTR(vm, 0), data, len, hex, sizeof(hex));
+	if (ok)
 		QC_ReturnString(vm, hex);
 	else
 		QC_ReturnInt(vm, 0);
@@ -461,11 +473,14 @@ static void bi_chr2str(qcvm_t *vm)
 
 static void case_convert(qcvm_t *vm, int (*conv)(int))
 {
-	char *s = Mem_Strdup(QC_PSTR(vm, 0));
-	for (char *p = s; *p; p++)
-		*p = (char)conv((unsigned char)*p);
-	QC_ReturnString(vm, s);
-	Mem_Free(s);
+	const char *in = QC_PSTR(vm, 0);
+	size_t len = strlen(in);
+	char buf[256], *s = len < sizeof(buf) ? buf : Mem_Alloc(len + 1);
+	for (size_t i = 0; i <= len; i++)
+		s[i] = (char)conv((unsigned char)in[i]);
+	QC_ReturnInt(vm, QC_NewStringLen(vm, s, len));
+	if (s != buf)
+		Mem_Free(s);
 }
 static void bi_strtolower(qcvm_t *vm) { case_convert(vm, tolower); }
 static void bi_strtoupper(qcvm_t *vm) { case_convert(vm, toupper); }

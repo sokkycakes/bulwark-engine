@@ -91,6 +91,39 @@ typedef struct qc_tokens_s {
 	uint32_t clock;
 	uint32_t writes; /* qc_string_writes when the cache was last checked */
 } qc_tokens_t;
+/* the engine string table (qc_strings.c): slot u of handle
+ * QC_STRING_RUNTIME | u holds its text, NULL when free, with the length in
+ * the word before the text */
+extern char **qc_strs;
+extern uint32_t qc_nstrs;
+/* set in the length word once the text may end before the length (QC
+ * stored a NUL into it, or it was made with one) */
+#define LEN_SHORTENED 0x80000000u
+
+/* string == without a call when both are engine strings whose lengths
+ * settle it; 1 equal, 0 not, -1 for QC_StringsEqual to decide */
+static inline int QC_StringsEqualQuick(string_t a, string_t b)
+{
+	uint32_t ua = (uint32_t)a & ~QC_STRING_RUNTIME, ub = (uint32_t)b & ~QC_STRING_RUNTIME;
+	const char *x, *y;
+	uint32_t lx, ly;
+	if (a == b)
+		return 1;
+	if (!((uint32_t)a & (uint32_t)b & QC_STRING_RUNTIME) || !ua || !ub || ua >= qc_nstrs || ub >= qc_nstrs)
+		return -1;
+	x = qc_strs[ua];
+	y = qc_strs[ub];
+	if (!x || !y)
+		return -1;
+	lx = ((const uint32_t *)(const void *)x)[-1];
+	ly = ((const uint32_t *)(const void *)y)[-1];
+	if ((lx | ly) & LEN_SHORTENED)
+		return -1;
+	if (lx != ly || x[0] != y[0])
+		return 0;
+	return -1;
+}
+
 /* bumped by every character store into a string (str[i] = c in QC) */
 extern uint32_t qc_string_writes;
 

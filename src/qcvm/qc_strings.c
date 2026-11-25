@@ -16,8 +16,12 @@
  * the word just before the text, in the same allocation, so a slot is one
  * pointer: a map load can make a quarter of a million strings before the
  * first collection, and the table is kept for the rest of the session. */
-static char **strs;
-static uint32_t nstrs, capstrs;
+char **qc_strs;
+uint32_t qc_nstrs;
+static uint32_t capstrs;
+/* shorter names for them in this file */
+#define strs qc_strs
+#define nstrs qc_nstrs
 static uint8_t *marks; /* one bit a slot, for the collector */
 /* free slots below nstrs; all slots below freescan are taken, so the
  * lowest free one is reused first and the table can shrink again */
@@ -31,10 +35,7 @@ static uint32_t live, threshold = 8192;
 #define SLOT_MASK 0x7fffffffu
 #define MIN_SLOTS 4096u
 
-/* The top bit of the length word is set once QC stores a NUL into the
- * text: the string then ends there for every reader, and the stored length
- * only gives the room. */
-#define LEN_SHORTENED 0x80000000u
+/* the room in a string; its text can end sooner (LEN_SHORTENED) */
 static uint32_t text_len(const char *text) { return ((const uint32_t *)(const void *)text)[-1] & ~LEN_SHORTENED; }
 
 /* Most strings are short and live a few frames, so they come from free
