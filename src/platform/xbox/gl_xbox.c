@@ -328,7 +328,18 @@ static uint64_t gpu_seen; /* the last gpu_pos: reading the register is slow */
 
 static uint64_t gpu_pos(void)
 {
-	uint32_t get = ((DMA_GET & 0x03FFFFFF) - ((uint32_t)pbbase & 0x03FFFFFF)) / 4;
+	uint32_t base = (uint32_t)pbbase & 0x03FFFFFF;
+	uint32_t get = (DMA_GET & 0x03FFFFFF) - base;
+	if (get >= PB_SIZE) {
+		/* inside a called index run: GET points into pool memory, so take
+		 * the return address, the ring word after the call; the GPU has
+		 * read up to there. If that is not in the ring either, report no
+		 * new progress and let the caller poll again. */
+		get = (VIDEOREG(NV_PFIFO_CACHE1_DMA_SUBROUTINE) & NV_PFIFO_CACHE1_DMA_SUBROUTINE_RETURN_OFFSET & 0x03FFFFFF) - base;
+		if (get >= PB_SIZE)
+			return gpu_seen;
+	}
+	get /= 4;
 	uint32_t k = (uint32_t)(kicked - pbbase);
 	return gpu_seen = stream_pos(kicked) - (k + PB_DWORDS - get) % PB_DWORDS;
 }
@@ -1138,6 +1149,9 @@ static void upload_cube_face(xtex_t *t, int face, const uint8_t *rgba, int w, in
 			free(img);
 			return;
 		}
+	} else {
+		/* writing over storage a frame in flight may still sample */
+		gpu_done_with(t->usedframe);
 	}
 	size_t face_bytes = (level_bytes(tw, th, t->fmt) + 127) & ~(size_t)127;
 	store_level(t->data + face_bytes * face, tw, th, img, t->fmt);
