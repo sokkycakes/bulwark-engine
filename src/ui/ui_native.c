@@ -128,6 +128,14 @@ static int open_order(uin_view_t **out)
 
 double uin_now(void) { return now; }
 
+bool uin_kind_open(int kind)
+{
+	for (int i = 0; i < MAX_VIEWS; i++)
+		if (views[i].open && views[i].kind == kind)
+			return true;
+	return false;
+}
+
 const char *uin_query(uin_view_t *v, const char *request)
 {
 	int serial = v ? v->serial : 0;
