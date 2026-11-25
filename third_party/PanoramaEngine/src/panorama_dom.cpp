@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -201,6 +202,7 @@ std::string decode_entities(std::string_view text)
             // ASCII/Latin glyphs Panorama menus use).
             const bool hex = entity.size() > 1 && (entity[1] == 'x' || entity[1] == 'X');
             const std::string digits(entity.substr(hex ? 2 : 1));
+#if defined(__cpp_exceptions)
             try
             {
                 const long code = std::stol(digits, nullptr, hex ? 16 : 10);
@@ -213,6 +215,16 @@ std::string decode_entities(std::string_view text)
             {
                 // Leave malformed numeric refs out rather than throwing.
             }
+#else
+            // without exceptions (nxdk): strtol, which can't throw
+            char* end = nullptr;
+            errno = 0;
+            const long code = std::strtol(digits.c_str(), &end, hex ? 16 : 10);
+            if (end != digits.c_str() && errno == 0 && code > 0 && code < 0x110000)
+            {
+                out.push_back(static_cast<char>(code & 0xFF));
+            }
+#endif
         }
         else
         {

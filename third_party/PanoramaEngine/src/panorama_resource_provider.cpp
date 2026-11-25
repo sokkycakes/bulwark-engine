@@ -366,7 +366,11 @@ bool PanoramaMemoryResourceProvider::read_view(
     PanoramaResourceView& out,
     PanoramaResourceReadStats* stats) const
 {
+#if defined(__cpp_lib_generic_unordered_lookup)
     const auto it = resources_.find(normalized_path);
+#else // older libc++ (nxdk): no heterogeneous lookup
+    const auto it = resources_.find(std::string(normalized_path));
+#endif
     if (it == resources_.end())
     {
         return false;

@@ -1,0 +1,119 @@
+// Bulwark engine - the slice of C++20 <format> PanoramaEngine uses, for
+// nxdk, whose libc++ (LLVM 10) has none. ISC licence, see LICENSE.
+//
+// Only what panorama_log.hpp needs: std::format_string and std::format with
+// "{}" (and "{N}") replacement fields over strings, characters, numbers,
+// booleans, enums and pointers. Format specs after ':' are accepted and
+// ignored; floating point prints as %g.
+#ifndef BW_XBOX_CXX_FORMAT
+#define BW_XBOX_CXX_FORMAT
+
+#include <cstdio>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+
+namespace std
+{
+template <class... Args>
+struct basic_format_string_bw
+{
+	string_view str;
+	template <class T, class = enable_if_t<is_convertible_v<const T &, string_view>>>
+	constexpr basic_format_string_bw(const T &s) : str(s) {}
+	constexpr string_view get() const noexcept { return str; }
+};
+
+template <class T>
+struct __bw_type_identity { using type = T; };
+
+template <class... Args>
+using format_string = basic_format_string_bw<typename __bw_type_identity<Args>::type...>;
+
+namespace __bw_format
+{
+inline void put(string &out, string_view s) { out.append(s.data(), s.size()); }
+inline void put(string &out, const char *s) { out.append(s ? s : "(null)"); }
+inline void put(string &out, char *s) { put(out, (const char *)s); }
+inline void put(string &out, const string &s) { out.append(s); }
+inline void put(string &out, bool b) { out.append(b ? "true" : "false"); }
+inline void put(string &out, char c) { out.push_back(c); }
+
+template <class T>
+void put(string &out, const T &v)
+{
+	char buf[64];
+	if constexpr (is_enum_v<T>) {
+		put(out, static_cast<underlying_type_t<T>>(v));
+		return;
+	} else if constexpr (is_floating_point_v<T>) {
+		snprintf(buf, sizeof(buf), "%g", (double)v);
+	} else if constexpr (is_integral_v<T> && is_signed_v<T>) {
+		snprintf(buf, sizeof(buf), "%lld", (long long)v);
+	} else if constexpr (is_integral_v<T>) {
+		snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+	} else if constexpr (is_pointer_v<T> || is_null_pointer_v<T>) {
+		snprintf(buf, sizeof(buf), "%p", (const void *)v);
+	} else {
+		static_assert(is_convertible_v<const T &, string_view>, "type not supported by the Xbox std::format");
+		put(out, string_view(v));
+		return;
+	}
+	out.append(buf);
+}
+
+inline void put_nth(string &, size_t) {}
+
+template <class First, class... Rest>
+void put_nth(string &out, size_t n, const First &first, const Rest &...rest)
+{
+	if (n == 0)
+		put(out, first);
+	else
+		put_nth(out, n - 1, rest...);
+}
+} // namespace __bw_format
+
+template <class... Args>
+string format(format_string<Args...> fmt, Args &&...args)
+{
+	const string_view f = fmt.get();
+	string out;
+	out.reserve(f.size() + 16 * sizeof...(Args));
+	size_t next = 0;
+	for (size_t i = 0; i < f.size(); i++) {
+		const char c = f[i];
+		if (c == '}' && i + 1 < f.size() && f[i + 1] == '}') {
+			out.push_back('}');
+			i++;
+			continue;
+		}
+		if (c != '{') {
+			out.push_back(c);
+			continue;
+		}
+		if (i + 1 < f.size() && f[i + 1] == '{') {
+			out.push_back('{');
+			i++;
+			continue;
+		}
+		size_t j = i + 1, index = next;
+		bool explicit_index = false;
+		while (j < f.size() && f[j] >= '0' && f[j] <= '9') {
+			index = (explicit_index ? index * 10 : 0) + (size_t)(f[j] - '0');
+			explicit_index = true;
+			j++;
+		}
+		while (j < f.size() && f[j] != '}')
+			j++;
+		if (!explicit_index)
+			next++;
+		__bw_format::put_nth(out, index, args...);
+		i = j;
+	}
+	return out;
+}
+} // namespace std
+
+#endif

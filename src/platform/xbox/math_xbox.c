@@ -61,3 +61,63 @@ float bwx_log2f(float x)
 {
 	return (float)bwx_log2(x);
 }
+
+/* JavaScript's Math.cbrt, expm1, log1p, acosh, asinh and atanh, and the
+ * scalbn its Float16 conversions use (QuickJS, for the Panorama UI) */
+double bwx_scalbn(double x, int n) { return ldexp(x, n); } /* FLT_RADIX is 2 */
+float bwx_scalbnf(float x, int n) { return ldexpf(x, n); }
+
+double bwx_cbrt(double x)
+{
+	if (x == 0 || isnan(x) || isinf(x))
+		return x;
+	double a = fabs(x), y = pow(a, 1.0 / 3.0);
+	y -= (y * y * y - a) / (3 * y * y); /* one Newton step for the last bits */
+	return x < 0 ? -y : y;
+}
+
+/* near zero, log(1 + x) and exp(x) - 1 lose x's low bits to the rounding
+ * of 1 + x and exp(x); dividing by the rounded value's own log gets them back */
+double bwx_log1p(double x)
+{
+	double u = 1 + x;
+	if (u == 1)
+		return x;
+	if (isinf(u))
+		return u;
+	return log(u) * x / (u - 1);
+}
+
+double bwx_expm1(double x)
+{
+	double u = exp(x);
+	if (u == 1)
+		return x;
+	double um1 = u - 1;
+	if (um1 == -1 || isinf(u))
+		return um1;
+	return um1 * x / log(u);
+}
+
+double bwx_asinh(double x)
+{
+	double a = fabs(x), r;
+	if (a > 1e8)
+		r = log(a) + M_LN2;
+	else
+		r = bwx_log1p(a + a * a / (1 + sqrt(1 + a * a)));
+	return x < 0 ? -r : r;
+}
+
+double bwx_acosh(double x)
+{
+	if (x > 1e8)
+		return log(x) + M_LN2;
+	return log(x + sqrt(x * x - 1)); /* NaN below 1, as sqrt gives it */
+}
+
+double bwx_atanh(double x)
+{
+	double a = fabs(x), r = 0.5 * bwx_log1p(2 * a / (1 - a));
+	return x < 0 ? -r : r;
+}

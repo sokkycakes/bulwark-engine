@@ -573,7 +573,11 @@ bool PanoramaPackage::try_read(
 bool PanoramaPackage::try_read_normalized(
     std::string_view normalized_entry_path, PanoramaSharedBytes& out) const
 {
+#if defined(__cpp_lib_generic_unordered_lookup)
     const auto it = entries_.find(normalized_entry_path);
+#else // older libc++ (nxdk): no heterogeneous lookup
+    const auto it = entries_.find(std::string(normalized_entry_path));
+#endif
     if (it == entries_.end())
     {
         return false;

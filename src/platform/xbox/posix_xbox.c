@@ -437,9 +437,10 @@ static DWORD WINAPI thread_main(LPVOID p)
 	return 0;
 }
 
-int pthread_attr_init(pthread_attr_t *a) { (void)a; return 0; }
+int pthread_attr_init(pthread_attr_t *a) { a->detach = PTHREAD_CREATE_JOINABLE; return 0; }
 int pthread_attr_destroy(pthread_attr_t *a) { (void)a; return 0; }
 int pthread_attr_setstacksize(pthread_attr_t *a, size_t size) { (void)a, (void)size; return 0; }
+int pthread_attr_setdetachstate(pthread_attr_t *a, int state) { a->detach = state; return 0; }
 
 int pthread_create(pthread_t *t, const pthread_attr_t *attr, void *(*fn)(void *), void *arg)
 {
@@ -454,6 +455,10 @@ int pthread_create(pthread_t *t, const pthread_attr_t *attr, void *(*fn)(void *)
 	if (!h) {
 		free(s);
 		return EAGAIN;
+	}
+	if (attr && attr->detach == PTHREAD_CREATE_DETACHED) {
+		CloseHandle(h);
+		h = NULL;
 	}
 	*t = h;
 	return 0;
@@ -542,10 +547,14 @@ static void cond_ready(pthread_cond_t *c)
 	}
 }
 
+int pthread_condattr_init(pthread_condattr_t *a) { a->clock = CLOCK_REALTIME; return 0; }
+int pthread_condattr_destroy(pthread_condattr_t *a) { (void)a; return 0; }
+int pthread_condattr_setclock(pthread_condattr_t *a, int clock) { a->clock = clock; return 0; }
+
 int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a)
 {
-	(void)a;
 	c->init = 0, c->sem = NULL, c->waiters = 0;
+	c->clock = a ? a->clock : CLOCK_REALTIME;
 	cond_ready(c);
 	return 0;
 }
@@ -569,6 +578,33 @@ int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m)
 	WaitForSingleObject(c->sem, INFINITE);
 	pthread_mutex_lock(m);
 	return 0;
+}
+
+int pthread_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *abstime)
+{
+	struct timespec now;
+	int64_t ms;
+	DWORD r;
+	cond_ready(c);
+	clock_gettime(c->clock, &now);
+	ms = (int64_t)(abstime->tv_sec - now.tv_sec) * 1000 + (abstime->tv_nsec - now.tv_nsec) / 1000000;
+	if (ms < 0)
+		ms = 0;
+	InterlockedIncrement(&c->waiters);
+	pthread_mutex_unlock(m);
+	r = WaitForSingleObject(c->sem, ms > 0x7ffffffe ? 0x7ffffffe : (DWORD)ms);
+	if (r != WAIT_OBJECT_0) {
+		/* take this waiter back off the count; when a signal has already
+		 * counted it, its release stays in the semaphore and wakes a later
+		 * waiter early, which POSIX allows */
+		for (;;) {
+			long w = c->waiters;
+			if (w <= 0 || InterlockedCompareExchange(&c->waiters, w - 1, w) == w)
+				break;
+		}
+	}
+	pthread_mutex_lock(m);
+	return r == WAIT_OBJECT_0 ? 0 : ETIMEDOUT;
 }
 
 int pthread_cond_signal(pthread_cond_t *c)
