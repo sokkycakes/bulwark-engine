@@ -115,7 +115,8 @@ impl Record {
         }
     }
 
-    /// The card as one JSON object. `id` is the player's current id.
+    /// The card as one JSON object. `id` is the player's current id, and it
+    /// comes first: clients find whose card it is from the opening `{"id":N`.
     pub fn card_json(&self, id: u32, name: &str) -> String {
         let mut heroes: Vec<(&String, &u32)> = self.heroes.iter().collect();
         heroes.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
@@ -125,8 +126,7 @@ impl Record {
             .map(|(h, n)| serde_json::json!({ "id": h, "sets": n }))
             .collect();
         let pct = |n: u32| if self.sets == 0 { 100 } else { (n * 100 + self.sets / 2) / self.sets };
-        serde_json::json!({
-            "id": id,
+        let rest = serde_json::json!({
             "name": if name.is_empty() { self.name.as_str() } else { name },
             "sets": self.sets,
             "completed": self.completed,
@@ -142,7 +142,8 @@ impl Record {
             "form": self.form,
             "heroes": heroes,
         })
-        .to_string()
+        .to_string();
+        format!("{{\"id\":{id},{}", &rest[1..])
     }
 }
 
@@ -218,6 +219,7 @@ mod tests {
         let card: serde_json::Value = serde_json::from_str(&r.card_json(5, "")).unwrap();
         assert_eq!(card["completion"], 0);
         assert_eq!(card["name"], "bo");
+        assert!(r.card_json(5, "").starts_with("{\"id\":5,"));
     }
 
     #[test]

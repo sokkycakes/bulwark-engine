@@ -98,3 +98,6 @@
 	text-transform: uppercase;
 	color: #ffffff;
 }
+
+/* off in a Bulwark Live set */
+.menu-item.is-off Label { color: #ffffff40; }

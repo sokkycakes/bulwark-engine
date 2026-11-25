@@ -1,0 +1,134 @@
+<!--
+	The in-game set view for Bulwark Live sets (docs/spec/setflow.md): the set
+	strip, blind hero select and the reveal, game results, the set's results
+	with the rematch vote, and the search ribbon while training. The engine
+	opens it in set games (src/client/cl_setflow.c) and gives it input only
+	while the player has something to choose. Stiletto's look: #333 panels,
+	red accents, standard_07_57 and hooge_05_57.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/setflow.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/setflow.js" />
+	</scripts>
+
+	<Panel id="Root" class="root">
+		<!-- top: set strip -->
+		<Panel id="Strip" class="strip hidden" hittest="false">
+			<Panel class="strip-side strip-left" hittest="false">
+				<Label id="StripName1" class="strip-name" text="" hittest="false" />
+				<Panel id="StripPips1" class="strip-pips" hittest="false" />
+			</Panel>
+			<Panel class="strip-mid" hittest="false">
+				<Label id="StripGame" class="strip-game" text="" hittest="false" />
+				<Label id="StripRule" class="strip-rule" text="" hittest="false" />
+			</Panel>
+			<Panel class="strip-side strip-right" hittest="false">
+				<Panel id="StripPips2" class="strip-pips" hittest="false" />
+				<Label id="StripName2" class="strip-name" text="" hittest="false" />
+			</Panel>
+		</Panel>
+
+		<!-- hero select -->
+		<Panel id="Select" class="screen select hidden">
+			<Panel class="dim" hittest="false" />
+			<Panel class="stage">
+				<Label id="SelectTitle" class="screen-title" text="CHOOSE YOUR FIGHTER" />
+				<Label id="SelectSub" class="screen-sub" text="Blind pick: your opponent sees your hero when you both lock in" />
+				<Label id="SelectTimer" class="timer" text="20" />
+				<Panel id="HeroGrid" class="hero-grid" />
+				<Panel class="select-foot">
+					<Panel class="pick-info">
+						<Label id="PickName" class="pick-name" text="" />
+						<Label id="PickRole" class="pick-role" text="" />
+					</Panel>
+					<Button id="LockBtn" class="btn btn-red lock-btn" onactivate="SetFlow.Lock()">
+						<Label id="LockLabel" text="LOCK IN" />
+					</Button>
+				</Panel>
+				<Panel class="opp-row">
+					<Label id="OppStatus" class="opp-status" text="" />
+				</Panel>
+				<Label class="hint" text="Arrows or mouse to pick  -  Enter to lock in" />
+			</Panel>
+		</Panel>
+
+		<!-- the reveal: both heroes -->
+		<Panel id="Reveal" class="screen reveal hidden" hittest="false">
+			<Panel class="dim" hittest="false" />
+			<Panel class="reveal-band" hittest="false">
+				<Panel class="reveal-side reveal-left" hittest="false">
+					<Label id="RevealHero1" class="reveal-hero" text="" hittest="false" />
+					<Label id="RevealName1" class="reveal-name" text="" hittest="false" />
+				</Panel>
+				<Label class="reveal-vs" text="VS" hittest="false" />
+				<Panel class="reveal-side reveal-right" hittest="false">
+					<Label id="RevealHero2" class="reveal-hero" text="" hittest="false" />
+					<Label id="RevealName2" class="reveal-name" text="" hittest="false" />
+				</Panel>
+			</Panel>
+			<Label id="RevealGame" class="reveal-game" text="" hittest="false" />
+		</Panel>
+
+		<!-- between games -->
+		<Panel id="GameEnd" class="screen game-end hidden" hittest="false">
+			<Panel class="banner" hittest="false">
+				<Label id="GameEndTitle" class="banner-title" text="" hittest="false" />
+				<Label id="GameEndSub" class="banner-sub" text="" hittest="false" />
+			</Panel>
+		</Panel>
+
+		<!-- the set's results and the rematch vote -->
+		<Panel id="SetEnd" class="screen set-end hidden">
+			<Panel class="dim" hittest="false" />
+			<Panel class="stage">
+				<Label id="SetEndTitle" class="screen-title result-title" text="" />
+				<Label id="SetEndScore" class="set-score" text="" />
+				<Label id="SetEndLog" class="set-log" text="" />
+				<Label id="SetEndForfeit" class="set-forfeit" text="" />
+				<Label id="SetTimer" class="timer" text="15" />
+				<Panel id="VoteRow" class="vote-row">
+					<Button id="Vote0" class="btn vote vote-0 is-selected" onactivate="SetFlow.Vote(0)" onmouseover="SetFlow.VoteHover(0)">
+						<Label text="REMATCH" hittest="false" />
+					</Button>
+					<Button id="Vote1" class="btn vote vote-1" onactivate="SetFlow.Vote(1)" onmouseover="SetFlow.VoteHover(1)">
+						<Label text="REMATCH - NEW HERO" hittest="false" />
+					</Button>
+					<Button id="Vote2" class="btn vote vote-2" onactivate="SetFlow.Vote(2)" onmouseover="SetFlow.VoteHover(2)">
+						<Label text="LEAVE" hittest="false" />
+					</Button>
+				</Panel>
+				<Label id="MyVote" class="my-vote" text="" />
+				<Label id="OppVote" class="opp-vote" text="" />
+				<Panel class="after-row">
+					<Label class="after-label" text="After leaving:" />
+					<Button id="AfterSearch" class="btn chip" onactivate="SetFlow.After('search')">
+						<Label text="SEARCH AGAIN" hittest="false" />
+					</Button>
+					<Button id="AfterMenu" class="btn chip" onactivate="SetFlow.After('menu')">
+						<Label text="ONLINE MENU" hittest="false" />
+					</Button>
+				</Panel>
+				<Label class="hint" text="Left / Right and Enter, or 1  2  3" />
+			</Panel>
+		</Panel>
+
+		<!-- the set closed: leaving -->
+		<Panel id="Leaving" class="screen leaving hidden" hittest="false">
+			<Panel class="dim" hittest="false" />
+			<Panel class="banner" hittest="false">
+				<Label id="LeavingTitle" class="banner-title" text="" hittest="false" />
+				<Label id="LeavingSub" class="banner-sub" text="" hittest="false" />
+			</Panel>
+		</Panel>
+
+		<!-- bottom: searching while training -->
+		<Panel id="Ribbon" class="ribbon hidden" hittest="false">
+			<Panel class="ribbon-dot" hittest="false" />
+			<Label id="RibbonText" class="ribbon-text" text="" hittest="false" />
+			<Label id="RibbonHint" class="ribbon-hint" text="" hittest="false" />
+		</Panel>
+	</Panel>
+</root>

@@ -45,7 +45,8 @@ stdbuf -oL "$BUILD/bulwark" -headless -basedir "$OUT/b" -game game +set name gue
 	> "$OUT/guest.log" 2>&1 &
 GUESTPID=$!
 sleep ${LIVE_WAIT:-14}
-kill $GUESTPID $HOSTPID $LIVEPID 2>/dev/null || true
+# headless clients don't stop on SIGTERM
+kill -9 $GUESTPID $HOSTPID $LIVEPID 2>/dev/null || true
 wait 2>/dev/null || true
 
 status=0

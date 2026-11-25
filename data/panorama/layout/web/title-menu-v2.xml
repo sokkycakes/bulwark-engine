@@ -26,15 +26,18 @@
 			<Panel id="FocusBar" class="focus-bar" hittest="false" />
 
 			<Button id="Item0" class="menu-item item-0 is-selected" onactivate="TitleMenu.Click(0)" onmouseover="TitleMenu.Hover(0)">
-				<Label text="Create Lobby" hittest="false" />
+				<Label text="Find Match" hittest="false" />
 			</Button>
 			<Button id="Item1" class="menu-item item-1" onactivate="TitleMenu.Click(1)" onmouseover="TitleMenu.Hover(1)">
-				<Label text="Join Lobby" hittest="false" />
+				<Label text="Create Lobby" hittest="false" />
 			</Button>
 			<Button id="Item2" class="menu-item item-2" onactivate="TitleMenu.Click(2)" onmouseover="TitleMenu.Hover(2)">
-				<Label text="Settings" hittest="false" />
+				<Label text="Join Lobby" hittest="false" />
 			</Button>
 			<Button id="Item3" class="menu-item item-3" onactivate="TitleMenu.Click(3)" onmouseover="TitleMenu.Hover(3)">
+				<Label text="Settings" hittest="false" />
+			</Button>
+			<Button id="Item4" class="menu-item item-4" onactivate="TitleMenu.Click(4)" onmouseover="TitleMenu.Hover(4)">
 				<Label text="Quit" hittest="false" />
 			</Button>
 

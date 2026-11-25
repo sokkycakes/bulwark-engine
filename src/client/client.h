@@ -313,6 +313,14 @@ bool WC_MenuOpen(void);
 bool WC_KeyEvent(int key, bool down, int unicode);
 void WC_SetStartsGame(bool starts);
 void WC_ClientGameShutdown(void);
+void WC_OpenPage(const char *url);
+
+/* cl_setflow.c: the match flow around Bulwark Live sets */
+void SF_Init(void);
+void SF_Frame(void);
+bool SF_Query(const char *req, strbuf_t *out);
+bool SF_InRunningSet(void);
+bool SF_SetGame(void); /* in a Live set game or the training map: no team or hero menus */
 extern const qc_builtin_t cl_webcore_builtins[];
 void CL_HostcacheRefresh(bool purge);
 int CL_HostcacheCount(void);

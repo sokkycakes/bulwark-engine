@@ -1,0 +1,505 @@
+/* The in-game set view. The view is 1080 lines high; content sits on a
+   1440 x 1080 stage centred across the width. */
+
+.root
+{
+	width: 100%;
+	height: 100%;
+	font-family: "standard_07_57";
+	color: #ffffff;
+	overflow: noclip;
+}
+
+.hidden { visibility: collapse; }
+
+.screen
+{
+	width: 100%;
+	height: 100%;
+	overflow: noclip;
+}
+
+.dim
+{
+	width: 100%;
+	height: 100%;
+	background-color: #1a1a1ae0;
+}
+
+.stage
+{
+	width: 1440px;
+	height: 1080px;
+	x: 50%;
+	margin-left: -720px;
+	overflow: noclip;
+}
+
+.screen-title
+{
+	y: 96px;
+	width: 100%;
+	text-align: center;
+	font-size: 64px;
+	letter-spacing: -2px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.screen-sub
+{
+	y: 180px;
+	width: 100%;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 22px;
+	color: #9d9d9d;
+}
+.timer
+{
+	x: 1240px;
+	y: 92px;
+	width: 140px;
+	height: 90px;
+	text-align: center;
+	font-size: 72px;
+	color: #e0262b;
+}
+.timer.low { color: #ffffff; background-color: #e0262b; }
+
+.hint
+{
+	y: 1010px;
+	width: 100%;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 18px;
+	color: #6d6d6d;
+}
+
+/* buttons */
+.btn
+{
+	background-color: #333333;
+	border: 3px solid #4a4a4a;
+}
+.btn Label
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 26px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #d0d0d0;
+}
+.btn:hover, .btn.is-selected
+{
+	background-color: #bfbfbf;
+	border: 3px solid #ffffff;
+}
+.btn:hover Label, .btn.is-selected Label { color: #333333; }
+.btn:disabled { opacity: 0.35; }
+.btn-red { background-color: #8a0f12; border: 3px solid #e0262b; }
+.btn-red:hover { background-color: #e0262b; border: 3px solid #ffffff; }
+.btn-red:hover Label, .btn-red Label { color: #ffffff; }
+
+/* --- set strip ------------------------------------------------------------------ */
+
+.strip
+{
+	y: 12px;
+	x: 50%;
+	margin-left: -900px;
+	width: 1800px;
+	height: 64px;
+}
+.strip-side
+{
+	y: 8px;
+	width: 440px;
+	height: 48px;
+	background-color: #333333d0;
+	flow-children: right;
+}
+.strip-left { x: 0px; }
+.strip-right { x: 1360px; }
+.strip-name
+{
+	vertical-align: center;
+	margin-left: 16px;
+	margin-right: 16px;
+	width: 300px;
+	font-size: 26px;
+	letter-spacing: -1px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.strip-right .strip-name { text-align: right; }
+.strip-pips
+{
+	vertical-align: center;
+	width: 100px;
+	height: 24px;
+	flow-children: right;
+}
+.pip
+{
+	width: 24px;
+	height: 24px;
+	margin-right: 8px;
+	background-color: #4a4a4a;
+	border: 2px solid #6d6d6d;
+}
+.pip.won { background-color: #e0262b; border: 2px solid #ffffff; }
+.strip-mid
+{
+	y: 8px;
+	x: 448px;
+	width: 220px;
+	height: 48px;
+	background-color: #8a0f12e0;
+	flow-children: down;
+}
+.strip-game
+{
+	horizontal-align: center;
+	margin-top: 2px;
+	font-size: 24px;
+	color: #ffffff;
+	text-transform: uppercase;
+}
+.strip-rule
+{
+	horizontal-align: center;
+	font-family: "hooge_05_57";
+	font-size: 14px;
+	color: #ffd0d0;
+}
+
+/* --- hero select ---------------------------------------------------------------- */
+
+.hero-grid
+{
+	x: 120px;
+	y: 260px;
+	width: 1200px;
+	height: 460px;
+	flow-children: right-wrap;
+}
+.hero
+{
+	width: 284px;
+	height: 214px;
+	margin-right: 16px;
+	margin-bottom: 16px;
+	background-color: #333333;
+	border: 3px solid #4a4a4a;
+	flow-children: down;
+}
+.hero:hover { border: 3px solid #bfbfbf; }
+.hero.is-cursor { border: 3px solid #ffffff; background-color: #444444; }
+.hero.is-picked { background-color: #8a0f12; border: 3px solid #e0262b; }
+.hero.is-picked.is-cursor { border: 3px solid #ffffff; }
+.hero.is-off { opacity: 0.35; }
+.hero-hp
+{
+	margin-top: 16px;
+	margin-left: 16px;
+	font-family: "hooge_05_57";
+	font-size: 18px;
+	color: #e0262b;
+}
+.hero.is-picked .hero-hp { color: #ffffff; }
+.hero-name
+{
+	margin-top: 40px;
+	margin-left: 16px;
+	font-size: 40px;
+	letter-spacing: -1.5px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.hero-role
+{
+	margin-left: 16px;
+	margin-top: 6px;
+	font-family: "hooge_05_57";
+	font-size: 18px;
+	color: #9d9d9d;
+}
+.hero.is-picked .hero-role { color: #ffd0d0; }
+
+.select-foot
+{
+	x: 120px;
+	y: 760px;
+	width: 1184px;
+	height: 120px;
+	background-color: #333333;
+}
+.pick-info
+{
+	x: 24px;
+	y: 16px;
+	width: 760px;
+	flow-children: down;
+}
+.pick-name
+{
+	font-size: 48px;
+	letter-spacing: -1.5px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.pick-role
+{
+	font-family: "hooge_05_57";
+	font-size: 20px;
+	color: #9d9d9d;
+}
+.lock-btn
+{
+	x: 864px;
+	y: 20px;
+	width: 300px;
+	height: 80px;
+}
+.lock-btn Label { font-size: 36px; }
+.select.is-locked .lock-btn { background-color: #4a4a4a; border: 3px solid #6d6d6d; }
+
+.opp-row
+{
+	x: 120px;
+	y: 900px;
+	width: 1184px;
+	height: 60px;
+}
+.opp-status
+{
+	horizontal-align: center;
+	vertical-align: center;
+	font-size: 28px;
+	text-transform: uppercase;
+	color: #bfbfbf;
+}
+.opp-status.ready { color: #e0262b; }
+
+/* --- reveal ----------------------------------------------------------------------- */
+
+.reveal-band
+{
+	y: 360px;
+	width: 100%;
+	height: 300px;
+	background-color: #8a0f12;
+}
+.reveal-side
+{
+	y: 40px;
+	width: 42%;
+	height: 220px;
+	flow-children: down;
+}
+.reveal-left { x: 3%; }
+.reveal-right { x: 55%; }
+.reveal-hero
+{
+	width: 100%;
+	font-size: 110px;
+	letter-spacing: -4px;
+	text-transform: uppercase;
+	color: #ffffff;
+	text-overflow: shrink;
+}
+.reveal-right .reveal-hero, .reveal-right .reveal-name { text-align: right; }
+.reveal-name
+{
+	width: 100%;
+	font-family: "hooge_05_57";
+	font-size: 30px;
+	color: #ffd0d0;
+}
+.reveal-vs
+{
+	x: 50%;
+	margin-left: -80px;
+	y: 70px;
+	width: 160px;
+	text-align: center;
+	font-size: 130px;
+	color: #333333;
+}
+.reveal-game
+{
+	y: 690px;
+	width: 100%;
+	text-align: center;
+	font-size: 40px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+
+/* --- banners (between games, leaving) ------------------------------------------- */
+
+.banner
+{
+	y: 400px;
+	width: 100%;
+	height: 220px;
+	background-color: #333333e8;
+	border-top: 4px solid #e0262b;
+	border-bottom: 4px solid #e0262b;
+	flow-children: down;
+}
+.banner-title
+{
+	horizontal-align: center;
+	margin-top: 40px;
+	font-size: 80px;
+	letter-spacing: -3px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.banner-sub
+{
+	horizontal-align: center;
+	margin-top: 8px;
+	font-family: "hooge_05_57";
+	font-size: 26px;
+	color: #bfbfbf;
+}
+
+/* --- set end ----------------------------------------------------------------------- */
+
+.result-title { y: 140px; font-size: 84px; }
+.result-title.win { color: #e0262b; }
+.set-score
+{
+	y: 250px;
+	width: 100%;
+	text-align: center;
+	font-size: 120px;
+	color: #ffffff;
+}
+.set-log
+{
+	y: 400px;
+	width: 100%;
+	text-align: center;
+	font-family: "hooge_05_57";
+	font-size: 24px;
+	color: #9d9d9d;
+}
+.set-forfeit
+{
+	y: 440px;
+	width: 100%;
+	text-align: center;
+	font-size: 28px;
+	text-transform: uppercase;
+	color: #e0262b;
+}
+.vote-row
+{
+	x: 120px;
+	y: 520px;
+	width: 1200px;
+	height: 110px;
+	flow-children: right;
+}
+.vote
+{
+	width: 376px;
+	height: 100px;
+	margin-right: 36px;
+}
+.vote-2 { margin-right: 0px; }
+.vote.is-chosen { background-color: #e0262b; border: 3px solid #ffffff; }
+.vote.is-chosen Label { color: #ffffff; }
+.my-vote
+{
+	y: 660px;
+	width: 100%;
+	text-align: center;
+	font-size: 28px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.opp-vote
+{
+	y: 710px;
+	width: 100%;
+	text-align: center;
+	font-size: 34px;
+	text-transform: uppercase;
+	color: #bfbfbf;
+}
+.opp-vote.yes { color: #e0262b; }
+.after-row
+{
+	x: 50%;
+	margin-left: -420px;
+	y: 820px;
+	width: 840px;
+	height: 60px;
+	flow-children: right;
+}
+.after-label
+{
+	vertical-align: center;
+	width: 220px;
+	font-family: "hooge_05_57";
+	font-size: 22px;
+	color: #9d9d9d;
+}
+.chip
+{
+	width: 300px;
+	height: 56px;
+	margin-right: 16px;
+}
+.chip Label { font-size: 22px; }
+.chip.is-on { background-color: #8a0f12; border: 3px solid #e0262b; }
+.chip.is-on Label { color: #ffffff; }
+
+/* --- search ribbon ------------------------------------------------------------------ */
+
+.ribbon
+{
+	y: 980px;
+	x: 50%;
+	margin-left: -420px;
+	width: 840px;
+	height: 64px;
+	background-color: #333333e8;
+	border-left: 6px solid #e0262b;
+	flow-children: right;
+}
+.ribbon.found { background-color: #8a0f12; }
+.ribbon-dot
+{
+	vertical-align: center;
+	margin-left: 20px;
+	width: 16px;
+	height: 16px;
+	background-color: #e0262b;
+}
+.ribbon.found .ribbon-dot { background-color: #ffffff; }
+.ribbon-text
+{
+	vertical-align: center;
+	margin-left: 16px;
+	width: 520px;
+	font-size: 28px;
+	text-transform: uppercase;
+	color: #ffffff;
+}
+.ribbon-hint
+{
+	vertical-align: center;
+	width: 260px;
+	text-align: right;
+	font-family: "hooge_05_57";
+	font-size: 18px;
+	color: #9d9d9d;
+}

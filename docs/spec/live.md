@@ -95,6 +95,8 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 13 | `match_left` | `u64` match id | none; the party stops being linked to that match (and frees its seats in a drop-in match) |
 | 14 | `pong` | `u32` nonce from `ping` | none; the server measures round-trip time |
 | 15 | `playlists` | | `playlist_info` |
+| 16 | `set_report` | `u64` match id, `u8` result (0 played to the end, 1 forfeit), `u8` first-to, `u8` runback (1 if a rematch of the last set), `u8` seat count (at most 16), then per seat: `u32` player id, `u8` slot, `u8` outcome (0 win, 1 loss, 2 quit, 3 disconnect), `u8` behind (1 if their side was behind when they left), `u8` games won, `str` hero | none; host of that match only (below) |
+| 17 | `card` | `u32` player id, 0 for yourself | `card_info` |
 
 ### Server to client
 
@@ -111,6 +113,7 @@ client that stops hearing from the server simply keeps sending `hello`.
 | 72 | `match` | `u64` match id, `str` playlist, `u32` host player id, `u8` count, then per seat: `u32` id, `u8` slot, `u8` team, `str` name; then `str` mode, `str` map, `u8` count, then per setting: `str` name, `str` value (all empty for a playlist without modes) |
 | 73 | `players` | `u8` count, then per player: `u32` id, `str` name, `str` status, `str` party code if joinable else empty |
 | 74 | `ping` | `u32` nonce; sent after each `welcome`, answered at once with `pong` |
+| 76 | `card_info` | the rest of the datagram is one JSON object that starts `{"id":N,`: the fighter card (below), or `{"id":N,"none":true}` for a player the server doesn't know |
 | 75 | `playlist_info` | the rest of the datagram is JSON: `[{id, name, description, players, teams, drop_in, searching, modes: [{id, name, maps}]}]` for the caller's game; maps are dropped if it wouldn't fit one datagram |
 
 Error codes: 1 not registered (reserved: the server stays silent instead), 2 wrong version, 3 server
@@ -269,6 +272,57 @@ the others connect to it the usual way, over the punched path or the relay.
 After a match, parties stay together. For a "runback" the game simply queues
 the same party again, or its leader keeps the lobby and starts directly.
 
+## Fighter records
+
+The server keeps a record for each player who finished a set: counts, not a
+skill rating, and the fighter card shows them as they are. Records are
+keyed by the player's `hello` token (`token` or `token:slot` for a
+split-screen guest), kept across restarts with `--records FILE` (JSON,
+written atomically after each change).
+
+The host of a match sends `set_report` when a set ends (Stiletto's arena
+director asks for it with `live_set_seat` / `live_set_report`, see
+docs/spec/setflow.md). The server takes it only from the match's host, at
+most 64 reports a match and none sooner than 20 s after the last, with
+every seat in the match and none twice, at least one win, no quits in a
+set played to the end and at least one in a forfeit. Seats are recorded by
+the token the server stored when it formed the match, so a report can't
+name players who weren't seated.
+
+| Field | Is |
+|---|---|
+| `sets` | sets they were seated in, however they ended |
+| `completed`, `completion` | sets they stayed in to the end, and that as a percentage of `sets` |
+| `wins`, `losses`, `forfeit_wins` | wins (including the other side leaving) and losses |
+| `quits`, `quits_behind` | sets they left while running, and of those, while their side was behind |
+| `disconnects` | sets they dropped out of (timed out) |
+| `runbacks` | sets that were a rematch of the one before |
+| `active_days` | distinct days (UTC) with a completed set: the queue's seniority |
+| `form` | the last 10 results, newest last: W, L, Q (quit), D (disconnect) |
+| `heroes` | the three heroes played most: `[{id, sets}]` |
+
+Seniority for matchmaking is the mean `active_days` of a party's seats. A
+client's own `seniority` in `queue` is ignored unless the server runs with
+`--trust-seniority` (for testing).
+
+A known gap: the host is the only reporter, so a host who leaves a set
+running isn't recorded (their guest sees the set end with "the host left").
+
+## Other backends
+
+The match flow (docs/spec/setflow.md) needs only these from an online
+service, so another backend (Steamworks lobbies and matchmaking, for
+example) can stand in for Bulwark Live without the menus or the game's
+rules changing:
+
+- search a playlist and cancel (`live_queue`, `live_cancel`), with the
+  search state in `live_state.queue`;
+- a found match: its id, seats (id, name), the host, and the mode's
+  settings and map, in `live_state.match` and the `live_match_*` cvars,
+  with the host loading the map and the others connecting to it;
+- `Live_ReportSet()` for the host to report a finished set;
+- fighter cards by player id, in `live_state.cards`.
+
 ## The SpacetimeDB module
 
 The module `bwlive` (in `services/live/stdb`) holds the same state as
@@ -296,6 +350,9 @@ A player is the SpacetimeDB identity calling the reducer. Tables: `player`,
 `hello`. Punching uses the addresses in `party_member` and `match_seat`;
 relaying goes through `bwlive-server --relay-only` by `relay_id`.
 
+The module doesn't keep fighter records yet: `set_report` and `card` are
+`bwlive-server` only.
+
 ## The engine client
 
 `src/net/live.c` is the client. It opens one UDP socket for everything:
@@ -312,6 +369,7 @@ the server, punches, direct traffic and the relay.
 | `live_setstatus <text>` | the friends-list status line |
 | `live_playlists` | asks for the game's playlists again (also asked once after the first `welcome`) |
 | `live_status`, `live_peers` | what the client knows, and which peers are direct or relayed |
+| `live_card [id]` | asks for a fighter card (yours without an id); it goes into `live_state.cards` |
 
 Cvars:
 
@@ -323,13 +381,18 @@ Cvars:
   `live: <name> "<value>"`). `$live_match_map` works inside it.
 - With `live_autoconnect` (1), a client that isn't hosting runs
   `connect live:<host>`.
+- `live_match_delay` (3) is how many seconds the match-found screen stays
+  up before the host loads the map and the others connect.
 - `live_punch` (1) tries direct paths. Set it to 0 to relay everything.
 - `live_port` is the local UDP port.
 - These are read-only:
   - `live_state`: everything as JSON, for menus and QC. Besides the party,
     queue and match it carries `guests`, `playlists` (the last
     `playlist_info`, or `[]`), and `error` with `error_seq`, which goes up
-    by one with each `error` so a menu shows each one once.
+    by one with each `error` so a menu shows each one once. `cards` holds
+    the fighter cards asked for (by player id; your own and everyone in
+    your match are asked for when a match forms, and again a second after
+    a set is reported), and `sets_reported` counts this host's reports.
   - `live_party`: the room code
   - `live_match_host`, `live_match_id`, `live_match_playlist`,
     `live_match_mode` and `live_match_map`: the last match

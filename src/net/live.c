@@ -153,6 +153,7 @@ static struct {
 	pqueue_t game[2], lobby;
 } L = {.sock = -1};
 
+static cvar_t *live_match_delay;
 static cvar_t *live_punch, *live_party, *live_server, *live_game, *live_autoconnect, *live_hostcmd, *live_state, *live_onconnect;
 
 static double now(void) { return Sys_Seconds(); }
@@ -770,6 +771,9 @@ static void keep_card(const char *json, size_t n)
 	update_state();
 }
 
+static double match_start_at;
+static void start_match(void);
+
 static void on_match(void)
 {
 	char buf[96];
@@ -784,6 +788,18 @@ static void on_match(void)
 	Con_Printf("live: match on %s%s%s%s%s, %d players, host %u%s\n", L.match_playlist,
 	           L.match_mode[0] ? ", " : "", L.match_mode, L.match_map[0] ? " on " : "", L.match_map, L.nseats,
 	           L.match_host, L.match_host == L.id ? " (you)" : "");
+	/* a moment on the match-found screen before the game takes over */
+	if (live_match_delay->value > 0) {
+		match_start_at = now() + (live_match_delay->value > 10 ? 10 : live_match_delay->value);
+		return;
+	}
+	start_match();
+}
+
+static void start_match(void)
+{
+	char buf[96];
+	match_start_at = 0;
 	if (L.match_host == L.id) {
 		/* the mode's settings go in before the map loads, so the game's
 		 * rules see them from the first frame */
@@ -1167,6 +1183,8 @@ void Live_Frame(void)
 	}
 	if (L.connected)
 		punch_frame(t);
+	if (match_start_at && t >= match_start_at)
+		start_match();
 	match_frame(t);
 	if (L.cards_refresh_at && t >= L.cards_refresh_at) {
 		L.cards_refresh_at = 0;
@@ -1491,6 +1509,7 @@ void Live_Init(void)
 	Cvar_Get("live_port", "0", CVAR_ARCHIVE, "Local UDP port for Bulwark Live, 0 for any");
 	live_game = Cvar_Get("live_game", "bulwark", 0, "Game name sent to Bulwark Live; players only meet the same game");
 	live_autoconnect = Cvar_Get("live_autoconnect", "1", CVAR_ARCHIVE, "Join a match's host when Bulwark Live makes one");
+	live_match_delay = Cvar_Get("live_match_delay", "3", CVAR_ARCHIVE, "Seconds on the match-found screen before a Live match's game starts");
 	live_hostcmd = Cvar_Get("live_hostcmd", "", 0, "Commands run when Bulwark Live picks this game to host a match");
 	live_onconnect = Cvar_Get("live_onconnect", "", 0, "Commands run each time Bulwark Live (re)connects, e.g. \"live_join ABCDEF\"");
 	live_state = Cvar_Get("live_state", "", CVAR_READONLY | CVAR_NOSAVE, "Bulwark Live state as JSON");
