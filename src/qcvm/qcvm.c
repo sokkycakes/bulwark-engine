@@ -351,6 +351,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	}
 #endif
 	p->statements = Mem_Alloc(sizeof(qcstatement_t) * (h->numstatements + 1));
+	int badops = 0;
 	for (int i = 0; i < h->numstatements; i++) {
 		const uint8_t *d = p->image + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
 		qcstatement_t *st = &p->statements[i];
@@ -368,10 +369,13 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 		/* the interpreter dispatches through a table with a slot for
 		 * every opcode it knows; anything beyond fails when it runs */
 		if (st->op >= OP_NUMOPS) {
-			Con_DPrintf("%s: statement %d has unknown opcode %u\n", name, i, (unsigned)st->op);
+			if (!badops++)
+				Con_Printf("%s: statement %d has unknown opcode %u\n", name, i, (unsigned)st->op);
 			st->op = QCOP_BAD;
 		}
 	}
+	if (badops > 1)
+		Con_Printf("%s: %d statements have unknown opcodes\n", name, badops);
 	/* running off the end of the code stops with an error */
 	p->statements[h->numstatements].op = QCOP_END;
 	for (int i = 0; i + 1 < h->numstatements; i++) {

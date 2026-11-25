@@ -1382,7 +1382,8 @@ static void bi_findfloat(qcvm_t *vm)
 {
 	int e = QC_PENT(vm, 0), f = QC_PINT(vm, 1);
 	int32_t match = QC_PINT(vm, 2);
-	if (e >= -1 && f >= 0 && f < vm->edict_words) {
+	/* e == -1 takes the slow loop, which returns world straight away */
+	if (e >= 0 && f >= 0 && f < vm->edict_words) {
 		/* Nuclide runs this hundreds of times a frame over every entity:
 		 * walk the field with a stride rather than a lookup per entity */
 		const qcval_t *v = QC_EdictFields(vm, 0) + f + (size_t)(e + 1) * vm->edict_words;

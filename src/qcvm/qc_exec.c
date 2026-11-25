@@ -247,22 +247,25 @@ static inline bool feq(const qcval_t *a, const qcval_t *b)
 
 #define JUMP(x) ((vm->stmt32) ? (int32_t)(x) : (int32_t)(int16_t)(x))
 
-/* A loop that never ends must jump backwards, so only backward jumps are
- * counted against the runaway limit, not every statement. */
-#define QC_MAX_BACKJUMPS (1u << 26)
+/* A loop that never ends must jump backwards, so the runaway limit is only
+ * checked on backward jumps, each adding the statements it jumps over: about
+ * the same statement budget as counting every one. */
+#define QC_MAX_INSTRUCTIONS (1u << 28)
 
 static BW_NORETURN void bad_statement(qcvm_t *vm, int s, unsigned op)
 {
 	vm->xstatement = s;
 	if (op == QCOP_END || (unsigned)s >= (unsigned)vm->numstatements)
 		QC_RunError(vm, "statement %d out of range", s);
+	if (op == QCOP_BAD)
+		QC_RunError(vm, "unknown opcode (logged when the progs loaded)");
 	QC_RunError(vm, "unsupported opcode %u", op);
 }
 
 static BW_NORETURN void runaway(qcvm_t *vm, int s)
 {
 	vm->xstatement = s;
-	QC_RunError(vm, "runaway loop (%u backward jumps)", QC_MAX_BACKJUMPS);
+	QC_RunError(vm, "runaway loop (%u statements)", QC_MAX_INSTRUCTIONS);
 }
 
 static void debug_statement(qcvm_t *vm, int s)
@@ -287,7 +290,7 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 	/* fixed for the life of the VM, so kept out of the loop's loads */
 	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->max_edicts, (uint32_t)vm->edict_words};
 	unsigned nst;
-	uint32_t backjumps = 0;
+	uint32_t looped = 0;
 #ifdef QC_THREADED
 	/* plaintable runs fused statements one at a time, for the debugger */
 	static const void *optable[QCOP_COUNT], *debugtable[QCOP_COUNT], *plaintable[QCOP_COUNT];
@@ -313,7 +316,7 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 	do {                                                                                           \
 		int32_t o_ = (off);                                                                        \
 		uintptr_t np_ = (uintptr_t)st + (uintptr_t)(intptr_t)o_ * sizeof(*st);                     \
-		if (o_ <= 0 && ++backjumps >= QC_MAX_BACKJUMPS)                                            \
+		if (o_ <= 0 && (looped += 1u - (uint32_t)o_) >= QC_MAX_INSTRUCTIONS)                       \
 			runaway(vm, SINDEX());                                                                 \
 		if (np_ - (uintptr_t)stmts >= (uintptr_t)nst * sizeof(*st))                                \
 			bad_statement(vm, SINDEX() + o_, 0);                                                   \
