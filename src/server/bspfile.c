@@ -1180,10 +1180,18 @@ const uint8_t *BSP_ClusterPVS(const bspmap_t *map, int cluster)
 
 bool BSP_CheckPVS(const bspmap_t *map, const float *a, const float *b)
 {
-	int la = BSP_PointLeaf(map, a), lb = BSP_PointLeaf(map, b);
+	return BSP_CheckPVSLeaf(map, BSP_PointLeaf(map, a), b);
+}
+
+bool BSP_CheckPVSLeaf(const bspmap_t *map, int la, const float *b)
+{
+	int lb;
 	const uint8_t *row;
 	int cb;
-	if (la < 0 || lb < 0)
+	if (la < 0)
+		return true;
+	lb = BSP_PointLeaf(map, b);
+	if (lb < 0)
 		return true;
 	cb = map->leafs[lb].cluster;
 	row = BSP_ClusterPVS(map, map->leafs[la].cluster);

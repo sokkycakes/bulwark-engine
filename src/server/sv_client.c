@@ -1470,6 +1470,21 @@ void SV_ReadPackets(void)
 
 /* --- per frame ---------------------------------------------------------- */
 
+/* one command for a bot, repeating its last one */
+static void bot_command(client_t *c, float msec)
+{
+	usercmd_t cmd;
+	if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
+		return;
+	cmd = c->lastucmd;
+	cmd.sequence = c->lastcmd + 1;
+	cmd.msec = msec;
+	cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
+	cmd.impulse = 0;
+	c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
+	run_usercmd(c, &cmd);
+}
+
 void SV_ClientsPreThink(void)
 {
 	qcvm_t *vm = sv.vm;
@@ -1485,18 +1500,21 @@ void SV_ClientsPreThink(void)
 	/* bots send no input, so each frame runs one command for them, repeating
 	 * the last one; the game fills input_* from its AI inside
 	 * SV_RunClientCommand, as Nuclide's bots do */
+	for (int i = 0; i < svs.maxclients; i++)
+		bot_command(&svs.clients[i], sv.frametime);
+}
+
+/* Time the world skipped (sv_maxticks) still refills movement budgets, and
+ * bots get it as commands of their own, so they keep pace with players. */
+void SV_ClientsDroppedTime(double t)
+{
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		usercmd_t cmd;
-		if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
+		if (c->state != CS_SPAWNED)
 			continue;
-		cmd = c->lastucmd;
-		cmd.sequence = c->lastcmd + 1;
-		cmd.msec = sv.frametime;
-		cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
-		cmd.impulse = 0;
-		c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
-		run_usercmd(c, &cmd);
+		c->cmd_budget = BW_MIN(c->cmd_budget + (float)t, 0.25f);
+		for (double left = t; left > 0.0005; left -= 0.1)
+			bot_command(c, (float)BW_MIN(left, 0.1));
 	}
 }
 
@@ -1572,6 +1590,10 @@ void SV_SendClientMessages(void)
 		}
 		rate = c->updaterate > 0 ? c->updaterate : 1.0f / sv.frametime;
 		rate = BW_MAX(sv_minupdaterate->value, BW_MIN(rate, sv_maxupdaterate->value));
+#ifdef BW_XBOX
+		/* snapshots between ticks resend little but cost a SendEntity pass */
+		rate = BW_MIN(rate, 1.0f / sv.frametime);
+#endif
 		if (now < c->next_snapshot || !Netchan_CanSend(&c->chan))
 			continue;
 		c->next_snapshot = BW_MAX(c->next_snapshot + 1.0 / rate, now - 0.5 / rate);

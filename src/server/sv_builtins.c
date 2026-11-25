@@ -239,17 +239,19 @@ void W_bi_checkpvs(qcvm_t *vm)
 	const float *view = QC_PVEC(vm, 0);
 	int e = QC_PENT(vm, 1);
 	float *org = ev(vm, e, F.origin), *mins = ev(vm, e, F.mins), *maxs = ev(vm, e, F.maxs);
+	int la;
 	if (!map || !map->vis || !org) {
 		QC_ReturnFloat(vm, 1);
 		return;
 	}
+	la = BSP_PointLeaf(map, view); /* once, not for each of the nine points */
 	for (int i = -1; i < 8; i++) {
 		float p[3];
 		for (int k = 0; k < 3; k++) {
 			float lo = mins ? mins[k] : 0, hi = maxs ? maxs[k] : 0;
 			p[k] = org[k] + (i < 0 ? (lo + hi) * 0.5f : ((i >> k) & 1) ? hi : lo);
 		}
-		if (BSP_CheckPVS(map, view, p)) {
+		if (BSP_CheckPVSLeaf(map, la, p)) {
 			QC_ReturnFloat(vm, 1);
 			return;
 		}

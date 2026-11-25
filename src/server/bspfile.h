@@ -157,5 +157,7 @@ int BSP_PointContents(const bspmap_t *map, int model, const float *origin, const
 int BSP_PointLeaf(const bspmap_t *map, const float *p);
 const uint8_t *BSP_ClusterPVS(const bspmap_t *map, int cluster);
 bool BSP_CheckPVS(const bspmap_t *map, const float *a, const float *b);
+/* the same, with the leaf of a already found (BSP_PointLeaf; -1 sees all) */
+bool BSP_CheckPVSLeaf(const bspmap_t *map, int la, const float *b);
 
 #endif

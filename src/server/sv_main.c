@@ -17,7 +17,21 @@
 server_t sv;
 int sv_spawncount;
 
-static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate;
+static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate, *sv_maxticks;
+
+/* The Xbox runs the world at 30 ticks a second rather than 72. Most of a
+ * tick is the game's own walk over every entity (Nuclide's StartFrame), and
+ * players move by their own commands at the client's frame rate either way,
+ * so this costs little but think and toss timing granularity. At most three
+ * ticks run in one frame there; time beyond that is dropped, so a slow frame
+ * slows the world rather than making the next frame slower still. */
+#ifdef BW_XBOX
+#define SV_TICKRATE_DEFAULT "30"
+#define SV_MAXTICKS_DEFAULT "3"
+#else
+#define SV_TICKRATE_DEFAULT "72"
+#define SV_MAXTICKS_DEFAULT "0"
+#endif
 
 /* --- info strings ---------------------------------------------------- */
 
@@ -906,6 +920,13 @@ void SV_Frame(double dt)
 	accum += dt;
 	if (accum > 0.25)
 		accum = 0.25; /* after a stall, drop time rather than spiral */
+	if (sv_maxticks->ivalue > 0 && accum >= sv.frametime * (sv_maxticks->ivalue + 1)) {
+		/* past the frame's tick limit: the world loses the time, but players
+		   keep moving at the rate their commands say, as their clients do */
+		int drop = (int)(accum / sv.frametime) - sv_maxticks->ivalue;
+		accum -= drop * sv.frametime;
+		SV_ClientsDroppedTime(drop * sv.frametime);
+	}
 	while (accum >= sv.frametime) {
 		accum -= sv.frametime;
 		if (!sv.paused) {
@@ -1110,7 +1131,9 @@ void SV_Init(void)
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
 	pr_maxedicts = Cvar_Get("pr_maxedicts", BW_SV_MAXEDICTS, 0, "Entity slots in the server game");
 	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
-	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
+	sv_tickrate = Cvar_Get("sv_tickrate", SV_TICKRATE_DEFAULT, 0, "Server frames per second");
+	sv_maxticks = Cvar_Get("sv_maxticks", SV_MAXTICKS_DEFAULT, 0,
+	                       "Most server frames run in one host frame, 0 for no limit; the rest of the time is dropped");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);
