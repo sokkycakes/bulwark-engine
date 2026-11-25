@@ -431,6 +431,7 @@ void QC_InitDebugCommands(void)
 	QC_InitSkelCommands();
 	QC_MeshPitch(); /* registers r_meshpitch */
 	static const char *const descs[3] = {"the server game", "the client game", "the menu"};
+	Cvar_Get("pr_seed", "0", 0, "Seed QC's random() with this when a game loads, instead of the clock (0)");
 	coreonerror[0] = Cvar_Get("pr_ssqc_coreonerror", "0", CVAR_ARCHIVE, "Write ssqccore.txt when the server game has an error");
 	coreonerror[1] = Cvar_Get("pr_csqc_coreonerror", "0", CVAR_ARCHIVE, "Write csqccore.txt when the client game has an error");
 	coreonerror[2] = Cvar_Get("pr_menuqc_coreonerror", "0", CVAR_ARCHIVE, "Write menuqccore.txt when the menu has an error");

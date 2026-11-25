@@ -645,8 +645,13 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 
 	vm->localstack_size = 1 << 16;
 	vm->localstack = Mem_Alloc(sizeof(qcval_t) * vm->localstack_size);
-	/* random() differs from run to run, as in Quake engines seeded from the clock */
-	vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ ((uint64_t)Sys_Milliseconds() * 0x2545f4914f6cdd1dull);
+	/* random() differs from run to run, as in Quake engines seeded from the
+	 * clock, unless pr_seed fixes it (for repeatable benchmarks and tests) */
+	{
+		cvar_t *seed = Cvar_Find("pr_seed");
+		uint64_t s = seed && seed->ivalue ? (uint64_t)(uint32_t)seed->ivalue : (uint64_t)Sys_Milliseconds();
+		vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ (s * 0x2545f4914f6cdd1dull);
+	}
 
 	activate(vm, 0);
 	resolve_fields(vm);
