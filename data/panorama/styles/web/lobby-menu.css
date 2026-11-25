@@ -571,3 +571,64 @@
 	font-size: 19.5px;
 	line-height: 30px;
 }
+
+/* server settings (the Server type row) */
+.server-row
+{
+	height: 51px;
+	margin-top: 6px;
+	margin-bottom: 6px;
+}
+.server-row .limit-label { width: 270px; }
+.wide-input { width: 360px; }
+.wide-unit { width: 150px; }
+.toggle
+{
+	width: 170px;
+	height: 46.5px;
+	margin-right: 12px;
+	padding-left: 12px;
+	border: 1.5px solid #666666;
+	color: #adadad;
+	font-family: "Trade Gothic Next LT Pro BdCn";
+	font-size: 28px;
+	line-height: 43.5px;
+	text-transform: uppercase;
+}
+.toggle.is-pressed
+{
+	color: #adc4df;
+	border: 1.5px solid #adc4df;
+}
+.toggle:disabled { color: #6e6e6e; }
+/* the list never scrolls, and the note keeps three lines so nothing moves */
+.server-settings { max-height: 820px; }
+.after-input { margin-left: 12px; }
+.server-note
+{
+	height: 77px;
+	margin-top: 9px;
+	margin-bottom: 9px;
+	font-size: 18px;
+	line-height: 25.5px;
+}
+.kind-server .dialog-back { margin-top: 9px; }
+.password-field
+{
+	width: 100%;
+	margin-bottom: 18px;
+}
+.password-input
+{
+	width: 100%;
+	color: #00000000;
+}
+.password-mask
+{
+	x: 12px;
+	y: 9px;
+	font-size: 24px;
+	letter-spacing: 4px;
+	color: #ffffff;
+}
+.server-note.error { color: #ffb3a9; }

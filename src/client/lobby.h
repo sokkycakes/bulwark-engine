@@ -23,6 +23,9 @@ void Lobby_Shutdown(void);
 void Lobby_Frame(void); /* once per client frame */
 lobby_phase_t Lobby_Phase(void);
 bool Lobby_Active(void); /* a session exists (any phase but IDLE) */
+/* a host turned this guest away for its password: the lobby page asks for
+ * it (joinpass:) and stays open meanwhile */
+bool Lobby_AskingPassword(void);
 
 /* the WebCore bridge requests: getlobby, getlobbychat, lobby_action:<a>,
  * hostcache_refresh, gethostcache; false for other requests */

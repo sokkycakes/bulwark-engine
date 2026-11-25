@@ -399,10 +399,18 @@ static void q_flow(const char *a, strbuf_t *out)
 	bool ok = true;
 
 	if (!strcmp(verb, "connect")) {
-		Cbuf_AddText("live_connect\n");
+		/* no Bulwark Live server configured (none is deployed for testers):
+		 * say so instead of "connecting..." for ever */
+		if (!Live_Configured())
+			ok = false;
+		else
+			Cbuf_AddText("live_connect\n");
 	} else if (!strcmp(verb, "queue")) {
 		const char *pl = *arg ? arg : "duel";
-		if (!playlist_ok(pl))
+		if (!Live_Configured()) {
+			notice("Online services are not connected in this build. Try Training or a Private Room.");
+			ok = false;
+		} else if (!playlist_ok(pl))
 			ok = false;
 		else if (!Live_Connected())
 			Cbuf_AddText(va("set live_onconnect \"live_queue %s\"\nlive_connect\n", pl));

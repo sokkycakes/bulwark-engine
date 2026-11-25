@@ -289,6 +289,7 @@ add_library(bwclient STATIC
 	src/client/cl_cmds.c
 	src/client/cl_altcon.c
 	src/client/cl_lobby.c
+	src/client/cl_dedlaunch.c
 	src/client/cl_webcore.c
 	src/client/cl_setflow.c
 	src/client/cl_chat.c
