@@ -223,62 +223,89 @@ bool S_LoadSfx(sfx_t *sfx)
 
 /* --- music -------------------------------------------------------------------- */
 
-/* One stream: Ogg files are decoded as they play, WAV and MP3 files are
+/* One stream: Ogg and MP3 files are decoded as they play, WAV files are
  * decoded whole when they start.
- * Touched by the mixer thread, so the caller holds the device lock. */
-static struct {
+ * Touched by the mixer thread, so the caller holds the device lock; a new
+ * track is loaded and opened without the lock and only swapped in under it. */
+typedef struct {
 	bool active, loop;
-	uint8_t *file;          /* the compressed file, for stb_vorbis */
+	uint8_t *file;          /* the compressed file, for stb_vorbis or minimp3 */
 	stb_vorbis *vorbis;
-	pcm_t wav;              /* or a whole decoded WAV or MP3 */
+	s_mp3stream_t *mp3;
+	pcm_t wav;              /* or a whole decoded WAV */
 	int channels, rate;
 	short buf[4096 * 2];    /* decoded frames waiting to be mixed */
 	int buffered, bufpos;
 	double frac;            /* resampling position between buf frames */
 	int wavpos;
-} mus;
+} music_t;
 
-void S_CloseMusic(void)
+static music_t mus;
+
+static void free_music(music_t *m)
 {
-	if (mus.vorbis)
-		stb_vorbis_close(mus.vorbis);
-	Mem_Free(mus.file);
-	Mem_Free(mus.wav.data);
-	memset(&mus, 0, sizeof(mus));
+	if (m->vorbis)
+		stb_vorbis_close(m->vorbis);
+	S_MP3Close(m->mp3);
+	Mem_Free(m->file);
+	Mem_Free(m->wav.data);
+	memset(m, 0, sizeof(*m));
 }
 
-bool S_OpenMusic(const char *path, bool loop)
+void S_CloseMusic(void) { free_music(&mus); }
+
+static music_t next, old; /* only the main thread opens music */
+
+static bool open_music(const char *path, bool loop)
 {
 	size_t len;
 	uint8_t *file = (uint8_t *)FS_LoadFile(path, &len);
-	S_CloseMusic();
+	memset(&next, 0, sizeof(next));
 	if (!file)
 		return false;
 	if (len >= 4 && !memcmp(file, "OggS", 4)) {
 		int err = 0;
 		stb_vorbis_info info;
-		mus.vorbis = stb_vorbis_open_memory(file, (int)len, &err, NULL);
-		if (!mus.vorbis) {
+		next.vorbis = stb_vorbis_open_memory(file, (int)len, &err, NULL);
+		if (!next.vorbis) {
 			Mem_Free(file);
 			return false;
 		}
-		info = stb_vorbis_get_info(mus.vorbis);
-		mus.file = file;
-		mus.channels = info.channels;
-		mus.rate = (int)info.sample_rate;
-	} else {
-		/* a level's bgm key names an .mp3 (worldspawn plays sound/bgm/<name>.mp3) */
-		bool ok = len >= 4 && !memcmp(file, "RIFF", 4) ? decode_wav(file, len, &mus.wav)
-		                                               : is_mp3(file, len) && decode_mp3(file, len, &mus.wav);
+		info = stb_vorbis_get_info(next.vorbis);
+		next.file = file;
+		next.channels = info.channels;
+		next.rate = (int)info.sample_rate;
+	} else if (len >= 4 && !memcmp(file, "RIFF", 4)) {
+		bool ok = decode_wav(file, len, &next.wav);
 		Mem_Free(file);
 		if (!ok)
 			return false;
-		mus.channels = mus.wav.channels;
-		mus.rate = mus.wav.rate;
+		next.channels = next.wav.channels;
+		next.rate = next.wav.rate;
+	} else {
+		/* a level's bgm key names an .mp3 (worldspawn plays sound/bgm/<name>.mp3) */
+		if (is_mp3(file, len))
+			next.mp3 = S_MP3Open(file, len, &next.channels, &next.rate);
+		if (!next.mp3) {
+			Mem_Free(file);
+			return false;
+		}
+		next.file = file;
 	}
-	mus.loop = loop;
-	mus.active = true;
+	next.loop = loop;
+	next.active = true;
 	return true;
+}
+
+bool S_OpenMusic(const char *path, bool loop)
+{
+	bool ok = open_music(path, loop);
+	SNDDMA_Lock();
+	old = mus;
+	mus = next; /* a track that won't open still stops the old one */
+	SNDDMA_Unlock();
+	free_music(&old);
+	return ok;
 }
 
 bool S_MusicActive(void) { return mus.active; }
@@ -291,6 +318,8 @@ double S_MusicTime(void)
 	int left = mus.buffered - mus.bufpos;
 	if (mus.vorbis)
 		return (double)(stb_vorbis_get_sample_offset(mus.vorbis) - left) / mus.rate;
+	if (mus.mp3)
+		return ((double)S_MP3Tell(mus.mp3) - left) / mus.rate;
 	return (double)(mus.wavpos - left) / mus.rate;
 }
 
@@ -314,6 +343,15 @@ void S_SeekMusic(double seconds)
 			frame = 0;
 		}
 		stb_vorbis_seek(mus.vorbis, frame);
+	} else if (mus.mp3) {
+		if (frame >= S_MP3Length(mus.mp3)) {
+			if (!mus.loop) {
+				S_CloseMusic();
+				return;
+			}
+			frame = 0;
+		}
+		S_MP3Seek(mus.mp3, frame);
 	} else {
 		if ((int)frame >= mus.wav.frames)
 			frame = mus.loop ? 0 : (unsigned)mus.wav.frames;
@@ -333,6 +371,12 @@ static bool refill(void)
 		if (got <= 0 && mus.loop) {
 			stb_vorbis_seek_start(mus.vorbis);
 			got = stb_vorbis_get_samples_short_interleaved(mus.vorbis, 2, mus.buf, (int)BW_ARRAY_COUNT(mus.buf));
+		}
+	} else if (mus.mp3) {
+		got = S_MP3Read(mus.mp3, mus.buf, (int)BW_ARRAY_COUNT(mus.buf) / 2);
+		if (got <= 0 && mus.loop) {
+			S_MP3Seek(mus.mp3, 0);
+			got = S_MP3Read(mus.mp3, mus.buf, (int)BW_ARRAY_COUNT(mus.buf) / 2);
 		}
 	} else {
 		int want = (int)BW_ARRAY_COUNT(mus.buf) / 2;

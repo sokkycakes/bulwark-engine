@@ -7,6 +7,10 @@
  * Exit status 1 if any file was rejected. ISC licence, see LICENSE. */
 #include "../src/sound/snd_mem.c"
 
+/* the music code swaps tracks under the device lock; there is no device here */
+void SNDDMA_Lock(void) {}
+void SNDDMA_Unlock(void) {}
+
 static uint8_t *readall(const char *path, size_t *len)
 {
 	FILE *f = fopen(path, "rb");

@@ -504,7 +504,7 @@ static void Music_f(int argc, const char **argv)
 	bool loop = !(argc > 2 && (!strcmp(argv[2], "-") || !strcmp(argv[2], "0")));
 	char *dot;
 	if (argc < 2) {
-		Con_Printf("usage: music <file or track number> [-]\n");
+		Con_Printf("usage: music <file or track number> [-|0|1]\n");
 		return;
 	}
 	media_playing = false; /* this replaces the playlist's track */
@@ -517,9 +517,7 @@ static void Music_f(int argc, const char **argv)
 	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
 		bool ok;
 		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
-		SNDDMA_Lock();
 		ok = S_OpenMusic(path, loop);
-		SNDDMA_Unlock();
 		if (ok)
 			return;
 		if (i == 0 && (dot = strrchr(base, '.')) && !strchr(dot, '/'))
@@ -542,9 +540,7 @@ bool S_PlayMusic(const char *name, bool loop)
 		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
 		if (i > 0 && !FS_FileExists(path))
 			continue;
-		SNDDMA_Lock();
 		ok = S_OpenMusic(path, loop);
-		SNDDMA_Unlock();
 		if (ok)
 			return true;
 		if (i == 0 && (dot = strrchr(base, '.')) && !strchr(dot, '/'))
@@ -687,9 +683,7 @@ static bool play_track(int i)
 	if (i < 0 || i >= numtracks || !snd_started)
 		return false;
 	curtrack = i;
-	SNDDMA_Lock();
 	ok = S_OpenMusic(playlist[i], false);
-	SNDDMA_Unlock();
 	media_playing = ok;
 	Con_Printf(ok ? "playing %s\n" : "^3can't play %s\n", playlist[i]);
 	return ok;

@@ -25,6 +25,14 @@ sfx_t *S_FindSfx(const char *name, bool load);
 bool S_LoadSfx(sfx_t *sfx);
 /* decodes a whole MP3 file to 16-bit PCM, at most two channels (snd_mp3.c) */
 bool S_DecodeMP3(const uint8_t *buf, size_t len, int16_t **data, int *frames, int *channels, int *rate);
+/* a streamed MP3 music track over a buffer that outlives it (snd_mp3.c) */
+typedef struct s_mp3stream_s s_mp3stream_t;
+s_mp3stream_t *S_MP3Open(const uint8_t *buf, size_t len, int *channels, int *rate);
+int S_MP3Read(s_mp3stream_t *s, int16_t *out, int frames); /* stereo frames */
+void S_MP3Seek(s_mp3stream_t *s, uint64_t frame);
+uint64_t S_MP3Tell(const s_mp3stream_t *s);
+uint64_t S_MP3Length(const s_mp3stream_t *s);
+void S_MP3Close(s_mp3stream_t *s);
 void S_FreeAllSfx(void);
 void S_ForEachSfx(void (*fn)(const sfx_t *sfx, void *ctx), void *ctx);
 
@@ -37,6 +45,8 @@ float S_DistanceGain(float attenuation, float dist);
 
 /* --- music --------------------------------------------------------------- */
 
+/* loads and opens a track, then swaps it in under the device lock, so the
+ * caller must not hold that lock */
 bool S_OpenMusic(const char *path, bool loop);
 void S_CloseMusic(void);
 /* adds the music into a stereo float buffer at the device rate */

@@ -6,7 +6,9 @@
 number of samples, and an entity's other channels replace each other, as
 fteextensions.qc documents for `sound()`. Distance and side panning are
 worked out on the main thread, and SDL pulls mixed frames from its own
-thread. Music is streamed separately and mixed in last, so room effects
+thread. Music (Ogg and MP3 decoded as it plays, WAV decoded when it
+starts) is loaded and opened off the mixer lock, swapped in under it, and
+mixed in last, so room effects
 don't apply to it. Nor do they apply to sounds started with
 SOUNDFLAG_NOREVERB (32; fteextensions.qc: "disables the use of
 underwater/reverb effects on this sound effect"), or to menu and HUD sounds
@@ -82,8 +84,11 @@ The checks run in this order; the first match wins:
 5. `dsp_automatic 1` (the default) guesses a room from traces. Every 0.5 s
    it casts nine rays (eight around the listener and one up) and measures
    the mean wall distance, the ceiling height, and how many rays reach sky
-   or nothing. A Q3 face flagged SURF_SKY or SURF_NODRAW (caulk) counts as
-   sky, since nothing is drawn there: duel_alley is boxed in by caulk under
+   or nothing. A Q3 face flagged SURF_SKY, or SURF_NODRAW on a plain
+   solid brush (caulk), counts as sky, since nothing is drawn there; clip
+   brushes (weapclip and the other *clip shaders, which carry the
+   translucent content bit) are nodraw too but stay walls, as they smooth
+   indoor rooms. duel_alley is boxed in by caulk under
    its `sky` key, and read as a closed 1.8 s room until 2026-11-25 (now
    about 1.1 s with weak reflections, as an alley open above). These set the decay time, density, reflection and late
    delays (at 13500 units/s), and in large open spaces a slap-back echo.
