@@ -957,10 +957,16 @@ static uint8_t *read_tga(const char *rel, int *w, int *h)
 	int top;
 	if (!d)
 		return NULL;
+	/* a cache cut short (the process died or the disk filled while it was
+	 * written, or a damaged copy) must not be read past its end */
+	if (len < 18) {
+		Mem_Free(d);
+		return NULL;
+	}
 	*w = d[12] | d[13] << 8;
 	*h = d[14] | d[15] << 8;
 	top = d[17] & 0x20;
-	if (len < 18 || d[2] != 2 || d[16] != 32 || *w <= 0 || *h <= 0 || len < 18 + (size_t)d[0] + (size_t)*w * *h * 4) {
+	if (d[2] != 2 || d[16] != 32 || *w <= 0 || *h <= 0 || len < 18 + (size_t)d[0] + (size_t)*w * *h * 4) {
 		Mem_Free(d);
 		return NULL;
 	}

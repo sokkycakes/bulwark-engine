@@ -60,6 +60,7 @@ typedef struct {
 	int numhosts;
 	bool searched;      /* a refresh has answered since Join opened */
 	host_t hosts[MAX_HOSTS];
+	double next_reason; /* when title_frame next asks why a game ended */
 } title_t;
 
 /* --- the backdrop's mask ------------------------------------------------------------------
@@ -413,6 +414,22 @@ static void title_open(uin_view_t *v)
 		uin_error_open("DISCONNECTED", r);
 }
 
+/* A connect made from the title (JOIN, or connect in the console) that
+ * fails leaves the title up: the router keeps the page it already shows,
+ * so title_open doesn't run again, and the next connect would clear the
+ * reason unread. Asked a few times a second rather than every frame. */
+static void title_frame(uin_view_t *v, double dt)
+{
+	title_t *t = UIN_STATE(v, title_t);
+	const char *r;
+	(void)dt;
+	if (uin_now() < t->next_reason)
+		return;
+	t->next_reason = uin_now() + 0.25;
+	if ((r = uin_query(v, "takedisconnect")) && *r)
+		uin_error_open("DISCONNECTED", r);
+}
+
 static void title_key(uin_view_t *v, int action, int key, bool repeat)
 {
 	title_t *t = UIN_STATE(v, title_t);
@@ -482,4 +499,4 @@ static void title_draw(uin_view_t *v, float x, float y, float w, float h)
 		uin_footer(w, h, "A=SELECT Y=SETTINGS");
 }
 
-const uin_screen_t uin_title_screen = {"title", title_open, NULL, title_key, NULL, title_draw};
+const uin_screen_t uin_title_screen = {"title", title_open, NULL, title_key, title_frame, title_draw};

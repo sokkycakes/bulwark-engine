@@ -5,7 +5,8 @@
  * a screen (uin_local.h), feeds it keys and frames, and draws it.
  * uin_local.h describes the parts. ISC licence, see LICENSE. */
 #include "uin_local.h"
-#include "../client/client.h" /* ui_key only: Key_NumForName, IN_KeyEvent */
+#include "../client/client.h" /* Key_IsDown, EM_Active; ui_key: Key_NumForName, IN_KeyEvent */
+#include "../client/console.h"
 #include "../client/keys.h"
 
 #include <stdio.h>
@@ -407,20 +408,32 @@ bool UI_AddFont(const char *family, const char *path, int weight)
 void UI_Frame(double dt)
 {
 	uin_view_t *order[MAX_VIEWS];
+	int serials[MAX_VIEWS];
 	int n;
 	if (dt > 0 && dt < 1)
 		now += dt;
 	else if (dt >= 1)
 		now += 0.1; /* a hitch (a map load) mustn't skip a whole fade */
+	/* The release of a held direction can go elsewhere: IN_KeyEvent hands
+	 * keys to the console and the engine's menus (EM swallows every
+	 * key-up) before the UI. So the repeat also ends when the key is no
+	 * longer down, or when another key layer sits above us; otherwise it
+	 * would run on under that layer and after it closes. */
+	if (held.key && (!Key_IsDown(held.key) || Con_IsActive() || EM_Active()))
+		held.key = 0;
 	if (held.key && now >= held.next) {
 		held.next = now + 0.1;
 		dispatch(held.action, held.key, true);
 	}
 	n = open_order(order);
+	/* serials taken before any frame runs: a slot that an earlier view's
+	 * frame closed and reopened holds a new view, which waits for the
+	 * next pass */
+	for (int i = 0; i < n; i++)
+		serials[i] = order[i]->serial;
 	for (int i = 0; i < n; i++) {
 		uin_view_t *v = order[i];
-		int serial = v->serial;
-		if (!v->open || v->serial != serial)
+		if (!v->open || v->serial != serials[i])
 			continue; /* closed by an earlier view's frame */
 		v->fade = BW_MIN(1.0f, (float)((now - v->opened) / UIN_FADE_S));
 		if (v->screen->frame)
