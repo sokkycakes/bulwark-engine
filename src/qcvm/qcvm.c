@@ -365,7 +365,15 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 			st->b = d[4] | (d[5] << 8);
 			st->c = d[6] | (d[7] << 8);
 		}
+		/* the interpreter dispatches through a table with a slot for
+		 * every opcode it knows; anything beyond fails when it runs */
+		if (st->op >= OP_NUMOPS) {
+			Con_DPrintf("%s: statement %d has unknown opcode %u\n", name, i, (unsigned)st->op);
+			st->op = QCOP_BAD;
+		}
 	}
+	/* running off the end of the code stops with an error */
+	p->statements[h->numstatements].op = QCOP_END;
 
 	unpack_defs(p, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12, &p->globaldefs);
 	p->numglobaldefs = h->numglobaldefs;
@@ -745,7 +753,7 @@ void QC_Free(qcvm_t *vm)
 
 /* --- parameters ------------------------------------------------------ */
 
-qcval_t *QC_Parm(qcvm_t *vm, int n)
+qcval_t *QC_ParmExt(qcvm_t *vm, int n)
 {
 	static qcval_t zero[3];
 	if (n < MAX_PARMS)

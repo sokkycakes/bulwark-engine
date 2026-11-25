@@ -7,6 +7,13 @@
 #include "opcodes.h"
 #include <stdio.h>
 
+/* opcodes the loader writes in place of what must not run: one this VM does
+ * not know, and the statement after the last, so the interpreter never has
+ * to range-check the statement it is about to run */
+#define QCOP_BAD OP_NUMOPS
+#define QCOP_END (OP_NUMOPS + 1)
+#define QCOP_COUNT (OP_NUMOPS + 2)
+
 #define QC_MAX_TOKENS 1024
 /* The text of each token is kept in buf, and argv() makes it a string the
  * first time it is asked for: Nuclide tokenizes whole decl files while a

@@ -301,7 +301,7 @@ int QC_LiveStrings(void);
 /* inline: the interpreter calls this for every field access */
 static inline qcval_t *QC_EdictFields(qcvm_t *vm, int e)
 {
-	if (e < 0 || e >= vm->max_edicts)
+	if ((unsigned)e >= (unsigned)vm->max_edicts)
 		QC_RunError(vm, "entity %d out of range", e);
 	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * vm->edict_words * 4);
 }
@@ -334,7 +334,12 @@ float QC_Random(qcvm_t *vm);
 void QC_Format(qcvm_t *vm, int fmtparm, strbuf_t *out);
 
 /* parameter and return helpers for builtins */
-qcval_t *QC_Parm(qcvm_t *vm, int n);
+qcval_t *QC_ParmExt(qcvm_t *vm, int n); /* $parm8 and up */
+/* inline: builtins read their arguments through this */
+static inline qcval_t *QC_Parm(qcvm_t *vm, int n)
+{
+	return n < MAX_PARMS ? &vm->globals[OFS_PARM(n)] : QC_ParmExt(vm, n);
+}
 #define QC_PFLOAT(vm, n) (QC_Parm(vm, n)->f)
 #define QC_PINT(vm, n) (QC_Parm(vm, n)->i)
 #define QC_PVEC(vm, n) (&QC_Parm(vm, n)->f)
