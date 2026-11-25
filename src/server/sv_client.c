@@ -994,14 +994,18 @@ static void set_input_globals(const usercmd_t *u)
 /* --- lag compensation (after Source's CLagCompensationManager) ---------- */
 
 #define LAG_HISTORY 256
+/* one player in one recorded frame: only the origin is rewound */
+typedef struct {
+	bool valid;
+	float origin[3];
+} lagent_t;
 typedef struct {
 	double time;
-	struct {
-		bool valid;
-		float origin[3], mins[3], maxs[3];
-	} ent[256];
+	lagent_t *ent; /* svs.maxclients entries in lag_ents */
 } lagframe_t;
-static lagframe_t *lag_frames;
+static lagframe_t lag_frames[LAG_HISTORY];
+static lagent_t *lag_ents; /* LAG_HISTORY x lag_width, sized by the slots in use */
+static int lag_width;
 static int lag_head; /* next slot to write */
 
 void SV_LagCompensationRecord(void)
@@ -1010,8 +1014,16 @@ void SV_LagCompensationRecord(void)
 	int n = BW_MIN(svs.maxclients, 256);
 	if (!sv_unlag->ivalue || svs.maxclients < 2)
 		return;
-	if (!lag_frames)
-		lag_frames = Mem_Alloc(sizeof(lagframe_t) * LAG_HISTORY);
+	if (!lag_ents || lag_width != n) {
+		/* the slot count changes only while nobody is connected, so the
+		 * history recorded for the old count has nothing worth keeping */
+		Mem_Free(lag_ents);
+		lag_ents = Mem_Alloc(sizeof(lagent_t) * (size_t)n * LAG_HISTORY);
+		lag_width = n;
+		lag_head = 0;
+		for (int k = 0; k < LAG_HISTORY; k++)
+			lag_frames[k].time = 0, lag_frames[k].ent = &lag_ents[(size_t)k * (size_t)n];
+	}
 	f = &lag_frames[lag_head++ % LAG_HISTORY];
 	f->time = sv.time;
 	for (int i = 0; i < n; i++) {
@@ -1020,8 +1032,6 @@ void SV_LagCompensationRecord(void)
 		if (!f->ent[i].valid)
 			continue;
 		memcpy(f->ent[i].origin, &QC_EdictFields(sv.vm, c->edict)[F.origin], sizeof(float) * 3);
-		memcpy(f->ent[i].mins, &QC_EdictFields(sv.vm, c->edict)[F.mins], sizeof(float) * 3);
-		memcpy(f->ent[i].maxs, &QC_EdictFields(sv.vm, c->edict)[F.maxs], sizeof(float) * 3);
 	}
 }
 
@@ -1037,7 +1047,7 @@ static void lag_rewind(client_t *c, const usercmd_t *u, lagrestore_t *restore)
 	double target;
 	int n = BW_MIN(svs.maxclients, 256);
 	memset(restore, 0, sizeof(lagrestore_t) * (size_t)n);
-	if (!sv_unlag->ivalue || svs.maxclients < 2 || !lag_frames || !u->servertime_ms)
+	if (!sv_unlag->ivalue || svs.maxclients < 2 || !lag_ents || lag_width != n || !u->servertime_ms)
 		return;
 	target = u->servertime_ms / 1000.0 - BW_MAX(c->interp, 0.0f);
 	if (sv.time - target > sv_maxunlag->value)

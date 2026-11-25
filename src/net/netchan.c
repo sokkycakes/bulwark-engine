@@ -24,8 +24,10 @@ void Netchan_Free(netchan_t *c)
 {
 	Mem_Free(c->relout);
 	Mem_Free(c->relin);
-	for (int i = 0; i < NETCHAN_WINDOW; i++)
+	for (int i = 0; i < NETCHAN_WINDOW; i++) {
 		Mem_Free(c->pending[i]);
+		Mem_Free(c->frags[i]);
+	}
 	memset(c, 0, sizeof(*c));
 }
 
@@ -50,7 +52,7 @@ size_t Netchan_ReliableBytesDue(const netchan_t *c)
 	double resend = c->rtt * 1.5 + 0.03;
 	size_t due = 0;
 	for (uint32_t s = c->relacked; s != c->relnext; s++) {
-		const netfrag_t *f = &c->frags[s % NETCHAN_WINDOW];
+		const netfrag_t *f = c->frags[s % NETCHAN_WINDOW];
 		if (!f->lastsent || host_time - f->lastsent >= resend)
 			due += 6 + f->len;
 	}
@@ -66,10 +68,14 @@ static void make_fragments(netchan_t *c)
 {
 	size_t used = 0;
 	while (used < c->reloutlen && c->relnext - c->relacked < NETCHAN_WINDOW) {
-		netfrag_t *f = &c->frags[c->relnext % NETCHAN_WINDOW];
+		netfrag_t **slot = &c->frags[c->relnext % NETCHAN_WINDOW];
+		netfrag_t *f;
 		size_t n = c->reloutlen - used;
 		if (n > NETCHAN_FRAGSIZE)
 			n = NETCHAN_FRAGSIZE;
+		if (!*slot)
+			*slot = Mem_Alloc(sizeof(netfrag_t));
+		f = *slot;
 		f->relseq = c->relnext++;
 		f->len = (uint16_t)n;
 		f->lastsent = 0;
@@ -107,7 +113,7 @@ uint32_t Netchan_Transmit(netchan_t *c, const void *data, size_t len)
 
 	make_fragments(c);
 	for (uint32_t s = c->relacked; s != c->relnext; s++) {
-		netfrag_t *f = &c->frags[s % NETCHAN_WINDOW];
+		netfrag_t *f = c->frags[s % NETCHAN_WINDOW];
 		if (f->lastsent && now - f->lastsent < resend)
 			continue;
 		if (m.cursize + 6 + f->len + len > NET_MAX_PACKET)
@@ -229,8 +235,14 @@ bool Netchan_Process(netchan_t *c, msg_t *msg)
 		}
 		c->peerack = ack;
 	}
-	if (relack > c->relacked && relack <= c->relnext)
+	if (relack > c->relacked && relack <= c->relnext) {
+		/* the peer has these: their fragments can go */
+		for (uint32_t s = c->relacked; s != relack; s++) {
+			Mem_Free(c->frags[s % NETCHAN_WINDOW]);
+			c->frags[s % NETCHAN_WINDOW] = NULL;
+		}
 		c->relacked = relack;
+	}
 
 	if (flags & FLAG_RELIABLE) {
 		int n = MSG_ReadByte(msg);

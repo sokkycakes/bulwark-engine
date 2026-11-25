@@ -326,7 +326,17 @@ typedef struct {
 	uint16_t mevmi[MAX_EDICTS_LINK];
 } link_t;
 
-static link_t links[MAX_LINKS];
+/* a link_t is large (its brush, sound and model event tables), so a slot's is
+ * made when a device first takes it and kept for the next one */
+static link_t *links[MAX_LINKS];
+static link_t *link_at(int i) { return links[i] && links[i]->used ? links[i] : NULL; }
+static int link_slot(const link_t *l)
+{
+	for (int i = 0; i < MAX_LINKS; i++)
+		if (links[i] == l)
+			return i;
+	return 0;
+}
 static int sock = -1;
 static int boundport;
 static cvar_t *sv_link_port, *sv_link_max, *sv_link_timeout, *sv_link_log, *sv_link_lag, *sv_link_autoaim;
@@ -491,26 +501,28 @@ static link_t *find_session(uint32_t session, const struct sockaddr_in *from, bo
 {
 	link_t *only = NULL;
 	int count = 0;
-	for (int i = 0; i < MAX_LINKS; i++)
-		if (links[i].used && links[i].session == session && links[i].from.sin_addr.s_addr == from->sin_addr.s_addr) {
-			if (links[i].from.sin_port == from->sin_port)
-				return &links[i];
-			only = &links[i], count++;
+	for (int i = 0; i < MAX_LINKS; i++) {
+		link_t *l = link_at(i);
+		if (l && l->session == session && l->from.sin_addr.s_addr == from->sin_addr.s_addr) {
+			if (l->from.sin_port == from->sin_port)
+				return l;
+			only = l, count++;
 		}
+	}
 	return count == 1 && !exact ? only : NULL;
 }
 
 static link_t *link_for_edict(int e)
 {
 	client_t *c = SV_ClientForEdict(e);
-	return c && c->link > 0 && c->link <= MAX_LINKS && links[c->link - 1].used ? &links[c->link - 1] : NULL;
+	return c && c->link > 0 && c->link <= MAX_LINKS ? link_at(c->link - 1) : NULL;
 }
 
 static int count_links(void)
 {
 	int n = 0;
 	for (int i = 0; i < MAX_LINKS; i++)
-		n += links[i].used;
+		n += link_at(i) != NULL;
 	return n;
 }
 
@@ -543,6 +555,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	uint32_t session;
 	char name[17];
 	link_t *l = NULL;
+	int slot = -1;
 	client_t *c;
 	if (len < 4 + 2 + 16)
 		return;
@@ -555,9 +568,14 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 		refuse(from, "no free link slots");
 		return;
 	}
-	for (int i = 0; i < MAX_LINKS && !l; i++)
-		if (!links[i].used)
-			l = &links[i];
+	for (int i = 0; i < MAX_LINKS && slot < 0; i++)
+		if (!link_at(i))
+			slot = i;
+	if (slot < 0)
+		return;
+	if (!links[slot])
+		links[slot] = Mem_Alloc(sizeof(link_t));
+	l = links[slot];
 	memcpy(name, d + 6, 16);
 	name[16] = 0;
 	for (char *s = name; *s; s++)
@@ -570,7 +588,7 @@ static void handle_join(const struct sockaddr_in *from, const uint8_t *d, int le
 	l->from = *from;
 	l->session = session;
 	l->lastrecv = Sys_Seconds();
-	c = SV_SpawnLinkClient(name, (int)(l - links) + 1);
+	c = SV_SpawnLinkClient(name, slot + 1);
 	if (!c) {
 		l->used = false;
 		refuse(from, "the server is full");
@@ -1660,27 +1678,32 @@ static int build_touches(const lbrush_t *br, int nbr, ltouch_t *out)
 /* angles the game sets itself, with no avelocity (c1a1c's e810 rolls each frame from its
  * think): a brush whose angles changed in the last half second is turning */
 #define TURN_EDICTS 4096
-static struct {
+typedef struct {
 	int spawncount;
 	float ang[TURN_EDICTS][3];
 	double t[TURN_EDICTS];
-} turn;
+} turn_t;
+static turn_t *turn_state; /* made when a link device first needs it */
 
 static bool turned_lately(int e)
 {
 	const float *a = ent_angles(e);
 	double now = Sys_Seconds();
-	if (turn.spawncount != svs.spawncount) {
-		memset(&turn, 0, sizeof(turn));
-		turn.spawncount = svs.spawncount;
+	turn_t *t;
+	if (!turn_state)
+		turn_state = Mem_Alloc(sizeof(turn_t));
+	t = turn_state;
+	if (t->spawncount != svs.spawncount) {
+		memset(t, 0, sizeof(*t));
+		t->spawncount = svs.spawncount;
 	}
 	if (e < 0 || e >= TURN_EDICTS)
 		return false;
-	if (memcmp(turn.ang[e], a, sizeof(turn.ang[e]))) {
-		memcpy(turn.ang[e], a, sizeof(turn.ang[e]));
-		turn.t[e] = now;
+	if (memcmp(t->ang[e], a, sizeof(t->ang[e]))) {
+		memcpy(t->ang[e], a, sizeof(t->ang[e]));
+		t->t[e] = now;
 	}
-	return now - turn.t[e] < 0.5;
+	return now - t->t[e] < 0.5;
 }
 
 static bool at_rest(int e)
@@ -2227,7 +2250,7 @@ static void update_winfo(link_t *l, int e, double now)
 	w_build(&p, w, fiammo, l->sndcap);
 	if (l->sndcap && p.len > (int)sizeof(l->wibody)) { /* the muzzle flashes are kept, the sounds go */
 		if (sv_link_log->ivalue)
-			Con_Printf("LINKSND %d: WEAPONINFO of %d is %d bytes with its sounds: sent without\n", (int)(l - links), w, p.len);
+			Con_Printf("LINKSND %d: WEAPONINFO of %d is %d bytes with its sounds: sent without\n", link_slot(l), w, p.len);
 		p.len = 0;
 		w_build(&p, w, fiammo, false);
 	}
@@ -2386,10 +2409,12 @@ static float box_gap2(const float *amin, const float *amax, const float *bmin, c
  * origin + maxs; the nearest max within BOX_RANGE, by edict */
 static int collect_boxes(int self, lbox_t *out, int max)
 {
-	static lbox_t cand[MAX_EDICTS_LINK];
+	static lbox_t *cand; /* MAX_EDICTS_LINK, made on first use */
 	float pmin[3], pmax[3];
 	const float *po = fvec(self, F.origin), *pmn = fvec(self, F.mins), *pmx = fvec(self, F.maxs);
 	int n = 0, mask = move_mask(self);
+	if (!cand)
+		cand = Mem_Alloc(sizeof(lbox_t) * MAX_EDICTS_LINK);
 	for (int k = 0; k < 3; k++)
 		pmin[k] = po[k] + pmn[k], pmax[k] = po[k] + pmx[k];
 	for (int e = 1; e < sv.vm->num_edicts && n < MAX_EDICTS_LINK; e++) {
@@ -2602,7 +2627,7 @@ static void log_before(link_t *l, int e, strbuf_t *sb)
 	static lbrush_t now[MAX_LBRUSH];
 	static lbox_t boxes[MAX_LOGBOXES];
 	float v[2 * PMV_COUNT];
-	int slot = (int)(l - links), n, moved = 0;
+	int slot = link_slot(l), n, moved = 0;
 	lstate_t s;
 	if (!l->logon) {
 		l->logon = true;
@@ -2703,7 +2728,7 @@ static void log_before(link_t *l, int e, strbuf_t *sb)
 static void log_wstate(link_t *l, int e, const char *what, float land, strbuf_t *sb)
 {
 	lwstate_t s;
-	int slot = (int)(l - links);
+	int slot = link_slot(l);
 	w_fields();
 	if (l->wiver && l->wiver != l->wilogver) {
 		SB_Printf(sb, "LINKPM %d winfo %u %u ", slot, l->wiedict, l->wiver);
@@ -3018,7 +3043,7 @@ static void input_v2(link_t *l, const uint8_t *d, int len)
 		if (log) {
 			const usercmd_t *r = &c->lastucmd;
 			lstate_t st;
-			int slot = (int)(l - links);
+			int slot = link_slot(l);
 			SB_Printf(&sb, "LINKPM %d cmd %u %d %d %d %d %d %d %u %d %a %d", slot, s, k[0], pitch, yaw,
 			          (int)r->movevalues[0], (int)r->movevalues[1], (int)r->movevalues[2], r->buttons, k[13],
 			          (double)r->msec, r->impulse);
@@ -3055,9 +3080,9 @@ void SV_LinkSend(void)
 	flush_lagout();
 	snd_impacts(); /* the impact sounds the game's multicasts brought (C4) */
 	for (int i = 0; i < MAX_LINKS; i++) {
-		link_t *l = &links[i];
+		link_t *l = link_at(i);
 		bool view;
-		if (!l->used || !l->client)
+		if (!l || !l->client)
 			continue;
 		/* the load grace covers one quiet spell: a device that is never heard
 		 * from again goes after LOAD_GRACE even if the map keeps changing */
@@ -3665,8 +3690,8 @@ static link_t *link_of(const client_t *c)
 	link_t *l;
 	if (!c || c->link <= 0 || c->link > MAX_LINKS)
 		return NULL;
-	l = &links[c->link - 1];
-	return l->used && l->client == c ? l : NULL;
+	l = link_at(c->link - 1);
+	return l && l->client == c ? l : NULL;
 }
 
 /* the link's text state for one map: FTE starts the PC's CSQC again on a level change,
@@ -4525,7 +4550,7 @@ static int snd_unqueue(link_t *l, int ent, int chan, bool cs)
 		if (l->sndq[i].ent == ent && l->sndq[i].chan == chan && !(l->sndq[i].lflags & SL_CLIENTSIDE) == !cs) {
 			n++;
 			if (sv_link_log->ivalue)
-				Con_Printf("LINKSNDGONE %d %u overtaken\n", (int)(l - links), (unsigned)l->sndq[i].seq);
+				Con_Printf("LINKSNDGONE %d %u overtaken\n", link_slot(l), (unsigned)l->sndq[i].seq);
 		} else
 			l->sndq[k++] = l->sndq[i];
 	l->sndn = k, k = 0;
@@ -4614,11 +4639,11 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 			l->sndsameframe++;
 			if (r.sflags & SF_NOREPLACE) {
 				if (sv_link_log->ivalue)
-					Con_Printf("LINKSNDSAME %d %s %s %d %d %d\n", (int)(l - links), snd_paths[path], name, r.ent, r.chan, cs ? 8 : 0);
+					Con_Printf("LINKSNDSAME %d %s %s %d %d %d\n", link_slot(l), snd_paths[path], name, r.ent, r.chan, cs ? 8 : 0);
 				return;
 			}
 			if (sv_link_log->ivalue)
-				Con_Printf("LINKSNDGONE %d %u sameframe\n", (int)(l - links), (unsigned)q->seq);
+				Con_Printf("LINKSNDGONE %d %u sameframe\n", link_slot(l), (unsigned)q->seq);
 			memmove(q, q + 1, (size_t)(l->sndn - i - 1) * sizeof(*q));
 			l->sndn--;
 			break;
@@ -4629,7 +4654,7 @@ static void snd_record(link_t *l, int path, const char *name, int ent, int chan,
 		char at_s[16] = "";
 		if (hasat)
 			snprintf(at_s, sizeof(at_s), " %u", (unsigned)(uint16_t)r.at);
-		Con_Printf("LINKSND %d %u %s %s %d %d %d %d %d %d %d %d %d%s\n", (int)(l - links), rel ? 0u : (unsigned)(uint16_t)(l->sndseq + 1),
+		Con_Printf("LINKSND %d %u %s %s %d %d %d %d %d %d %d %d %d%s\n", link_slot(l), rel ? 0u : (unsigned)(uint16_t)(l->sndseq + 1),
 		           snd_paths[path], name, r.ent, r.chan, r.vol, r.atten, r.pitch, r.sflags | (r.lflags << 8), r.org[0],
 		           r.org[1], r.org[2], at_s);
 	}
@@ -4674,7 +4699,7 @@ void SV_LinkSoundLog(int e, int chan, int idx)
 	if (!sv_link_log || !sv_link_log->ivalue || idx <= 0 || idx >= sv.numsounds)
 		return;
 	for (int i = 0; i < MAX_LINKS && !any; i++)
-		any = links[i].used && snd_ready(&links[i]);
+		any = link_at(i) && snd_ready(links[i]);
 	if (any)
 		Con_Printf("SVSND %d %s %d %d\n", idx, sv.sounds[idx], e, chan);
 }
@@ -4770,7 +4795,7 @@ typedef struct {
 static struct {
 	int spawncount;
 	const qcvm_t *vm;
-	sdef_t d[SDEF_CACHE];
+	sdef_t *d; /* SDEF_CACHE of them, made when a link device first needs one */
 	int n, next;
 } sdefs;
 
@@ -4965,6 +4990,8 @@ static const sdef_t *sdef_find(const char *name)
 		return NULL;
 	if (sdefs.spawncount != svs.spawncount || sdefs.vm != sv.vm)
 		sdefs.spawncount = svs.spawncount, sdefs.vm = sv.vm, sdefs.n = sdefs.next = 0;
+	if (!sdefs.d)
+		sdefs.d = Mem_Alloc(sizeof(sdef_t) * SDEF_CACHE);
 	for (int i = 0; i < sdefs.n; i++)
 		if (!strcmp(sdefs.d[i].name, name))
 			return sdefs.d[i].ok ? &sdefs.d[i] : NULL;
@@ -5280,7 +5307,7 @@ static void ev_sentence(link_t *l, int ent, int id)
 		b[o++] = (uint8_t)k, b[o++] = (uint8_t)(k >> 8), b[o++] = (uint8_t)(k >> 16), b[o++] = (uint8_t)(k >> 24);
 		nw++;
 		if (sv_link_log->ivalue)
-			Con_Printf("LINKSND %d 0 sent %s %d %d 255 %d 100 %d 0 0 0\n", (int)(l - links), word, ent, CHAN_VOICE,
+			Con_Printf("LINKSND %d 0 sent %s %d %d 255 %d 100 %d 0 0 0\n", link_slot(l), word, ent, CHAN_VOICE,
 			           (int)BW_CLAMP(atten * 64, 0, 255), SF_FOLLOW | (SL_CLIENTSIDE << 8));
 	}
 	b[0] = (uint8_t)(ent & 0xff), b[1] = (uint8_t)(ent >> 8);
@@ -5300,7 +5327,7 @@ static void ev_music(link_t *l, int op, const char *name)
 	memcpy(b + 1, name, (size_t)n);
 	l->sndmade++, l->sndbypath[SP_MUSIC]++;
 	if (sv_link_log->ivalue)
-		Con_Printf("LINKSND %d 0 music %s op %d\n", (int)(l - links), n ? name : "-", op);
+		Con_Printf("LINKSND %d 0 music %s op %d\n", link_slot(l), n ? name : "-", op);
 	ev_put(l, LE_MUSIC, b, n + 1);
 }
 
@@ -5689,7 +5716,7 @@ static void wsnd_log(link_t *l, int ver)
 	if (!sv_link_log->ivalue || !wtab_built)
 		return;
 	for (int i = 0; i < wtab.n; i++)
-		Con_Printf("LINKSND %d 0 vm %s - %d %d %d %d-%d %d n=%d dist=%d off=%d (%s) version %d\n", (int)(l - links),
+		Con_Printf("LINKSND %d 0 vm %s - %d %d %d %d-%d %d n=%d dist=%d off=%d (%s) version %d\n", link_slot(l),
 		           wtab.s[i].first, wtab.s[i].chan, wtab.s[i].vol, wtab.s[i].atten, wtab.s[i].pmin, wtab.s[i].pmax,
 		           wtab.s[i].flags, wtab.s[i].nsamp, wtab.s[i].dist == 0xff ? -1 : wtab.s[i].dist, wtab.s[i].off,
 		           wtab.s[i].id, ver);
@@ -5903,7 +5930,7 @@ static void update_ambient(link_t *l)
 				had = l->amb[j].ent == set[i].ent && l->amb[j].key == set[i].key;
 			if (!had) {
 				int idx = (set[i].flags & 128) ? (int)qnum(set[i].ent, ns_idx) : 0;
-				Con_Printf("LINKSND %d 0 amb %s %d 4 %d %d %d %d %d %d %d\n", (int)(l - links),
+				Con_Printf("LINKSND %d 0 amb %s %d 4 %d %d %d %d %d %d %d\n", link_slot(l),
 				           idx > 0 && idx < sv.numsounds ? sv.sounds[idx] : qstr(set[i].ent, ag_path), set[i].ent,
 				           set[i].vol, set[i].atten, set[i].pitch, set[i].flags | (SL_CLIENTSIDE << 8), set[i].org[0],
 				           set[i].org[1], set[i].org[2]);
@@ -5955,15 +5982,16 @@ void SV_LinkClientDropped(client_t *c, const char *reason)
 	pkt_t p;
 	if (c->link <= 0 || c->link > MAX_LINKS)
 		return;
-	l = &links[c->link - 1];
-	if (l->used) {
+	l = links[c->link - 1];
+	if (l && l->used) {
 		p_begin(&p, L_KICK);
 		p_u32(&p, l->session);
 		p_str(&p, reason ? reason : "", 64);
 		send_to(&l->from, &p);
 		Con_Printf("link: %s left\n", c->name);
 	}
-	memset(l, 0, sizeof(*l));
+	if (l)
+		memset(l, 0, sizeof(*l));
 	c->link = 0;
 	c->linkcmds = false;
 }
@@ -6048,9 +6076,9 @@ static void SV_LinkTeleport_f(int argc, const char **argv)
 		return;
 	}
 	for (int i = 0; i < MAX_LINKS; i++) {
-		link_t *l = &links[i];
+		link_t *l = link_at(i);
 		int e;
-		if (!l->used || !l->client || (argc > 5 && Str_ICmp(argv[5], l->client->name)))
+		if (!l || !l->client || (argc > 5 && Str_ICmp(argv[5], l->client->name)))
 			continue;
 		e = l->client->edict;
 		for (int c = 0; c < 3; c++)
@@ -6079,9 +6107,9 @@ static void SV_LinkGod_f(int argc, const char **argv)
 		return;
 	}
 	for (int i = 0; i < MAX_LINKS; i++)
-		if (links[i].used && links[i].client) {
-			QC_EdictFields(sv.vm, links[i].client->edict)[td].f = on ? 0 : 2;
-			Con_Printf("link: %s %s\n", links[i].client->name, on ? "takes no damage" : "takes damage");
+		if (link_at(i) && links[i]->client) {
+			QC_EdictFields(sv.vm, links[i]->client->edict)[td].f = on ? 0 : 2;
+			Con_Printf("link: %s %s\n", links[i]->client->name, on ? "takes no damage" : "takes damage");
 		}
 }
 
@@ -6090,9 +6118,9 @@ static void SV_LinkStats_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
 	for (int i = 0; i < MAX_LINKS; i++) {
-		const link_t *l = &links[i];
+		const link_t *l = link_at(i);
 		const float *o;
-		if (!l->used || !l->client || !sv.active || F.origin < 0)
+		if (!l || !l->client || !sv.active || F.origin < 0)
 			continue;
 		o = &QC_EdictFields(sv.vm, l->client->edict)[F.origin].f;
 		Con_Printf("link %s map %s at %.0f %.0f %.0f eye %+.0f mins %.0f fps %d min %d polys %d load %d ms\n",
