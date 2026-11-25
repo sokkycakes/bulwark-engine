@@ -131,10 +131,55 @@ With `--tunnel`, plain UDP game traffic goes over Steam on channel 2:
   NAME "Stiletto Proto"
   GAMEDIR base
   GAMEDIR stbuilt
+  GAMEDIR local
   ```
+
+  The last directory (`local`, with an empty `fte.cfg` in it) takes
+  FTEQW's config and downloads. Without it FTEQW writes `fte.cfg` into
+  `base/`, and Bulwark then runs that file.
 
 Set reports and fighter cards need the engine's Live client, so a game on
 stock FTEQW plays matches found on Steam but keeps no records.
+
+## Testing with Spacewar
+
+You need two Steam accounts, each logged in to Steam on its own computer
+(Steam allows one account per computer). Make sure both accounts are friends
+if you want to test invites. Spacewar (480) needs no install and no store
+page.
+
+1. Build the bridge: `cargo build --release --manifest-path
+   services/live/Cargo.toml`. This gives you `bwlive-steam`.
+2. Get the Steam API library from the Steamworks SDK (`redistributable_bin/`).
+   On Linux it is `linux64/libsteam_api.so`, on Windows `win64/steam_api64.dll`.
+3. On each computer, with Steam running, start the bridge:
+   `bwlive-steam --steam-lib path/to/libsteam_api.so --game stiletto`.
+   It should print `on Steam as <persona> (account N), app 480`. Steam then
+   shows you as playing Spacewar.
+4. Pick how to play:
+   - **Stiletto on Bulwark.** Start the game with `+live_connect 127.0.0.1`,
+     or run `live_connect 127.0.0.1` in the console, then use Find Match in
+     the menus or `live_queue duel`. The host loads `duel_alley`, the other
+     player follows, the set is reported, and both records and fighter cards
+     update. Records are saved to Steam Cloud and the
+     `bwlive_stiletto_sets` leaderboard.
+   - **Stiletto on stock FTEQW.** Put the manifest above in FTEQW's basedir
+     and start the bridge with the tunnel and hooks, for example:
+     `bwlive-steam --steam-lib ... --game stiletto --tunnel --on-match-host
+     'fteqw $BW_SETTINGS +map $BW_MAP' --on-match-join 'fteqw +connect
+     $BW_CONNECT'`. Type `queue duel` into the bridge on both computers.
+     Alternatively, start FTEQW yourself and `connect 127.0.0.1:27960` once
+     the bridge prints `connect 127.0.0.1:27960 to play`.
+5. Parties: type `party 2 1` into one bridge (or use the game's party
+   menu). It prints a room code, which the other player joins with
+   `join <code>`. Or send an invite with `invite <account id>`, which also
+   shows up as a Steam invite.
+6. Use `status` in a bridge at any time to see the party, the queue, the
+   match and its seats.
+
+If it doesn't pair, check that both bridges use the same `--game`, the same
+playlists and the same app id. Lobby search on Steam is filtered by
+distance: duel's first stages only look nearby, and later stages widen.
 
 ## How it was checked
 
