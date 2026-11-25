@@ -541,6 +541,12 @@ nothing if a title or lobby page is already up. [INF]
   Lobby discovery MUST NOT advertise it. [INF]
   [PROPOSED] Do not open it to the network at all.
 - The arena and pause routes MUST NOT load the backdrop. [SRC]
+- The backdrop's `set g_gametype singleplayer`/`coop 1` would otherwise carry into the
+  next `map` typed at the console. The game hands them back: Nuclide's server resets
+  `g_gametype ""` and `coop 0` when it consumes `sv_background`. [SRC: `entry.qc`]
+- The arena route closes on a level change (`cl.spawncount` changes, or the client
+  leaves the game); an arena mode on the new level opens it again. Left open, it sat
+  over the next mode and took its input. [SRC]
 - The test harness disables it with `set webcore_menumap ""`. [SRC]
 - [UNCERTAIN] Whether the backdrop keeps running while the lobby page is shown.
   The lobby is "mapless" meaning no gameplay server or listen server. A purely local
