@@ -327,11 +327,53 @@ static void run(page_t *p, const char *command)
 		Cbuf_AddText(va("%s\n", command));
 }
 
-/* the keys bound to a command, as "K, MOUSE1", or "" */
+#ifdef BW_UI_NATIVE
+/* the pad's buttons as the player knows them, the order the list shows
+ * them in. On the Xbox the shoulders are the White and Black buttons
+ * (vid_xbox.c). */
+static const struct {
+	int key;
+	const char *name;
+} pad_names[] = {
+#ifdef BW_XBOX
+	{K_GP_A, "A"}, {K_GP_B, "B"}, {K_GP_X, "X"}, {K_GP_Y, "Y"},
+	{K_GP_RTRIGGER, "Right trigger"}, {K_GP_LTRIGGER, "Left trigger"},
+	{K_GP_LSHOULDER, "White"}, {K_GP_RSHOULDER, "Black"},
+#else
+	/* beside keyboard keys, where a bare "A" would be the A key */
+	{K_GP_A, "Pad A"}, {K_GP_B, "Pad B"}, {K_GP_X, "Pad X"}, {K_GP_Y, "Pad Y"},
+	{K_GP_RTRIGGER, "Right trigger"}, {K_GP_LTRIGGER, "Left trigger"},
+	{K_GP_LSHOULDER, "Left bumper"}, {K_GP_RSHOULDER, "Right bumper"},
+#endif
+	{K_GP_LTHUMB, "Left stick click"}, {K_GP_RTHUMB, "Right stick click"},
+	{K_GP_DPAD_UP, "D-pad up"}, {K_GP_DPAD_DOWN, "D-pad down"}, {K_GP_DPAD_LEFT, "D-pad left"},
+	{K_GP_DPAD_RIGHT, "D-pad right"}, {K_GP_MENU, "Start"}, {K_GP_VIEW, "Back"},
+};
+#endif
+
+/* the keys bound to a command, as "K, MOUSE1", or "". With the native UI
+ * the pad's buttons come first under their own names; the Xbox, which has
+ * only pads, lists nothing else. */
 static void keys_for(const char *command, char *out, size_t size)
 {
 	out[0] = 0;
+#ifdef BW_UI_NATIVE
+	for (size_t i = 0; i < BW_ARRAY_COUNT(pad_names); i++) {
+		const char *b = Key_GetBinding(pad_names[i].key);
+		if (b && *b && !Str_ICmp(b, command)) {
+			size_t n = strlen(out);
+			snprintf(out + n, size - n, "%s%s", n ? ", " : "", pad_names[i].name);
+		}
+	}
+#ifdef BW_XBOX
+	return;
+#endif
+#endif
 	for (int k = 0; k < K_MAX; k++) {
+#ifdef BW_UI_NATIVE
+		if (k >= K_GP_DPAD_UP && k <= K_GP_RTRIGGER)
+			continue; /* named above */
+#endif
 		const char *b = Key_GetBinding(k);
 		if (b && *b && !Str_ICmp(b, command)) {
 			size_t n = strlen(out);
@@ -429,7 +471,11 @@ static void value_text(const item_t *it, char *out, size_t size)
 	case IT_BIND:
 		keys_for(it->command, out, size);
 		if (!out[0])
+#ifdef BW_UI_NATIVE
+			Str_Copy(out, "-", size); /* a player-facing "not bound" */
+#else
 			Str_Copy(out, "???", size);
+#endif
 		break;
 	case IT_SLIDER:
 		snprintf(out, size, "%g", atof(get_value(it->cvar, buf, sizeof(buf))));
