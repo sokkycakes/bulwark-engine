@@ -41,7 +41,8 @@ function(bulwark_xbox_executable)
 		${BW_XBOX_DIR}/sys_xbox.c
 		${BW_XBOX_DIR}/vid_xbox.c
 		${BW_XBOX_DIR}/gl_xbox.c
-		${BW_XBOX_DIR}/snd_xbox.c)
+		${BW_XBOX_DIR}/snd_xbox.c
+		${BW_XBOX_DIR}/dxt_xbox.c)
 	target_link_libraries(bulwark bwclient bwxboxposix ${BW_XBOX_LIBS})
 	# the main thread's stack (nxdk's default is 64 KB; the engine keeps
 	# several 8 KB buffers on it) and D: mounted on the XBE's folder
