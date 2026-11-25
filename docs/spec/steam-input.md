@@ -150,6 +150,30 @@ the command is bound to and the pad's set.
 | `in_steaminput_status` | how the game was started, Steam Input's state, the manifest and controllers |
 | `steaminput_bindings` | opens Steam's binding panel (needs the overlay) |
 | `joy_virtual_dev <vid> <pid> [name]` | a pretend controller that claims to be that device, for tests |
+| `joy_rumble 1` | vibration strength, 0 (off) to 1; scales `gp_rumble` and trigger rumble |
+| `in_paddefaults` | bind the controller buttons to the default layout again (below) |
+
+## Default layout and the Controller page
+
+When a controller arrives and no controller button (`GP_*`) is bound, the
+engine binds a layout: the game's own `pad_defaults.cfg` if it ships one
+(only its `bind <key> <command>` lines are read, and they apply at once, so
+a config still queued can't be overwritten by them), otherwise a built-in
+console-shooter layout. `in_paddefaults` applies the same layout on demand,
+whatever is bound.
+
+Options > Controller (`menu_controller`) holds the stick tuning (`joy_enable`,
+`joy_yawspeed`, `joy_pitchspeed`, `joy_invert`, `joy_deadzone`, `joy_curve`
+as "Look acceleration", `joy_movescale`), `joy_rumble`, and a "Controller
+layout" list of every bound controller button with its command. The buttons
+themselves are binds, changed on the Keys page.
+
+The Keys page (`menu_keys`) lists the game's own actions: the first of
+`bindlist.lst`, `scripts/kb_act.lst` and `gfx/shell/kb_act.lst` with any rows.
+One row a line: `"command" "description"` (anything after is ignored); a
+`blank "TITLE"` or `- "TITLE"` line, or a quoted title alone, is a section
+heading. A game without any of these gets a short list of common actions.
+Unbound rows say "not bound".
 
 ## Tests
 

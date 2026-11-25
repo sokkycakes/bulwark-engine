@@ -408,7 +408,7 @@ static void value_text(const item_t *it, char *out, size_t size)
 	case IT_BIND:
 		keys_for(it->command, out, size);
 		if (!out[0])
-			Str_Copy(out, "???", size);
+			Str_Copy(out, "not bound", size);
 		break;
 	case IT_SLIDER:
 		snprintf(out, size, "%g", atof(get_value(it->cvar, buf, sizeof(buf))));
@@ -877,6 +877,7 @@ static void pg_options(page_t *p)
 	add_combo(p, "Mouse look", "m_pitch", "Normal", "0.022", "Inverted", "-0.022", NULL);
 	add_check(p, "Smooth the mouse", "m_filter");
 	add_check(p, "Always run", "cl_run");
+	add_cmd(p, "Controller...", "menu_controller");
 	add_header(p, "Screen");
 	add_slider(p, "Field of view", "fov", 70, 130, 5);
 	add_combo(p, "Crosshair", "crosshair", "Off", "0", "1", "1", "2", "2", "3", "3", "4", "4", "5", "5", NULL);
@@ -886,19 +887,80 @@ static void pg_options(page_t *p)
 	add_cmd(p, "Reset everything to defaults", "cfg_reset");
 }
 
+/* the game's own list of actions to bind, in the format Quake-engine games
+ * ship: one action a line, "command" "description" [tooltip], with a
+ * "blank" or "-" command (or a lone description) for a section heading.
+ * FTE's bindlist.lst comes first, then the kb_act.lst a Half-Life style
+ * game keeps in scripts/ or gfx/shell/. Returns the rows it added. */
+static int keys_from_list(page_t *p)
+{
+	static const char *const files[] = {"bindlist.lst", "scripts/kb_act.lst", "gfx/shell/kb_act.lst"};
+	for (size_t f = 0; f < BW_ARRAY_COUNT(files); f++) {
+		char *text = FS_LoadFile(files[f], NULL);
+		int rows = 0;
+		if (!text)
+			continue;
+		for (char *line = text; line && *line;) {
+			char *end = strchr(line, '\n'), tok[3][128];
+			int n = 0;
+			if (end)
+				*end = 0;
+			for (const char *d = line; n < 3 && (d = COM_Parse(d, tok[n], sizeof(tok[n]))); n++)
+				;
+			if (n == 1 && line[strspn(line, " \t")] == '"') /* a heading on its own */
+				add_header(p, tok[0]), rows++;
+			else if (n >= 1 && (!strcmp(tok[0], "blank") || !strcmp(tok[0], "-")))
+				add_header(p, n > 1 ? tok[1] : ""), rows++;
+			else if (n >= 1)
+				add_bind(p, n > 1 ? tok[1] : tok[0], tok[0]), rows++;
+			line = end ? end + 1 : NULL;
+		}
+		Mem_Free(text);
+		if (rows)
+			return rows;
+		free_items(p);
+	}
+	return 0;
+}
+
 static void pg_keys(page_t *p)
 {
+	/* a game without a list of its own gets the common Quake-engine actions */
 	static const char *const binds[][2] = {
 		{"Attack", "+attack"}, {"Secondary attack", "+attack2"}, {"Reload", "+reload"}, {"Use", "+use"},
 		{"Jump", "+jump"}, {"Crouch", "+duck"}, {"Forward", "+forward"}, {"Back", "+back"},
-		{"Step left", "+moveleft"}, {"Step right", "+moveright"}, {"Walk", "+speed"}, {"Next weapon", "invnext"},
-		{"Previous weapon", "invprev"}, {"Last weapon", "lastinv"}, {"Flashlight", "impulse 100"},
-		{"Spray", "impulse 201"}, {"Scores", "+showscores"}, {"Chat", "messagemode"}, {"Team chat", "messagemode2"},
-		{"Voice chat", "+voip"}, {"Screenshot", "screenshot"}, {"Console", "toggleconsole"}, {"Quick save", "quicksave"},
-		{"Quick load", "quickload"}};
-	for (size_t i = 0; i < BW_ARRAY_COUNT(binds); i++)
-		add_bind(p, binds[i][0], binds[i][1]);
-	Str_Copy(p->footer, "Enter, then the key. Esc/Back cancels, Backspace clears", sizeof(p->footer));
+		{"Step left", "+moveleft"}, {"Step right", "+moveright"}, {"Next weapon", "weapnext"},
+		{"Previous weapon", "weapprev"}, {"Spray", "impulse 201"}, {"Scores", "+showscores"}, {"Chat", "messagemode"},
+		{"Team chat", "messagemode2"}, {"Voice chat", "+voip"}, {"Screenshot", "screenshot"},
+		{"Console", "toggleconsole"}};
+	if (!keys_from_list(p))
+		for (size_t i = 0; i < BW_ARRAY_COUNT(binds); i++)
+			add_bind(p, binds[i][0], binds[i][1]);
+	Str_Copy(p->footer, "Enter/A, then the key or button. Esc/Back cancels, Backspace clears", sizeof(p->footer));
+}
+
+/* the sticks' tuning (cl_input.c) and vibration (vid_sdl.c); the buttons
+ * are ordinary binds, set on the Keys page */
+static void pg_controller(page_t *p)
+{
+	add_check(p, "Use the sticks", "joy_enable");
+	add_slider(p, "Turn speed", "joy_yawspeed", 60, 600, 20);
+	add_slider(p, "Look up and down speed", "joy_pitchspeed", 40, 400, 20);
+	add_check(p, "Invert look", "joy_invert");
+	add_slider(p, "Dead zone", "joy_deadzone", 0, 0.5f, 0.02f);
+	add_combo(p, "Look acceleration", "joy_curve", "None (linear)", "1", "Low", "1.5", "Normal", "2", "High", "3", NULL);
+	add_slider(p, "Movement scale", "joy_movescale", 0.2f, 1, 0.05f);
+	add_slider(p, "Vibration", "joy_rumble", 0, 1, 0.1f);
+	add_header(p, "Controller layout");
+	for (int k = K_GP_DPAD_UP; k <= K_GP_LAST; k++) {
+		const char *b = Key_GetBinding(k);
+		if (b && *b)
+			add_text(p, va("  %-14s %s", Key_NameForNum(k), b));
+	}
+	add_text(p, "Change a button on the Keys page: A on a row, then the button.");
+	add_cmd(p, "Keys and buttons...", "menu_keys");
+	add_cmd(p, "Restore the default controller layout", "in_paddefaults");
+	Str_Copy(p->footer, "Left/right change a setting. B goes back", sizeof(p->footer));
 }
 
 static void pg_video(page_t *p)
@@ -1225,6 +1287,7 @@ static const struct {
 	{"menu_network", "Network", pg_network, 0, NULL},
 	{"menu_options", "Options", pg_options, 0, NULL},
 	{"menu_keys", "Keys", pg_keys, 0, NULL},
+	{"menu_controller", "Controller", pg_controller, 1, NULL}, /* refreshes: the layout follows binds */
 	{"menu_video", "Video", pg_video, 0, NULL},
 	{"menu_render", "Rendering", pg_render, 0, NULL},
 	{"menu_textures", "Textures", pg_textures, 0, NULL},

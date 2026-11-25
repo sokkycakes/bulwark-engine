@@ -5,6 +5,7 @@
 #include "keys.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/fs.h"
 #include "../ui/ui.h"
 #include "../render/render.h"
 
@@ -690,13 +691,45 @@ static const struct {
 	{K_GP_DPAD_DOWN, "slot3"}, {K_GP_DPAD_LEFT, "slot4"},
 };
 
-void IN_ControllerAdded(int dev)
+/* the game's own layout (a pad_defaults.cfg of bind lines) wins over the
+ * one above, so a game whose actions aren't Quake's gets its own */
+static void apply_pad_defaults(void)
 {
-	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
-		if (bindings[pad_defaults[i].key])
-			return;
+	char *text = FS_LoadFile("pad_defaults.cfg", NULL);
+	if (text) {
+		/* applied here and now rather than through the command buffer, so
+		 * it can't land after (and over) a config that is still queued */
+		for (char *line = text; line && *line;) {
+			char *end = strchr(line, '\n'), tok[3][256];
+			int n = 0, key;
+			if (end)
+				*end = 0;
+			for (const char *d = line; n < 3 && (d = COM_Parse(d, tok[n], sizeof(tok[n]))); n++)
+				;
+			if (n == 3 && !Str_ICmp(tok[0], "bind") && (key = Key_NumForName(tok[1])) >= 0)
+				Key_SetBinding(key, tok[2]);
+			line = end ? end + 1 : NULL;
+		}
+		Mem_Free(text);
+		return;
+	}
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
 		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
+}
+
+/* in_paddefaults: put the controller layout back, whatever is bound now */
+static void InPadDefaults_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	apply_pad_defaults();
+}
+
+void IN_ControllerAdded(int dev)
+{
+	for (int k = K_GP_DPAD_UP; k <= K_GP_LAST; k++)
+		if (bindings[k] && bindings[k][0])
+			return;
+	apply_pad_defaults();
 }
 
 void IN_ControllerRemoved(int dev)
@@ -911,6 +944,7 @@ void IN_Init(void)
 	Cmd_Add("bind", Bind_f);
 	Cmd_Add("unbind", Unbind_f);
 	Cmd_Add("unbindall", Unbindall_f);
+	Cmd_AddD("in_paddefaults", InPadDefaults_f, "Bind the controller's buttons to the game's layout (pad_defaults.cfg) or the engine's");
 	Cmd_Add("bindlist", Bindlist_f);
 	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");
 	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
