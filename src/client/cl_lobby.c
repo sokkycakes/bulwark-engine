@@ -564,15 +564,16 @@ static bool ruleset_runs(const char *id)
 	return true;
 }
 
-/* the map a ruleset starts on: its own, else lobby_defaultmap, else the first listed */
+/* the map a ruleset starts on: lobby_defaultmap when set, else the ruleset's
+ * own, else the first listed (docs/spec/lobby.md) */
 static const char *ruleset_map(const char *id)
 {
 	const lobbyruleset_t *r = find_ruleset(id);
 	load_catalog();
-	if (r && r->map[0] && map_present(r->map))
-		return r->map;
 	if (*lobby_defaultmap->string)
 		return lobby_defaultmap->string;
+	if (r && r->map[0] && map_present(r->map))
+		return r->map;
 	return cat.nummaps ? cat.maps[0].id : "start";
 }
 
