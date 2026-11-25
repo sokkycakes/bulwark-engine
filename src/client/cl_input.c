@@ -62,7 +62,32 @@ static const keyname_t keynames[] = {
 	{"GP_START", K_GP_MENU}, {"GP_BACK", K_GP_VIEW}, {"GP_MENU", K_GP_MENU}, {"GP_VIEW", K_GP_VIEW},
 	{"GP_LTHUMB", K_GP_LTHUMB}, {"GP_RTHUMB", K_GP_RTHUMB}, {"GP_DPAD_UP", K_GP_DPAD_UP},
 	{"GP_DPAD_DOWN", K_GP_DPAD_DOWN}, {"GP_DPAD_LEFT", K_GP_DPAD_LEFT}, {"GP_DPAD_RIGHT", K_GP_DPAD_RIGHT},
+	{"GP_L4", K_GP_L4}, {"GP_L5", K_GP_L5}, {"GP_R4", K_GP_R4}, {"GP_R5", K_GP_R5},
+	{"GP_TOUCHPAD", K_GP_TOUCHPAD}, {"GP_MISC1", K_GP_MISC1},
 	{NULL, 0}};
+
+/* SI_<action>: the Steam Input digital actions' keys, named when the action
+ * manifest loads (in_steam.c) */
+static char *si_keynames[K_SI_LAST - K_SI_FIRST + 1];
+
+void Key_SetSteamActionName(int key, const char *action)
+{
+	char buf[80];
+	if (key < K_SI_FIRST || key > K_SI_LAST)
+		return;
+	Mem_Free(si_keynames[key - K_SI_FIRST]);
+	si_keynames[key - K_SI_FIRST] = NULL;
+	if (action && *action) {
+		snprintf(buf, sizeof(buf), "SI_%s", action);
+		for (char *c = buf; *c; c++)
+			*c = (char)(*c >= 'a' && *c <= 'z' ? *c - 'a' + 'A' : *c);
+		si_keynames[key - K_SI_FIRST] = Mem_Strdup(buf);
+	}
+}
+
+bool (*IN_PadGlyph)(const char *what, int dev, char *path, size_t pathsize, char *label, size_t labelsize);
+
+bool Key_IsPad(int key) { return (key >= K_JOY1 && key <= K_GP_LAST) || (key >= K_SI_FIRST && key <= K_SI_LAST); }
 
 int Key_NumForName(const char *name)
 {
@@ -75,6 +100,9 @@ int Key_NumForName(const char *name)
 	for (const keyname_t *k = keynames; k->name; k++)
 		if (!Str_ICmp(k->name, name))
 			return k->key;
+	for (int i = 0; i <= K_SI_LAST - K_SI_FIRST; i++)
+		if (si_keynames[i] && !Str_ICmp(si_keynames[i], name))
+			return K_SI_FIRST + i;
 	if (!Str_NICmp(name, "K_", 2))
 		return Key_NumForName(name + 2);
 	if (name[0] == '#')
@@ -93,6 +121,8 @@ const char *Key_NameForNum(int key)
 	for (const keyname_t *k = keynames; k->name; k++)
 		if (k->key == key)
 			return k->name;
+	if (key >= K_SI_FIRST && key <= K_SI_LAST && si_keynames[key - K_SI_FIRST])
+		return si_keynames[key - K_SI_FIRST];
 	snprintf(buf, sizeof(buf), "#%d", key);
 	return buf;
 }
@@ -369,13 +399,13 @@ void IN_KeyEvent(int key, bool down, int unicode)
 	const char *b;
 	if (key < 0 || key >= K_MAX)
 		return;
-	if (cl.state == ca_active && !(key >= K_JOY1 && key <= K_GP_RTRIGGER) && CL_SeatForDevice(0) > 0 &&
+	if (cl.state == ca_active && !Key_IsPad(key) && CL_SeatForDevice(0) > 0 &&
 	    key != '`' && key != '~' && !Con_IsActive()) {
 		seat_key_event(0, CL_SeatForDevice(0), key, down); /* seat_device gave the keyboard to a guest */
 		return;
 	}
 	if (down)
-		last_device(key >= K_JOY1 && key <= K_GP_RTRIGGER);
+		last_device(Key_IsPad(key));
 	if (down && keydown[key] && key != K_BACKSPACE && !Con_IsActive() && bindings[key] && bindings[key][0] == '+')
 		return; /* key repeat on a held button */
 	keydown[key] = down;
@@ -579,6 +609,25 @@ void IN_MouseMove(float dx, float dy)
 		cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
 		CL_SetSeat(0);
 	}
+}
+
+/* a controller's mouse-like look (Steam Input's trackpads and gyro, as
+ * deltas in mouse counts): turns its player's view the way the mouse does */
+void IN_PadLook(int dev, float dx, float dy)
+{
+	int seat = CL_SeatForDevice(dev + 1);
+	if (!dx && !dy)
+		return;
+	if (seat < 0 && cl.state == ca_active)
+		return;
+	if (Con_IsActive() || EM_Active() || ED_Active() || cl.state != ca_active)
+		return;
+	CL_SetSeat(seat < 0 ? 0 : seat);
+	cl.viewangles[1] -= m_yaw->value * dx * sensitivity->value;
+	cl.viewangles[0] += m_pitch->value * dy * sensitivity->value;
+	clamp_pitch();
+	cl.viewangles[1] = fmodf(cl.viewangles[1], 360.0f);
+	CL_SetSeat(0);
 }
 
 /* --- controllers ------------------------------------------------------------ */

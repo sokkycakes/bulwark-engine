@@ -241,12 +241,21 @@ void IN_ReleaseAll(void);
 /* controller axes in SDL's order (left x/y, right x/y, triggers), -1..1 */
 void IN_JoyAxis(int dev, int axis, float value);
 void IN_ControllerAdded(int dev);
+void IN_PadLook(int dev, float dx, float dy); /* mouse-like look from controller slot dev */
 void IN_ControllerRemoved(int dev);
 extern float in_mouse_x, in_mouse_y;
 void CL_BuildCommand(double now);
 void CL_UpdateCurrentCommand(double now);
 bool CL_GetInputState(uint32_t seq, usercmd_t *out);
 const char *Key_NameForNum(int key);
+void Key_SetSteamActionName(int key, const char *action); /* names K_SI_FIRST.. as SI_<ACTION> */
+bool Key_IsPad(int key); /* a controller's button or a Steam Input action */
+/* a controller's prompt for a key name or a bound command ("GP_A", "+jump")
+ * on device dev (1.. a controller, -1 the one used last): the image path
+ * ("{images}/glyphs/steamdeck/south.png", "" if none) into path and a text
+ * label into label; false when no controller binding exists. Filled by the
+ * SDL video code when it is built in. */
+extern bool (*IN_PadGlyph)(const char *what, int dev, char *path, size_t pathsize, char *label, size_t labelsize);
 int Key_NumForName(const char *name);
 const char *Key_GetBinding(int key);
 void Key_ForEachName(void (*fn)(const char *name, void *ctx), void *ctx);

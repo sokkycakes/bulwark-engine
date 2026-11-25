@@ -17,6 +17,13 @@ enum {
 	K_GP_DPAD_UP = 816, K_GP_DPAD_DOWN, K_GP_DPAD_LEFT, K_GP_DPAD_RIGHT,
 	K_GP_MENU = 820, K_GP_VIEW, K_GP_LTHUMB, K_GP_RTHUMB, K_GP_LSHOULDER, K_GP_RSHOULDER, K_GP_A, K_GP_B, K_GP_X,
 	K_GP_Y, K_GP_LTRIGGER, K_GP_RTRIGGER,
+	/* back buttons (Steam Deck L4/L5/R4/R5, Elite paddles), touchpad click,
+	 * and the share/capture button, through SDL */
+	K_GP_L4 = 832, K_GP_L5, K_GP_R4, K_GP_R5, K_GP_TOUCHPAD, K_GP_MISC1,
+	K_GP_LAST = K_GP_MISC1,
+	/* Steam Input digital actions: SI_<action>, numbered as the action
+	 * manifest lists them (docs/spec/steam-input.md) */
+	K_SI_FIRST = 896, K_SI_LAST = 1023,
 	K_MAX = 1024
 };
 
