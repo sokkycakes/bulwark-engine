@@ -19,7 +19,20 @@
 #define QCOP_EQF_IFNOT (OP_NUMOPS + 3)
 #define QCOP_EQS_IFNOT (OP_NUMOPS + 4)
 #define QCOP_LTI_IFNOT (OP_NUMOPS + 5)
-#define QCOP_COUNT (OP_NUMOPS + 6)
+#define QCOP_BITAND_IFNOTF (OP_NUMOPS + 6)
+/* Longer sequences the loader marks the same way, by the opcode of their
+ * first statement; each runs its statements one after another, exactly as
+ * they would run alone, without a dispatch between them:
+ * a field copy, a field load and store of one word (or a vector) */
+#define QCOP_FIELD_COPY (OP_NUMOPS + 7)
+#define QCOP_FIELD_COPYV (OP_NUMOPS + 8)
+/* two field loads, their float != and the IFNOT on it */
+#define QCOP_FIELDS_NEF_IFNOT (OP_NUMOPS + 9)
+/* i += step and the backward GOTO at the end of a loop */
+#define QCOP_ADDI_GOTO (OP_NUMOPS + 10)
+/* a whole search loop, for (i = ..; i < n; i++) if (s == table[i].f) */
+#define QCOP_FIND_S (OP_NUMOPS + 11)
+#define QCOP_COUNT (OP_NUMOPS + 12)
 
 /* the opcode a statement had before the loader fused it */
 static inline unsigned QC_PlainOp(unsigned op)
@@ -29,6 +42,12 @@ static inline unsigned QC_PlainOp(unsigned op)
 	case QCOP_EQF_IFNOT: return OP_EQ_F;
 	case QCOP_EQS_IFNOT: return OP_EQ_S;
 	case QCOP_LTI_IFNOT: return OP_LT_I;
+	case QCOP_BITAND_IFNOTF: return OP_BITAND;
+	case QCOP_FIELD_COPY: return OP_LOADF_F;
+	case QCOP_FIELD_COPYV: return OP_LOADF_V;
+	case QCOP_FIELDS_NEF_IFNOT: return OP_LOADF_F;
+	case QCOP_ADDI_GOTO: return OP_ADD_I;
+	case QCOP_FIND_S: return OP_LT_I;
 	default: return op;
 	}
 }

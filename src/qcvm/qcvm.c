@@ -297,6 +297,74 @@ static void free_progs(qcprogs_t *p)
 
 /* reads a progs file image into p: code, defs, strings, functions and the
  * size of its globals; the globals themselves are placed by the caller */
+static bool loadf1(unsigned op)
+{
+	return op == OP_LOADF_F || op == OP_LOADF_S || op == OP_LOADF_ENT || op == OP_LOADF_FLD || op == OP_LOADF_FNC ||
+	       op == OP_LOADF_I || op == OP_LOADF_P;
+}
+
+static bool loada1(unsigned op)
+{
+	return op == OP_LOADA_F || op == OP_LOADA_S || op == OP_LOADA_ENT || op == OP_LOADA_FLD || op == OP_LOADA_FNC ||
+	       op == OP_LOADA_I;
+}
+
+/* the statement a jump in operand x of statement i goes to */
+static int jump_target(const qcprogs_t *p, int i, uint32_t x)
+{
+	return i + (p->stmt32 ? (int32_t)x : (int32_t)(int16_t)x);
+}
+
+/* Marks the first statement of each common sequence with an opcode that
+ * runs the whole sequence (see QCOP_NEF_IFNOT and QCOP_FIELD_COPY in
+ * qc_internal.h). Only that opcode changes: the statements after it stay
+ * as they were, as jumps can land on them. Each pass looks at the plain
+ * opcodes and leaves a statement an earlier pass marked alone. */
+static void fuse_statements(qcprogs_t *p)
+{
+	qcstatement_t *s = p->statements;
+	int n = p->numstatements;
+#define OPAT(k) QC_PlainOp(s[k].op)
+	/* search loops; the jumps that stay inside the loop must be the
+	 * ones the handler takes without checking them */
+	for (int i = 0; i + 7 < n; i++) {
+		int step;
+		if (s[i].op != OP_LT_I || OPAT(i + 1) != OP_IFNOT || OPAT(i + 2) != OP_BOUNDCHECK ||
+		    OPAT(i + 3) != OP_MUL_I || !loada1(OPAT(i + 4)) || OPAT(i + 5) != OP_EQ_S || OPAT(i + 6) != OP_IFNOT)
+			continue;
+		step = jump_target(p, i + 6, s[i + 6].b);
+		if (step <= i + 6 || step + 1 >= n || OPAT(step) != OP_ADD_I || OPAT(step + 1) != OP_GOTO ||
+		    jump_target(p, step + 1, s[step + 1].a) != i)
+			continue;
+		s[i].op = QCOP_FIND_S;
+	}
+	for (int i = 0; i + 3 < n; i++)
+		if (s[i].op == OP_LOADF_F && OPAT(i + 1) == OP_LOADF_F && OPAT(i + 2) == OP_NE_F && OPAT(i + 3) == OP_IFNOT)
+			s[i].op = QCOP_FIELDS_NEF_IFNOT;
+	for (int i = 0; i + 1 < n; i++) {
+		unsigned x = s[i].op, y = OPAT(i + 1);
+		if (loadf1(x) && (y == OP_STOREF_F || y == OP_STOREF_S || y == OP_STOREF_I))
+			s[i].op = QCOP_FIELD_COPY;
+		else if (x == OP_LOADF_V && y == OP_STOREF_V)
+			s[i].op = QCOP_FIELD_COPYV;
+		else if (x == OP_ADD_I && y == OP_GOTO)
+			s[i].op = QCOP_ADDI_GOTO;
+		else if (x == OP_BITAND && y == OP_IFNOT_F)
+			s[i].op = QCOP_BITAND_IFNOTF;
+		else if (y == OP_IFNOT && s[i + 1].a == s[i].c) {
+			/* a compare whose result the IFNOT tests */
+			switch (x) {
+			case OP_NE_F: s[i].op = QCOP_NEF_IFNOT; break;
+			case OP_EQ_F: s[i].op = QCOP_EQF_IFNOT; break;
+			case OP_EQ_S: s[i].op = QCOP_EQS_IFNOT; break;
+			case OP_LT_I: s[i].op = QCOP_LTI_IFNOT; break;
+			default: break;
+			}
+		}
+	}
+#undef OPAT
+}
+
 static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t size)
 {
 	progs_header_t *h = &p->hdr;
@@ -378,18 +446,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 		Con_Printf("%s: %d statements have unknown opcodes\n", name, badops);
 	/* running off the end of the code stops with an error */
 	p->statements[h->numstatements].op = QCOP_END;
-	for (int i = 0; i + 1 < h->numstatements; i++) {
-		qcstatement_t *x = &p->statements[i], *y = x + 1;
-		if (y->op != OP_IFNOT || y->a != x->c)
-			continue;
-		switch (x->op) {
-		case OP_NE_F: x->op = QCOP_NEF_IFNOT; break;
-		case OP_EQ_F: x->op = QCOP_EQF_IFNOT; break;
-		case OP_EQ_S: x->op = QCOP_EQS_IFNOT; break;
-		case OP_LT_I: x->op = QCOP_LTI_IFNOT; break;
-		default: break;
-		}
-	}
+	fuse_statements(p);
 
 	unpack_defs(p, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12, &p->globaldefs);
 	p->numglobaldefs = h->numglobaldefs;

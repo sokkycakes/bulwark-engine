@@ -120,7 +120,7 @@ bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b)
 		if (x && y) {
 			uint32_t lx = ((const uint32_t *)(const void *)x)[-1], ly = ((const uint32_t *)(const void *)y)[-1];
 			if (!((lx | ly) & LEN_SHORTENED))
-				return lx == ly && !memcmp(x, y, lx);
+				return lx == ly && x[0] == y[0] && !memcmp(x, y, lx);
 		}
 	}
 	x = QC_GetString(vm, a);

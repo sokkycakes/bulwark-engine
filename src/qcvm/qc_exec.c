@@ -258,6 +258,12 @@ static BW_NORETURN void bad_statement(qcvm_t *vm, int s, unsigned op)
 	QC_RunError(vm, "unsupported opcode %u", op);
 }
 
+static BW_NORETURN void bound_error(qcvm_t *vm, int s, int32_t i, int32_t lo, int32_t hi)
+{
+	vm->xstatement = s;
+	QC_RunError(vm, "array index %d out of bounds %d..%d", i, lo, hi - 1);
+}
+
 static BW_NORETURN void runaway(qcvm_t *vm, int s)
 {
 	vm->xstatement = s;
@@ -378,7 +384,8 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 		optable[QCOP_END] = &&L_unsupported;
 		for (int i = 0; i < QCOP_COUNT; i++)
 			plaintable[i] = optable[QC_PlainOp((unsigned)i)];
-		T(QCOP_NEF_IFNOT) T(QCOP_EQF_IFNOT) T(QCOP_EQS_IFNOT) T(QCOP_LTI_IFNOT)
+		T(QCOP_NEF_IFNOT) T(QCOP_EQF_IFNOT) T(QCOP_EQS_IFNOT) T(QCOP_LTI_IFNOT) T(QCOP_BITAND_IFNOTF)
+		T(QCOP_FIELD_COPY) T(QCOP_FIELD_COPYV) T(QCOP_FIELDS_NEF_IFNOT) T(QCOP_ADDI_GOTO) T(QCOP_FIND_S)
 #undef T
 	}
 #endif
@@ -589,10 +596,8 @@ dispatch:
 	OPCODE(OP_BOUNDCHECK) {
 		OPS;
 		int32_t lo = (int32_t)st->c, hi = (int32_t)st->b;
-		if (a->i < lo || a->i >= hi) {
-			vm->xstatement = SINDEX();
-			QC_RunError(vm, "array index %d out of bounds %d..%d", a->i, lo, hi - 1);
-		}
+		if (a->i < lo || a->i >= hi)
+			bound_error(vm, SINDEX(), a->i, lo, hi);
 		NEXT();
 	}
 
@@ -816,6 +821,77 @@ dispatch:
 	OPCODE(QCOP_EQS_IFNOT) FUSED_IFNOT(c->f = str_eq(vm, a->i, b->i))
 	OPCODE(QCOP_LTI_IFNOT) FUSED_IFNOT(c->i = a->i < b->i)
 #undef FUSED_IFNOT
+	OPCODE(QCOP_BITAND_IFNOTF) {
+		OPS;
+		c->f = (float)(f2i(a->f) & f2i(b->f));
+		st++;
+		if (!ftrue(&G[st->a]))
+			JUMPBY(JUMP(st->b));
+		NEXT();
+	}
+
+	/* --- longer sequences, see QCOP_FIELD_COPY --- */
+#define LOADF1(s) (G[(s)->c].i = field_ptr(vm, &es, G[(s)->a].i, G[(s)->b].i, 1)->i)
+	OPCODE(QCOP_FIELD_COPY) {
+		LOADF1(st);
+		st++;
+		field_ptr(vm, &es, G[st->a].i, G[st->b].i, 1)->i = G[st->c].i;
+		NEXT();
+	}
+	OPCODE(QCOP_FIELD_COPYV) {
+		qcval_t *p = field_ptr(vm, &es, G[st->a].i, G[st->b].i, 3), *v = G + st->c;
+		v[0] = p[0]; v[1] = p[1]; v[2] = p[2];
+		st++;
+		p = field_ptr(vm, &es, G[st->a].i, G[st->b].i, 3);
+		v = G + st->c;
+		p[0] = v[0]; p[1] = v[1]; p[2] = v[2];
+		NEXT();
+	}
+	OPCODE(QCOP_FIELDS_NEF_IFNOT) {
+		LOADF1(st);
+		LOADF1(st + 1);
+		st += 2;
+		G[st->c].f = !feq(G + st->a, G + st->b);
+		st++;
+		if (!G[st->a].i)
+			JUMPBY(JUMP(st->b));
+		NEXT();
+	}
+	OPCODE(QCOP_ADDI_GOTO) {
+		G[st->c].i = (int32_t)((uint32_t)G[st->a].i + (uint32_t)G[st->b].i);
+		st++;
+		JUMPBY(JUMP(st->a));
+	}
+	OPCODE(QCOP_FIND_S) {
+		/* 0 LT_I, 1 IFNOT out of the loop, 2 BOUNDCHECK, 3 MUL_I,
+		 * 4 LOADA, 5 EQ_S, 6 IFNOT to the step, which is an ADD_I and a
+		 * GOTO back to 0; the loader checked where the jumps go */
+		const qcstatement_t *s0 = st, *step = st + 6 + JUMP(st[6].b);
+		uint32_t back = 1u - (uint32_t)JUMP(step[1].a);
+		for (;;) {
+			G[s0[0].c].i = G[s0[0].a].i < G[s0[0].b].i;
+			if (!G[s0[1].a].i) {
+				st = s0 + 1;
+				JUMPBY(JUMP(st->b));
+			}
+			{
+				int32_t v = G[s0[2].a].i, lo = (int32_t)s0[2].c, hi = (int32_t)s0[2].b;
+				if (v < lo || v >= hi)
+					bound_error(vm, (int)(s0 + 2 - stmts), v, lo, hi);
+			}
+			G[s0[3].c].i = (int32_t)((uint32_t)G[s0[3].a].i * (uint32_t)G[s0[3].b].i);
+			G[s0[4].c].i = global_index(vm, (int64_t)s0[4].a + G[s0[4].b].i, 1)->i;
+			G[s0[5].c].f = str_eq(vm, G[s0[5].a].i, G[s0[5].b].i);
+			if (G[s0[6].a].i) {
+				st = s0 + 7;
+				DISPATCH();
+			}
+			G[step->c].i = (int32_t)((uint32_t)G[step->a].i + (uint32_t)G[step->b].i);
+			if ((looped += back) >= QC_MAX_INSTRUCTIONS)
+				runaway(vm, (int)(step + 1 - stmts));
+		}
+	}
+#undef LOADF1
 
 	OPCODE(OP_SWITCH_F) OPCODE(OP_SWITCH_V) OPCODE(OP_SWITCH_S) OPCODE(OP_SWITCH_E)
 	OPCODE(OP_SWITCH_FNC) OPCODE(OP_SWITCH_I) {
