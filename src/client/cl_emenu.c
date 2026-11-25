@@ -627,6 +627,8 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	switch (key) {
 	case K_ESCAPE:
 	case K_MOUSE2:
+	case K_GP_B:
+	case K_GP_MENU:
 		pop();
 		break;
 	case K_UPARROW: case K_KP_UPARROW: case K_MWHEELUP: case K_GP_DPAD_UP:
@@ -635,11 +637,11 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	case K_DOWNARROW: case K_KP_DOWNARROW: case K_MWHEELDOWN: case K_GP_DPAD_DOWN:
 		move_cursor(p, 1);
 		break;
-	case K_PGUP:
+	case K_PGUP: case K_GP_LSHOULDER:
 		for (int i = 0; i < 10; i++)
 			move_cursor(p, -1);
 		break;
-	case K_PGDN:
+	case K_PGDN: case K_GP_RSHOULDER:
 		for (int i = 0; i < 10; i++)
 			move_cursor(p, 1);
 		break;

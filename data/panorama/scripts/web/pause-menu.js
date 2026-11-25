@@ -66,7 +66,7 @@ var PauseMenu = (function ()
 			select( selected + 1, 1 );
 		else if ( key === "Enter" || key === " " )
 			activate();
-		else if ( key === "Escape" )
+		else if ( key === "Escape" || e.bind === "GP_START" || e.bind === "GP_MENU" )
 			cbuf( "webcore_closemenu" );
 	} );
 

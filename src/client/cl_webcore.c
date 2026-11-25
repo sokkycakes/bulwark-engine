@@ -363,7 +363,7 @@ bool WC_KeyEvent(int key, bool down, int unicode)
 {
 	if (!wc.menu)
 		return false;
-	if (key == K_ESCAPE && down && in_game()) {
+	if ((key == K_ESCAPE || key == K_GP_B) && down && in_game()) {
 		UI_KeyEvent(key, down, unicode);
 		close_menu();
 		return true;
