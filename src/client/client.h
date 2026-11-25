@@ -14,6 +14,7 @@
 #define CL_MAX_SOUNDS 4096
 #define CL_MAX_PARTICLES 1024
 #define CL_MAX_PLAYERS 256
+#define CL_PLAYERINFO_SIZE 2048
 #define CL_CMD_BACKUP 256 /* input frames remembered for prediction, power of two */
 
 typedef enum {
@@ -69,7 +70,7 @@ typedef struct {
 	char csprogsname[64];
 	uint16_t csprogscrc;
 	char serverinfo[8192];
-	char playerinfo[CL_MAX_PLAYERS][2048];
+	char *playerinfo[CL_MAX_PLAYERS]; /* CL_PLAYERINFO_SIZE bytes each, allocated when a slot is first set */
 	infoblob_t playerblobs[CL_MAX_PLAYERS][MAX_INFOBLOBS];
 
 	clmodel_t models[CL_MAX_MODELS];
