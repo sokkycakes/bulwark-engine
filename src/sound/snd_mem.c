@@ -143,29 +143,39 @@ static bool decode_ogg(const uint8_t *buf, size_t len, pcm_t *out)
 	 * them a block at a time. */
 	channels = BW_MIN(info.channels, 2);
 	cap = (int)stb_vorbis_stream_length_in_samples(v);
-	if (cap <= 0 || cap > 1 << 28)
+	/* the length comes from the last page's granule position, which a
+	 * damaged or odd stream can set to anything: trust it only up to a
+	 * generous 64 frames per compressed byte, and otherwise grow */
+	if (cap <= 0 || cap > 1 << 28 || (uint64_t)cap > (uint64_t)len * 64)
 		cap = 1 << 16;
 	data = Mem_Alloc((size_t)cap * channels * sizeof(int16_t) + 2);
 	for (;;) {
+		static short block[1024 * 8];
 		int got;
-		if (frames == cap) {
-			cap += cap / 2 + 4096;
-			data = Mem_Realloc(data, (size_t)cap * channels * sizeof(int16_t) + 2);
-		}
-		if (info.channels <= 2) {
+		/* a full buffer (a stream whose length was exact, usually) decodes
+		 * a block aside first, so that the end of the stream costs no
+		 * growth; so do streams with more channels than are kept */
+		bool aside = frames == cap || info.channels > 2;
+		if (aside) {
+			int want = (int)(BW_ARRAY_COUNT(block) / info.channels);
+			if (frames < cap)
+				want = BW_MIN(want, cap - frames);
+			got = stb_vorbis_get_samples_short_interleaved(v, info.channels, block, want * info.channels);
+		} else {
 			got = stb_vorbis_get_samples_short_interleaved(v, channels, data + (size_t)frames * channels,
 			                                               (cap - frames) * channels);
-		} else {
-			static short block[1024 * 8];
-			int want = BW_MIN(cap - frames, (int)(BW_ARRAY_COUNT(block) / info.channels));
-			got = stb_vorbis_get_samples_short_interleaved(v, info.channels, block, want * info.channels);
-			for (int i = 0; i < got; i++) {
-				data[(size_t)(frames + i) * 2] = block[i * info.channels];
-				data[(size_t)(frames + i) * 2 + 1] = block[i * info.channels + 1];
-			}
 		}
 		if (got <= 0)
 			break;
+		if (aside) {
+			if (frames + got > cap) {
+				cap = BW_MAX(cap + cap / 2 + 4096, frames + got);
+				data = Mem_Realloc(data, (size_t)cap * channels * sizeof(int16_t) + 2);
+			}
+			for (int i = 0; i < got; i++)
+				for (int c = 0; c < channels; c++)
+					data[(size_t)(frames + i) * channels + c] = block[i * info.channels + c];
+		}
 		frames += got;
 	}
 	stb_vorbis_close(v);
@@ -255,7 +265,7 @@ static void halve_rate(pcm_t *p)
 	p->frames = n;
 	p->rate /= 2;
 	if (p->loopstart >= 0)
-		p->loopstart /= 2;
+		p->loopstart = BW_MIN(p->loopstart / 2, n - 1);
 }
 
 static void lowmem_reduce(pcm_t *p)
