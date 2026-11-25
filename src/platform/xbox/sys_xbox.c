@@ -134,6 +134,49 @@ static void fs_test(const char *dir)
 	closedir(d);
 }
 
+/* -cpubench: a dependent chain of simple integer operations, about one per
+ * clock on a Pentium III, timed with the performance counter: how fast the
+ * CPU (or an emulator's) runs compared with the real 733 MHz part */
+static void cpu_bench(void)
+{
+	volatile uint32_t sink;
+	uint32_t x = 1;
+	ULONGLONG t0 = KeQueryPerformanceCounter();
+	for (uint32_t i = 0; i < 100000000u; i++)
+		x = x * 1664525u + 1013904223u;
+	ULONGLONG t1 = KeQueryPerformanceCounter();
+	sink = x;
+	(void)sink;
+	double secs = (double)(t1 - t0) / (double)KeQueryPerformanceFrequency();
+	Con_Printf("cpubench: 100M multiply-adds in %.3f s (a 733 MHz Pentium III: about %.2f s, 5 clocks each)\n", secs, 100e6 * 5 / 733e6);
+	/* single-precision SSE: a multiply then an add, 4 + 3 clocks of latency */
+	volatile float fsink;
+	float f = 1.0f;
+	t0 = KeQueryPerformanceCounter();
+	for (uint32_t i = 0; i < 20000000u; i++)
+		f = f * 0.999999f + 0.000001f;
+	t1 = KeQueryPerformanceCounter();
+	fsink = f;
+	(void)fsink;
+	secs = (double)(t1 - t0) / (double)KeQueryPerformanceFrequency();
+	Con_Printf("cpubench: 20M float multiply-adds in %.3f s (Pentium III: about %.2f s, 7 clocks each)\n", secs, 20e6 * 7 / 733e6);
+	/* memory: sum 16 MB, 4 bytes at a time (the P3's 133 MHz bus: roughly 0.5-0.8 GB/s) */
+	uint32_t *buf = malloc(16u << 20);
+	if (buf) {
+		memset(buf, 1, 16u << 20);
+		uint32_t sum = 0;
+		t0 = KeQueryPerformanceCounter();
+		for (int pass = 0; pass < 4; pass++)
+			for (uint32_t i = 0; i < (4u << 20); i++)
+				sum += buf[i];
+		t1 = KeQueryPerformanceCounter();
+		sink = sum;
+		secs = (double)(t1 - t0) / (double)KeQueryPerformanceFrequency();
+		Con_Printf("cpubench: read 64 MB in %.3f s (%.0f MB/s)\n", secs, 64 / secs);
+		free(buf);
+	}
+}
+
 /* words separated by spaces, "quoted" words keep theirs */
 static int split_args(char *s, char **out, int max)
 {
@@ -187,6 +230,8 @@ void Plat_Init(int *argc, char ***argv)
 			net = false;
 		else if (!strcmp(args[i], "-nodbgprint"))
 			dbgprint = false;
+		else if (!strcmp(args[i], "-cpubench"))
+			cpu_bench();
 		else if (!strcmp(args[i], "-fstest") && i + 1 < n)
 			fs_test(args[++i]);
 		else

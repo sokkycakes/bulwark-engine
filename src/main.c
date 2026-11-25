@@ -54,6 +54,30 @@ static void usage(void)
 	           "               [-window] [+command args]...\n");
 }
 
+static cvar_t *host_speeds;
+
+static void host_speeds_add(const double *t)
+{
+	static const char *names[7] = {"misc", "server", "client", "csqc+3d", "ui", "2d+swap", "sound"};
+	static double sum[7], since;
+	static int frames;
+	for (int i = 0; i < 7; i++)
+		sum[i] += t[i + 1] - t[i];
+	frames++;
+	if (!since)
+		since = t[0];
+	if (t[7] - since >= 5 && frames) {
+		char line[256];
+		int o = snprintf(line, sizeof(line), "host_speeds: %.1f fps;", frames / (t[7] - since));
+		for (int i = 0; i < 7 && o < (int)sizeof(line); i++)
+			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", names[i], sum[i] * 1000 / frames);
+		Con_Printf("%s ms\n", line);
+		memset(sum, 0, sizeof(sum));
+		frames = 0;
+		since = t[7];
+	}
+}
+
 int main(int argc, char **argv)
 {
 	const char *basedir;
@@ -135,6 +159,7 @@ int main(int argc, char **argv)
 	cvar_t *fps_max = Cvar_Get("fps_max", "0", CVAR_ARCHIVE, "Frame rate cap, 0 for none");
 	cvar_t *cl_maxfps = Cvar_Get("cl_maxfps", "0", CVAR_ARCHIVE, "Frame rate cap (FTE's name), used when fps_max is 0");
 	cvar_t *host_timescale = Cvar_Get("host_timescale", "1", CVAR_CHEAT, "Game speed multiplier for a local server");
+	host_speeds = Cvar_Get("host_speeds", "0", 0, "Print where the frame time goes (milliseconds per frame) every 5 seconds");
 	cvar_t *host_framerate = Cvar_Get("host_framerate", "0", 0, "Fixed seconds per frame when above 0, for recording");
 	Cmd_Add("path", Path_f);
 	Cmd_DescribeAll();
@@ -214,15 +239,22 @@ int main(int argc, char **argv)
 		host_time += dt;
 		/* a local game can run slow or fast; a remote server sets its own pace */
 		double gdt = sv.active && host_timescale->value > 0 ? dt * BW_CLAMP(host_timescale->value, 0.01f, 10) : dt;
+		/* host_speeds 1: where the frame goes, every 5 seconds */
+		double hs[8];
+#define HS(i) (hs[i] = host_speeds->ivalue ? Sys_Seconds() : 0)
+		HS(0);
 		NET_RunDelayed();
 		PKG_Frame();
 		Worker_Frame();
 		Plug_Frame();
 		QC_URIFrame();
+		HS(1);
 		SV_Frame(gdt);
+		HS(2);
 		CL_Frame(gdt);
 		Lobby_Frame();
 		WC_Frame();
+		HS(3);
 		R_BeginFrame();
 		{
 			int w, h;
@@ -230,10 +262,17 @@ int main(int argc, char **argv)
 			CSQC_Frame(w, h);
 			MQC_Frame(w, h);
 		}
+		HS(4);
 		UI_Frame(dt);
 		UI_Draw();
+		HS(5);
 		R_EndFrame();
+		HS(6);
 		S_Update(NULL, NULL, NULL, NULL);
+		HS(7);
+#undef HS
+		if (host_speeds->ivalue)
+			host_speeds_add(hs);
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("netstats");
