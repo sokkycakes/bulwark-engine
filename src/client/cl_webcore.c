@@ -778,46 +778,6 @@ static void q_arena_action(const char *a, strbuf_t *out)
 	reply_ok(out, false, "unknown action");
 }
 
-/* a JSON string member, escaped as q_gethud does: control bytes dropped */
-static void json_member(strbuf_t *out, const char *key, const char *value, bool comma)
-{
-	SB_Printf(out, "%s\"%s\":\"", comma ? "," : "", key);
-	for (const char *s = value; *s; s++)
-		if (*s == '"' || *s == '\\')
-			SB_Printf(out, "\\%c", *s);
-		else if ((unsigned char)*s >= 0x20)
-			SB_Append(out, s, 1);
-	SB_AppendStr(out, "\"");
-}
-
-/* what a menu needs to know of the game it is over (the native pause page
- * and hero picker): the local player's hero, the mode and a running vote.
- * The vote keys are the names the client game's strings suggest; when
- * they are wrong the vote simply reads as none. */
-static void q_getclient(strbuf_t *out)
-{
-	char hero[64], mode[64], gametype[64], vote[128], yes[16], no[16];
-	bool connected = cl.state != ca_disconnected;
-	hero[0] = mode[0] = gametype[0] = vote[0] = yes[0] = no[0] = 0;
-	if (connected) {
-		CL_PlayerKey(cl.playerslot, "*hero", hero, sizeof(hero));
-		CL_ServerKey("mode", mode, sizeof(mode));
-		if (!CL_ServerKey("g_gametype", gametype, sizeof(gametype)) || !gametype[0])
-			Str_Copy(gametype, mode, sizeof(gametype));
-		CL_ServerKey("vote_cmd", vote, sizeof(vote));
-		CL_ServerKey("votes_y", yes, sizeof(yes));
-		CL_ServerKey("votes_n", no, sizeof(no));
-	}
-	SB_Printf(out, "{\"state\":%d,\"inGame\":%s", (int)cl.state, in_game() ? "true" : "false");
-	json_member(out, "hero", hero, true);
-	json_member(out, "mode", mode, true);
-	json_member(out, "gametype", gametype, true);
-	json_member(out, "vote", vote, true);
-	json_member(out, "votesY", yes, true);
-	json_member(out, "votesN", no, true);
-	SB_AppendStr(out, "}");
-}
-
 /* why the last connection ended, once: the reason is cleared as it is
  * read, so a title that opens again doesn't show it twice */
 static void q_takedisconnect(strbuf_t *out)
@@ -865,8 +825,6 @@ static void query(int view, const char *req, strbuf_t *out)
 		q_arena_action(req + 13, out);
 	else if (!strncmp(req, "lobby_join:", 11))
 		q_lobby_join(req + 11, out);
-	else if (!strcmp(req, "getclient"))
-		q_getclient(out);
 	else if (!strcmp(req, "takedisconnect"))
 		q_takedisconnect(out);
 	else
