@@ -54,19 +54,38 @@ bool qc_profiling;
  * which a library call would cost more than */
 static inline void copy_words(qcval_t *d, const qcval_t *s, int n)
 {
-	switch (n) {
-	case 3: d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; return;
-	case 2: d[0] = s[0]; d[1] = s[1]; return;
-	case 1: d[0] = s[0]; return;
-	case 0: return;
-	default:
-		if (n > 0)
-			memcpy(d, s, sizeof(qcval_t) * (size_t)n);
+	if (n > 16) {
+		memcpy(d, s, sizeof(qcval_t) * (size_t)n);
 		return;
+	}
+	switch (n) {
+	case 16: d[15] = s[15]; /* fall through */
+	case 15: d[14] = s[14]; /* fall through */
+	case 14: d[13] = s[13]; /* fall through */
+	case 13: d[12] = s[12]; /* fall through */
+	case 12: d[11] = s[11]; /* fall through */
+	case 11: d[10] = s[10]; /* fall through */
+	case 10: d[9] = s[9]; /* fall through */
+	case 9: d[8] = s[8]; /* fall through */
+	case 8: d[7] = s[7]; /* fall through */
+	case 7: d[6] = s[6]; /* fall through */
+	case 6: d[5] = s[5]; /* fall through */
+	case 5: d[4] = s[4]; /* fall through */
+	case 4: d[3] = s[3]; /* fall through */
+	case 3: d[2] = s[2]; /* fall through */
+	case 2: d[1] = s[1]; /* fall through */
+	case 1: d[0] = s[0]; /* fall through */
+	default: break;
 	}
 }
 
-static inline void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
+#if defined(__GNUC__) || defined(__clang__)
+#define QC_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define QC_ALWAYS_INLINE inline
+#endif
+
+static QC_ALWAYS_INLINE void enter_function(qcvm_t *vm, int fnum, int returnto, int caller)
 {
 	qcfunc_t *f = &vm->functions[fnum];
 	int locals = f->d.locals;
@@ -116,7 +135,7 @@ static inline void enter_function(qcvm_t *vm, int fnum, int returnto, int caller
 }
 
 /* returns the statement to continue at */
-static inline int leave_function(qcvm_t *vm)
+static QC_ALWAYS_INLINE int leave_function(qcvm_t *vm)
 {
 	qcframe_t *fr = &vm->stack[--vm->depth];
 	qcfunc_t *f = &vm->functions[vm->xfunction];
@@ -163,11 +182,17 @@ static BW_NORETURN void field_error(qcvm_t *vm, int32_t e, int32_t f)
 
 /* an entity field: both checks are single unsigned compares, as a negative
  * field offset wraps to a huge one (edict_words is always above 3) */
-static inline qcval_t *field_ptr(qcvm_t *vm, uint8_t *edicts, int32_t e, int32_t f, int words)
+typedef struct {
+	uint8_t *base; /* entity 0's fields */
+	uint32_t count; /* max_edicts */
+	uint32_t words; /* edict_words */
+} edictspace_t;
+
+static inline qcval_t *field_ptr(qcvm_t *vm, const edictspace_t *es, int32_t e, int32_t f, uint32_t words)
 {
-	if ((uint32_t)e >= (uint32_t)vm->max_edicts || (uint32_t)f > (uint32_t)(vm->edict_words - words))
+	if ((uint32_t)e >= es->count || (uint32_t)f > es->words - words)
 		field_error(vm, e, f);
-	return (qcval_t *)(edicts + ((size_t)(uint32_t)e * (uint32_t)vm->edict_words + (uint32_t)f) * 4);
+	return (qcval_t *)(es->base + ((size_t)(uint32_t)e * es->words + (uint32_t)f) * 4);
 }
 
 static inline qcval_t *mem_ptr(qcvm_t *vm, uint32_t addr, int words)
@@ -184,12 +209,7 @@ static inline qcval_t *global_index(qcvm_t *vm, int64_t idx, int words)
 	return vm->globals + idx;
 }
 
-static bool str_eq(qcvm_t *vm, int32_t a, int32_t b)
-{
-	if (a == b)
-		return true;
-	return !strcmp(QC_GetString(vm, a), QC_GetString(vm, b));
-}
+static inline bool str_eq(qcvm_t *vm, int32_t a, int32_t b) { return a == b || QC_StringsEqual(vm, a, b); }
 
 static inline bool str_empty(qcvm_t *vm, int32_t s) { return !s || !*QC_GetString(vm, s); }
 
@@ -216,11 +236,13 @@ static void string_setchar(qcvm_t *vm, int32_t s, int64_t idx, int ch)
  * variables, where they read as denormals, and tests them with the float
  * opcodes; the 3DS runs its FPU flushing denormals to zero, which would
  * make every such value false and equal to 0. */
-static inline bool fdenorm(int32_t i) { return (i & 0x7f800000) == 0 && (i & 0x7fffff); }
 static inline bool ftrue(const qcval_t *v) { return (v->i & 0x7fffffff) != 0; }
+/* in integer operations alone: equal bits are equal floats unless NaN, and
+ * different bits are equal floats only as +0 and -0 (denormals included) */
 static inline bool feq(const qcval_t *a, const qcval_t *b)
 {
-	return fdenorm(a->i) || fdenorm(b->i) ? a->i == b->i : a->f == b->f;
+	uint32_t x = a->u, y = b->u;
+	return x == y ? (x & 0x7fffffff) <= 0x7f800000 : ((x | y) & 0x7fffffff) == 0;
 }
 
 #define JUMP(x) ((vm->stmt32) ? (int32_t)(x) : (int32_t)(int16_t)(x))
@@ -262,7 +284,8 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 {
 	const qcstatement_t *stmts, *st;
 	qcval_t *G;
-	uint8_t *const edicts = vm->mem + vm->edicts_ofs;
+	/* fixed for the life of the VM, so kept out of the loop's loads */
+	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->max_edicts, (uint32_t)vm->edict_words};
 	unsigned nst;
 	uint32_t backjumps = 0;
 #ifdef QC_THREADED
@@ -288,12 +311,12 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 #define JUMPBY(off)                                                                                \
 	do {                                                                                           \
 		int32_t o_ = (off);                                                                        \
-		int ns_ = SINDEX() + o_;                                                                   \
+		uintptr_t np_ = (uintptr_t)st + (uintptr_t)(intptr_t)o_ * sizeof(*st);                     \
 		if (o_ <= 0 && ++backjumps >= QC_MAX_BACKJUMPS)                                            \
 			runaway(vm, SINDEX());                                                                 \
-		if ((unsigned)ns_ >= nst)                                                                  \
-			bad_statement(vm, ns_, 0);                                                             \
-		st = stmts + ns_;                                                                          \
+		if (np_ - (uintptr_t)stmts >= (uintptr_t)nst * sizeof(*st))                                \
+			bad_statement(vm, SINDEX() + o_, 0);                                                   \
+		st = (const qcstatement_t *)np_;                                                           \
 		DISPATCH();                                                                                \
 	} while (0)
 #define OPS                                                                                        \
@@ -446,41 +469,41 @@ dispatch:
 	OPCODE(OP_LOADF_F) OPCODE(OP_LOADF_S) OPCODE(OP_LOADF_ENT) OPCODE(OP_LOADF_FLD)
 	OPCODE(OP_LOADF_FNC) OPCODE(OP_LOADF_I) OPCODE(OP_LOADF_P) {
 		OPS;
-		c->i = field_ptr(vm, edicts, a->i, b->i, 1)->i;
+		c->i = field_ptr(vm, &es, a->i, b->i, 1)->i;
 		NEXT();
 	}
 	OPCODE(OP_LOADF_V) {
 		OPS;
-		qcval_t *p = field_ptr(vm, edicts, a->i, b->i, 3);
+		qcval_t *p = field_ptr(vm, &es, a->i, b->i, 3);
 		c[0] = p[0]; c[1] = p[1]; c[2] = p[2];
 		NEXT();
 	}
 	OPCODE(OP_LOADF_I64) {
 		OPS;
-		qcval_t *p = field_ptr(vm, edicts, a->i, b->i, 2);
+		qcval_t *p = field_ptr(vm, &es, a->i, b->i, 2);
 		c[0] = p[0]; c[1] = p[1];
 		NEXT();
 	}
 	OPCODE(OP_FLDADDRESS) {
 		OPS;
-		field_ptr(vm, edicts, a->i, b->i, 1);
+		field_ptr(vm, &es, a->i, b->i, 1);
 		c->u = (uint32_t)(vm->edicts_ofs + ((size_t)a->i * vm->edict_words + b->i) * 4);
 		NEXT();
 	}
 	OPCODE(OP_STOREF_F) OPCODE(OP_STOREF_S) OPCODE(OP_STOREF_I) {
 		OPS;
-		field_ptr(vm, edicts, a->i, b->i, 1)->i = c->i;
+		field_ptr(vm, &es, a->i, b->i, 1)->i = c->i;
 		NEXT();
 	}
 	OPCODE(OP_STOREF_V) {
 		OPS;
-		qcval_t *p = field_ptr(vm, edicts, a->i, b->i, 3);
+		qcval_t *p = field_ptr(vm, &es, a->i, b->i, 3);
 		p[0] = c[0]; p[1] = c[1]; p[2] = c[2];
 		NEXT();
 	}
 	OPCODE(OP_STOREF_I64) {
 		OPS;
-		qcval_t *p = field_ptr(vm, edicts, a->i, b->i, 2);
+		qcval_t *p = field_ptr(vm, &es, a->i, b->i, 2);
 		p[0] = c[0]; p[1] = c[1];
 		NEXT();
 	}

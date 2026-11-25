@@ -290,6 +290,7 @@ extern bool qc_profiling; /* count statements per function (pr_profile) */
 
 /* strings */
 const char *QC_GetString(qcvm_t *vm, string_t s);
+bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b);
 string_t QC_NewString(qcvm_t *vm, const char *s);
 string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len);
 /* writable view into an engine string or the progs table, or NULL */

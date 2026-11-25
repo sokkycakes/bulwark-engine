@@ -48,6 +48,18 @@ const char *QC_GetString(qcvm_t *vm, string_t s)
 	return strs[u];
 }
 
+/* the interpreter's string ==, with both lookups inline (QC can write a
+ * NUL into a string, so the stored lengths cannot settle it) */
+bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b)
+{
+	const char *x, *y;
+	if (a == b)
+		return true;
+	x = QC_GetString(vm, a);
+	y = QC_GetString(vm, b);
+	return x[0] == y[0] && !strcmp(x, y);
+}
+
 char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len)
 {
 	uint32_t u = (uint32_t)s;
@@ -97,7 +109,9 @@ string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len)
 		slot = nstrs++;
 		freescan = nstrs;
 	}
-	block = Mem_Alloc(sizeof(uint32_t) + len + 1);
+	/* every byte is written below, so skip Mem_Alloc's clearing: Nuclide
+	 * makes tens of thousands of these a frame */
+	block = Mem_Realloc(NULL, sizeof(uint32_t) + len + 1);
 	block[0] = (uint32_t)len;
 	strs[slot] = (char *)(block + 1);
 	memcpy(strs[slot], s, len);
