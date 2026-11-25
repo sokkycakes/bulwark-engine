@@ -172,10 +172,6 @@ var SetFlow = ( function ()
 		} );
 		$( "#StageInitial" ).text = heroName( id ).charAt( 0 );
 		$( "#StageName" ).text = heroName( id );
-		var hp = $( "#StageHp" );
-		hp.RemoveAndDeleteChildren();
-		for ( var n = 0; n < ( HP[ id ] || 4 ); n++ )
-			$.CreatePanel( "Panel", hp, "", { class: "hp-pip", hittest: "false" } );
 	}
 
 	function moveCursor( i, snd )
