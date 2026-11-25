@@ -23,8 +23,10 @@
 #define ECHO_SEC 0.3f
 #define FADE_SEC 0.08f
 /* sets the tail's overall level: the generic room's tail sits about 12 dB
- * under the direct sound */
-#define LATE_LEVEL 0.12f
+ * under the direct sound. Measured on a capture of a short click with
+ * room_type 1 (docs/spec/sound.md); 0.12 was set against the old allpasses,
+ * whose extra gain made up the rest, and left the tail near -30 dB */
+#define LATE_LEVEL 1.0f
 #define DC_POLE 0.995f /* the wet input's DC blocker, about 35 Hz at 44.1 kHz */
 #define SOUND_SPEED 13500.0f /* units per second, taking a unit as an inch */
 
@@ -408,8 +410,12 @@ static bool guess_room(const float *org, reverb_t *out)
 			float past[3];
 			for (int k = 0; k < 3; k++)
 				past[k] = tr.endpos[k] + dir[k] * 4;
-			if ((tr.surfaceflags & 4) || (BSP_PointContents(cl.world, 0, zero, past) & CONTENTS_SKY))
-				open += 1; /* sky: Q3's SURF_SKY, or a Q1 sky leaf behind the hit */
+			/* sky: Q3's SURF_SKY, or a Q1 sky leaf behind the hit. A Q3
+			 * SURF_NODRAW face (caulk) seen from where the listener stands
+			 * isn't drawn, so it reads as open air too: duel_alley closes
+			 * its alley with a caulk lid and walls under its sky key */
+			if ((tr.surfaceflags & (4 | 0x80)) || (BSP_PointContents(cl.world, 0, zero, past) & CONTENTS_SKY))
+				open += 1;
 		}
 		if (i < 8) {
 			dsum += d;

@@ -1046,7 +1046,7 @@ void Cmd_DescribeAll(void)
 		{"joy_virtual_set", "Set up the on-screen controller"},
 		{"map", "map <name>: start a map"},
 		{"menu_restart", "Reload the menu"},
-		{"music", "music <file or track> [-]: play music"},
+		{"music", "music <file or track> [-|0|1]: play music, once with - or 0"},
 		{"netstats", "Network statistics: latency, loss and traffic"},
 		{"path", "The search path for game files"},
 		{"pingserver", "pingserver <address>: ask a server for its status"},

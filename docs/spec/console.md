@@ -641,7 +641,7 @@ held and the matching `-` command when it's let go.
 | `+moveup` / `-moveup` | Swim or fly up |
 | `msg_trigger` | msg_trigger [name [text [-l level]]]: run alias <name> when a message contains the text |
 | `multvar` | multvar <cvar> <min> <max> <factor>: scale a cvar within a range |
-| `music` | music <file or track> [-]: play music |
+| `music` | music <file or track> [-\|0\|1]: play music, once with - or 0 |
 | `music_fforward` | music_fforward [seconds]: skip ahead in the music (10 seconds) |
 | `music_next` | Play the next track of the playlist |
 | `music_rewind` | music_rewind [seconds]: go back in the music (10 seconds) |

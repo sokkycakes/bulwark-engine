@@ -223,13 +223,14 @@ bool S_LoadSfx(sfx_t *sfx)
 
 /* --- music -------------------------------------------------------------------- */
 
-/* One stream: Ogg files are decoded as they play, WAV files are held whole.
+/* One stream: Ogg files are decoded as they play, WAV and MP3 files are
+ * decoded whole when they start.
  * Touched by the mixer thread, so the caller holds the device lock. */
 static struct {
 	bool active, loop;
 	uint8_t *file;          /* the compressed file, for stb_vorbis */
 	stb_vorbis *vorbis;
-	pcm_t wav;              /* or a whole decoded WAV */
+	pcm_t wav;              /* or a whole decoded WAV or MP3 */
 	int channels, rate;
 	short buf[4096 * 2];    /* decoded frames waiting to be mixed */
 	int buffered, bufpos;
@@ -266,7 +267,9 @@ bool S_OpenMusic(const char *path, bool loop)
 		mus.channels = info.channels;
 		mus.rate = (int)info.sample_rate;
 	} else {
-		bool ok = decode_wav(file, len, &mus.wav);
+		/* a level's bgm key names an .mp3 (worldspawn plays sound/bgm/<name>.mp3) */
+		bool ok = len >= 4 && !memcmp(file, "RIFF", 4) ? decode_wav(file, len, &mus.wav)
+		                                               : is_mp3(file, len) && decode_mp3(file, len, &mus.wav);
 		Mem_Free(file);
 		if (!ok)
 			return false;
