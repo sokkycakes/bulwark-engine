@@ -1,0 +1,145 @@
+<!--
+	Stiletto's server browser (docs/spec/serverbrowser.md): the servers the
+	master servers know, the ones on the LAN, favourites and history. Opened
+	from the online hub ("menu_webcore servers"). Same look as the hub
+	(online.xml): the title's red wash over #333, standard_07_57 and
+	hooge_05_57, on a 1440 x 1080 stage. Keys, mouse and controller all
+	work; the hint bar shows the glyphs for whichever was used last.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/web/server-browser.css" />
+	</styles>
+	<scripts>
+		<include src="file://{resources}/scripts/web/server-browser.js" />
+	</scripts>
+
+	<Panel id="Root" class="root">
+		<Panel class="bg" hittest="false" />
+		<Panel class="bg-red" hittest="false" />
+		<Panel class="stage">
+			<Label class="head" text="SERVERS" hittest="false" />
+			<Label id="Status" class="status" text="" hittest="false" />
+
+			<!-- tabs: LB / RB, Q / E, or click -->
+			<Panel class="tabs">
+				<Label id="TabPrev" class="tab-key" text="LB" hittest="false" />
+				<Button id="Tab0" class="tab is-selected" onactivate="Servers.Tab(0)">
+					<Label text="Internet" hittest="false" />
+				</Button>
+				<Button id="Tab1" class="tab" onactivate="Servers.Tab(1)">
+					<Label text="LAN" hittest="false" />
+				</Button>
+				<Button id="Tab2" class="tab" onactivate="Servers.Tab(2)">
+					<Label text="Favorites" hittest="false" />
+				</Button>
+				<Button id="Tab3" class="tab" onactivate="Servers.Tab(3)">
+					<Label text="History" hittest="false" />
+				</Button>
+				<Label id="TabNext" class="tab-key" text="RB" hittest="false" />
+			</Panel>
+
+			<!-- filters: Up from the first row, Left / Right, A to change -->
+			<Panel id="Filters" class="filters">
+				<Button id="Filter0" class="chip" onactivate="Servers.Filter(0)" onmouseover="Servers.HoverFilter(0)">
+					<Label id="FilterText0" text="Mode: All" hittest="false" />
+				</Button>
+				<Button id="Filter1" class="chip" onactivate="Servers.Filter(1)" onmouseover="Servers.HoverFilter(1)">
+					<Label id="FilterText1" text="Empty: Show" hittest="false" />
+				</Button>
+				<Button id="Filter2" class="chip" onactivate="Servers.Filter(2)" onmouseover="Servers.HoverFilter(2)">
+					<Label id="FilterText2" text="Full: Show" hittest="false" />
+				</Button>
+				<Button id="Filter3" class="chip" onactivate="Servers.Filter(3)" onmouseover="Servers.HoverFilter(3)">
+					<Label id="FilterText3" text="Locked: Show" hittest="false" />
+				</Button>
+				<Button id="Filter4" class="chip" onactivate="Servers.Filter(4)" onmouseover="Servers.HoverFilter(4)">
+					<Label id="FilterText4" text="Sort: Ping" hittest="false" />
+				</Button>
+			</Panel>
+
+			<!-- the list -->
+			<Panel class="list">
+				<Panel class="cols" hittest="false">
+					<Label class="col c-lock" text="" hittest="false" />
+					<Label class="col c-name" text="NAME" hittest="false" />
+					<Label class="col c-mode" text="MODE" hittest="false" />
+					<Label class="col c-map" text="MAP" hittest="false" />
+					<Label class="col c-players" text="PLAYERS" hittest="false" />
+					<Label class="col c-ping" text="PING" hittest="false" />
+				</Panel>
+				<Panel id="Rows" class="rows" />
+				<Label id="Empty" class="empty" text="" hittest="false" />
+				<Panel id="ScrollTrack" class="scroll-track" hittest="false">
+					<Panel id="ScrollThumb" class="scroll-thumb" hittest="false" />
+				</Panel>
+			</Panel>
+
+			<!-- the selected server -->
+			<Panel id="Detail" class="detail" hittest="false">
+				<Label class="detail-head" text="SERVER" hittest="false" />
+				<Label id="DName" class="detail-name" text="" hittest="false" />
+				<Label id="DAddr" class="detail-addr" text="" hittest="false" />
+				<Panel class="detail-stats" hittest="false">
+					<Panel class="dstat" hittest="false">
+						<Label id="DMode" class="dstat-num" text="-" hittest="false" />
+						<Label class="dstat-label" text="mode" hittest="false" />
+					</Panel>
+					<Panel class="dstat" hittest="false">
+						<Label id="DMap" class="dstat-num" text="-" hittest="false" />
+						<Label class="dstat-label" text="map" hittest="false" />
+					</Panel>
+					<Panel class="dstat" hittest="false">
+						<Label id="DPlayers" class="dstat-num" text="-" hittest="false" />
+						<Label class="dstat-label" text="players" hittest="false" />
+					</Panel>
+					<Panel class="dstat" hittest="false">
+						<Label id="DPing" class="dstat-num" text="-" hittest="false" />
+						<Label class="dstat-label" text="ping" hittest="false" />
+					</Panel>
+				</Panel>
+				<Label id="DState" class="detail-state" text="" hittest="false" />
+				<Label class="detail-sub" text="PLAYERS" hittest="false" />
+				<Panel id="DPlayerList" class="detail-players" hittest="false" />
+				<Label id="DFlags" class="detail-flags" text="" hittest="false" />
+			</Panel>
+
+			<Label id="Notice" class="notice hidden" text="" hittest="false" />
+
+			<!-- what the buttons do; glyphs or keys, whichever was used last -->
+			<Panel id="Hints" class="hints" />
+		</Panel>
+
+		<!-- password / address entry -->
+		<Panel id="Dialog" class="dialog hidden">
+			<Panel class="dialog-dim" onactivate="Servers.CloseDialog()" />
+			<Panel class="dialog-panel">
+				<Label id="DialogHead" class="dialog-head" text="PASSWORD" />
+				<Label id="DialogText" class="dialog-text" text="" />
+				<Panel class="dialog-field">
+					<TextEntry id="DialogEntry" class="dialog-entry" text="" maxchars="64" oninputsubmit="Servers.DialogOk()" />
+					<!-- a password shows as dots: the entry's own text is hidden -->
+					<Label id="DialogMask" class="dialog-mask" text="" hittest="false" />
+				</Panel>
+				<Panel class="dialog-row">
+					<Button id="DialogOk" class="dialog-btn is-selected" onactivate="Servers.DialogOk()" onmouseover="Servers.HoverDialog(0)">
+						<Label id="DialogOkText" text="JOIN" hittest="false" />
+					</Button>
+					<Button id="DialogCancel" class="dialog-btn" onactivate="Servers.CloseDialog()" onmouseover="Servers.HoverDialog(1)">
+						<Label text="CANCEL" hittest="false" />
+					</Button>
+				</Panel>
+			</Panel>
+		</Panel>
+
+		<!-- joining -->
+		<Panel id="Joining" class="joining hidden" hittest="false">
+			<Panel class="joining-dim" hittest="false" />
+			<Panel class="joining-band" hittest="false">
+				<Label class="joining-title" text="JOINING" hittest="false" />
+				<Label id="JoiningName" class="joining-name" text="" hittest="false" />
+				<Label id="JoiningSub" class="joining-sub" text="" hittest="false" />
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

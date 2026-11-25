@@ -325,6 +325,7 @@ void CL_Connect(const char *address)
 		return;
 	}
 	Str_Copy(cl.servername, address, sizeof(cl.servername));
+	CL_MasterNoteConnect(&cl.server);
 	/* rand() is never seeded, so every client process would pick the same
 	 * qport, and a second game from the same address (two on one PC, or
 	 * two behind one NAT) would take over the first one's slot */
@@ -382,10 +383,13 @@ static void connectionless(const netadr_t *from, uint8_t *data, size_t len)
 		cl.chan.rate = cl_rate->ivalue;
 		cl.state = ca_loading;
 		Con_Printf("connected\n");
-	} else if (!strcmp(t->argv[0], "reject")) {
+	} else if (!strcmp(t->argv[0], "reject") && (cl.state == ca_challenging || cl.state == ca_connecting) &&
+	           NET_CompareAdr(from, &cl.server)) {
 		const char *why = strchr(text, ' ');
 		Con_Printf("server refused connection:%s\n", why ? why : "");
 		cl.state = ca_disconnected;
+		/* the server browser tells the player why */
+		Str_Copy(cl.disconnect_reason, why ? why + 1 : "refused", sizeof(cl.disconnect_reason));
 		Host_Loading(NULL, NULL, 0);
 	} else if (!strcmp(t->argv[0], "print")) {
 		/* rcon replies and other server messages */
