@@ -458,7 +458,10 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 		qf->tmin = (int)floorf(tmin / 16);
 		qf->w = (int)ceilf(smax / 16) - qf->smin + 1;
 		qf->h = (int)ceilf(tmax / 16) - qf->tmin + 1;
-		if (!(tflags & TEX_SPECIAL) && lightofs >= 0 && qf->w <= 64 && qf->h <= 64 &&
+		/* a face with no lightmap in a lit map got no light at all (light
+		 * leaves those out): it gets a black block, as in Quake. Only a map
+		 * compiled without light is drawn full bright. */
+		if (!(tflags & TEX_SPECIAL) && (lightofs >= 0 || l[L_LIGHTING].len > 0) && qf->w <= 64 && qf->h <= 64 &&
 		    atlas_alloc(qf->w, qf->h, &qf->page, &qf->x, &qf->y)) {
 			int n = qf->w * qf->h;
 			uint8_t *page = q1.pages[qf->page];
@@ -466,7 +469,7 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 			/* every style at its normal strength, added up. GoldSrc light is
 			 * RGB with lightofs counting bytes, and full brightness at 255
 			 * rather than Quake's 128: halved to share the scale */
-			for (int st = 0; st < 4 && styles[st] != 255; st++) {
+			for (int st = 0; lightofs >= 0 && st < 4 && styles[st] != 255; st++) {
 				size_t o = hl ? (size_t)lightofs + (size_t)st * n * 3 : (size_t)lightofs + (size_t)st * n;
 				if (o + (hl ? n * 3 : n) > (size_t)l[L_LIGHTING].len)
 					break;

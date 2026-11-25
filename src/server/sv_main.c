@@ -320,6 +320,7 @@ bool SV_SpawnServer(const char *mapname)
 	char path[160];
 	size_t len;
 	char *progs;
+	const char *progsname;
 	qcvm_t *vm;
 	char keep_serverinfo[8192], keep_localinfo[8192];
 	scenefile_t *scene = NULL;
@@ -383,14 +384,22 @@ bool SV_SpawnServer(const char *mapname)
 	SV_SyncServerinfoCvars(false);
 
 	Host_Loading("server_progs", mapname, 0.10f);
-	progs = FS_LoadFile(sv_progs->string, &len);
+	/* FTE writes sv_progs "" (autodetect) into fte.cfg, which a game dir
+	 * shared with FTE also feeds us: empty means progs.dat, then qwprogs.dat */
+	progsname = sv_progs->string;
+	if (!*progsname) {
+		progsname = "progs.dat";
+		if (!FS_FileExists(progsname) && FS_FileExists("qwprogs.dat"))
+			progsname = "qwprogs.dat";
+	}
+	progs = FS_LoadFile(progsname, &len);
 	if (!progs) {
-		Con_Printf("couldn't load %s\n", sv_progs->string);
+		Con_Printf("couldn't load %s\n", progsname);
 		Scene_Free(scene);
 		Host_Loading(NULL, NULL, 0);
 		return false;
 	}
-	vm = QC_Load(sv_progs->string, progs, len, QCVM_SERVER, sv_tables, BW_MAX(64, pr_maxedicts->ivalue),
+	vm = QC_Load(progsname, progs, len, QCVM_SERVER, sv_tables, BW_MAX(64, pr_maxedicts->ivalue),
 	             (size_t)BW_MAX(1, pr_heapsize->ivalue) * 1024 * 1024);
 	Mem_Free(progs);
 	if (!vm) {
