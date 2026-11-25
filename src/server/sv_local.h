@@ -167,6 +167,7 @@ void SV_ClientsMapChanged(void); /* after a new map is spawned */
 void SV_ReadPackets(void);
 void SV_ClientsPreThink(void);
 void SV_ClientsPostThink(void);
+void SV_ClientsDroppedTime(double t);
 void SV_SendClientMessages(void);
 void SV_ClientsAfterPhysics(void);
 void SV_RunUsercmd(client_t *c, const usercmd_t *u); /* one command, as a client's move runs it */
@@ -296,6 +297,7 @@ typedef struct worldctx_s {
 	bspmap_t *world;
 	bool (*brushmodel)(int modelindex, bspmap_t **bsp, int *submodel);
 	struct vxworld_s *voxel; /* the voxel grid, part of the world (ent 0) */
+	struct area_s *area; /* sv_world.c's index of linked entities, made on first use */
 } worldctx_t;
 /* Points the world functions (SV_Move and friends) at another module's
  * entities, e.g. the client's; NULL restores the server. Returns the previous

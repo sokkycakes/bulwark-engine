@@ -1,10 +1,12 @@
 /* Bulwark engine - server world: entity links, traces and contents.
- * Entities are tested by brute force for now; an area grid can come later.
+ * Entities are found through a small area tree (below) rather than by
+ * testing every slot.
  * ISC licence, see LICENSE. */
 #include "sv_local.h"
 #include "../common/voxel.h"
 
 #include <math.h>
+#include <string.h>
 
 /* The same code serves the client (CSQC traces and prediction) by pointing
  * W at the client's world; see SV_SetWorldContext. */
@@ -17,7 +19,7 @@ static bool sv_brushmodel(int mi, bspmap_t **bsp, int *sub)
 	return true;
 }
 
-static worldctx_t sv_worldctx = {NULL, NULL, sv_brushmodel, NULL};
+static worldctx_t sv_worldctx = {NULL, NULL, sv_brushmodel, NULL, NULL};
 static worldctx_t *W = &sv_worldctx;
 static int last_voxelcell[4] = {0, 0, 0, -1};
 
@@ -45,7 +47,262 @@ worldctx_t *SV_SetWorldContext(worldctx_t *w)
 #define F cur()->vm->fofs
 #define G cur()->vm->gofs
 
-static float *evec(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(cur()->vm, e)[ofs].f; }
+static inline float *evec(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFields(cur()->vm, e)[ofs].f; }
+
+/* --- area tree ------------------------------------------------------------
+ * Every entity slot is filed under the deepest node of a fixed tree of boxes
+ * (the world's bounds halved along x or y, AREA_DEPTH times) that holds its
+ * absmin..absmax whole. A trace, point or touch then looks only at the
+ * nodes its own box reaches. SV_LinkEdict is what writes absmin and absmax,
+ * so it refiles the entity; a check of every slot once per server frame and
+ * per host frame catches the rest (slots cleared or reused, boxes restored
+ * by a save or written by QC). Each candidate still gets every test it got
+ * when all slots were scanned, in slot order, so results are unchanged. */
+#define AREA_DEPTH 5
+#define AREA_NODES ((2 << AREA_DEPTH) - 1)
+
+typedef struct {
+	int axis; /* -1 for a leaf */
+	float dist;
+	int children[2]; /* [0] above dist, [1] below */
+	int head; /* first entity filed here, -1 for none */
+} areanode_t;
+
+typedef struct area_s {
+	qcvm_t *vm;
+	bspmap_t *world;
+	int max_edicts;
+	float wmins[3], wmaxs[3];
+	double synced_time;
+	int synced_frame;
+	int numnodes;
+	areanode_t nodes[AREA_NODES];
+	int *node, *next, *prev; /* per slot; node -1 until filed */
+	float (*box)[6]; /* the absmin, absmax each slot was filed with */
+	uint32_t *bits; /* one per slot, all clear between queries */
+	int *scratch; /* candidate lists; nested queries stack up in it */
+	int scratch_top, scratch_size;
+} area_t;
+
+static int area_build(area_t *a, int depth, const float *mins, const float *maxs)
+{
+	int n = a->numnodes++;
+	areanode_t *an = &a->nodes[n];
+	an->head = -1;
+	if (depth == AREA_DEPTH) {
+		an->axis = -1;
+		an->children[0] = an->children[1] = -1;
+		return n;
+	}
+	an->axis = maxs[0] - mins[0] >= maxs[1] - mins[1] ? 0 : 1;
+	an->dist = 0.5f * (mins[an->axis] + maxs[an->axis]);
+	{
+		float lo[3], hi[3];
+		VectorCopy(mins, lo);
+		VectorCopy(maxs, hi);
+		lo[an->axis] = an->dist;
+		an->children[0] = area_build(a, depth + 1, lo, maxs);
+		hi[an->axis] = an->dist;
+		an->children[1] = area_build(a, depth + 1, mins, hi);
+	}
+	return n;
+}
+
+static void area_unfile(area_t *a, int e)
+{
+	int n = a->node[e];
+	if (n < 0)
+		return;
+	if (a->prev[e] >= 0)
+		a->next[a->prev[e]] = a->next[e];
+	else
+		a->nodes[n].head = a->next[e];
+	if (a->next[e] >= 0)
+		a->prev[a->next[e]] = a->prev[e];
+	a->node[e] = -1;
+}
+
+static void area_file(area_t *a, int e, const float *amin, const float *amax)
+{
+	int n = 0;
+	area_unfile(a, e);
+	for (;;) {
+		const areanode_t *an = &a->nodes[n];
+		if (an->axis < 0)
+			break;
+		if (amin[an->axis] > an->dist)
+			n = an->children[0];
+		else if (amax[an->axis] < an->dist)
+			n = an->children[1];
+		else
+			break; /* straddles the split (or NaN): stays here */
+	}
+	a->node[e] = n;
+	a->prev[e] = -1;
+	a->next[e] = a->nodes[n].head;
+	if (a->next[e] >= 0)
+		a->prev[a->next[e]] = e;
+	a->nodes[n].head = e;
+	memcpy(a->box[e], amin, sizeof(float) * 3);
+	memcpy(a->box[e] + 3, amax, sizeof(float) * 3);
+}
+
+static void area_sync(area_t *a)
+{
+	qcvm_t *vm = a->vm;
+	int fmin = vm->fofs.absmin, fmax = vm->fofs.absmax;
+	for (int e = 1; e < vm->num_edicts; e++) {
+		const qcval_t *f = QC_EdictFields(vm, e);
+		if (a->node[e] >= 0 && !memcmp(a->box[e], &f[fmin], sizeof(float) * 3) &&
+		    !memcmp(a->box[e] + 3, &f[fmax], sizeof(float) * 3))
+			continue;
+		area_file(a, e, &f[fmin].f, &f[fmax].f);
+	}
+}
+
+/* the current context's tree, made or resynced as needed; NULL when the
+ * progs have no absmin/absmax, which leaves every slot to be scanned */
+static area_t *area_get(void)
+{
+	worldctx_t *w = cur();
+	qcvm_t *vm = w->vm;
+	area_t *a = w->area;
+	float wmins[3] = {-4096, -4096, -4096}, wmaxs[3] = {4096, 4096, 4096};
+	int frame = w == &sv_worldctx ? sv.frames : 0;
+	if (!vm || vm->fofs.absmin < 0 || vm->fofs.absmax < 0)
+		return NULL;
+	if (w->world && w->world->nummodels > 0) {
+		VectorCopy(w->world->models[0].mins, wmins);
+		VectorCopy(w->world->models[0].maxs, wmaxs);
+	}
+	if (!a || a->vm != vm || a->world != w->world || a->max_edicts != vm->max_edicts ||
+	    memcmp(a->wmins, wmins, sizeof(wmins)) || memcmp(a->wmaxs, wmaxs, sizeof(wmaxs))) {
+		if (a && a->scratch_top)
+			return NULL; /* remade under a running query: scan this one */
+		if (!a || a->max_edicts != vm->max_edicts) {
+			if (a) {
+				Mem_Free(a->node);
+				Mem_Free(a->box);
+				Mem_Free(a->scratch);
+				Mem_Free(a->bits);
+				Mem_Free(a);
+			}
+			a = w->area = Mem_Alloc(sizeof(*a));
+			a->max_edicts = vm->max_edicts;
+			a->node = Mem_Alloc(sizeof(int) * 3 * (size_t)a->max_edicts);
+			a->next = a->node + a->max_edicts;
+			a->prev = a->next + a->max_edicts;
+			a->box = Mem_Alloc(sizeof(*a->box) * (size_t)a->max_edicts);
+			a->scratch_size = a->max_edicts * 4;
+			a->scratch = Mem_Alloc(sizeof(int) * (size_t)a->scratch_size);
+			a->bits = Mem_Alloc(sizeof(uint32_t) * (size_t)((a->max_edicts + 31) >> 5));
+		}
+		a->vm = vm;
+		a->world = w->world;
+		VectorCopy(wmins, a->wmins);
+		VectorCopy(wmaxs, a->wmaxs);
+		a->numnodes = 0;
+		area_build(a, 0, wmins, wmaxs);
+		for (int e = 0; e < a->max_edicts; e++)
+			a->node[e] = -1;
+		a->synced_time = -1;
+	}
+	if (a->synced_time != host_time || a->synced_frame != frame) {
+		a->synced_time = host_time;
+		a->synced_frame = frame;
+		area_sync(a);
+	}
+	return a;
+}
+
+typedef struct {
+	area_t *a; /* NULL: every slot */
+	int *ids;
+	int n;
+} arealist_t;
+
+/* The slots whose filed boxes may meet lo..hi, in slot order. With no tree
+ * (or no room) it lists every slot, as the scan used to. Release with
+ * area_done, innermost first. */
+static void area_query(arealist_t *l, const float *lo, const float *hi)
+{
+	area_t *a = area_get();
+	int stack[AREA_NODES], sp = 0, n = 0, room, *ids;
+	l->a = NULL;
+	l->n = 0;
+	l->ids = NULL;
+	for (int i = 0; i < 3 && a; i++)
+		if (lo[i] != lo[i] || hi[i] != hi[i])
+			a = NULL; /* NaN boxes overlap everything */
+	if (!a)
+		return;
+	room = a->scratch_size - a->scratch_top;
+	if (room < a->vm->num_edicts)
+		return;
+	ids = a->scratch + a->scratch_top;
+	stack[sp++] = 0;
+	while (sp) {
+		const areanode_t *an = &a->nodes[stack[--sp]];
+		for (int e = an->head; e >= 0; e = a->next[e]) {
+			const float *b = a->box[e];
+			if (b[0] > hi[0] || b[1] > hi[1] || b[2] > hi[2] || b[3] < lo[0] || b[4] < lo[1] || b[5] < lo[2])
+				continue;
+			ids[n++] = e;
+		}
+		if (an->axis < 0)
+			continue;
+		if (hi[an->axis] > an->dist)
+			stack[sp++] = an->children[0];
+		if (lo[an->axis] < an->dist)
+			stack[sp++] = an->children[1];
+	}
+	if (n > 1) {
+		if (n <= 32) {
+			for (int i = 1; i < n; i++) {
+				int v = ids[i], j = i;
+				while (j > 0 && ids[j - 1] > v) {
+					ids[j] = ids[j - 1];
+					j--;
+				}
+				ids[j] = v;
+			}
+		} else {
+			/* long lists (a trace across the map) sort through a bitmap */
+			int words = 0;
+			for (int i = 0; i < n; i++) {
+				a->bits[ids[i] >> 5] |= 1u << (ids[i] & 31);
+				words = BW_MAX(words, (ids[i] >> 5) + 1);
+			}
+			n = 0;
+			for (int w = 0; w < words; w++) {
+				uint32_t b = a->bits[w];
+				a->bits[w] = 0;
+				while (b) {
+					ids[n++] = (w << 5) + __builtin_ctz(b);
+					b &= b - 1;
+				}
+			}
+		}
+	}
+	a->scratch_top += n;
+	l->a = a;
+	l->ids = ids;
+	l->n = n;
+}
+
+static void area_done(arealist_t *l)
+{
+	if (l->a)
+		l->a->scratch_top -= l->n;
+}
+
+/* the k'th slot of a list, or past the end: -1 */
+static inline int area_at(const arealist_t *l, int k, int num_edicts)
+{
+	if (!l->a)
+		return k + 1 < num_edicts ? k + 1 : -1;
+	return k < l->n ? l->ids[k] : -1;
+}
 
 void SV_LinkEdict(int e, bool touch_triggers)
 {
@@ -72,6 +329,8 @@ void SV_LinkEdict(int e, bool touch_triggers)
 		if (amax)
 			amax[i] = org[i] + (radius > 0 ? radius : maxs[i]) + 1;
 	}
+	if (amin && amax && cur()->area && cur()->area->vm == cur()->vm && e < cur()->area->max_edicts)
+		area_file(cur()->area, e, amin, amax);
 	if (touch_triggers && QC_EFloat(cur()->vm, e, F.solid) != SOLID_NOT)
 		SV_TouchTriggers(e);
 }
@@ -215,10 +474,12 @@ int SV_PointContentsBits(const float *p)
 	if (cur()->voxel)
 		bits |= (int)Vox_PointContents(cur()->voxel, p);
 	/* brush entities such as func_water add their contents too */
-	for (int e = 1; e < cur()->vm->num_edicts; e++) {
+	arealist_t l;
+	area_query(&l, p, p);
+	for (int k = 0, e; (e = area_at(&l, k, cur()->vm->num_edicts)) >= 0; k++) {
 		brushref_t m;
 		int solid;
-		if (cur()->vm->edicts[e].free)
+		if (e >= cur()->vm->num_edicts || cur()->vm->edicts[e].free)
 			continue;
 		solid = (int)QC_EFloat(cur()->vm, e, F.solid);
 		if (solid != SOLID_BSP && solid != SOLID_BSPTRIGGER)
@@ -236,6 +497,7 @@ int SV_PointContentsBits(const float *p)
 			bits |= skinbits && c ? skinbits : c;
 		}
 	}
+	area_done(&l);
 	return bits;
 }
 
@@ -402,11 +664,16 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 		tmin[i] = BW_MIN(start[i], end[i]) + mins[i] - 1;
 		tmax[i] = BW_MAX(start[i], end[i]) + maxs[i] + 1;
 	}
-	for (int e = 1; e < cur()->vm->num_edicts && tr->fraction > 0; e++) {
+	arealist_t l = {NULL, NULL, 0};
+	if (onlyent < 0)
+		area_query(&l, tmin, tmax);
+	for (int k = 0, e; tr->fraction > 0 && (e = area_at(&l, k, cur()->vm->num_edicts)) >= 0; k++) {
 		int solid, owner;
 		float *amin, *amax;
 		brushref_t m;
 		if (onlyent >= 0 && e != onlyent)
+			continue;
+		if (e >= cur()->vm->num_edicts)
 			continue;
 		if (cur()->vm->edicts[e].free || (e == passent && onlyent < 0))
 			continue;
@@ -459,6 +726,7 @@ void SV_Move(const float *start, const float *mins, const float *maxs, const flo
 			trace_aabb(start, mins, maxs, end, bmin, bmax, tr, e, c, solid == SOLID_TRIGGER);
 		}
 	}
+	area_done(&l);
 	for (int i = 0; i < 3; i++)
 		tr->endpos[i] = start[i] + (end[i] - start[i]) * tr->fraction;
 	if (tr->ent > 0)
@@ -495,13 +763,15 @@ void SV_TouchTriggers(int e)
 	qcvm_t *vm = cur()->vm;
 	float *amin = evec(e, F.absmin), *amax = evec(e, F.absmax);
 	int oldself = QC_GInt(vm, G.self), oldother = QC_GInt(vm, G.other);
+	arealist_t l;
 	if (!amin || !amax)
 		return;
-	for (int t = 1; t < vm->num_edicts; t++) {
+	area_query(&l, amin, amax);
+	for (int k = 0, t; (t = area_at(&l, k, vm->num_edicts)) >= 0; k++) {
 		int solid;
 		float *tmin, *tmax;
 		func_t touch;
-		if (t == e || vm->edicts[t].free)
+		if (t == e || t >= vm->num_edicts || vm->edicts[t].free)
 			continue;
 		solid = (int)QC_EFloat(vm, t, F.solid);
 		if (solid != SOLID_TRIGGER && solid != SOLID_BSPTRIGGER)
@@ -519,7 +789,17 @@ void SV_TouchTriggers(int e)
 		QC_Execute(vm, touch);
 		if (vm->edicts[e].free)
 			break;
+		/* the touch may have moved e or any trigger: look again from here
+		   on, as the scan of every slot saw them where they are now */
+		if (l.a) {
+			area_done(&l);
+			area_query(&l, amin, amax);
+			for (k = 0; k < l.n && l.ids[k] <= t; k++)
+				;
+			k--;
+		}
 	}
+	area_done(&l);
 	QC_SetGInt(vm, G.self, oldself);
 	QC_SetGInt(vm, G.other, oldother);
 }
