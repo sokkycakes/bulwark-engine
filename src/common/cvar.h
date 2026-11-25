@@ -27,6 +27,7 @@ typedef struct cvar_s {
 	int ivalue;
 	int flags;
 	int modified;
+	int changed_at; /* cvar_generation when it last changed, to tell which of several was set last */
 	struct cvar_s *next;
 } cvar_t;
 

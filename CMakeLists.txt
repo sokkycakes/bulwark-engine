@@ -138,6 +138,7 @@ endif()
 
 add_library(bwserver STATIC
 	src/server/sv_main.c
+	src/server/sv_ded.c
 	src/server/sv_compile.c
 	src/server/sv_world.c
 	src/server/sv_uri.c

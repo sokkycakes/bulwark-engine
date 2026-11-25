@@ -17,7 +17,8 @@ source.
    command. `cl_cmd`, `menu_cmd` and `sv` pass a line to one module even
    when it never registered the command.
 2. Then aliases, engine commands and cvars, in that order.
-3. Anything else goes to the server as a client command. Nuclide handles
+3. Anything else goes to the server as a client command (on a dedicated
+   server, to the server game's `ConsoleCmd`: see dedicated.md). Nuclide handles
    most of its player commands this way, and the engine handles what the
    game passes back with `clientcommand`: the cheats (`god`, `buddha`,
    `noclip`, `notarget`, `fly`, `give`, `setpos`), `pause`, `fullupdate`.

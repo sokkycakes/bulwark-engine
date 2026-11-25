@@ -60,7 +60,7 @@ static void build_info(char *out, size_t size, const char *challenge)
 	         "\\sv_maxclients\\%d\\map\\%s\\maxclients\\%d\\engine\\%s\\password\\%d",
 	         Cvar_String("com_protocolname"), FS_GameDir(), PROTOCOL_VERSION, hostname->string, sv.mapname, n, bots,
 	         svs.maxclients, sv.mapname, svs.maxclients, PROTOCOL_NAME,
-	         Cvar_String("sv_password")[0] && strcmp(Cvar_String("sv_password"), "none") ? 1 : 0);
+	         SV_JoinPassword()[0] ? 1 : 0);
 	/* what a server browser shows besides the counts: the game mode, and
 	 * for Stiletto's duels the arena's state (docs/spec/serverbrowser.md) */
 	static const char *const extra[] = {"g_gametype", "arena_state", "arena_set", "sv_region", NULL};

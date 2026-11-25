@@ -116,7 +116,11 @@ players join a desktop server.
 
 Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 `-frames n`, `-developer`, `-userdir dir` (write configs and saves there
-instead of the game folder), and `+command args` for console commands.
+instead of the game folder), `-port n`, and `+command args` for console
+commands. The game client does the same with `bulwark -dedicated ...`.
+The server runs the game's configs and then `server.cfg`, and takes
+commands typed on the terminal (`status`, `serverinfo`, `map`, `kick`,
+`addBot`, `quit`). See [docs/spec/dedicated.md](docs/spec/dedicated.md).
 
 ## Scenes
 

@@ -877,11 +877,17 @@ static void spawn_client(client_t *c)
 	}
 	copy_parms_to_globals(c);
 	QC_SetGInt(vm, G.self, c->edict);
-	if (QC_FindFunction(vm, "ClientConnect"))
-		QC_ExecuteByName(vm, "ClientConnect");
-	QC_SetGInt(vm, G.self, c->edict);
-	if (QC_FindFunction(vm, "PutClientInServer"))
-		QC_ExecuteByName(vm, "PutClientInServer");
+	if (c->spectator && QC_FindFunction(vm, "SpectatorConnect")) {
+		/* a spectator gets SpectatorConnect in place of ClientConnect and
+		 * PutClientInServer */
+		QC_ExecuteByName(vm, "SpectatorConnect");
+	} else {
+		if (QC_FindFunction(vm, "ClientConnect"))
+			QC_ExecuteByName(vm, "ClientConnect");
+		QC_SetGInt(vm, G.self, c->edict);
+		if (QC_FindFunction(vm, "PutClientInServer"))
+			QC_ExecuteByName(vm, "PutClientInServer");
+	}
 	c->state = CS_SPAWNED;
 	SV_SaveClientSpawned(c);
 	if (!c->bot) {
@@ -902,9 +908,10 @@ void SV_DropClient(client_t *c, const char *reason)
 		return;
 	SV_LiveNoteDrop(c, reason);
 	if (c->state == CS_SPAWNED && vm) {
+		const char *fn = c->spectator && QC_FindFunction(vm, "SpectatorConnect") ? "SpectatorDisconnect" : "ClientDisconnect";
 		QC_SetGInt(vm, G.self, c->edict);
-		if (QC_FindFunction(vm, "ClientDisconnect"))
-			QC_ExecuteByName(vm, "ClientDisconnect");
+		if (QC_FindFunction(vm, fn))
+			QC_ExecuteByName(vm, fn);
 	}
 	if (!is_seat(c)) {
 		/* a connection's seats go with it */
@@ -1007,6 +1014,7 @@ static void cl_getchallenge(const netadr_t *from)
 
 static void cl_connect(const netadr_t *from, int argc, const char **argv)
 {
+	bool spectator = false;
 	int proto, qport, challenge;
 	client_t *c = NULL;
 	if (argc < 5) {
@@ -1040,9 +1048,32 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 			NET_OutOfBandPrint(NS_SERVER, from, "reject %s", why);
 			return;
 		}
-		/* a server password is matched against the "password" userinfo key */
-		if (Cvar_String("sv_password")[0] && strcmp(Cvar_String("sv_password"), "none") && from->type != NA_LOOPBACK &&
-		    strcmp(SV_InfoGet(argv[4], "password", pass, sizeof(pass)), Cvar_String("sv_password"))) {
+		/* QuakeWorld spectators: userinfo "spectator" is 1, or the
+		 * spectator password. They're held to maxspectators and
+		 * spectator_password instead of the players' password. */
+		SV_InfoGet(argv[4], "spectator", pass, sizeof(pass));
+		spectator = pass[0] && strcmp(pass, "0");
+		if (spectator) {
+			const char *sp = Cvar_String("spectator_password");
+			int spectators = 0;
+			for (int i = 0; i < svs.maxclients; i++) {
+				const client_t *o = &svs.clients[i];
+				/* a reconnect takes over its own slot, so it doesn't count */
+				if (o->state != CS_FREE && !o->bot && NET_CompareBaseAdr(&o->chan.remote, from) && o->chan.qport == qport)
+					continue;
+				spectators += o->state != CS_FREE && o->spectator;
+			}
+			if (sp[0] && strcmp(sp, "none") && from->type != NA_LOOPBACK && strcmp(pass, sp)) {
+				NET_OutOfBandPrint(NS_SERVER, from, "reject server needs a spectator password (setinfo spectator <password>)");
+				return;
+			}
+			if (spectators >= Cvar_Value("maxspectators")) {
+				NET_OutOfBandPrint(NS_SERVER, from, "reject server is full of spectators");
+				return;
+			}
+		} else if (SV_JoinPassword()[0] && from->type != NA_LOOPBACK &&
+		           strcmp(SV_InfoGet(argv[4], "password", pass, sizeof(pass)), SV_JoinPassword())) {
+			/* a server password is matched against the "password" userinfo key */
 			NET_OutOfBandPrint(NS_SERVER, from, "reject server needs a password (setinfo password ...)");
 			return;
 		}
@@ -1071,6 +1102,12 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 	c->edict = client_slot(c) + 1;
 	Netchan_Setup(&c->chan, NS_SERVER, from, qport, false);
 	Str_Copy(c->userinfo, argv[4], sizeof(c->userinfo));
+	c->spectator = spectator;
+	/* the passwords stay off the userinfo other players are sent */
+	SV_InfoSet(c->userinfo, sizeof(c->userinfo), "password", "");
+	SV_InfoSet(c->userinfo, sizeof(c->userinfo), "spectator", "");
+	if (spectator)
+		SV_InfoSet(c->userinfo, sizeof(c->userinfo), "*spectator", "1");
 	SV_InfoGet(c->userinfo, "name", c->name, sizeof(c->name));
 	if (!c->name[0]) {
 		Str_Copy(c->name, "player", sizeof(c->name));
@@ -1462,6 +1499,10 @@ static void parse_stringcmd(client_t *c, const char *s)
 		goto done;
 	}
 	if (!strcmp(t->argv[0], "setinfo") && t->argc >= 3) {
+		/* the join passwords are only read at connect and never stored or
+		 * passed on; '*' keys belong to the server */
+		if (!strcmp(t->argv[1], "password") || !strcmp(t->argv[1], "spectator") || t->argv[1][0] == '*')
+			goto done;
 		set_playerkey(c, t->argv[1], t->argv[2], true);
 		if (!strcmp(t->argv[1], "cl_updaterate"))
 			c->updaterate = (float)atof(t->argv[2]);
@@ -1705,13 +1746,16 @@ void SV_ClientsPreThink(void)
 {
 	qcvm_t *vm = sv.vm;
 	func_t f = QC_FindFunction(vm, "PlayerPreThink");
-	for (int i = 0; f && i < svs.maxclients; i++) {
+	bool qw_spectators = QC_FindFunction(vm, "SpectatorConnect") != 0;
+	func_t spec = qw_spectators ? QC_FindFunction(vm, "SpectatorThink") : 0;
+	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		if (c->state != CS_SPAWNED)
+		func_t think = c->spectator && qw_spectators ? spec : f;
+		if (c->state != CS_SPAWNED || !think)
 			continue;
 		QC_SetGInt(vm, G.self, c->edict);
 		QC_SetGFloat(vm, G.time, (float)sv.time);
-		QC_Execute(vm, f);
+		QC_Execute(vm, think);
 	}
 	/* bots send no input, so each frame runs one command for them, repeating
 	 * the last one; the game fills input_* from its AI inside
@@ -1735,6 +1779,7 @@ void SV_ClientsPostThink(void)
 {
 	qcvm_t *vm = sv.vm;
 	func_t f = QC_FindFunction(vm, "PlayerPostThink");
+	bool qw_spectators = QC_FindFunction(vm, "SpectatorConnect") != 0;
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
 		if (c->state != CS_SPAWNED)
@@ -1742,7 +1787,8 @@ void SV_ClientsPostThink(void)
 		/* real time passes for everyone, so movement budget refills */
 		c->cmd_budget = BW_MIN(c->cmd_budget + sv.frametime, 0.25f);
 		SV_CompatPostThink(c);
-		if (!f)
+		/* spectators think once, in SpectatorThink */
+		if (!f || (c->spectator && qw_spectators))
 			continue;
 		QC_SetGInt(vm, G.self, c->edict);
 		QC_SetGFloat(vm, G.time, (float)sv.time);
@@ -2428,18 +2474,21 @@ void SV_InitClients(void)
 /* Called by SV_SpawnServer before the progs runs, so the slot count is fixed
  * for the whole map. Slots are only resized when nobody is connected. */
 /* maxplayers, maxclients and sv_playerslots are one setting under three
- * names. Whichever was set since the last map wins (sv_playerslots first,
- * then maxclients, then maxplayers, when several were), and all three are
- * then given that value, so a game reading any of them sees the real
- * slot count. */
+ * names. Whichever was set last since the previous map wins (configs set
+ * all three, then "maxplayers 2" on the command line must still count),
+ * and all three are then given that value, so a game reading any of them
+ * sees the real slot count. */
 static void sync_slot_cvars(void)
 {
 	static int seen[3];
 	cvar_t *names[3] = {sv_playerslots, sv_maxclients_alias, sv_maxclients};
 	cvar_t *from = sv_maxclients;
-	for (int i = 2; i >= 0; i--)
-		if (names[i]->modified != seen[i] && *names[i]->string)
+	int latest = -1;
+	for (int i = 0; i < 3; i++)
+		if (names[i]->modified != seen[i] && *names[i]->string && names[i]->changed_at > latest) {
 			from = names[i];
+			latest = names[i]->changed_at;
+		}
 	char value[16];
 	snprintf(value, sizeof(value), "%d", BW_MAX(1, BW_MIN(255, from->ivalue)));
 	for (int i = 0; i < 3; i++) {

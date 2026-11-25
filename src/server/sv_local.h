@@ -100,6 +100,7 @@ typedef struct {
 typedef struct client_s {
 	clientstate_t state;
 	bool bot;
+	bool spectator; /* joined with userinfo "spectator" set: QC's Spectator* entry points, "*spectator 1" */
 	int link; /* link player (sv_link.c): its slot + 1, 0 for none; bot is set too */
 	/* split screen: a local player sharing another client's connection.
 	 * parent is that connection's slot + 1 (0 for a connection itself), seat
@@ -272,6 +273,7 @@ bool SV_SaveTakeRestored(client_t *c);
 extern bool sv_dedicated;
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);
+bool SV_MapExists(const char *mapname); /* maps/<name>.scene/.bsp/.vxmap/.ftew */
 void SV_Shutdown(void);
 void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);
@@ -282,6 +284,16 @@ const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outs
 const char *SV_InfoPublic(const char *info, char *out, size_t outsize);
 int SV_Spawn(void);
 bool SV_ConsoleCommand(const char *line);
+/* any line to the progs' ConsoleCmd, as a dedicated server's console does
+ * with commands the engine doesn't know */
+bool SV_GameCommand(const char *line);
+/* the dedicated server host (sv_ded.c): bulwark-ded's main, and
+ * "bulwark -dedicated" */
+int Ded_Main(int argc, char **argv);
+/* the password players need, from sv_password or FTE's "password"; "" for none */
+const char *SV_JoinPassword(void);
+/* an info string's keys and values, one per line */
+void SV_PrintInfo(const char *info);
 /* "say" from the server console; false when no server is running */
 bool SV_ConsoleSay(const char *msg);
 
