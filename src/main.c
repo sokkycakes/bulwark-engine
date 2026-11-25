@@ -144,6 +144,12 @@ int main(int argc, char **argv)
 	Cmd_SetFallback(CL_ForwardToServer);
 
 	Mf_ExecConfigs();
+#ifdef BW_XBOX
+	/* the console's own settings over the game's (data/xbox_ui.cfg in the
+	 * engine data the disc carries): after autoexec.cfg, before the title */
+	if (FS_FileExists("xbox_ui.cfg"))
+		Cbuf_AddText("exec xbox_ui.cfg\n");
+#endif
 	/* the front end starts on its menu unless the command line starts a game */
 	bool starts_game = false;
 	for (const char *l = cmds.data; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : "") {
