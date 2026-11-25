@@ -5,6 +5,8 @@
 #include "keys.h"
 #include "../common/cvar.h"
 #include "../common/cmd.h"
+#include "in_pads.h"
+#include "steaminput.h"
 
 #include <stdlib.h>
 
@@ -17,12 +19,18 @@ static cvar_t *vid_vsync, *vid_width, *vid_height, *vid_fullscreen;
 
 /* --- game controllers ------------------------------------------------------ */
 
-#define MAX_PADS 4
+/* slots hold an SDL controller or a Steam Input one (in_steam.c); a slot is
+ * a split screen device, device = slot + 1 */
 static struct {
 	SDL_GameController *gc;
 	SDL_JoystickID id;
+	uint64_t steam;    /* a Steam Input handle, when the slot is Steam Input's */
+	si_set_t glyphs;   /* the prompts this pad wants */
 	bool ltrig, rtrig; /* trigger keys, pressed past half travel */
 } pads[MAX_PADS];
+
+static cvar_t *in_padglyphs;
+static int last_pad = -1;
 
 static int pad_for_id(SDL_JoystickID id)
 {
@@ -32,14 +40,86 @@ static int pad_for_id(SDL_JoystickID id)
 	return -1;
 }
 
+/* the pad a player used last: its prompts are what HUDs show */
+void Pad_Touched(int slot)
+{
+	if (slot < 0 || slot >= MAX_PADS || slot == last_pad)
+		return;
+	last_pad = slot;
+	if (in_padglyphs)
+		Cvar_SetDirect(in_padglyphs, si_set_name(pads[slot].glyphs));
+}
+
+int Pad_ClaimSteam(uint64_t handle)
+{
+	for (int i = 0; i < MAX_PADS; i++)
+		if (!pads[i].gc && !pads[i].steam) {
+			memset(&pads[i], 0, sizeof(pads[i]));
+			pads[i].steam = handle;
+			pads[i].glyphs = si_set_for_controller(handle);
+			return i;
+		}
+	return -1;
+}
+
+void Pad_Release(int slot)
+{
+	if (slot >= 0 && slot < MAX_PADS && pads[slot].steam)
+		memset(&pads[slot], 0, sizeof(pads[slot]));
+}
+
+/* SDL_GameControllerGetSteamHandle came with SDL 2.30: looked up when the
+ * SDL this runs with has it */
+static uint64_t pad_steam_handle(SDL_GameController *gc)
+{
+#if SDL_VERSION_ATLEAST(2, 30, 0)
+	SDL_version v;
+	SDL_GetVersion(&v);
+	if (SDL_VERSIONNUM(v.major, v.minor, v.patch) >= SDL_VERSIONNUM(2, 30, 0))
+		return SDL_GameControllerGetSteamHandle(gc);
+#endif
+	return 0;
+}
+
+/* what a pad really is, and so its prompts. Run by Steam (as a Steam app
+ * or as a non-Steam game), a game sees Steam's virtual gamepad instead of
+ * the device: SDL 2.30 reads Steam's SteamVirtualGamepadInfo file and
+ * reports the real device; an older SDL reports Valve's virtual pad id, and
+ * the file is read here instead */
+static si_set_t pad_glyphs(SDL_GameController *gc, char *how, size_t howsize)
+{
+	uint16_t vid = SDL_GameControllerGetVendor(gc), pid = SDL_GameControllerGetProduct(gc);
+	int type = (int)SDL_GameControllerGetType(gc);
+	const char *name = SDL_GameControllerName(gc);
+	snprintf(how, howsize, "%s", pad_steam_handle(gc) ? ", through Steam Input's virtual gamepad" : "");
+	if (vid == SI_VID_VALVE && pid == SI_PID_STEAM_VIRTUAL_GAMEPAD) {
+		int slot = si_virtual_gamepad_slot(name);
+		uint16_t rv = 0, rp = 0;
+		if (slot < 0)
+			slot = SDL_GameControllerGetPlayerIndex(gc); /* XInput's index on Windows */
+		if (si_virtual_gamepad_info(slot, &rv, &rp, NULL, 0) && rv) {
+			vid = rv, pid = rp, type = SI_SDLTYPE_UNKNOWN;
+			snprintf(how, howsize, ", through Steam's virtual gamepad %d", slot);
+		} else {
+			/* no word on what's behind it: on a Deck it is the Deck */
+			const char *deck = getenv("SteamDeck");
+			snprintf(how, howsize, ", Steam's virtual gamepad");
+			if (deck && atoi(deck))
+				return SI_SET_STEAMDECK;
+		}
+	}
+	return si_set_for_device(vid, pid, type);
+}
+
 static void pad_open(int index)
 {
 	SDL_GameController *gc;
+	char how[96];
 	int slot = -1;
 	if (!SDL_IsGameController(index))
 		return;
 	for (int i = 0; i < MAX_PADS; i++)
-		if (!pads[i].gc) {
+		if (!pads[i].gc && !pads[i].steam) {
 			slot = i;
 			break;
 		}
@@ -48,7 +128,9 @@ static void pad_open(int index)
 	pads[slot].gc = gc;
 	pads[slot].id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gc));
 	pads[slot].ltrig = pads[slot].rtrig = false;
-	Con_Printf("controller %d: %s\n", slot, SDL_GameControllerName(gc));
+	pads[slot].glyphs = pad_glyphs(gc, how, sizeof(how));
+	Con_Printf("controller %d: %s (%s glyphs%s)\n", slot, SDL_GameControllerName(gc),
+	           si_set_name(pads[slot].glyphs), how);
 	IN_ControllerAdded(slot);
 }
 
@@ -80,6 +162,15 @@ static int pad_button(int b)
 	case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return K_GP_DPAD_DOWN;
 	case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return K_GP_DPAD_LEFT;
 	case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return K_GP_DPAD_RIGHT;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+	/* SDL's paddles 1-4 are the Deck's R4, L4, R5, L5 */
+	case SDL_CONTROLLER_BUTTON_PADDLE1: return K_GP_R4;
+	case SDL_CONTROLLER_BUTTON_PADDLE2: return K_GP_L4;
+	case SDL_CONTROLLER_BUTTON_PADDLE3: return K_GP_R5;
+	case SDL_CONTROLLER_BUTTON_PADDLE4: return K_GP_L5;
+	case SDL_CONTROLLER_BUTTON_TOUCHPAD: return K_GP_TOUCHPAD;
+	case SDL_CONTROLLER_BUTTON_MISC1: return K_GP_MISC1;
+#endif
 	default: return 0;
 	}
 }
@@ -122,6 +213,38 @@ static void JoyVirtual_f(int argc, const char **argv)
 #endif
 }
 
+/* joy_virtual_dev <vendor> <product> [name]: a pretend controller that
+ * says it is that device ("joy_virtual_dev 0x28de 0x1205" is a Steam Deck,
+ * "0x28de 0x11ff Steam Virtual Gamepad pad 0" Steam's virtual gamepad) */
+static void JoyVirtualDev_f(int argc, const char **argv)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+	SDL_VirtualJoystickDesc d;
+	int index, i;
+	if (argc < 3) {
+		Con_Printf("joy_virtual_dev <vendor> <product> [name]\n");
+		return;
+	}
+	for (i = 0; i < MAX_PADS && virtual_pads[i]; i++)
+		;
+	if (i == MAX_PADS)
+		return;
+	SDL_zero(d);
+	d.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
+	d.type = SDL_JOYSTICK_TYPE_GAMECONTROLLER;
+	d.naxes = SDL_CONTROLLER_AXIS_MAX;
+	d.nbuttons = SDL_CONTROLLER_BUTTON_MAX;
+	d.vendor_id = (Uint16)strtoul(argv[1], NULL, 0);
+	d.product_id = (Uint16)strtoul(argv[2], NULL, 0);
+	d.name = argc > 3 ? argv[3] : "Virtual controller";
+	index = SDL_JoystickAttachVirtualEx(&d);
+	if (index < 0 || !(virtual_pads[i] = SDL_JoystickOpen(index)))
+		Con_Printf("joy_virtual_dev: %s\n", SDL_GetError());
+#else
+	Con_Printf("joy_virtual_dev needs SDL 2.24\n");
+#endif
+}
+
 static void JoyVirtualSet_f(int argc, const char **argv)
 {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
@@ -145,7 +268,9 @@ static void JoyVirtualSet_f(int argc, const char **argv)
 
 void VID_Rumble(int dev, float low, float high, float seconds)
 {
-	if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
+	if (dev >= 0 && dev < MAX_PADS && pads[dev].steam)
+		INS_Rumble(dev, low, high, seconds);
+	else if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
 		SDL_GameControllerRumble(pads[dev].gc, (Uint16)(BW_MAX(0, BW_MIN(low, 1)) * 65535),
 		                         (Uint16)(BW_MAX(0, BW_MIN(high, 1)) * 65535), (Uint32)(BW_MAX(seconds, 0) * 1000));
 }
@@ -162,6 +287,10 @@ void VID_RumbleTriggers(int dev, float left, float right, float seconds)
 
 void VID_SetControllerLED(int dev, const float *rgb)
 {
+	if (dev >= 0 && dev < MAX_PADS && pads[dev].steam) {
+		INS_LED(dev, rgb);
+		return;
+	}
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 	if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
 		SDL_GameControllerSetLED(pads[dev].gc, (Uint8)(BW_MAX(0, BW_MIN(rgb[0], 1)) * 255),
@@ -290,7 +419,93 @@ static void InDeviceIds_f(int argc, const char **argv)
 	Con_Printf("keyboard and mouse: device 0\n");
 	for (int i = 0; i < MAX_PADS; i++)
 		if (pads[i].gc)
-			Con_Printf("controller %d: %s\n", i, SDL_GameControllerName(pads[i].gc));
+			Con_Printf("controller %d: %s (%s glyphs)%s\n", i, SDL_GameControllerName(pads[i].gc),
+			           si_set_name(pads[i].glyphs), INS_Active() ? ", unused while Steam Input has controllers" : "");
+		else if (pads[i].steam)
+			Con_Printf("controller %d: Steam Input %llu (%s glyphs)\n", i, (unsigned long long)pads[i].steam,
+			           si_set_name(pads[i].glyphs));
+}
+
+/* the key that "what" names, or the controller key bound to the command
+ * "what" (the first in this order, so A beats the d-pad for the same command) */
+static int pad_key_for(const char *what)
+{
+	static const int order[] = {K_GP_A, K_GP_B, K_GP_X, K_GP_Y, K_GP_RTRIGGER, K_GP_LTRIGGER, K_GP_RSHOULDER,
+	                            K_GP_LSHOULDER, K_GP_LTHUMB, K_GP_RTHUMB, K_GP_MENU, K_GP_VIEW, K_GP_DPAD_UP,
+	                            K_GP_DPAD_DOWN, K_GP_DPAD_LEFT, K_GP_DPAD_RIGHT, K_GP_L4, K_GP_R4, K_GP_L5,
+	                            K_GP_R5, K_GP_TOUCHPAD, K_GP_MISC1};
+	int k = Key_NumForName(what);
+	if (k > 0)
+		return k;
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(order); i++)
+		if (!Str_ICmp(Key_GetBinding(order[i]), what))
+			return order[i];
+	return -1;
+}
+
+static si_button_t key_button(int key)
+{
+	switch (key) {
+	case K_GP_A: return SI_BTN_SOUTH;
+	case K_GP_B: return SI_BTN_EAST;
+	case K_GP_X: return SI_BTN_WEST;
+	case K_GP_Y: return SI_BTN_NORTH;
+	case K_GP_LSHOULDER: return SI_BTN_LB;
+	case K_GP_RSHOULDER: return SI_BTN_RB;
+	case K_GP_LTRIGGER: return SI_BTN_LT;
+	case K_GP_RTRIGGER: return SI_BTN_RT;
+	case K_GP_LTHUMB: return SI_BTN_LCLICK;
+	case K_GP_RTHUMB: return SI_BTN_RCLICK;
+	case K_GP_MENU: return SI_BTN_START;
+	case K_GP_VIEW: return SI_BTN_BACK;
+	case K_GP_DPAD_UP: return SI_BTN_DUP;
+	case K_GP_DPAD_DOWN: return SI_BTN_DDOWN;
+	case K_GP_DPAD_LEFT: return SI_BTN_DLEFT;
+	case K_GP_DPAD_RIGHT: return SI_BTN_DRIGHT;
+	case K_GP_L4: return SI_BTN_L4;
+	case K_GP_L5: return SI_BTN_L5;
+	case K_GP_R4: return SI_BTN_R4;
+	case K_GP_R5: return SI_BTN_R5;
+	case K_GP_TOUCHPAD: return SI_BTN_CPAD;
+	default: return SI_BTN_NONE;
+	}
+}
+
+/* IN_PadGlyph: a prompt for a key or command on a controller */
+static bool pad_glyph(const char *what, int dev, char *path, size_t pathsize, char *label, size_t labelsize)
+{
+	int slot = dev > 0 ? dev - 1 : last_pad, key;
+	si_set_t set;
+	si_button_t btn;
+	if (slot < 0 || slot >= MAX_PADS) {
+		/* nobody has used one: the first connected, else Xbox's look */
+		for (slot = 0; slot < MAX_PADS && !pads[slot].gc && !pads[slot].steam; slot++)
+			;
+	}
+	if (slot < MAX_PADS && pads[slot].steam)
+		return INS_Glyph(slot, what, path, pathsize, label, labelsize);
+	set = slot < MAX_PADS && pads[slot].gc ? pads[slot].glyphs : SI_SET_XBOX;
+	key = pad_key_for(what);
+	if (key < 0 || !(btn = key_button(key)))
+		return false;
+	snprintf(path, pathsize, si_xelu_file(set, btn) ? "{images}/glyphs/%s/%s.png" : "", si_set_name(set),
+	         si_button_name(btn));
+	snprintf(label, labelsize, "%s", si_button_label(set, btn));
+	return true;
+}
+
+/* in_glyph <key or command> [device]: the prompt a HUD would show */
+static void InGlyph_f(int argc, const char **argv)
+{
+	char path[128], label[64];
+	if (argc < 2) {
+		Con_Printf("in_glyph <key or command> [device]: e.g. in_glyph +jump\n");
+		return;
+	}
+	if (pad_glyph(argv[1], argc > 2 ? atoi(argv[2]) : -1, path, sizeof(path), label, sizeof(label)))
+		Con_Printf("%s: %s \"%s\"\n", argv[1], path[0] ? path : "(no image)", label);
+	else
+		Con_Printf("%s: no controller binding\n", argv[1]);
 }
 
 /* vid_modelist: the display's modes */
@@ -348,12 +563,34 @@ bool VID_Init(int width, int height, bool fullscreen)
 	Cmd_AddD("in_deviceids", InDeviceIds_f, "List the input devices");
 	SDL_GL_SetSwapInterval(vid_vsync->value ? 1 : 0);
 	SDL_StartTextInput();
+	in_padglyphs = Cvar_Get("in_padglyphs", "xbox", CVAR_READONLY,
+	                        "Button prompts for the controller used last: xbox, xbox360, ps4, ps5, switch, steamdeck "
+	                        "or steamcontroller ({images}/glyphs/<set>/)");
+	IN_PadGlyph = pad_glyph;
+	Cmd_AddD("in_glyph", InGlyph_f, "Show the controller prompt for a key or command");
+	/* Steam Input first: whether Steam runs decides how SDL should treat
+	 * Valve's controllers */
+	{
+		char *base = SDL_GetBasePath();
+		INS_Init(base);
+		SDL_free(base);
+	}
+	/* buttons by position, as Steam Input names them: A is the bottom
+	 * button on every pad, a Switch pad's B included */
+	SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
+#ifdef SDL_HINT_JOYSTICK_HIDAPI_STEAM
+	/* without Steam, read a Steam Controller directly (SDL leaves it to
+	 * Steam by default, since both reading it at once fights) */
+	if (!si_active() && si_launch() == SI_LAUNCH_PLAIN)
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
+#endif
 	/* controllers are optional: devices already plugged in arrive as
 	 * CONTROLLERDEVICEADDED events */
 	if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0)
 		Con_DPrintf("no game controller support: %s\n", SDL_GetError());
 	Cmd_Add("joy_virtual", JoyVirtual_f);
 	Cmd_Add("joy_virtual_set", JoyVirtualSet_f);
+	Cmd_Add("joy_virtual_dev", JoyVirtualDev_f);
 	return true;
 }
 
@@ -361,6 +598,7 @@ void VID_Shutdown(void)
 {
 	if (!window)
 		return;
+	INS_Shutdown();
 	for (int i = 0; i < MAX_PADS; i++)
 		if (pads[i].gc)
 			SDL_GameControllerClose(pads[i].gc);
@@ -513,15 +751,23 @@ bool VID_PumpEvents(void)
 			break;
 		case SDL_CONTROLLERBUTTONDOWN:
 		case SDL_CONTROLLERBUTTONUP: {
-			int k = pad_button(ev.cbutton.button);
-			if (k && pad_for_id(ev.cbutton.which) >= 0)
-				IN_DeviceKeyEvent(pad_for_id(ev.cbutton.which) + 1, k, ev.type == SDL_CONTROLLERBUTTONDOWN, 0);
+			int k = pad_button(ev.cbutton.button), slot = pad_for_id(ev.cbutton.which);
+			/* while Steam Input has the controllers, SDL's copy of them is
+			 * Steam's virtual gamepad (or the device itself) */
+			if (!k || slot < 0 || (INS_Active() && ev.type == SDL_CONTROLLERBUTTONDOWN))
+				break;
+			if (ev.type == SDL_CONTROLLERBUTTONDOWN)
+				Pad_Touched(slot);
+			IN_DeviceKeyEvent(slot + 1, k, ev.type == SDL_CONTROLLERBUTTONDOWN, 0);
 			break;
 		}
 		case SDL_CONTROLLERAXISMOTION: {
 			int slot = pad_for_id(ev.caxis.which);
-			if (slot >= 0)
-				pad_axis(slot, ev.caxis.axis, ev.caxis.value);
+			if (slot < 0 || (INS_Active() && ev.caxis.value))
+				break;
+			if (abs(ev.caxis.value) > 16000)
+				Pad_Touched(slot);
+			pad_axis(slot, ev.caxis.axis, ev.caxis.value);
 			break;
 		}
 		case SDL_WINDOWEVENT:
@@ -532,5 +778,6 @@ bool VID_PumpEvents(void)
 	}
 	if (pending_key)
 		IN_KeyEvent(pending_key, true, 0);
+	INS_Frame();
 	return true;
 }
