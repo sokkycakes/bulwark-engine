@@ -7,7 +7,12 @@
  * Engine pages lay their rows out themselves; script menus place items on
  * a 320x200 screen scaled to fit, as Quake's menus were. A script menu's
  * text items run "<callback> <option>" when the menu has a callback, and
- * their own command when it doesn't. ISC licence, see LICENSE. */
+ * their own command when it doesn't. ISC licence, see LICENSE.
+ *
+ * Native UI builds (BW_UI_NATIVE, the Xbox) reach these pages from a pad
+ * alone: B goes back, X clears a binding, the D-pad repeats while held,
+ * and menu_options is cut to the pages a console needs (Controller,
+ * Buttons, Audio, Video, Game). */
 #include "client.h"
 #include "console.h"
 #include "keys.h"
@@ -64,6 +69,13 @@ static int depth;
 static bool editing;     /* an edit field has the keys */
 static char editbuf[256];
 static bool binding;     /* waiting for the key to bind */
+#ifdef BW_UI_NATIVE
+/* a pad has no key repeat of its own (and the OS's is off for the UI):
+ * a held direction repeats after 400 ms, then every 100 ms, as the native
+ * UI's own menus do */
+static int held_key;
+static double held_next;
+#endif
 static float lastmx = -1, lastmy = -1;
 
 static const float c_text[3] = {0.85f, 0.85f, 0.85f}, c_dim[3] = {0.5f, 0.5f, 0.5f}, c_title[3] = {1, 0.75f, 0.35f};
@@ -233,6 +245,15 @@ static void pop(void)
 		return;
 	free_page(stack[--depth]);
 	editing = binding = false;
+#ifdef BW_UI_NATIVE
+	held_key = 0;
+#endif
+#if defined(BW_UI_NATIVE) && defined(BW_XBOX)
+	/* a console is usually switched off rather than quit, which would
+	 * lose what was changed here: write the config as the menus close */
+	if (!depth)
+		Cfg_SaveIfModified();
+#endif
 }
 
 static void close_all(void)
@@ -306,11 +327,53 @@ static void run(page_t *p, const char *command)
 		Cbuf_AddText(va("%s\n", command));
 }
 
-/* the keys bound to a command, as "K, MOUSE1", or "" */
+#ifdef BW_UI_NATIVE
+/* the pad's buttons as the player knows them, the order the list shows
+ * them in. On the Xbox the shoulders are the White and Black buttons
+ * (vid_xbox.c). */
+static const struct {
+	int key;
+	const char *name;
+} pad_names[] = {
+#ifdef BW_XBOX
+	{K_GP_A, "A"}, {K_GP_B, "B"}, {K_GP_X, "X"}, {K_GP_Y, "Y"},
+	{K_GP_RTRIGGER, "Right trigger"}, {K_GP_LTRIGGER, "Left trigger"},
+	{K_GP_LSHOULDER, "White"}, {K_GP_RSHOULDER, "Black"},
+#else
+	/* beside keyboard keys, where a bare "A" would be the A key */
+	{K_GP_A, "Pad A"}, {K_GP_B, "Pad B"}, {K_GP_X, "Pad X"}, {K_GP_Y, "Pad Y"},
+	{K_GP_RTRIGGER, "Right trigger"}, {K_GP_LTRIGGER, "Left trigger"},
+	{K_GP_LSHOULDER, "Left bumper"}, {K_GP_RSHOULDER, "Right bumper"},
+#endif
+	{K_GP_LTHUMB, "Left stick click"}, {K_GP_RTHUMB, "Right stick click"},
+	{K_GP_DPAD_UP, "D-pad up"}, {K_GP_DPAD_DOWN, "D-pad down"}, {K_GP_DPAD_LEFT, "D-pad left"},
+	{K_GP_DPAD_RIGHT, "D-pad right"}, {K_GP_MENU, "Start"}, {K_GP_VIEW, "Back"},
+};
+#endif
+
+/* the keys bound to a command, as "K, MOUSE1", or "". With the native UI
+ * the pad's buttons come first under their own names; the Xbox, which has
+ * only pads, lists nothing else. */
 static void keys_for(const char *command, char *out, size_t size)
 {
 	out[0] = 0;
+#ifdef BW_UI_NATIVE
+	for (size_t i = 0; i < BW_ARRAY_COUNT(pad_names); i++) {
+		const char *b = Key_GetBinding(pad_names[i].key);
+		if (b && *b && !Str_ICmp(b, command)) {
+			size_t n = strlen(out);
+			snprintf(out + n, size - n, "%s%s", n ? ", " : "", pad_names[i].name);
+		}
+	}
+#ifdef BW_XBOX
+	return;
+#endif
+#endif
 	for (int k = 0; k < K_MAX; k++) {
+#ifdef BW_UI_NATIVE
+		if (k >= K_GP_DPAD_UP && k <= K_GP_RTRIGGER)
+			continue; /* named above */
+#endif
 		const char *b = Key_GetBinding(k);
 		if (b && *b && !Str_ICmp(b, command)) {
 			size_t n = strlen(out);
@@ -408,7 +471,11 @@ static void value_text(const item_t *it, char *out, size_t size)
 	case IT_BIND:
 		keys_for(it->command, out, size);
 		if (!out[0])
+#ifdef BW_UI_NATIVE
+			Str_Copy(out, "-", size); /* a player-facing "not bound" */
+#else
 			Str_Copy(out, "???", size);
+#endif
 		break;
 	case IT_SLIDER:
 		snprintf(out, size, "%g", atof(get_value(it->cvar, buf, sizeof(buf))));
@@ -499,7 +566,12 @@ static void draw_page(page_t *p, int sw, int sh)
 {
 	/* about 40 rows on a 720 line screen, larger on bigger ones */
 	const float size = BW_MAX(10.0f, floorf(sh / 56.0f)), row = size * 1.5f;
+#ifdef BW_UI_NATIVE
+	/* inside a TV's safe area: 5% of a 640x480 screen each side */
+	float pw = BW_MIN(sw - 64.0f, size * 60), ph = BW_MIN(sh - 48.0f, size * 46);
+#else
 	float pw = BW_MIN(sw - 32.0f, size * 60), ph = BW_MIN(sh - 32.0f, size * 46);
+#endif
 	float px = (sw - pw) / 2, py = (sh - ph) / 2;
 	int visible = (int)((ph - size * 6) / row);
 	R_Rect(0, 0, (float)sw, (float)sh, c_panel, 0.45f);
@@ -555,6 +627,14 @@ void EM_Draw(int w, int h)
 	page_t *p = top();
 	if (!p)
 		return;
+#ifdef BW_UI_NATIVE
+	if (held_key && !editing && !binding && Sys_Seconds() >= held_next) {
+		EM_KeyEvent(held_key, true, 0);
+		held_next = Sys_Seconds() + 0.1; /* the press restarted the first wait */
+		if (!(p = top()))
+			return;
+	}
+#endif
 	if (p->populate && p->refresh > 0 && Sys_Seconds() >= p->nextrefresh) {
 		p->nextrefresh = Sys_Seconds() + p->refresh;
 		if (!editing && !binding)
@@ -592,6 +672,12 @@ static void move_cursor(page_t *p, int dir)
 static bool edit_key(page_t *p, item_t *it, int key, int unicode)
 {
 	size_t n = strlen(editbuf);
+#ifdef BW_UI_NATIVE
+	if (key == K_GP_A)
+		key = K_ENTER;
+	else if (key == K_GP_B)
+		key = K_ESCAPE;
+#endif
 	if (key == K_ENTER || key == K_KP_ENTER)
 		finish_edit(p, it);
 	else if (key == K_ESCAPE)
@@ -611,11 +697,38 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	page_t *p = top();
 	if (!p)
 		return false;
+#ifdef BW_UI_NATIVE
+	if (!down) {
+		if (key == held_key)
+			held_key = 0;
+		return true;
+	}
+	switch (key) {
+	case K_UPARROW: case K_DOWNARROW: case K_LEFTARROW: case K_RIGHTARROW:
+	case K_GP_DPAD_UP: case K_GP_DPAD_DOWN: case K_GP_DPAD_LEFT: case K_GP_DPAD_RIGHT:
+		if (!binding && !editing) {
+			held_key = key;
+			held_next = Sys_Seconds() + 0.4;
+		}
+		break;
+	default:
+		held_key = 0;
+		break;
+	}
+#else
 	if (!down)
 		return true;
+#endif
 	item_t *it = p->numitems ? &p->items[p->cursor] : NULL;
 	if (binding && it && it->type == IT_BIND) {
 		binding = false;
+#ifdef BW_UI_NATIVE
+		/* START opens the menus and BACK is half of the console chord:
+		 * bound to an action they would leave a pad with no way back, so
+		 * they cancel the wait instead, as Escape does */
+		if (key == K_GP_MENU || key == K_GP_VIEW)
+			return true;
+#endif
 		if (key != K_ESCAPE)
 			Key_SetBinding(key, it->command);
 		return true;
@@ -627,6 +740,9 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 	switch (key) {
 	case K_ESCAPE:
 	case K_MOUSE2:
+#ifdef BW_UI_NATIVE
+	case K_GP_B:
+#endif
 		pop();
 		break;
 	case K_UPARROW: case K_KP_UPARROW: case K_MWHEELUP: case K_GP_DPAD_UP:
@@ -636,10 +752,16 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 		move_cursor(p, 1);
 		break;
 	case K_PGUP:
+#ifdef BW_UI_NATIVE
+	case K_GP_LSHOULDER:
+#endif
 		for (int i = 0; i < 10; i++)
 			move_cursor(p, -1);
 		break;
 	case K_PGDN:
+#ifdef BW_UI_NATIVE
+	case K_GP_RSHOULDER:
+#endif
 		for (int i = 0; i < 10; i++)
 			move_cursor(p, 1);
 		break;
@@ -669,6 +791,9 @@ bool EM_KeyEvent(int key, bool down, int unicode)
 			activate(p, it, 0);
 		break;
 	case K_BACKSPACE: case K_DEL:
+#ifdef BW_UI_NATIVE
+	case K_GP_X:
+#endif
 		if (it && it->type == IT_BIND)
 			for (int k = 0; k < K_MAX; k++) {
 				const char *b = Key_GetBinding(k);
@@ -853,6 +978,58 @@ static void pg_network(page_t *p)
 	add_slider(p, "Connection timeout", "cl_timeout", 10, 120, 5);
 }
 
+#ifdef BW_UI_NATIVE
+/* a console's settings: what a pad and a TV can use. The rest (windows,
+ * resolutions, the mouse, voice chat, renderer switches) is left out. */
+static void pg_options(page_t *p)
+{
+	add_cmd(p, "Controller", "menu_controller");
+	add_cmd(p, "Buttons", "menu_keys");
+	add_cmd(p, "Audio", "menu_audio");
+	add_cmd(p, "Video", "menu_video");
+	add_cmd(p, "Game", "menu_game");
+	Str_Copy(p->footer, "A opens, B goes back", sizeof(p->footer));
+}
+
+static void pg_controller(page_t *p)
+{
+	/* cl_input.c's joy_* cvars, all archived, so config.cfg keeps them */
+	add_slider(p, "Dead zone", "joy_deadzone", 0, 0.5f, 0.05f);
+	add_slider(p, "Response curve", "joy_curve", 1, 4, 0.25f);
+	add_slider(p, "Turn speed", "joy_yawspeed", 60, 400, 10);
+	add_slider(p, "Look speed", "joy_pitchspeed", 40, 400, 10);
+	add_check(p, "Invert look", "joy_invert");
+	add_slider(p, "Move speed", "joy_movescale", 0.25f, 1, 0.05f);
+	add_header(p, "");
+	add_cmd(p, "Reset pad layout", "in_paddefaults");
+	Str_Copy(p->footer, "Left and right change a setting, B goes back", sizeof(p->footer));
+}
+
+/* scripts/bots.txt's names, offered as player names: there is no keyboard */
+static void pg_game(page_t *p)
+{
+	item_t *it = add_combo(p, "Name", "name", NULL);
+	const char *cur = Cvar_String("name");
+	if (*cur)
+		add_option(it, cur, cur);
+	char *text = FS_LoadFile("scripts/bots.txt", NULL);
+	char tok[128];
+	for (const char *d = text; d && (d = COM_Parse(d, tok, sizeof(tok)));) {
+		if (Str_ICmp(tok, "name") || !(d = COM_Parse(d, tok, sizeof(tok))))
+			continue;
+		bool have = false;
+		for (int i = 0; i < it->numopts && !have; i++)
+			have = !Str_ICmp(it->values[i], tok);
+		if (!have && it->numopts < 64)
+			add_option(it, tok, tok);
+	}
+	Mem_Free(text);
+	add_header(p, "");
+	/* cfg_reset runs unbindall and the game's default binds, which have no
+	 * pad buttons: put the pad layout back after them */
+	add_cmd(p, "Reset everything to defaults", "cfg_reset; in_paddefaults");
+}
+#else
 static void pg_options(page_t *p)
 {
 	add_cmd(p, "Keys", "menu_keys");
@@ -879,9 +1056,53 @@ static void pg_options(page_t *p)
 	add_header(p, "");
 	add_cmd(p, "Reset everything to defaults", "cfg_reset");
 }
+#endif
+
+#ifdef BW_UI_NATIVE
+/* the game's own list of actions, "command" "caption" pairs with
+ * blank "HEADER" lines between groups; false when the game has none */
+static bool keys_from_list(page_t *p)
+{
+	char *text = FS_LoadFile("scripts/kb_act.lst", NULL);
+	char cmd[128], label[128];
+	if (!text)
+		return false;
+	for (const char *d = text; (d = COM_Parse(d, cmd, sizeof(cmd))) && (d = COM_Parse(d, label, sizeof(label)));) {
+		if (!Str_ICmp(cmd, "blank"))
+			add_header(p, label);
+		else
+			add_bind(p, label, cmd);
+	}
+	Mem_Free(text);
+	/* what configs bind beyond the list (autoexec.cfg's hero_action 0,
+	 * +stiletto_dash, vote yes), so those can be moved to the pad too */
+	bool header = false;
+	for (int k = 0; k < K_MAX; k++) {
+		const char *b = Key_GetBinding(k);
+		if (!b || !*b || !Str_ICmp(b, "togglemenu") || !Str_ICmp(b, "toggleconsole"))
+			continue;
+		bool have = false;
+		for (int i = 0; i < p->numitems && !have; i++)
+			have = p->items[i].type == IT_BIND && !Str_ICmp(p->items[i].command, b);
+		if (have)
+			continue;
+		if (!header)
+			add_header(p, "OTHER");
+		header = true;
+		add_bind(p, b, b);
+	}
+	return p->numitems > 0;
+}
+#endif
 
 static void pg_keys(page_t *p)
 {
+#ifdef BW_UI_NATIVE
+	if (keys_from_list(p)) {
+		Str_Copy(p->footer, "A, then press a button (START cancels). X clears", sizeof(p->footer));
+		return;
+	}
+#endif
 	static const char *const binds[][2] = {
 		{"Attack", "+attack"}, {"Secondary attack", "+attack2"}, {"Reload", "+reload"}, {"Use", "+use"},
 		{"Jump", "+jump"}, {"Crouch", "+duck"}, {"Forward", "+forward"}, {"Back", "+back"},
@@ -897,6 +1118,17 @@ static void pg_keys(page_t *p)
 
 static void pg_video(page_t *p)
 {
+#ifdef BW_UI_NATIVE
+	/* nothing reads vid_gamma or vid_brightness, which the desktop page
+	 * offers: the lightmaps' scale is the brightness a console has */
+	add_slider(p, "Brightness", "r_lightmapscale", 1, 4, 0.25f);
+	add_slider(p, "Field of view", "fov", 70, 130, 5);
+	add_combo(p, "Crosshair", "crosshair", "Off", "0", "1", "1", "2", "2", "3", "3", "4", "4", "5", "5", NULL);
+#ifdef BW_XBOX
+	add_combo(p, "Frame rate", "vid_xbox_swapinterval", "30, steady", "2", "60", "1", NULL);
+#endif
+	add_check(p, "Show frames a second", "cl_showfps");
+#else
 	add_check(p, "Full screen", "vid_fullscreen");
 	add_combo(p, "Resolution", "@resolution", "640x480", NULL, "800x600", NULL, "1024x768", NULL, "1280x720", NULL,
 	          "1280x1024", NULL, "1366x768", NULL, "1600x900", NULL, "1920x1080", NULL, "2560x1440", NULL,
@@ -907,6 +1139,7 @@ static void pg_video(page_t *p)
 	add_slider(p, "Brightness", "vid_brightness", 0, 1, 0.05f);
 	add_combo(p, "Frame limit", "cl_maxfps", "Unlimited", "0", "60", "60", "120", "120", "144", "144", "240", "240", NULL);
 	add_cmd(p, "Apply", "vid_restart");
+#endif
 }
 
 static void pg_render(page_t *p)
@@ -954,6 +1187,7 @@ static void pg_audio(page_t *p)
 {
 	add_slider(p, "Volume", "volume", 0, 1, 0.05f);
 	add_slider(p, "Music volume", "bgmvolume", 0, 1, 0.05f);
+#ifndef BW_UI_NATIVE /* no microphone, room effects or sound restarts on a console */
 	add_slider(p, "Room effects", "dsp_volume", 0, 2, 0.1f);
 	add_cmd(p, "Restart sound", "snd_restart");
 	add_header(p, "Voice chat");
@@ -966,6 +1200,7 @@ static void pg_audio(page_t *p)
 	add_slider(p, "Speaking threshold", "cl_voip_vad_threshhold", 0, 50, 1);
 	add_slider(p, "Game volume while others talk", "cl_voip_ducking", 0, 1, 0.05f);
 	add_check(p, "Hear yourself", "cl_voip_test");
+#endif
 }
 
 static void pg_speakers(page_t *p)
@@ -1218,7 +1453,13 @@ static const struct {
 	{"menu_setup", "Player setup", pg_setup, 0, NULL},
 	{"menu_network", "Network", pg_network, 0, NULL},
 	{"menu_options", "Options", pg_options, 0, NULL},
+#ifdef BW_UI_NATIVE
+	{"menu_controller", "Controller", pg_controller, 0, NULL},
+	{"menu_game", "Game", pg_game, 0, NULL},
+	{"menu_keys", "Buttons", pg_keys, 0, NULL},
+#else
 	{"menu_keys", "Keys", pg_keys, 0, NULL},
+#endif
 	{"menu_video", "Video", pg_video, 0, NULL},
 	{"menu_render", "Rendering", pg_render, 0, NULL},
 	{"menu_textures", "Textures", pg_textures, 0, NULL},

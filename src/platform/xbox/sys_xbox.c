@@ -6,7 +6,8 @@
  * (the same words as on a desktop, e.g. "-game base +map lqdm1"), and
  * D:\bulwark.log gets everything the engine prints. Run from a DVD, D: is
  * read-only and the log goes only to the kernel debugger (DbgPrint, which
- * xemu's serial port shows with a debug kernel). */
+ * xemu's serial port shows with a debug kernel). Quitting goes back to
+ * the dashboard (Plat_Shutdown). */
 #include <hal/debug.h>
 #include <hal/video.h>
 #include <hal/xbox.h>
@@ -250,9 +251,18 @@ void Plat_Init(int *argc, char ***argv)
 
 const char *Plat_DefaultBaseDir(void) { return BASEDIR; }
 
+/* quit: back to the dashboard. Returning from main would get there too
+ * (nxdk's exit() ends in a quick reboot with no launch data, which boots
+ * the dashboard), but by way of the C library's exit handlers while the
+ * sound and network threads still run. XLaunchXBE(NULL) writes the launch
+ * data page as LDT_LAUNCH_DASHBOARD, the way a title asks for the
+ * dashboard, and reboots straight away. It returns only if it can't get
+ * memory for that page, and then main's return still gets there. */
 void Plat_Shutdown(void)
 {
+	Con_Printf("quit: back to the dashboard\n");
 	if (logfile)
 		fclose(logfile);
 	logfile = NULL;
+	XLaunchXBE(NULL);
 }

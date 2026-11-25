@@ -36,6 +36,10 @@ static bool drop_menu_map;
 /* commands the game modules registered come before the engine's own */
 static bool GamePreHook(const char *line, int argc, const char **argv)
 {
+	/* the UI first: the native one turns the rules' hero menu request into
+	 * its own picker before the client game opens its mouse-only one */
+	if (UI_PreCommand(argc, argv))
+		return true;
 	if (drop_menu_map && argc > 0 && !strcmp(argv[0], "map_background")) {
 		drop_menu_map = false;
 		Con_DPrintf("the command line starts a game: menu background map skipped\n");
@@ -169,6 +173,12 @@ int main(int argc, char **argv)
 	Cmd_SetFallback(CL_ForwardToServer);
 
 	Mf_ExecConfigs();
+#ifdef BW_XBOX
+	/* the console's own settings over the game's (data/xbox_ui.cfg in the
+	 * engine data the disc carries): after autoexec.cfg, before the title */
+	if (FS_FileExists("xbox_ui.cfg"))
+		Cbuf_AddText("exec xbox_ui.cfg\n");
+#endif
 	/* the front end starts on its menu unless the command line starts a game */
 	bool starts_game = false;
 	for (const char *l = cmds.data; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : "") {

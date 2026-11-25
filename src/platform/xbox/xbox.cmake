@@ -6,8 +6,10 @@
 #
 # This file is included from the top-level CMakeLists.txt when NXDK is set.
 # It turns the console defaults on (no plugins, no PanoramaEngine, no host
-# tools; -DBULWARK_UI_PANORAMA=ON builds and links the Panorama UI, at about
-# 3.5 MB more XBE, on the shims in compat/cxx, fs_xbox.cpp and cxxrt_xbox.c), points the compiler at the POSIX shims in compat/, and defines
+# tools). The default UI is native (src/ui/ui_native.c);
+# -DBULWARK_UI_NATIVE=OFF -DBULWARK_UI_PANORAMA=ON builds and links the
+# Panorama UI instead, at about 3.5 MB more XBE, on the shims in compat/cxx,
+# fs_xbox.cpp and cxxrt_xbox.c. It points the compiler at the POSIX shims in compat/, and defines
 # bulwark_xbox_executable(), which builds bulwark.exe, default.xbe and an
 # ISO image for xemu. docs/platforms/xbox.md has the details.
 

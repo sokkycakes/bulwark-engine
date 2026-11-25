@@ -901,12 +901,15 @@ void R_ImageSize(int handle, int *w, int *h)
 
 void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint16_t *idx, int numidx, int blend)
 {
+	/* UI toolkits call this every frame with a few hundred vertices: those
+	 * convert into a static scratch instead of a heap block each call */
+	static rvert_t scratch[2048];
 	image_t *img = image > 0 && image < numimagehandles ? imagehandles[image] : r_whiteimage;
 	rvert_t *v;
 	if (!in2d || !R_Active() || numverts <= 0 || numidx <= 0 || !r_draw2d->ivalue)
 		return;
 	R_Flush2D();
-	v = Mem_Alloc(sizeof(*v) * (size_t)numverts);
+	v = numverts <= (int)BW_ARRAY_COUNT(scratch) ? scratch : Mem_Alloc(sizeof(*v) * (size_t)numverts);
 	for (int i = 0; i < numverts; i++) {
 		v[i].xyz[0] = in[i].x;
 		v[i].xyz[1] = in[i].y;
@@ -927,7 +930,8 @@ void R_Draw2DTriangles(int image, const r2dvert_t *in, int numverts, const uint1
 	qglUniform4f(r_progs[PROG_2D].u_tcmod, 0, 0, 1, 1);
 	qglUniform1f(r_progs[PROG_2D].u_alphatest, 0);
 	R_StreamDraw(GL_TRIANGLES, v, numverts, idx, numidx);
-	Mem_Free(v);
+	if (v != scratch)
+		Mem_Free(v);
 	cur_blend = -1; /* the batch must set its state again */
 }
 
