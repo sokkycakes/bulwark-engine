@@ -123,23 +123,44 @@ bool R_LooksLikeSVG(const uint8_t *data, size_t len)
 	return false;
 }
 
-uint8_t *R_DecodeSVG(const uint8_t *data, size_t len, int *w, int *h)
+static NSVGimage *parse_svg(const uint8_t *data, size_t len)
 {
 	char *text = Mem_Alloc(len + 1);
 	NSVGimage *img;
-	NSVGrasterizer *rast;
-	uint8_t *px = NULL;
-	float scale = 2, longest;
 	memcpy(text, data, len);
 	text[len] = 0;
 	img = nsvgParse(text, "px", 96);
 	Mem_Free(text);
+	if (img && (img->width <= 0 || img->height <= 0)) {
+		nsvgDelete(img);
+		img = NULL;
+	}
+	return img;
+}
+
+/* img at scale into a new w x h buffer, masks included */
+static uint8_t *raster_image(NSVGimage *img, float scale, int w, int h)
+{
+	NSVGrasterizer *rast = nsvgCreateRasterizer();
+	uint8_t *px = NULL;
+	if (rast) {
+		px = Mem_Alloc((size_t)w * h * 4);
+		if (uses_masks(img))
+			raster_masked(rast, img, scale, px, w, h);
+		else
+			nsvgRasterize(rast, img, 0, 0, scale, px, w, h, w * 4);
+		nsvgDeleteRasterizer(rast);
+	}
+	return px;
+}
+
+uint8_t *R_DecodeSVG(const uint8_t *data, size_t len, int *w, int *h)
+{
+	NSVGimage *img = parse_svg(data, len);
+	uint8_t *px;
+	float scale = 2, longest;
 	if (!img)
 		return NULL;
-	if (img->width <= 0 || img->height <= 0) {
-		nsvgDelete(img);
-		return NULL;
-	}
 	longest = img->width > img->height ? img->width : img->height;
 	if (longest * scale < 512)
 		scale = 512 / longest;
@@ -147,14 +168,23 @@ uint8_t *R_DecodeSVG(const uint8_t *data, size_t len, int *w, int *h)
 		scale /= 2;
 	*w = (int)ceilf(img->width * scale);
 	*h = (int)ceilf(img->height * scale);
-	if ((rast = nsvgCreateRasterizer())) {
-		px = Mem_Alloc((size_t)*w * *h * 4);
-		if (uses_masks(img))
-			raster_masked(rast, img, scale, px, *w, *h);
-		else
-			nsvgRasterize(rast, img, 0, 0, scale, px, *w, *h, *w * 4);
-		nsvgDeleteRasterizer(rast);
-	}
+	px = raster_image(img, scale, *w, *h);
+	nsvgDelete(img);
+	return px;
+}
+
+/* the native UI bakes small copies of its art: drawing straight at that
+ * size skips the 512-pixel intermediate, about 1 MiB an icon */
+uint8_t *R_DecodeSVGSized(const uint8_t *data, size_t len, int tw, int th)
+{
+	NSVGimage *img;
+	uint8_t *px;
+	float sx, sy;
+	if (tw < 1 || th < 1 || tw > 4096 || th > 4096 || !R_LooksLikeSVG(data, len) || !(img = parse_svg(data, len)))
+		return NULL;
+	sx = tw / img->width;
+	sy = th / img->height;
+	px = raster_image(img, sx < sy ? sx : sy, tw, th);
 	nsvgDelete(img);
 	return px;
 }
