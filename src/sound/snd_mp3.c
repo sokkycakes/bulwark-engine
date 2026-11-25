@@ -41,3 +41,62 @@ bool S_DecodeMP3(const uint8_t *buf, size_t len, int16_t **data, int *frames, in
 	*rate = info.hz;
 	return true;
 }
+
+/* --- streamed music ---------------------------------------------------------- */
+
+/* A music track is decoded a block at a time as it plays, like Ogg: opening
+ * one only walks the frame headers (to find the length and a seek index). */
+struct s_mp3stream_s {
+	mp3dec_ex_t dec;
+	int channels;
+};
+
+s_mp3stream_t *S_MP3Open(const uint8_t *buf, size_t len, int *channels, int *rate)
+{
+	s_mp3stream_t *s = Mem_Alloc(sizeof(*s));
+	if (mp3dec_ex_open_buf(&s->dec, buf, len, MP3D_SEEK_TO_SAMPLE) || s->dec.info.channels < 1 ||
+	    s->dec.info.hz <= 0) {
+		mp3dec_ex_close(&s->dec);
+		Mem_Free(s);
+		return NULL;
+	}
+	s->channels = s->dec.info.channels;
+	*channels = s->channels > 2 ? 2 : s->channels;
+	*rate = s->dec.info.hz;
+	return s;
+}
+
+/* up to frames stereo frames into out (frames * 2 shorts); 0 at the end */
+int S_MP3Read(s_mp3stream_t *s, int16_t *out, int frames)
+{
+	int16_t tmp[1152 * 2];
+	int done = 0;
+	while (done < frames) {
+		int want = frames - done;
+		size_t got;
+		if (want > 1152)
+			want = 1152;
+		got = mp3dec_ex_read(&s->dec, tmp, (size_t)want * (size_t)s->channels) / (size_t)s->channels;
+		if (!got)
+			break;
+		for (size_t i = 0; i < got; i++) {
+			const int16_t *f = tmp + i * (size_t)s->channels;
+			out[(done + (int)i) * 2] = f[0];
+			out[(done + (int)i) * 2 + 1] = f[s->channels > 1 ? 1 : 0];
+		}
+		done += (int)got;
+	}
+	return done;
+}
+
+void S_MP3Seek(s_mp3stream_t *s, uint64_t frame) { mp3dec_ex_seek(&s->dec, frame * (uint64_t)s->channels); }
+uint64_t S_MP3Tell(const s_mp3stream_t *s) { return s->dec.cur_sample / (uint64_t)s->channels; }
+uint64_t S_MP3Length(const s_mp3stream_t *s) { return s->dec.samples / (uint64_t)s->channels; }
+
+void S_MP3Close(s_mp3stream_t *s)
+{
+	if (!s)
+		return;
+	mp3dec_ex_close(&s->dec);
+	Mem_Free(s);
+}

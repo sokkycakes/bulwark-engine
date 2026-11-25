@@ -79,8 +79,15 @@ now goes further, as GoldSrc does:
 - `sky "<name>"` from `Sky_Update`, with the map's `skyname` server key.
 - `music <path> [-]` from `Music_ParseTrack`/`Music_ParseLoop`. The path is a
   file (often `music/trackNN.flac`) or a bare CD track number; a trailing
-  `-` plays once. This engine falls back to `.ogg` and `.wav` under the same
-  name, since it doesn't decode FLAC.
+  `-` plays once. This engine falls back to `.ogg`, `.mp3` and `.wav` under
+  the same name, since it doesn't decode FLAC.
+- `music <path> 0` and `music <path> 1` from `Music_ReadOnce` and
+  `Music_ReadLoop` (src/client/music.qc), for the server's
+  `music.PlayOnce*` and `music.Play*` (EV_MUSIC_ONCE and EV_MUSIC_LOOP).
+  `0` plays once, `1` loops. Before 2026-11-25 only `-` meant once, so a
+  stinger such as Domination's round win looped until the next track.
+- `music sound/bgm/<name>.mp3` from worldspawn's `bgm` key. Music files may
+  be Ogg Vorbis, WAV or MP3.
 - `stopmusic`, `snd_restart`.
 
 ## Sound

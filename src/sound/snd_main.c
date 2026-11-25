@@ -20,10 +20,13 @@
 #define SNDF_FORCELOOP 2
 #define SNDF_NOSPATIALISE 4
 #define SNDF_ABSVOLUME 16
+#define SNDF_NOREVERB 32
 #define SNDF_FOLLOW 64
 #define SNDF_NOREPLACE 128
 /* engine-side: the entity number belongs to the client game, not the server */
 #define SNDF_CSQCENT (1 << 20)
+/* engine-side: a menu or HUD sound, not in the world, so kept out of the room */
+#define SNDF_UI (1 << 21)
 
 typedef struct {
 	sfx_t *sfx;
@@ -457,14 +460,22 @@ static void paint(int16_t *out, int frames)
 		return;
 	}
 	memset(mixbuf, 0, sizeof(float) * 2 * (size_t)frames);
-	for (int i = 0; i < MAX_CHANNELS; i++) {
-		channel_t *ch = &channels[i];
-		if (channel_live(ch) && ch->sfx->loaded && (ch->left > 0 || ch->right > 0 || ch->pos < 0))
-			mix_channel(ch, mixbuf, frames);
-		else if (channel_live(ch) && ch->sfx->loaded)
-			ch->pos += (double)ch->sfx->rate / snd_rate * ch->pitch * frames; /* silent, keep time */
+	/* the world's sounds first, through the room; then what stays dry:
+	 * SOUNDFLAG_NOREVERB ("disables the use of underwater/reverb effects on
+	 * this sound effect", fteextensions.qc), menu and HUD sounds, and music */
+	for (int pass = 0; pass < 2; pass++) {
+		for (int i = 0; i < MAX_CHANNELS; i++) {
+			channel_t *ch = &channels[i];
+			if (!channel_live(ch) || !ch->sfx->loaded || ((ch->flags & (SNDF_NOREVERB | SNDF_UI)) != 0) != pass)
+				continue;
+			if (ch->left > 0 || ch->right > 0 || ch->pos < 0)
+				mix_channel(ch, mixbuf, frames);
+			else
+				ch->pos += (double)ch->sfx->rate / snd_rate * ch->pitch * frames; /* silent, keep time */
+		}
+		if (pass == 0)
+			S_ApplyDSP(mixbuf, frames, dsp_level);
 	}
-	S_ApplyDSP(mixbuf, frames, dsp_level); /* music stays out of the room */
 	S_MixMusic(mixbuf, frames, snd_rate, music_volume);
 	if (duck < 1)
 		for (int i = 0; i < frames * 2; i++)
@@ -480,17 +491,20 @@ static void paint(int16_t *out, int frames)
 
 /* --- music ------------------------------------------------------------------------ */
 
-/* "music <name> [-]": a path, or a CD track number. A trailing "-" plays it
- * once; otherwise it loops. A missing extension, or one this engine can't
- * decode (such as .flac), falls back to .ogg then .wav. */
+/* "music <name> [-|0|1]": a path, or a CD track number. A second argument
+ * of "-" or "0" plays it once; "1", or none, loops it. Nuclide's platform
+ * code sends "-" for a single track, and its client game sends "0" for
+ * EV_MUSIC_ONCE (stingers such as a round win) and "1" for EV_MUSIC_LOOP
+ * (src/client/music.qc). A missing extension, or one this engine can't
+ * decode (such as .flac), falls back to .ogg, .mp3 then .wav. */
 static void Music_f(int argc, const char **argv)
 {
 	char base[160], path[192];
-	static const char *exts[] = {"", ".ogg", ".wav"};
-	bool loop = !(argc > 2 && !strcmp(argv[2], "-"));
+	static const char *exts[] = {"", ".ogg", ".mp3", ".wav"};
+	bool loop = !(argc > 2 && (!strcmp(argv[2], "-") || !strcmp(argv[2], "0")));
 	char *dot;
 	if (argc < 2) {
-		Con_Printf("usage: music <file or track number> [-]\n");
+		Con_Printf("usage: music <file or track number> [-|0|1]\n");
 		return;
 	}
 	media_playing = false; /* this replaces the playlist's track */
@@ -503,9 +517,7 @@ static void Music_f(int argc, const char **argv)
 	for (size_t i = 0; i < BW_ARRAY_COUNT(exts); i++) {
 		bool ok;
 		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
-		SNDDMA_Lock();
 		ok = S_OpenMusic(path, loop);
-		SNDDMA_Unlock();
 		if (ok)
 			return;
 		if (i == 0 && (dot = strrchr(base, '.')) && !strchr(dot, '/'))
@@ -517,7 +529,7 @@ static void Music_f(int argc, const char **argv)
 bool S_PlayMusic(const char *name, bool loop)
 {
 	char base[160], path[192];
-	static const char *exts[] = {"", ".ogg", ".wav"};
+	static const char *exts[] = {"", ".ogg", ".mp3", ".wav"};
 	char *dot;
 	media_playing = false;
 	if (!snd_started)
@@ -528,9 +540,7 @@ bool S_PlayMusic(const char *name, bool loop)
 		snprintf(path, sizeof(path), "%s%s", base, exts[i]);
 		if (i > 0 && !FS_FileExists(path))
 			continue;
-		SNDDMA_Lock();
 		ok = S_OpenMusic(path, loop);
-		SNDDMA_Unlock();
 		if (ok)
 			return true;
 		if (i == 0 && (dot = strrchr(base, '.')) && !strchr(dot, '/'))
@@ -563,7 +573,7 @@ bool S_MusicPlaying(void)
 void S_LocalSound(const char *name)
 {
 	if (snd_started)
-		start_sound(0, 0, S_FindSfx(name, true), NULL, 1, 0, 100, SNDF_CSQCENT, 0);
+		start_sound(0, 0, S_FindSfx(name, true), NULL, 1, 0, 100, SNDF_CSQCENT | SNDF_UI, 0);
 }
 
 bool S_LocalSoundPlaying(const char *name)
@@ -673,9 +683,7 @@ static bool play_track(int i)
 	if (i < 0 || i >= numtracks || !snd_started)
 		return false;
 	curtrack = i;
-	SNDDMA_Lock();
 	ok = S_OpenMusic(playlist[i], false);
-	SNDDMA_Unlock();
 	media_playing = ok;
 	Con_Printf(ok ? "playing %s\n" : "^3can't play %s\n", playlist[i]);
 	return ok;
@@ -949,7 +957,7 @@ static void bi_pointsound(qcvm_t *vm)
 static void bi_localsound(qcvm_t *vm)
 {
 	float vol = vm->argc > 2 ? QC_PFLOAT(vm, 2) : 1;
-	start_sound(0, 0, S_FindSfx(QC_PSTR(vm, 0), true), NULL, vol, 0, 100, SNDF_CSQCENT, 0);
+	start_sound(0, 0, S_FindSfx(QC_PSTR(vm, 0), true), NULL, vol, 0, 100, SNDF_CSQCENT | SNDF_UI, 0);
 }
 
 static void bi_ambientsound(qcvm_t *vm)
