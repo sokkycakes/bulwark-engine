@@ -1056,8 +1056,13 @@ static void cl_connect(const netadr_t *from, int argc, const char **argv)
 		if (spectator) {
 			const char *sp = Cvar_String("spectator_password");
 			int spectators = 0;
-			for (int i = 0; i < svs.maxclients; i++)
-				spectators += svs.clients[i].state != CS_FREE && svs.clients[i].spectator;
+			for (int i = 0; i < svs.maxclients; i++) {
+				const client_t *o = &svs.clients[i];
+				/* a reconnect takes over its own slot, so it doesn't count */
+				if (o->state != CS_FREE && !o->bot && NET_CompareBaseAdr(&o->chan.remote, from) && o->chan.qport == qport)
+					continue;
+				spectators += o->state != CS_FREE && o->spectator;
+			}
 			if (sp[0] && strcmp(sp, "none") && from->type != NA_LOOPBACK && strcmp(pass, sp)) {
 				NET_OutOfBandPrint(NS_SERVER, from, "reject server needs a spectator password (setinfo spectator <password>)");
 				return;
@@ -1494,6 +1499,10 @@ static void parse_stringcmd(client_t *c, const char *s)
 		goto done;
 	}
 	if (!strcmp(t->argv[0], "setinfo") && t->argc >= 3) {
+		/* the join passwords are only read at connect and never stored or
+		 * passed on; '*' keys belong to the server */
+		if (!strcmp(t->argv[1], "password") || !strcmp(t->argv[1], "spectator") || t->argv[1][0] == '*')
+			goto done;
 		set_playerkey(c, t->argv[1], t->argv[2], true);
 		if (!strcmp(t->argv[1], "cl_updaterate"))
 			c->updaterate = (float)atof(t->argv[2]);

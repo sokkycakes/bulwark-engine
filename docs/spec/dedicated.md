@@ -96,7 +96,7 @@ and a link `^[text\key\value...^]` prints only its text. Nuclide's log lines
 | `status` | map, time and entities, then `host <hostname>, port <n>, <p> players, <b> bots, <s> spectators, <slots> slots[, password set]` and one line per client (slot, name, state, frags, address or `bot`, `(spectator)`) |
 | `serverinfo` | the server's info keys, one per line (`Server info settings:` first, as in QuakeWorld) |
 | `serverinfo <key> <value>` | sets a key and sends it to the clients (`sv_serverinfo` is the same); `*` keys are the engine's |
-| `map <name>`, `changelevel <name>` | new map; `g_gametype <mode>` before it picks Stiletto's rules |
+| `map <name>`, `changelevel <name>` | new map; `g_gametype <mode>` before it picks Stiletto's rules. A name with no `maps/<name>.scene`, `.bsp`, `.vxmap` or `.ftew` prints `Can't find "maps/<name>.bsp"` and the current game goes on untouched (no spawn parms saved). A map that is found but fails to load ends the game and drops everyone with "server shut down" |
 | `kick <slot or name>` | drops a player ("kicked") |
 | `say <text>` | prints `console: <text>` to everyone |
 | `clients` | the client list with rates |
@@ -121,7 +121,13 @@ and a link `^[text\key\value...^]` prints only its text. Nuclide's log lines
   and `ClientDisconnect` (when the progs has them; otherwise they join as
   players). Nuclide makes them free-flying spectators.
 - The `password` and `spectator` values are taken off a client's userinfo
-  once it has joined, so other players are never sent them.
+  once it has joined, so other players are never sent them. A connected
+  client's later `setinfo password ...`, `setinfo spectator ...` or
+  `setinfo *<key> ...` is ignored: the join values are read only at
+  connect, and `*` keys belong to the server.
+- A reconnect from the same address and qport takes over its old slot, so
+  a spectator reconnecting while the server is at `maxspectators` isn't
+  refused (its own old slot doesn't count).
 
 ## Slots
 
@@ -148,3 +154,4 @@ same lines:
 | `password abc` | sets the server password | the same |
 | `maxspectators` | 8 | 8 |
 | `server.cfg` with a map, plus `+map` | both maps load | one map loads |
+| `map nosuchmap` while a game runs | Can't find "maps/nosuchmap.bsp"; the game goes on | the same |

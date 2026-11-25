@@ -273,6 +273,7 @@ bool SV_SaveTakeRestored(client_t *c);
 extern bool sv_dedicated;
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);
+bool SV_MapExists(const char *mapname); /* maps/<name>.scene/.bsp/.vxmap/.ftew */
 void SV_Shutdown(void);
 void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);

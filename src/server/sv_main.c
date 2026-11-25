@@ -315,7 +315,39 @@ void SV_Shutdown(void)
 	memset(&sv, 0, sizeof(sv));
 }
 
+/* the map names a world we can find: .scene, .bsp, .vxmap or .ftew */
+bool SV_MapExists(const char *mapname)
+{
+	static const char *const exts[] = {"scene", "bsp", "vxmap", "ftew"};
+	char path[160];
+	if (!mapname[0])
+		return false;
+	for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+		snprintf(path, sizeof(path), "maps/%s.%s", mapname, exts[i]);
+		if (FS_FileExists(path))
+			return true;
+	}
+	return false;
+}
+
+static bool spawn_server(const char *mapname);
+
+/* A map that isn't there leaves the running game alone, as FTE's does, so a
+ * typo on the server console doesn't end a match. A map that fails once the
+ * old one is gone drops the players with a reason, not a frozen screen. */
 bool SV_SpawnServer(const char *mapname)
+{
+	if (!SV_MapExists(mapname)) {
+		Con_Printf("Can't find \"maps/%s.bsp\"\n", mapname);
+		return false;
+	}
+	if (spawn_server(mapname))
+		return true;
+	SV_DropClients("server shut down");
+	return false;
+}
+
+static bool spawn_server(const char *mapname)
 {
 	char path[160];
 	size_t len;
@@ -990,6 +1022,10 @@ static void SV_Map_f(int argc, const char **argv)
 		Con_Printf("usage: map <name>\n");
 		return;
 	}
+	if (!SV_MapExists(argv[1])) {
+		Con_Printf("Can't find \"maps/%s.bsp\"\n", argv[1]);
+		return;
+	}
 	/* a fresh map starts everyone's spawn parms over */
 	for (int i = 0; i < svs.maxclients; i++)
 		svs.clients[i].have_parms = false;
@@ -1000,6 +1036,10 @@ static void SV_Changelevel_f(int argc, const char **argv)
 {
 	if (argc < 2) {
 		Con_Printf("usage: changelevel <name>\n");
+		return;
+	}
+	if (!SV_MapExists(argv[1])) {
+		Con_Printf("Can't find \"maps/%s.bsp\"\n", argv[1]);
 		return;
 	}
 	SV_SaveSpawnParms();
