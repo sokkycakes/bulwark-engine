@@ -12,7 +12,26 @@
  * to range-check the statement it is about to run */
 #define QCOP_BAD OP_NUMOPS
 #define QCOP_END (OP_NUMOPS + 1)
-#define QCOP_COUNT (OP_NUMOPS + 2)
+/* A compare whose result only feeds the IFNOT after it runs as one
+ * statement that does both, saving a dispatch on a ninth of all statements.
+ * The IFNOT is left in place, as it can be a jump target. */
+#define QCOP_NEF_IFNOT (OP_NUMOPS + 2)
+#define QCOP_EQF_IFNOT (OP_NUMOPS + 3)
+#define QCOP_EQS_IFNOT (OP_NUMOPS + 4)
+#define QCOP_LTI_IFNOT (OP_NUMOPS + 5)
+#define QCOP_COUNT (OP_NUMOPS + 6)
+
+/* the opcode a statement had before the loader fused it */
+static inline unsigned QC_PlainOp(unsigned op)
+{
+	switch (op) {
+	case QCOP_NEF_IFNOT: return OP_NE_F;
+	case QCOP_EQF_IFNOT: return OP_EQ_F;
+	case QCOP_EQS_IFNOT: return OP_EQ_S;
+	case QCOP_LTI_IFNOT: return OP_LT_I;
+	default: return op;
+	}
+}
 
 #define QC_MAX_TOKENS 1024
 /* The text of each token is kept in buf, and argv() makes it a string the

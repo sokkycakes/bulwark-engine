@@ -374,6 +374,18 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	}
 	/* running off the end of the code stops with an error */
 	p->statements[h->numstatements].op = QCOP_END;
+	for (int i = 0; i + 1 < h->numstatements; i++) {
+		qcstatement_t *x = &p->statements[i], *y = x + 1;
+		if (y->op != OP_IFNOT || y->a != x->c)
+			continue;
+		switch (x->op) {
+		case OP_NE_F: x->op = QCOP_NEF_IFNOT; break;
+		case OP_EQ_F: x->op = QCOP_EQF_IFNOT; break;
+		case OP_EQ_S: x->op = QCOP_EQS_IFNOT; break;
+		case OP_LT_I: x->op = QCOP_LTI_IFNOT; break;
+		default: break;
+		}
+	}
 
 	unpack_defs(p, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12, &p->globaldefs);
 	p->numglobaldefs = h->numglobaldefs;

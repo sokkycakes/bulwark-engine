@@ -289,7 +289,8 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 	unsigned nst;
 	uint32_t backjumps = 0;
 #ifdef QC_THREADED
-	static const void *optable[QCOP_COUNT], *debugtable[QCOP_COUNT];
+	/* plaintable runs fused statements one at a time, for the debugger */
+	static const void *optable[QCOP_COUNT], *debugtable[QCOP_COUNT], *plaintable[QCOP_COUNT];
 	const void *const *disp;
 #else
 	bool hooks;
@@ -375,8 +376,11 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 		T(OP_CALL7) T(OP_CALL8) T(OP_CALL1H) T(OP_CALL2H) T(OP_CALL3H) T(OP_CALL4H) T(OP_CALL5H)
 		T(OP_CALL6H) T(OP_CALL7H) T(OP_CALL8H)
 		T(OP_RETURN) T(OP_DONE)
-#undef T
 		optable[QCOP_END] = &&L_unsupported;
+		for (int i = 0; i < QCOP_COUNT; i++)
+			plaintable[i] = optable[QC_PlainOp((unsigned)i)];
+		T(QCOP_NEF_IFNOT) T(QCOP_EQF_IFNOT) T(QCOP_EQS_IFNOT) T(QCOP_LTI_IFNOT)
+#undef T
 	}
 #endif
 
@@ -388,12 +392,12 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 #ifdef QC_THREADED
 L_debug:
 	debug_statement(vm, SINDEX());
-	goto *optable[st->op];
+	goto *plaintable[st->op];
 #else
 dispatch:
 	if (hooks)
 		debug_statement(vm, SINDEX());
-	switch (st->op) {
+	switch (hooks ? QC_PlainOp(st->op) : st->op) {
 #endif
 
 	/* --- float/vector arithmetic --- */
@@ -796,6 +800,23 @@ dispatch:
 	OPCODE(OP_IFS) { if (!str_empty(vm, G[st->a].i)) JUMPBY(JUMP(st->b)); NEXT(); }
 	OPCODE(OP_IFNOTS) { if (str_empty(vm, G[st->a].i)) JUMPBY(JUMP(st->b)); NEXT(); }
 	OPCODE(OP_GOTO) { JUMPBY(JUMP(st->a)); }
+
+	/* a compare and the IFNOT after it; the result is still stored, as
+	 * later code may read it */
+#define FUSED_IFNOT(store)                                                                         \
+	{                                                                                              \
+		OPS;                                                                                       \
+		store;                                                                                     \
+		st++;                                                                                      \
+		if (!G[st->a].i)                                                                           \
+			JUMPBY(JUMP(st->b));                                                                   \
+		NEXT();                                                                                    \
+	}
+	OPCODE(QCOP_NEF_IFNOT) FUSED_IFNOT(c->f = !feq(a, b))
+	OPCODE(QCOP_EQF_IFNOT) FUSED_IFNOT(c->f = feq(a, b))
+	OPCODE(QCOP_EQS_IFNOT) FUSED_IFNOT(c->f = str_eq(vm, a->i, b->i))
+	OPCODE(QCOP_LTI_IFNOT) FUSED_IFNOT(c->i = a->i < b->i)
+#undef FUSED_IFNOT
 
 	OPCODE(OP_SWITCH_F) OPCODE(OP_SWITCH_V) OPCODE(OP_SWITCH_S) OPCODE(OP_SWITCH_E)
 	OPCODE(OP_SWITCH_FNC) OPCODE(OP_SWITCH_I) {
