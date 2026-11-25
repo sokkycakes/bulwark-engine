@@ -28,9 +28,9 @@
 /* message types */
 enum {
 	T_HELLO = 1, T_BYE, T_PARTY_CREATE, T_PARTY_JOIN, T_PARTY_LEAVE, T_PARTY_SET, T_INVITE,
-	T_QUEUE, T_QUEUE_CANCEL, T_RELAY, T_STATUS, T_LIST, T_MATCH_LEFT, T_PONG, T_PLAYLISTS,
+	T_QUEUE, T_QUEUE_CANCEL, T_RELAY, T_STATUS, T_LIST, T_MATCH_LEFT, T_PONG, T_PLAYLISTS, T_SET_REPORT, T_CARD,
 	T_WELCOME = 64, T_ERROR, T_PARTY, T_PARTY_GONE, T_INVITED, T_INTRODUCE, T_FORWARD,
-	T_QUEUE_STATUS, T_MATCH, T_PLAYERS, T_PING, T_PLAYLIST_INFO,
+	T_QUEUE_STATUS, T_MATCH, T_PLAYERS, T_PING, T_PLAYLIST_INFO, T_CARD_INFO,
 	T_PUNCH = 96, T_PUNCH_ACK, T_DATA
 };
 
@@ -42,6 +42,8 @@ enum {
 #define MAX_SEATS 16
 #define MAX_SETTINGS 32
 #define MAX_INVITES 8
+#define MAX_CARDS 8
+#define CARD_LEN 768
 #define QUEUE_LEN 128
 
 #define PUNCH_EVERY 0.3
@@ -137,6 +139,15 @@ static struct {
 		char name[64], code[8];
 	} invites[MAX_INVITES];
 	int ninvites;
+
+	/* fighter cards (records the server keeps), by player id, for menus */
+	struct {
+		uint32_t id;
+		char json[CARD_LEN];
+		double at;
+	} cards[MAX_CARDS];
+	int sets_reported;
+	double cards_refresh_at;
 
 	peer_t peers[MAX_PEERS];
 	pqueue_t game[2], lobby;
@@ -443,6 +454,13 @@ static void update_state(void)
 	} else {
 		SB_AppendStr(&sb, "null");
 	}
+	SB_AppendStr(&sb, ",\"cards\":{");
+	for (int i = 0, n = 0; i < MAX_CARDS; i++) {
+		if (!L.cards[i].id)
+			continue;
+		SB_Printf(&sb, "%s\"%u\":%s", n++ ? "," : "", L.cards[i].id, L.cards[i].json);
+	}
+	SB_Printf(&sb, "},\"sets_reported\":%d", L.sets_reported);
 	SB_AppendStr(&sb, ",\"invites\":[");
 	for (int i = 0; i < L.ninvites; i++) {
 		SB_Printf(&sb, "%s{\"from\":%u,\"name\":", i ? "," : "", L.invites[i].from);
@@ -706,6 +724,52 @@ static void apply_settings(void)
 	}
 }
 
+static void ask_card(uint32_t id)
+{
+	wbuf_t w;
+	w_start(&w, T_CARD);
+	w_u32(&w, id);
+	send_server(&w);
+}
+
+/* the cards of everyone in the match, and our own */
+static void ask_match_cards(void)
+{
+	ask_card(0);
+	for (int i = 0; i < L.nseats; i++)
+		if (L.seats[i].slot == 0 && L.seats[i].id != L.id)
+			ask_card(L.seats[i].id);
+}
+
+static void keep_card(const char *json, size_t n)
+{
+	/* {"id":N,...}: kept only when it looks like one JSON object */
+	if (n < 8 || n >= CARD_LEN || json[0] != '{' || json[n - 1] != '}' || strncmp(json, "{\"id\":", 6))
+		return;
+	for (size_t i = 0; i < n; i++)
+		if ((unsigned char)json[i] < 0x20)
+			return;
+	uint32_t id = (uint32_t)strtoul(json + 6, NULL, 10);
+	if (!id)
+		return;
+	int slot = -1, oldest = 0;
+	for (int i = 0; i < MAX_CARDS; i++) {
+		if (L.cards[i].id == id) {
+			slot = i;
+			break;
+		}
+		if (L.cards[i].at < L.cards[oldest].at)
+			oldest = i;
+	}
+	if (slot < 0)
+		slot = oldest;
+	L.cards[slot].id = id;
+	memcpy(L.cards[slot].json, json, n);
+	L.cards[slot].json[n] = 0;
+	L.cards[slot].at = now();
+	update_state();
+}
+
 static void on_match(void)
 {
 	char buf[96];
@@ -716,6 +780,7 @@ static void on_match(void)
 	Cvar_Set("live_match_playlist", L.match_playlist);
 	Cvar_Set("live_match_mode", L.match_mode);
 	Cvar_Set("live_match_map", L.match_map);
+	ask_match_cards();
 	Con_Printf("live: match on %s%s%s%s%s, %d players, host %u%s\n", L.match_playlist,
 	           L.match_mode[0] ? ", " : "", L.match_mode, L.match_map[0] ? " on " : "", L.match_map, L.nseats,
 	           L.match_host, L.match_host == L.id ? " (you)" : "");
@@ -765,6 +830,9 @@ static void from_server(int type, rbuf_t *r)
 		}
 		break;
 	}
+	case T_CARD_INFO:
+		keep_card((const char *)r->b + r->at, r->n - r->at);
+		break;
 	case T_PLAYLIST_INFO: {
 		/* kept only if it looks like a JSON array, as it goes into
 		 * live_state as it is */
@@ -1100,7 +1168,44 @@ void Live_Frame(void)
 	if (L.connected)
 		punch_frame(t);
 	match_frame(t);
+	if (L.cards_refresh_at && t >= L.cards_refresh_at) {
+		L.cards_refresh_at = 0;
+		if (L.connected)
+			ask_match_cards();
+	}
 }
+
+/* --- fighter records ---------------------------------------------------------- */
+
+bool Live_ReportSet(int result, int first_to, bool runback, const live_seat_report_t *seats, int n)
+{
+	if (!L.connected || !L.match_id || L.match_host != L.id || n <= 0 || n > MAX_SEATS)
+		return false;
+	wbuf_t w;
+	w_start(&w, T_SET_REPORT);
+	w_u64(&w, L.match_id);
+	w_u8(&w, (unsigned)result);
+	w_u8(&w, (unsigned)first_to);
+	w_u8(&w, runback ? 1 : 0);
+	w_u8(&w, (unsigned)n);
+	for (int i = 0; i < n; i++) {
+		w_u32(&w, seats[i].id);
+		w_u8(&w, (unsigned)seats[i].slot);
+		w_u8(&w, (unsigned)seats[i].outcome);
+		w_u8(&w, seats[i].behind ? 1 : 0);
+		w_u8(&w, (unsigned)seats[i].games);
+		w_str(&w, seats[i].hero);
+	}
+	send_server(&w);
+	L.sets_reported++;
+	/* the cards change with the set; ask again once the server has it */
+	L.cards_refresh_at = now() + 1.0;
+	update_state();
+	return true;
+}
+
+uint64_t Live_MatchId(void) { return L.match_id; }
+uint32_t Live_MatchHost(void) { return L.match_host; }
 
 /* --- game and lobby streams ------------------------------------------------- */
 
@@ -1334,6 +1439,13 @@ static void Guests_f(int argc, const char **argv)
 		send_hello();
 }
 
+static void Card_f(int argc, const char **argv)
+{
+	if (!need())
+		return;
+	ask_card(argc > 1 ? (uint32_t)strtoul(argv[1], NULL, 10) : 0);
+}
+
 static void Status_f(int argc, const char **argv)
 {
 	(void)argc, (void)argv;
@@ -1403,6 +1515,7 @@ void Live_Init(void)
 	Cmd_AddD("live_setstatus", SetStatus_f, "Set the status line friends see");
 	Cmd_AddD("live_guests", Guests_f, "Name the split-screen guests on this console");
 	Cmd_AddD("live_status", Status_f, "Show Bulwark Live state");
+	Cmd_AddD("live_card", Card_f, "Ask for a player's fighter card (id, or none for your own); it goes into live_state");
 	Cmd_AddD("live_peers", Peers_f, "Show paths to other players (direct or relayed)");
 	update_state();
 }

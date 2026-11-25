@@ -37,6 +37,21 @@ uint32_t Live_PartyLeader(void);
 void Live_SendGame(netsrc_t src, const void *data, size_t len, const netadr_t *to);
 size_t Live_GetGame(netsrc_t src, void *buf, size_t bufsize, netadr_t *from);
 
+/* One seat of a finished set, for the fighter records (outcome: 0 win,
+ * 1 loss, 2 quit, 3 disconnect). */
+typedef struct {
+	uint32_t id;
+	int slot, outcome, games;
+	bool behind;
+	char hero[33];
+} live_seat_report_t;
+
+/* The match's host reports a finished set; false when this game isn't
+ * the host of a Live match. */
+bool Live_ReportSet(int result, int first_to, bool runback, const live_seat_report_t *seats, int n);
+uint64_t Live_MatchId(void);
+uint32_t Live_MatchHost(void);
+
 /* the pre-game lobby's stream (virtual port 1) */
 bool Live_SendLobby(uint32_t peer, const void *data, size_t len);
 size_t Live_GetLobby(void *buf, size_t bufsize, uint32_t *from);

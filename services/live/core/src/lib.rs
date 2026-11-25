@@ -6,6 +6,7 @@ pub mod code;
 pub mod matcher;
 pub mod party;
 pub mod playlist;
+pub mod records;
 pub mod wire;
 
 pub use matcher::{drop_in, match_tickets, Formed, Open, Ticket};

@@ -298,7 +298,12 @@ pub const DEFAULT_PLAYLISTS: &str = r#"[
       { "after": 40, "seniority_ratio": 0,   "max_rtt_sum": 400 },
       { "after": 60, "seniority_ratio": 0,   "max_rtt_sum": 0 }
     ],
-    "avoid_rematch_minutes": 10 },
+    "avoid_rematch_minutes": 10,
+    "description": "One on one. First to two games, each the best of three rounds, then rematch or move on.",
+    "modes": [
+      { "id": "set", "name": "First to 2", "maps": ["duel_alley"],
+        "settings": { "g_gametype": "duel", "arena_setFirstTo": "2", "deathmatch": "1", "coop": "0", "maxplayers": "2" } }
+    ] },
   { "id": "2v2", "name": "2v2", "game": "stiletto", "team_size": 2, "teams": 2,
     "stages": [
       { "after": 0,  "seniority_ratio": 1.5, "max_rtt_sum": 150 },
@@ -382,8 +387,13 @@ mod tests {
         assert_eq!((ff.teams, ff.team_size, ff.game.as_str()), (1, 4, "coop"));
         assert_eq!(ff.modes.len(), 2);
         assert_eq!(ff.modes[1].weight, 1);
+        // Stiletto's duel plays sets: its one mode turns set play on
         let duel = all.iter().find(|p| p.id == "duel").unwrap();
-        assert_eq!(duel.pick(7, None), Pick::default());
+        let pick = duel.pick(7, None);
+        assert_eq!((pick.mode.as_str(), pick.map.as_str()), ("set", "duel_alley"));
+        assert!(pick.settings.contains(&("arena_setFirstTo".to_string(), "2".to_string())));
+        let two = all.iter().find(|p| p.id == "2v2").unwrap();
+        assert_eq!(two.pick(7, None), Pick::default());
     }
 
     #[test]

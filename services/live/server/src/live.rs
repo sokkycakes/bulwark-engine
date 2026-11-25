@@ -1,6 +1,7 @@
 //! All server state and message handling.
 
-use bwlive_core::wire::{self, err, gone, t, Client, Listed, Member, Seat, Server, MAX_GUESTS, STAGE_NONE};
+use bwlive_core::records::{self, Records, SeatResult};
+use bwlive_core::wire::{self, err, gone, t, Client, Listed, Member, ReportSeat, Seat, Server, MAX_GUESTS, STAGE_NONE};
 use bwlive_core::{code, drop_in, match_tickets, party, Open, Pick, Playlist, Ticket};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -24,6 +25,9 @@ pub struct Config {
     /// Control messages per second per player.
     pub msg_rate: f64,
     pub playlists: Vec<Playlist>,
+    /// Use the seniority a client sends with `queue` instead of the one in
+    /// its fighter record (tests and private servers).
+    pub trust_seniority: bool,
 }
 
 impl Default for Config {
@@ -35,6 +39,7 @@ impl Default for Config {
             relay_burst_secs: 4.0,
             msg_rate: 20.0,
             playlists: Playlist::defaults(),
+            trust_seniority: false,
         }
     }
 }
@@ -106,6 +111,25 @@ struct Party {
     matched: Option<u64>,
 }
 
+/// A match the matcher made, kept so its host can report sets.
+struct Made {
+    host: u32,
+    seats: Vec<Seat>,
+    /// Each seat's console token when the match was made, so a player who
+    /// has since left still gets the set on their record.
+    tokens: Vec<u64>,
+    made: Instant,
+    reports: u32,
+    last_report: Option<Instant>,
+}
+
+/// Sets a host may report for one match (runbacks included).
+pub const MAX_REPORTS: u32 = 64;
+/// A match is forgotten this long after it was made.
+pub const MATCH_MEMORY: Duration = Duration::from_secs(6 * 3600);
+/// The shortest possible set, so a host can't spam reports.
+pub const MIN_SET: Duration = Duration::from_secs(20);
+
 /// A running match on a drop-in playlist.
 struct Running {
     playlist: String,
@@ -124,6 +148,7 @@ pub struct Stats {
     pub relayed_bytes: u64,
     pub relay_dropped: u64,
     pub datagrams_in: u64,
+    pub sets_reported: u64,
 }
 
 pub struct Live {
@@ -139,6 +164,13 @@ pub struct Live {
     last_pick: HashMap<String, (String, String)>,
     /// Drop-in matches that still take players, by match id.
     running: HashMap<u64, Running>,
+    made: HashMap<u64, Made>,
+    /// Fighter records, by records::key.
+    pub records: Records,
+    /// Set when `records` changed since the caller last saved it.
+    pub records_dirty: bool,
+    /// Today, in days since 1970 (UTC), for records. Set by the caller.
+    pub today: u32,
     rng: u64,
     order: u64,
     next_party: u32,
@@ -158,6 +190,10 @@ impl Live {
             recent: HashMap::new(),
             last_pick: HashMap::new(),
             running: HashMap::new(),
+            made: HashMap::new(),
+            records: Records::default(),
+            records_dirty: false,
+            today: 0,
             rng: seed | 1,
             order: 0,
             next_party: 1,
@@ -257,6 +293,10 @@ impl Live {
             }
             Client::List => self.list(id),
             Client::Playlists => self.playlist_info(id),
+            Client::SetReport { match_id, result, first_to: _, runback, seats } => {
+                self.set_report(id, match_id, result, runback != 0, &seats, now)
+            }
+            Client::Card { player } => self.card(id, player),
             Client::MatchLeft { id: m } => {
                 if let Some(pid) = self.players[&id].party {
                     let pt = self.parties.get_mut(&pid).unwrap();
@@ -570,6 +610,8 @@ impl Live {
         if seats > pl.team_size as usize {
             return self.error(id, err::BAD, "party too big for that playlist");
         }
+        let seniority = if self.cfg.trust_seniority { seniority } else { self.party_seniority(pid) };
+        let pt = self.parties.get_mut(&pid).unwrap();
         pt.ticket = Some(Queued { playlist: pl.id.clone(), seniority, since: now });
         pt.matched = None;
         self.send_queue_status(pid, now);
@@ -729,6 +771,7 @@ impl Live {
         for id in stale {
             self.drop_player(id);
         }
+        self.made.retain(|_, m| now.saturating_duration_since(m.made) < MATCH_MEMORY);
 
         let longest = self.cfg.playlists.iter().map(|p| p.avoid_rematch_minutes).max().unwrap_or(0);
         self.recent
@@ -823,6 +866,11 @@ impl Live {
                     Seat { id, slot, team: *team, name: self.seat_name(id, slot) }
                 })
                 .collect();
+            let tokens = seats.iter().map(|x| self.players.get(&x.id).map(|p| p.token).unwrap_or(0)).collect();
+            self.made.insert(
+                mid,
+                Made { host: (f.host >> 8) as u32, seats: seats.clone(), tokens, made: now, reports: 0, last_report: None },
+            );
             if pl.drop_in {
                 self.running.insert(
                     mid,
@@ -1007,10 +1055,84 @@ impl Live {
             "relayed_bytes": self.stats.relayed_bytes,
             "relay_dropped": self.stats.relay_dropped,
             "datagrams_in": self.stats.datagrams_in,
+            "sets_reported": self.stats.sets_reported,
+            "records": self.records.players.len(),
             "playlists": playlists,
             "top_relays": top_relays,
         })
         .to_string()
+    }
+
+    /// The mean seniority (days with a completed set) of a party's seats,
+    /// from the fighter records.
+    fn party_seniority(&self, pid: u32) -> u32 {
+        let Some(pt) = self.parties.get(&pid) else { return 0 };
+        let mut sum = 0u64;
+        let mut n = 0u64;
+        for (m, _) in &pt.members {
+            let Some(p) = self.players.get(m) else { continue };
+            for slot in 0..self.locals(*m) as u8 {
+                sum += self.records.seniority(&records::key(p.token, slot)) as u64;
+                n += 1;
+            }
+        }
+        if n == 0 { 0 } else { (sum / n) as u32 }
+    }
+
+    /// A host reports a finished set of a match it hosts.
+    fn set_report(&mut self, id: u32, mid: u64, result: u8, runback: bool, seats: &[ReportSeat], now: Instant) {
+        let Some(m) = self.made.get_mut(&mid) else {
+            return self.error(id, err::BAD, "no such match");
+        };
+        if m.host != id {
+            return self.error(id, err::BAD, "only the match's host reports its sets");
+        }
+        if m.reports >= MAX_REPORTS || m.last_report.is_some_and(|at| now.saturating_duration_since(at) < MIN_SET) {
+            return self.error(id, err::RATE, "too many set reports");
+        }
+        if result > records::result::FORFEIT || seats.is_empty() || seats.len() > m.seats.len() {
+            return self.error(id, err::BAD, "bad set report");
+        }
+        let mut seen = Vec::new();
+        for s in seats {
+            let in_match = m.seats.iter().any(|x| x.id == s.id && x.slot == s.slot);
+            if !in_match || seen.contains(&(s.id, s.slot)) || s.outcome > records::outcome::DISCONNECT {
+                return self.error(id, err::BAD, "bad set report");
+            }
+            seen.push((s.id, s.slot));
+        }
+        // A completed set has winners and losers only; a forfeit has a winner.
+        let wins = seats.iter().filter(|s| s.outcome == records::outcome::WIN).count();
+        let left = seats.iter().filter(|s| s.outcome >= records::outcome::QUIT).count();
+        if wins == 0 || (result == records::result::COMPLETE && left > 0) || (result == records::result::FORFEIT && left == 0) {
+            return self.error(id, err::BAD, "bad set report");
+        }
+        m.reports += 1;
+        m.last_report = Some(now);
+        let known: Vec<(u32, u8, String, u64)> =
+            m.seats.iter().zip(&m.tokens).map(|(x, tok)| (x.id, x.slot, x.name.clone(), *tok)).collect();
+        for s in seats {
+            let Some((_, _, name, token)) = known.iter().find(|n| n.0 == s.id && n.1 == s.slot) else { continue };
+            if *token == 0 {
+                continue;
+            }
+            let r = SeatResult { outcome: s.outcome, behind: s.behind != 0, hero: s.hero.clone(), runback };
+            self.records.apply(&records::key(*token, s.slot), name, &r, result, self.today);
+        }
+        self.records_dirty = true;
+        self.stats.sets_reported += 1;
+    }
+
+    fn card(&mut self, id: u32, player: u32) {
+        let who = if player == 0 { id } else { player };
+        let Some(p) = self.players.get(&who) else {
+            return self.send(id, Server::CardInfo { json: format!("{{\"id\":{who},\"none\":true}}") });
+        };
+        let json = match self.records.get(&records::key(p.token, 0)) {
+            Some(r) => r.card_json(who, &p.name),
+            None => records::Record::default().card_json(who, &p.name),
+        };
+        self.send(id, Server::CardInfo { json });
     }
 
     /// Tells everyone the server is going away.
@@ -1362,6 +1484,55 @@ mod tests {
             n.hello(2, "bob");
         }
         assert_eq!(n.live.stats.matches_made, 2);
+    }
+
+    #[test]
+    fn set_reports_build_cards_and_seniority() {
+        let mut n = Net::new(Config::default());
+        let a = n.hello(1, "ann");
+        let b = n.hello(2, "bo");
+        n.send(1, Client::Queue { playlist: "duel".into(), seniority: 900 });
+        n.send(2, Client::Queue { playlist: "duel".into(), seniority: 900 });
+        n.tick(1);
+        let m = match_msgs(&n.got(1));
+        let (mid, host, _) = m[0].clone();
+        n.got(2);
+        let guest = if host == a { b } else { a };
+        let (hn, gn) = if host == a { (1, 2) } else { (2, 1) };
+        // the client's seniority claim was ignored: nobody has a record yet
+        assert_eq!(n.live.party_seniority(n.live.players[&host].party.unwrap()), 0);
+        let seat = |id, outcome, games| ReportSeat { id, slot: 0, outcome, behind: 0, games, hero: "hero_juliet".into() };
+        // only the host may report
+        n.send(gn, Client::SetReport { match_id: mid, result: 0, first_to: 2, runback: 0, seats: vec![seat(host, 1, 0), seat(guest, 0, 2)] });
+        assert!(n.got(gn).iter().any(|m| matches!(m, Server::Error { .. })));
+        // a completed set may not hold a quit
+        n.send(hn, Client::SetReport { match_id: mid, result: 0, first_to: 2, runback: 0, seats: vec![seat(host, 0, 2), seat(guest, 2, 0)] });
+        assert!(n.got(hn).iter().any(|m| matches!(m, Server::Error { .. })));
+        n.send(hn, Client::SetReport { match_id: mid, result: 0, first_to: 2, runback: 0, seats: vec![seat(host, 0, 2), seat(guest, 1, 1)] });
+        assert!(n.got(hn).is_empty());
+        assert_eq!(n.live.stats.sets_reported, 1);
+        // a second report straight away is refused (shortest set)
+        n.send(hn, Client::SetReport { match_id: mid, result: 0, first_to: 2, runback: 1, seats: vec![seat(host, 0, 2), seat(guest, 1, 0)] });
+        assert!(n.got(hn).iter().any(|m| matches!(m, Server::Error { code: err::RATE, .. })));
+        n.now += Duration::from_secs(30);
+        n.send(hn, Client::SetReport { match_id: mid, result: 1, first_to: 2, runback: 1, seats: vec![seat(host, 0, 1), ReportSeat { id: guest, slot: 0, outcome: 2, behind: 1, games: 0, hero: String::new() }] });
+        assert_eq!(n.live.stats.sets_reported, 2);
+        n.send(gn, Client::Card { player: 0 });
+        let card = n.got(gn).into_iter().find_map(|m| if let Server::CardInfo { json } = m { Some(json) } else { None }).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&card).unwrap();
+        assert_eq!(v["sets"], 2);
+        assert_eq!(v["losses"], 1);
+        assert_eq!(v["quits_behind"], 1);
+        assert_eq!(v["runbacks"], 1);
+        assert_eq!(v["form"], "LQ");
+        assert_eq!(v["active_days"], 1);
+        n.send(gn, Client::Card { player: host });
+        let card = n.got(gn).into_iter().find_map(|m| if let Server::CardInfo { json } = m { Some(json) } else { None }).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&card).unwrap();
+        assert_eq!(v["wins"], 2);
+        assert_eq!(v["forfeit_wins"], 1);
+        // seniority for the next search comes from the record
+        assert_eq!(n.live.party_seniority(n.live.players[&host].party.unwrap()), 1);
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub mod t {
     pub const MATCH_LEFT: u8 = 13;
     pub const PONG: u8 = 14;
     pub const PLAYLISTS: u8 = 15;
+    pub const SET_REPORT: u8 = 16;
+    pub const CARD: u8 = 17;
 
     pub const WELCOME: u8 = 64;
     pub const ERROR: u8 = 65;
@@ -39,6 +41,7 @@ pub mod t {
     pub const PLAYERS: u8 = 73;
     pub const PING: u8 = 74;
     pub const PLAYLIST_INFO: u8 = 75;
+    pub const CARD_INFO: u8 = 76;
 
     pub const PUNCH: u8 = 96;
     pub const PUNCH_ACK: u8 = 97;
@@ -89,6 +92,22 @@ pub enum Client {
     Pong { nonce: u32 },
     /// Asks for the playlists of the player's game.
     Playlists,
+    /// The host's report of a finished set (fighter records).
+    SetReport { match_id: u64, result: u8, first_to: u8, runback: u8, seats: Vec<ReportSeat> },
+    /// Asks for a player's fighter card; 0 = the caller's own.
+    Card { player: u32 },
+}
+
+/// One seat of a `set_report`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportSeat {
+    pub id: u32,
+    pub slot: u8,
+    /// 0 win, 1 loss, 2 quit, 3 disconnect (records::outcome).
+    pub outcome: u8,
+    pub behind: u8,
+    pub games: u8,
+    pub hero: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +165,9 @@ pub enum Server {
     /// The rest of the datagram.
     PlaylistInfo { json: String },
     Ping { nonce: u32 },
+    /// A fighter card as JSON (records::Record::card_json), the rest of the
+    /// datagram. `{"id":N,"none":true}` for an unknown player.
+    CardInfo { json: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -356,6 +378,19 @@ impl Client {
                 w.u32(*nonce);
                 w
             }
+            Client::SetReport { match_id, result, first_to, runback, seats } => {
+                let mut w = W::new(t::SET_REPORT);
+                w.u64(*match_id).u8(*result).u8(*first_to).u8(*runback).u8(seats.len() as u8);
+                for s in seats {
+                    w.u32(s.id).u8(s.slot).u8(s.outcome).u8(s.behind).u8(s.games).str(&s.hero);
+                }
+                w
+            }
+            Client::Card { player } => {
+                let mut w = W::new(t::CARD);
+                w.u32(*player);
+                w
+            }
         };
         w.0
     }
@@ -384,6 +419,19 @@ impl Client {
             t::PLAYLISTS => Client::Playlists,
             t::MATCH_LEFT => Client::MatchLeft { id: r.u64()? },
             t::PONG => Client::Pong { nonce: r.u32()? },
+            t::SET_REPORT => {
+                let (match_id, result, first_to, runback) = (r.u64()?, r.u8()?, r.u8()?, r.u8()?);
+                let n = r.u8()?;
+                if n as usize > 16 {
+                    return None;
+                }
+                let mut seats = Vec::new();
+                for _ in 0..n {
+                    seats.push(ReportSeat { id: r.u32()?, slot: r.u8()?, outcome: r.u8()?, behind: r.u8()?, games: r.u8()?, hero: r.str()? });
+                }
+                Client::SetReport { match_id, result, first_to, runback, seats }
+            }
+            t::CARD => Client::Card { player: r.u32()? },
             _ => return None,
         })
     }
@@ -473,6 +521,11 @@ impl Server {
                 w.u32(*nonce);
                 w
             }
+            Server::CardInfo { json } => {
+                let mut w = W::new(t::CARD_INFO);
+                w.bytes(json.as_bytes());
+                w
+            }
         };
         w.0
     }
@@ -528,6 +581,7 @@ impl Server {
             }
             t::PING => Server::Ping { nonce: r.u32()? },
             t::PLAYLIST_INFO => Server::PlaylistInfo { json: String::from_utf8(r.rest()).ok()? },
+            t::CARD_INFO => Server::CardInfo { json: String::from_utf8(r.rest()).ok()? },
             _ => return None,
         })
     }
@@ -609,6 +663,12 @@ mod tests {
         rt_server(Server::Players { list: vec![Listed { id: 1, name: "a".into(), status: "idle".into(), code: "".into() }] });
         rt_server(Server::PlaylistInfo { json: "[{\"id\":\"horde\"}]".into() });
         rt_client(Client::Playlists);
+        rt_client(Client::SetReport { match_id: 9, result: 1, first_to: 2, runback: 1, seats: vec![
+            ReportSeat { id: 1, slot: 0, outcome: 0, behind: 0, games: 2, hero: "hero_juliet".into() },
+            ReportSeat { id: 2, slot: 0, outcome: 2, behind: 1, games: 0, hero: String::new() },
+        ] });
+        rt_client(Client::Card { player: 0 });
+        rt_server(Server::CardInfo { json: "{\"id\":1}".into() });
         let p = Peer::Punch { from: 1, to: 2, nonce: 3 };
         let enc = p.encode();
         let (_, ty, body) = header(&enc).unwrap();

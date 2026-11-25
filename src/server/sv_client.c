@@ -899,6 +899,7 @@ void SV_DropClient(client_t *c, const char *reason)
 	qcvm_t *vm = sv.vm;
 	if (c->state == CS_FREE)
 		return;
+	SV_LiveNoteDrop(c, reason);
 	if (c->state == CS_SPAWNED && vm) {
 		QC_SetGInt(vm, G.self, c->edict);
 		if (QC_FindFunction(vm, "ClientDisconnect"))

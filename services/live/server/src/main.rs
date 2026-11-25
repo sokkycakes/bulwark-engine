@@ -2,6 +2,7 @@
 //!
 //!   bwlive-server [--bind ADDR] [--http ADDR] [--playlists FILE]
 //!                 [--relay-only] [--max-players N] [--relay-kbps N]
+//!                 [--records FILE] [--trust-seniority]
 //!
 //! One UDP port (default 0.0.0.0:27950). With --http, a JSON status page.
 
@@ -16,7 +17,8 @@ fn usage() -> ! {
     eprintln!(
         "usage: bwlive-server [--bind 0.0.0.0:27950] [--http 127.0.0.1:27951]\n\
          \x20                    [--playlists playlists.json] [--relay-only]\n\
-         \x20                    [--max-players 4096] [--relay-kbps 64]"
+         \x20                    [--max-players 4096] [--relay-kbps 64]\n\
+         \x20                    [--records records.json] [--trust-seniority]"
     );
     std::process::exit(2)
 }
@@ -24,6 +26,7 @@ fn usage() -> ! {
 fn main() {
     let mut bind = "0.0.0.0:27950".to_string();
     let mut http: Option<String> = None;
+    let mut records_path: Option<String> = None;
     let mut cfg = Config::default();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -32,6 +35,8 @@ fn main() {
             "--bind" => bind = val(),
             "--http" => http = Some(val()),
             "--relay-only" => cfg.relay_only = true,
+            "--trust-seniority" => cfg.trust_seniority = true,
+            "--records" => records_path = Some(val()),
             "--max-players" => cfg.max_players = val().parse().unwrap_or_else(|_| usage()),
             "--relay-kbps" => cfg.relay_rate = val().parse::<f64>().unwrap_or_else(|_| usage()) * 1024.0,
             "--playlists" => {
@@ -63,6 +68,24 @@ fn main() {
         http.as_deref().map(|h| format!(", status http://{h}/")).unwrap_or_default()
     );
     let mut live = Live::new(cfg, seed);
+    let today = || bwlive_core::records::day_of(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+    live.today = today();
+    if let Some(path) = &records_path {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                live.records = bwlive_core::records::Records::from_json(&text).unwrap_or_else(|e| {
+                    eprintln!("{path}: {e}");
+                    std::process::exit(1)
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                std::process::exit(1)
+            }
+        }
+        eprintln!("fighter records in {path} ({} players)", live.records.players.len());
+    }
 
     let status = Arc::new(Mutex::new(live.status_json()));
     if let Some(h) = http {
@@ -103,8 +126,19 @@ fn main() {
         let now = Instant::now();
         if now >= next_tick {
             next_tick = now + Duration::from_secs(1);
+            live.today = today();
             for (to, data) in live.tick(now) {
                 let _ = sock.send_to(&data, to);
+            }
+            if live.records_dirty {
+                live.records_dirty = false;
+                if let Some(path) = &records_path {
+                    // write beside, then rename, so a crash never leaves half a file
+                    let tmp = format!("{path}.tmp");
+                    if std::fs::write(&tmp, live.records.to_json()).and_then(|_| std::fs::rename(&tmp, path)).is_err() {
+                        eprintln!("can't save fighter records to {path}");
+                    }
+                }
             }
             *status.lock().unwrap() = live.status_json();
         }
