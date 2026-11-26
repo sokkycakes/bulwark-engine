@@ -381,6 +381,19 @@ and the thread doubles that to 48 kHz by linear interpolation. That halves
 the mixing work, and the game's samples are mostly 22 or 11 kHz anyway.
 There are four buffers of 21 ms, so about 85 ms of latency.
 
+### Collision
+
+Every SSE float compare is a helper call in xemu, and nxdk builds with no
+builtin `memcpy`, so the world code avoids both where it runs per trace:
+
+- The area tree compares boxes as integer keys made from the float bits.
+- Q1 hull walks test axial planes with a subtract, not a dot product.
+- World traces and world point contents are remembered, keyed on their
+  exact input bits. That takes about 260 KB per map under `BW_LOWMEM`.
+
+`tests/bsp/tracefuzz.c` prints many seeded traces as raw bits, so two
+builds can be compared bit for bit on any set of maps.
+
 ### Network
 
 nxdk's lwIP stack, started in a background thread with DHCP. System link
