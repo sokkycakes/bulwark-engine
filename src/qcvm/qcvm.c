@@ -966,6 +966,8 @@ void QC_Free(qcvm_t *vm)
 		return;
 	QC_PrintMemStats(vm);
 	Mem_Free(vm->watch);
+	Mem_Free(vm->prof_stack);
+	Mem_Free(vm->prof_edges);
 	for (int i = 0; i < vm_count; i++)
 		if (vm_list[i] == vm) {
 			vm_list[i] = vm_list[--vm_count];

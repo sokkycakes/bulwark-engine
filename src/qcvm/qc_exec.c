@@ -128,6 +128,8 @@ static QC_ALWAYS_INLINE int leave_function(qcvm_t *vm)
 {
 	qcframe_t *fr = &vm->stack[--vm->depth];
 	qcfunc_t *f = &vm->functions[vm->xfunction];
+	if (vm->debug_hooks)
+		QC_DebugFunctionLeft(vm, f);
 	copy_words(vm->globals + f->d.parm_start, vm->localstack + fr->localbase, f->d.locals);
 	vm->localstack_used = fr->localbase;
 	if (fr->progs != vm->curprogs)
@@ -356,8 +358,7 @@ static qcfunc_t *call_begin(qcvm_t *vm, const qcstatement_t *st, int s, const ed
 		if (vm->profiling) {
 			double t0 = Sys_Seconds();
 			f->builtin(vm);
-			f->prof_time += Sys_Seconds() - t0;
-			f->prof_calls++;
+			QC_DebugBuiltinTime(vm, f, Sys_Seconds() - t0);
 		} else {
 			f->builtin(vm);
 		}
@@ -563,8 +564,7 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 		if (vm->profiling) {                                                                       \
 			double t0_ = Sys_Seconds();                                                            \
 			(f)->builtin(vm);                                                                      \
-			(f)->prof_time += Sys_Seconds() - t0_;                                                 \
-			(f)->prof_calls++;                                                                     \
+			QC_DebugBuiltinTime(vm, (f), Sys_Seconds() - t0_);                                     \
 		} else {                                                                                   \
 			(f)->builtin(vm);                                                                      \
 		}                                                                                          \

@@ -78,6 +78,8 @@ typedef struct {
 	/* profile_ssqc and friends */
 	uint64_t prof_statements, prof_calls;
 	double prof_time; /* builtins only */
+	uint64_t prof_incl; /* statements run in it and in what it called */
+	double prof_incl_time; /* builtin time in it and in what it called */
 } qcfunc_t;
 
 typedef struct {
@@ -276,6 +278,12 @@ struct qcvm_s {
 	bool debug_hooks;
 	bool profiling;
 	double profile_start;
+	/* the profile's running totals and, for each frame, what they were
+	 * when it began (qc_debug.c) */
+	uint64_t prof_total;
+	double prof_btime;
+	struct qc_profframe_s *prof_stack;
+	struct qc_profedges_s *prof_edges;
 	char breakpoint[64];
 	struct qc_watch_s *watch;
 
@@ -459,6 +467,8 @@ float QC_MeshPitch(void);
 void QC_InitDebugCommands(void);
 void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f);
 void QC_DebugStatement(qcvm_t *vm, int s);
+void QC_DebugFunctionLeft(qcvm_t *vm, qcfunc_t *f);
+void QC_DebugBuiltinTime(qcvm_t *vm, qcfunc_t *f, double seconds);
 void QC_DebugUpdateHooks(qcvm_t *vm);
 void QC_CoreDump(qcvm_t *vm, const char *why);
 extern const char *const qc_supported_extensions[];
