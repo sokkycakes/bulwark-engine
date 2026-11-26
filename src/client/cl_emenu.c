@@ -622,6 +622,28 @@ static void draw_slider(const item_t *it, float x, float y, float w, float size,
 }
 
 /* a framed box of a colour */
+/* text in at most maxw: a little smaller first, then cut short with "..."
+ * (a row's label stays inside the panel, whatever the screen size) */
+static float text_fit(float x, float y, const char *text, float size, const float *col, float alpha, float maxw)
+{
+	char buf[512];
+	size_t n;
+	float w = R_TextWidth(text, size);
+	if (maxw <= 0 || w <= maxw)
+		return R_Text(x, y, text, size, col, alpha);
+	if (w * 0.85f <= maxw)
+		return R_Text(x, y + size * (1 - maxw / w) * 0.5f, text, size * maxw / w, col, alpha);
+	Str_Copy(buf, text, sizeof(buf));
+	for (n = strlen(buf); n > 0; n--) {
+		while (n > 0 && buf[n - 1] == ' ')
+			n--;
+		memcpy(buf + n, "...", 4);
+		if (R_TextWidth(buf, size) <= maxw)
+			break;
+	}
+	return R_Text(x, y, buf, size, col, alpha);
+}
+
 static void draw_swatch(float x, float y, float w, float h, unsigned int color)
 {
 	float rgb[3];
@@ -736,7 +758,7 @@ static void draw_page(page_t *p, int sw, int sh)
 		if (sel)
 			R_Rect(px + 4, y - 2, pw - 8, rh, c_bar, 0.5f);
 		if (it->header && !strchr(it->label, '\t')) {
-			R_Text(px + size, y, it->label, size, c_head, 1);
+			text_fit(px + size, y, it->label, size, c_head, 1, pw - size * 2);
 			continue;
 		}
 		const float *col = it->header ? c_head : !selectable(it) && it->type != IT_TEXT ? c_dim : sel ? c_sel : c_text;
@@ -748,11 +770,19 @@ static void draw_page(page_t *p, int sw, int sh)
 			for (int k = 0; *c && k < 5; k++) {
 				size_t n = strcspn(c, "\t");
 				Str_Copy(cell, c, BW_MIN(sizeof(cell), n + 1));
-				R_Text(px + size * 1.5f + (pw - size * 3) * at[k], y, cell, size, col, 1);
+				{
+					float cx = px + size * 1.5f + (pw - size * 3) * at[k];
+					float next = k < 4 && c[n] == '\t' ? px + size * 1.5f + (pw - size * 3) * at[k + 1] : px + pw - size;
+					text_fit(cx, y, cell, size, col, 1, next - cx - size * 0.5f);
+				}
 				c += n + (c[n] == '\t');
 			}
-		} else
-			R_Text(px + size * 1.5f, y, it->label, size, col, 1);
+		} else {
+			/* a value starts mid-panel; a plain row has up to the edge */
+			bool has_value = (it->type != IT_TEXT && it->type != IT_COMMAND) || it->draw;
+			float lx = px + size * 1.5f;
+			text_fit(lx, y, it->label, size, col, 1, (has_value ? valx - size * 0.5f : px + pw - size) - lx);
+		}
 		if ((it->type != IT_TEXT && it->type != IT_COMMAND) || it->draw)
 			draw_value(it, valx, y, px + pw - valx - 12, size, sel);
 	}
@@ -761,7 +791,7 @@ static void draw_page(page_t *p, int sw, int sh)
 	if (p->scroll + visible < p->numitems)
 		R_Text(px + pw - size * 2, py + ph - size * 3.5f, "v", size, c_dim, 1);
 	if (p->footer[0])
-		R_Text(px + size, py + ph - size * 2, p->footer, size, c_dim, 1);
+		text_fit(px + size, py + ph - size * 2, p->footer, size, c_dim, 1, pw - size * 2);
 }
 
 void EM_Draw(int w, int h)
@@ -1099,7 +1129,7 @@ static void draw_color_preview(const item_t *it, float x, float y, float w, floa
 	draw_swatch(x + (bw + size) * 3.5f, y, bw, h, hero_tint(cvar_color("bottomcolor")));
 	R_Text(x, y + h + 2, "Upper", size * 0.8f, c_dim, 1);
 	R_Text(x + bw + size, y + h + 2, "Lower", size * 0.8f, c_dim, 1);
-	R_Text(x + (bw + size) * 2.5f, y + h + 2, "As the game tints them", size * 0.8f, c_dim, 1);
+	text_fit(x + (bw + size) * 2.5f, y + h + 2, "In game", size * 0.8f, c_dim, 1, w - (bw + size) * 2.5f);
 }
 
 static void draw_spray_preview(const item_t *it, float x, float y, float w, float h, float size)
@@ -1335,7 +1365,7 @@ static void pg_controller(page_t *p)
 		if (b && *b)
 			add_text(p, va("  %-14s %s", Key_NameForNum(k), b));
 	}
-	add_text(p, "Change a button on the Keys page: A on a row, then the button.");
+	add_text(p, "Rebind on the Keys page: A on a row, then the new button.");
 	add_cmd(p, "Keys and buttons...", "menu_keys");
 	add_cmd(p, "Restore the default controller layout", "in_paddefaults");
 	Str_Copy(p->footer, "Left/right change a setting. B goes back", sizeof(p->footer));
