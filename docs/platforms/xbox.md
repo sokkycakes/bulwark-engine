@@ -124,7 +124,8 @@ instead, with switches in `args.txt` (or on the command line):
 - `-xmemlog` prints each new low of free memory (in 512 KB steps) with the
   address of the code that took it; look the address up in
   `build-xbox/bulwark.map`. `xbox_meminfo` also prints the lowest free
-  memory so far, and `xbox_meminfo regions` lists the committed regions of
+  memory so far (watched at each big allocation only under `-xmemlog`, as
+  each look is a kernel call), and `xbox_meminfo regions` lists the committed regions of
   64 KB and more.
 
 `xbench.sh` takes `XMEM=<MB>` for the console xemu emulates and `FLASH=` for

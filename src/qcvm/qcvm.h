@@ -218,6 +218,7 @@ struct qcvm_s {
 	int edict_words_used; /* the rest is spare room for fields added progs declare */
 	int max_edicts;
 	int edicts_backed; /* slots below this have memory behind them (QC_BackEdict) */
+	size_t backed_end; /* arena offset where those slots end */
 	int num_edicts; /* highest slot in use + 1 */
 	int reserved_edicts; /* slots 1..reserved are never handed out by spawn() (player slots) */
 	float quick_reuse_before; /* slots freed before this time can be reused at once (map load) */

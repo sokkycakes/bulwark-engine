@@ -610,8 +610,8 @@ static char *load_part(const char *path, size_t ofs, size_t n, size_t *len)
 		}
 	}
 	if (fs_enginedir[0]) {
-		int n = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
-		if (n > 0 && (size_t)n < sizeof(ospath))
+		int k = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
+		if (k > 0 && (size_t)k < sizeof(ospath))
 			return load_os_file(ospath, ofs, n, len);
 	}
 	return NULL;

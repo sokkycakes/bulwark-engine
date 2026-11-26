@@ -791,9 +791,11 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 		if (!Mem_PageCommit(vm->mem + h, vm->committed - h))
 			Sys_Error("out of memory for %s", name);
 	}
+	vm->backed_end = vm->edicts_ofs;
 #else
 	vm->mem = Mem_PageAlloc(vm->memsize, vm->memsize);
 	vm->edicts_backed = vm->max_edicts;
+	vm->backed_end = vm->heap_ofs;
 #endif
 	p->globals = (qcval_t *)vm->mem;
 	p->globals_addr = 0;
@@ -979,6 +981,7 @@ qcval_t *QC_BackEdict(qcvm_t *vm, int e)
 	if (!Mem_PageCommit(vm->mem + from, to - from))
 		Sys_Error("out of memory for %d entities of %s", want, vm->name);
 	vm->edicts_backed = (int)BW_MIN((size_t)vm->max_edicts, (to - vm->edicts_ofs) / ent);
+	vm->backed_end = vm->edicts_backed == vm->max_edicts ? vm->heap_ofs : vm->edicts_ofs + (size_t)vm->edicts_backed * ent;
 	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * ent);
 }
 
@@ -1165,10 +1168,29 @@ const char *QC_ParseEdict(qcvm_t *vm, int e, const char *data, bool *ok)
 
 /* --- arena pointers and heap ----------------------------------------- */
 
+static bool heap_commit(qcvm_t *vm, size_t ofs);
+
 void *QC_Pointer(qcvm_t *vm, uint32_t addr, size_t bytes)
 {
-	if ((uint64_t)addr + bytes > vm->memsize || addr == 0)
+	uint64_t end = (uint64_t)addr + bytes;
+	if (end > vm->memsize || addr == 0)
 		QC_RunError(vm, "bad pointer 0x%x (+%zu)", addr, bytes);
+#ifdef MEM_PAGE_LAZY
+	/* parts of the arena are only reserved, and touching them faults */
+	if (end > vm->backed_end) {
+		if (addr < vm->heap_ofs) {
+			/* entity slots: back them, as a field access would */
+			if (end > vm->edicts_ofs) {
+				size_t top = (size_t)BW_MIN(end, (uint64_t)vm->heap_ofs) - 1 - vm->edicts_ofs;
+				QC_BackEdict(vm, (int)BW_MIN(top / ((size_t)vm->edict_words * 4), (size_t)vm->max_edicts - 1));
+			}
+		}
+		/* past the backed heap is only a free tail: back it (zeroed) rather
+		   than fault on a stale pointer */
+		if (end > vm->committed && !heap_commit(vm, (size_t)end - vm->heap_ofs))
+			QC_RunError(vm, "out of memory for pointer 0x%x (+%zu)", addr, bytes);
+	}
+#endif
 	return vm->mem + addr;
 }
 
@@ -1238,7 +1260,8 @@ uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes)
 			QC_RunError(vm, "memalloc heap corrupted");
 		if (!h->used && h->size >= need) {
 			bool split = h->size - need >= sizeof(heaphdr_t) + 16;
-			if (!heap_commit(vm, ofs + need + (split ? sizeof(heaphdr_t) : 0)))
+			/* unsplit, the whole block is cleared below */
+			if (!heap_commit(vm, ofs + (split ? need + sizeof(heaphdr_t) : h->size)))
 				return 0;
 			if (split) {
 				heaphdr_t *rest = heap_block(vm, ofs + need);
@@ -1267,6 +1290,8 @@ static heaphdr_t *heap_header_for(qcvm_t *vm, uint32_t addr)
 	heaphdr_t *h;
 	if (addr < vm->heap_ofs + sizeof(heaphdr_t) || addr >= vm->heap_ofs + vm->heap_size)
 		return NULL;
+	if (addr > vm->committed)
+		return NULL; /* the header would be in a released page: never a live block */
 	h = (heaphdr_t *)(vm->mem + addr) - 1;
 	if (h->magic != HEAP_MAGIC || !h->used)
 		return NULL;

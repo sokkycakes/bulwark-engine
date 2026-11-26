@@ -12,6 +12,7 @@ void CTR_PrintMemory(const char *when);
 #ifdef BW_XBOX
 void XBX_Log(const char *text);
 void XBX_NoteFreeMemory(const void *from);
+extern bool xbx_memlog;
 #endif
 
 int developer = 0;
@@ -198,7 +199,7 @@ void *Mem_Alloc(size_t size)
 	trace_add(p, size, __builtin_return_address(0));
 #endif
 #ifdef BW_XBOX
-	if (size >= (64u << 10))
+	if (xbx_memlog && size >= (64u << 10))
 		XBX_NoteFreeMemory(__builtin_return_address(0));
 #endif
 	if (!p)
@@ -216,7 +217,7 @@ void *Mem_Realloc(void *p, size_t size)
 	trace_add(n, size, __builtin_return_address(0));
 #endif
 #ifdef BW_XBOX
-	if (size >= (64u << 10))
+	if (xbx_memlog && size >= (64u << 10))
 		XBX_NoteFreeMemory(__builtin_return_address(0));
 #endif
 	if (!n)

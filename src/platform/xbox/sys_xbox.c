@@ -52,7 +52,9 @@ void XBX_Log(const char *text)
 }
 
 static size_t lowest_free = (size_t)-1, logged_free = (size_t)-1;
-static bool memlog; /* -xmemlog: log each new low of free memory, by 512 KB steps */
+/* -xmemlog: log each new low of free memory, by 512 KB steps. Off, big
+ * allocations skip the kernel query (XBX_NoteFreeMemory) */
+bool xbx_memlog;
 
 size_t XBX_FreeMemory(void)
 {
@@ -66,12 +68,12 @@ size_t XBX_FreeMemory(void)
 	return f;
 }
 
-/* after a big allocation: the least memory there has been free shows how
- * close loading came to running out */
+/* after a big allocation (only under -xmemlog): the least memory there has
+ * been free shows how close loading came to running out */
 void XBX_NoteFreeMemory(const void *from)
 {
 	size_t f = XBX_FreeMemory();
-	if (memlog && f + (512u << 10) <= logged_free) {
+	if (xbx_memlog && f + (512u << 10) <= logged_free) {
 		char b[96];
 		logged_free = f;
 		snprintf(b, sizeof(b), "xmemlog: %u KB free, from %p\n", (unsigned)(f >> 10), from);
@@ -340,7 +342,7 @@ void Plat_Init(int *argc, char ***argv)
 		else if (!strcmp(args[i], "-xmem") && i + 1 < n)
 			limit_memory((unsigned)atoi(args[++i]), true);
 		else if (!strcmp(args[i], "-xmemlog"))
-			memlog = true;
+			xbx_memlog = true;
 		else if (!strcmp(args[i], "-xmemsizes") && i + 1 < n)
 			limit_memory((unsigned)atoi(args[++i]), false);
 		else

@@ -112,7 +112,8 @@ static size_t gpu_used;
 static void *contig_alloc(size_t size)
 {
 	void *p = MmAllocateContiguousMemoryEx(size, 0, GPU_MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
-	XBX_NoteFreeMemory(__builtin_return_address(0));
+	if (xbx_memlog)
+		XBX_NoteFreeMemory(__builtin_return_address(0));
 	return p;
 }
 
@@ -1122,8 +1123,8 @@ static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint intern
 		return;
 	}
 	/* new pixels for a texture that had some: an atlas or a moving picture */
-	if (t->data && !t->cube)
-		t->updated = true;
+	if ((t->data || t->pending) && !t->cube)
+		t->updated = true; /* pending: its storage was deferred, it still had pixels */
 	free_tex_storage(t);
 	t->cube = false;
 	t->w = w, t->h = h, t->tw = tw, t->th = th;

@@ -48,6 +48,7 @@ DWORD pb_get_vbl_counter(void) { return 0; }
 DWORD pb_wait_for_vbl(void) { return 0; }
 size_t XBX_FreeMemory(void) { return 0; }
 void XBX_NoteFreeMemory(const void *from) { (void)from; }
+bool xbx_memlog;
 size_t XBX_TotalMemory(void) { return (size_t)64 << 20; }
 
 void Con_Printf(const char *fmt, ...)
