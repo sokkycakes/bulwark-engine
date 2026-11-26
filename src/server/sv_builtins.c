@@ -134,7 +134,7 @@ static void bi_soundnameforindex(qcvm_t *vm)
 static void do_trace(qcvm_t *vm, const float *start, const float *mins, const float *maxs, const float *end, int type, int ent)
 {
 	svtrace_t tr;
-	SV_Move(start, mins, maxs, end, type, ent, &tr);
+	SV_MoveWater(start, mins, maxs, end, type, ent, &tr);
 	SV_SetTraceGlobals(&tr);
 }
 

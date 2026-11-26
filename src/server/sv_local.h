@@ -307,7 +307,11 @@ bspmap_t *SV_CurrentWorld(void); /* the map of the current context */
 
 void SV_LinkEdict(int e, bool touch_triggers);
 void SV_UnlinkEdict(int e);
+/* SV_Move leaves tr->inwater false: it costs a point-contents query and
+ * only trace_inwater reads it, so SV_MoveWater is for traces QC sees */
 void SV_Move(const float *start, const float *mins, const float *maxs, const float *end, int type, int passent, svtrace_t *tr);
+void SV_MoveWater(const float *start, const float *mins, const float *maxs, const float *end, int type, int passent,
+                  svtrace_t *tr);
 int SV_PointContentsBits(const float *p);
 bool SV_InsideBrushEntity(int pusher, int e);
 int SV_ContentsToQuake(int bits);
