@@ -15,6 +15,7 @@
 
 static bool r_active;
 double r_time;
+unsigned r_framenum;
 cvar_t *r_lightmapscale, *r_fullbright, *r_drawentities, *r_drawworld, *r_novis, *r_clearcolor;
 cvar_t *gl_texturemode, *r_wireframe, *r_speeds;
 static cvar_t *scr_scale, *r_screenshot_format, *jpeg_quality;
@@ -125,6 +126,7 @@ static void take_screenshot(const char *name);
 void R_BeginFrame(void)
 {
 	r_time = cl.realtime;
+	r_framenum++;
 	if (!r_active)
 		return;
 	update_size();

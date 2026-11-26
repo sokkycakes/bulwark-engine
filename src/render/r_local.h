@@ -360,6 +360,7 @@ typedef struct {
 } rstats_t;
 extern rstats_t r_stats;
 extern double r_time;
+extern unsigned r_framenum; /* counts R_BeginFrame calls */
 
 void R_ClearScene(void);
 rentity_t *R_AllocEntity(void);
