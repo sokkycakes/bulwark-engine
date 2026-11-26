@@ -10,6 +10,8 @@ BW_GL_FUNCS(X)
 #undef X
 
 void(BWGLAPI *qglFramebufferTexture2D_opt)(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l);
+void(BWGLAPI *qglMultiDrawElements_opt)(GLenum mode, const GLsizei *count, GLenum type, const void *const *ofs,
+                                         GLsizei n);
 
 int GL_LoadFunctions(void *(*getproc)(const char *name))
 {
@@ -23,6 +25,8 @@ int GL_LoadFunctions(void *(*getproc)(const char *name))
 	BW_GL_FUNCS(X)
 #undef X
 	qglFramebufferTexture2D_opt = (void(BWGLAPI *)(GLenum, GLenum, GLenum, GLuint, GLint))getproc("glFramebufferTexture2D");
+	qglMultiDrawElements_opt = (void(BWGLAPI *)(GLenum, const GLsizei *, GLenum, const void *const *, GLsizei))getproc(
+		"glMultiDrawElements");
 	return missing == 0;
 }
 

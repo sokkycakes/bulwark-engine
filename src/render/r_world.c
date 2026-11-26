@@ -851,6 +851,30 @@ static bool mark_visible(const float *planes)
 	return true;
 }
 
+/* surfaces drawn with the same state go to GL in one call */
+#define WORLD_BATCH 256
+static GLsizei batchcount[WORLD_BATCH];
+static const void *batchofs[WORLD_BATCH];
+static int batchn;
+
+static void flush_surfaces(void)
+{
+	if (batchn == 1 || (batchn && !qglMultiDrawElements_opt))
+		for (int i = 0; i < batchn; i++)
+			qglDrawElements(GL_TRIANGLES, batchcount[i], GL_UNSIGNED_INT, batchofs[i]);
+	else if (batchn)
+		qglMultiDrawElements_opt(GL_TRIANGLES, batchcount, GL_UNSIGNED_INT, batchofs, batchn);
+	batchn = 0;
+}
+
+static void batch_surface(const rsurface_t *s)
+{
+	if (batchn == WORLD_BATCH)
+		flush_surfaces();
+	batchcount[batchn] = s->numindexes;
+	batchofs[batchn++] = (const void *)(sizeof(uint32_t) * (size_t)s->firstindex);
+}
+
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass)
 {
 	const glprog_t *p = &r_progs[PROG_WORLD];
@@ -887,6 +911,8 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 			continue;
 		}
 		r_stats.worldsurfs++;
+		if (mat != cur || s->lightmap != curlm)
+			flush_surfaces();
 		if (mat != cur) {
 			float a = alpha * (mat->program == MP_WATER && mat->blend == BLEND_OPAQUE ? 0.6f : 1.0f);
 			cur = mat;
@@ -920,8 +946,9 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 				qglUniform1f(p->u_lmscale, -1);
 			}
 		}
-		qglDrawElements(GL_TRIANGLES, s->numindexes, GL_UNSIGNED_INT, (void *)(sizeof(uint32_t) * (size_t)s->firstindex));
+		batch_surface(s);
 	}
+	flush_surfaces();
 	qglBindVertexArray(0);
 	GL_SetCull(true);
 }
