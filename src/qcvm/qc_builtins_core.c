@@ -1124,6 +1124,15 @@ static void bi_tokenize_console(qcvm_t *vm)
 	QC_ReturnFloat(vm, (float)t->count);
 	return;
 found:
+	/* argv() hands out the strings it made last time only when no progs
+	 * here can store characters: s[i] = c into one would change a copy QC
+	 * kept from an earlier split too */
+	for (int k = 0; k < vm->numprogs; k++)
+		if (vm->progs[k].char_stores) {
+			for (int i = 0; i < t->count; i++)
+				t->argv[i] = 0;
+			break;
+		}
 	t->used = ++tk->clock;
 	tk->cur = t;
 	QC_ReturnFloat(vm, (float)t->count);

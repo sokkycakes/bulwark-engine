@@ -183,6 +183,16 @@ void() test_strings = {
 	check(n == 6 && argv(3) == "setup_length" && argv(4) == "70" && argv(5) == "}", "tokenize_console spans lines");
 	n = tokenizebyseparator("a,b;;c", ",", ";");
 	check(n == 4 && argv(2) == "" && argv(3) == "c", "tokenizebyseparator");
+	/* splitting the same text again gives strings of its own: a store
+	 * into the new one leaves the one kept from before alone */
+	string tk = sprintf("%s", "alpha beta");
+	tokenize_console(tk);
+	string a1 = argv(0);
+	tokenize_console("x y");
+	tokenize_console(tk);
+	string a2 = argv(0);
+	a2[0] = 65;
+	check(a1 == "alpha" && a2 == "Alpha", "argv after a repeated split");
 	switch (s) {
 	case "nope": check(0, "string switch wrong"); break;
 	case "hello": break;

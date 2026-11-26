@@ -151,7 +151,9 @@ A third of the statements both games run is Nuclide's
 every entity def in a QC loop, then splits that def's spawn data with
 `tokenize_console` and reads it pair by pair with `argv`; the per-field
 change checks of `EvaluateEntity` are most of the rest. So the VM keeps the
-last 16 splits (with the strings `argv` made from them), settles most
+last 16 splits (with the strings `argv` made from them, reused only in a
+VM with no character stores, which Nuclide's server and client game
+are), settles most
 string `==` by length without a call, runs the whole search loop and the
 other common short sequences as one statement each (see
 `fuse_statements` in `src/qcvm/qcvm.c`), and calls a getter that only

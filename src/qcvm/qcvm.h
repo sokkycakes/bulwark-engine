@@ -127,6 +127,7 @@ typedef struct {
 	const uint8_t *image; /* the file image, only while it is being loaded */
 	progs_header_t hdr;
 	bool stmt32;
+	bool char_stores; /* has str[i] = c statements */
 	qcstatement_t *statements;
 	int numstatements;
 	qcfunc_t *functions;

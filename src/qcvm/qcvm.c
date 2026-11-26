@@ -474,6 +474,8 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 				Con_Printf("%s: statement %d has unknown opcode %u\n", name, i, (unsigned)st->op);
 			st->op = QCOP_BAD;
 		}
+		if (st->op == OP_STOREP_C || st->op == OP_STOREP_I8)
+			p->char_stores = true;
 	}
 	if (badops > 1)
 		Con_Printf("%s: %d statements have unknown opcodes\n", name, badops);

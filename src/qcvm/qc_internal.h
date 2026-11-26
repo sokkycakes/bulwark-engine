@@ -77,9 +77,13 @@ typedef struct qc_tokset_s {
 /* Nuclide looks up entity keys by splitting the same few spawn data strings
  * again and again, walking each class's inheritance chain, so the last
  * splits are kept. A split found again keeps the strings argv() made for
- * it: they are kept alive by the collector while the split is cached, and
- * a string's text only changes through a character store, which empties
- * the whole cache. */
+ * it, kept alive by the collector while the split is cached, but only in a
+ * VM none of whose progs has a character store: otherwise s[i] = c into
+ * one argv() result would also change the copy QC kept from an earlier
+ * split, so argv() makes new strings, as before. Any character store also
+ * empties the whole cache, as the text it was found by may have changed.
+ * A progs added later with character stores could still write into a
+ * string handed out twice before it was added. */
 #ifdef BW_LOWMEM
 #define QC_TOKEN_SETS 16
 #else
