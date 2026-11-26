@@ -513,14 +513,18 @@ static void lerp_trs(const float *a, const float *b, float t, float *out)
 	}
 }
 
-void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t *out)
+/* bones first..last of Skel_SampleRelative's pose; each bone is worked
+ * out on its own, so part of the skeleton comes out as in the whole */
+static void sample_range(const skelmodel_t *m, int group, float time, int first, int last, bonemat_t *out)
 {
 	const framegroup_t *g;
 	int f0, f1;
 	float t;
+	if (last < first)
+		return;
 	if (!m->numframes || group < 0 || group >= m->numanims) {
 		if (m->numjoints) /* baserel is NULL without a skeleton */
-			memcpy(out, m->baserel, sizeof(bonemat_t) * m->numjoints);
+			memcpy(out + first, m->baserel + first, sizeof(bonemat_t) * (size_t)(last - first + 1));
 		return;
 	}
 	g = &m->anims[group];
@@ -541,30 +545,43 @@ void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t 
 	f1 = BW_MAX(0, BW_MIN(g->first + f1, m->numframes - 1));
 	/* a is the most recently used cache entry, so decoding b keeps it */
 	const float *a = frame_trs(m, f0), *b = frame_trs(m, f1);
-	for (int j = 0; j < m->numjoints; j++) {
+	for (int j = first; j <= last; j++) {
 		float trs[10];
 		lerp_trs(a + j * 10, b + j * 10, t, trs);
 		Bone_FromTRS(out[j], trs);
 	}
 }
 
-void Skel_EntityPose(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
-                     float lerpfrac, bonemat_t *out)
+void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t *out)
+{
+	sample_range(m, group, time, 0, m->numjoints - 1, out);
+}
+
+void Skel_EntityPoseRange(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
+                          float lerpfrac, int first, int last, bonemat_t *out)
 {
 	static bonemat_t *b;
 	static int maxb;
-	Skel_SampleRelative(m, frame, frame1time, out);
+	first = BW_MAX(first, 0);
+	last = BW_MIN(last, m->numjoints - 1);
+	sample_range(m, frame, frame1time, first, last, out);
 	if (lerpfrac > 0 && frame2 != frame) {
 		float l = BW_MIN(lerpfrac, 1);
 		if (m->numjoints > maxb) {
 			maxb = m->numjoints;
 			b = Mem_Realloc(b, sizeof(bonemat_t) * maxb);
 		}
-		Skel_SampleRelative(m, frame2, frame2time, b);
-		for (int j = 0; j < m->numjoints; j++)
+		sample_range(m, frame2, frame2time, first, last, b);
+		for (int j = first; j <= last; j++)
 			for (int k = 0; k < 12; k++)
 				out[j][k] += (b[j][k] - out[j][k]) * l;
 	}
+}
+
+void Skel_EntityPose(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
+                     float lerpfrac, bonemat_t *out)
+{
+	Skel_EntityPoseRange(m, frame, frame1time, frame2, frame2time, lerpfrac, 0, m->numjoints - 1, out);
 }
 
 void Skel_ToAbsolute(const skelmodel_t *m, const bonemat_t *rel, bonemat_t *abs)

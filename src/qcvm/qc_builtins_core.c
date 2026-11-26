@@ -45,8 +45,18 @@ static void format_float(char *out, size_t size, float f)
 
 static void bi_makevectors(qcvm_t *vm)
 {
-	float f[3], r[3], u[3];
-	AngleVectors(QC_PVEC(vm, 0), f, r, u);
+	/* games often turn the same angles again (a player's view, a bot's
+	 * aim): the last result, for the same bits */
+	static uint32_t last[3];
+	static bool valid;
+	static float f[3], r[3], u[3];
+	uint32_t in[3];
+	memcpy(in, QC_PVEC(vm, 0), sizeof(in));
+	if (!valid || memcmp(in, last, sizeof(in))) {
+		AngleVectors(QC_PVEC(vm, 0), f, r, u);
+		memcpy(last, in, sizeof(in));
+		valid = true;
+	}
 	QC_SetGVec(vm, vm->gofs.v_forward, f);
 	QC_SetGVec(vm, vm->gofs.v_right, r);
 	QC_SetGVec(vm, vm->gofs.v_up, u);

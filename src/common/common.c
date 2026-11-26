@@ -361,12 +361,26 @@ const char *COM_Parse(const char *data, char *token, size_t tokensize)
 	return data;
 }
 
+/* the sine and cosine of a in degrees; a zero angle (most rolls and many
+ * pitches) gives what sinf and cosf give for it, without the calls */
+static inline void sincos_deg(float a, float *s, float *c)
+{
+	float r = a * (float)(M_PI / 180.0);
+	if (r == 0) {
+		*s = r; /* keeps the sign of zero, as sinf does */
+		*c = 1;
+	} else {
+		*s = sinf(r);
+		*c = cosf(r);
+	}
+}
+
 void AngleVectors(const float *angles, float *forward, float *right, float *up)
 {
-	const float d2r = (float)(M_PI / 180.0);
-	float sy = sinf(angles[1] * d2r), cy = cosf(angles[1] * d2r);
-	float sp = sinf(angles[0] * d2r), cp = cosf(angles[0] * d2r);
-	float sr = sinf(angles[2] * d2r), cr = cosf(angles[2] * d2r);
+	float sy, cy, sp, cp, sr, cr;
+	sincos_deg(angles[1], &sy, &cy);
+	sincos_deg(angles[0], &sp, &cp);
+	sincos_deg(angles[2], &sr, &cr);
 	if (forward) {
 		forward[0] = cp * cy;
 		forward[1] = cp * sy;
