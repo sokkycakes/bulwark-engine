@@ -852,6 +852,18 @@ static void prepare_client_edict(client_t *c)
 
 #define BOT_RESPAWN_DELAY 0.5
 
+/* The game's player callbacks live in the main progs. A client can join or
+ * leave while an addon progs is running (a rules progs adding or dropping a
+ * bot), so look them up there rather than in whichever progs is current. */
+static func_t main_func(qcvm_t *vm, const char *name) { return QC_FindFunctionIn(vm, 0, name); }
+
+static void run_main(qcvm_t *vm, const char *name)
+{
+	func_t f = main_func(vm, name);
+	if (f)
+		QC_Execute(vm, f);
+}
+
 static void spawn_client(client_t *c)
 {
 	qcvm_t *vm = sv.vm;
@@ -871,22 +883,19 @@ static void spawn_client(client_t *c)
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGInt(vm, G.self, c->edict);
 	if (!c->have_parms) {
-		if (QC_FindFunction(vm, "SetNewParms"))
-			QC_ExecuteByName(vm, "SetNewParms");
+		run_main(vm, "SetNewParms");
 		copy_globals_to_parms(c);
 	}
 	copy_parms_to_globals(c);
 	QC_SetGInt(vm, G.self, c->edict);
-	if (c->spectator && QC_FindFunction(vm, "SpectatorConnect")) {
+	if (c->spectator && main_func(vm, "SpectatorConnect")) {
 		/* a spectator gets SpectatorConnect in place of ClientConnect and
 		 * PutClientInServer */
-		QC_ExecuteByName(vm, "SpectatorConnect");
+		run_main(vm, "SpectatorConnect");
 	} else {
-		if (QC_FindFunction(vm, "ClientConnect"))
-			QC_ExecuteByName(vm, "ClientConnect");
+		run_main(vm, "ClientConnect");
 		QC_SetGInt(vm, G.self, c->edict);
-		if (QC_FindFunction(vm, "PutClientInServer"))
-			QC_ExecuteByName(vm, "PutClientInServer");
+		run_main(vm, "PutClientInServer");
 	}
 	c->state = CS_SPAWNED;
 	SV_SaveClientSpawned(c);
@@ -908,10 +917,9 @@ void SV_DropClient(client_t *c, const char *reason)
 		return;
 	SV_LiveNoteDrop(c, reason);
 	if (c->state == CS_SPAWNED && vm) {
-		const char *fn = c->spectator && QC_FindFunction(vm, "SpectatorConnect") ? "SpectatorDisconnect" : "ClientDisconnect";
+		const char *fn = c->spectator && main_func(vm, "SpectatorConnect") ? "SpectatorDisconnect" : "ClientDisconnect";
 		QC_SetGInt(vm, G.self, c->edict);
-		if (QC_FindFunction(vm, fn))
-			QC_ExecuteByName(vm, fn);
+		run_main(vm, fn);
 	}
 	if (!is_seat(c)) {
 		/* a connection's seats go with it */
@@ -2546,8 +2554,7 @@ void SV_SaveSpawnParms(void)
 		if (c->state != CS_SPAWNED)
 			continue;
 		QC_SetGInt(vm, G.self, c->edict);
-		if (QC_FindFunction(vm, "SetChangeParms"))
-			QC_ExecuteByName(vm, "SetChangeParms");
+		run_main(vm, "SetChangeParms");
 		copy_globals_to_parms(c);
 	}
 }
