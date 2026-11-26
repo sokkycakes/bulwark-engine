@@ -771,13 +771,22 @@ void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 
 /* --- drawing ----------------------------------------------------------------- */
 
-static bool cull_box(const float *planes, const float *mins, const float *maxs)
+/* the view's side planes, and for each the box corner furthest along it
+ * (bit k: the max on axis k), picked once rather than per box: float
+ * compares are slow on the Xbox */
+typedef struct {
+	float p[4][4];
+	int far[4];
+} frustum_t;
+
+static bool cull_box(const frustum_t *fr, const float *mins, const float *maxs)
 {
 	for (int p = 0; p < 4; p++) {
-		const float *pl = planes + p * 4;
-		float x = pl[0] > 0 ? maxs[0] : mins[0];
-		float y = pl[1] > 0 ? maxs[1] : mins[1];
-		float z = pl[2] > 0 ? maxs[2] : mins[2];
+		const float *pl = fr->p[p];
+		int f = fr->far[p];
+		float x = (f & 1) ? maxs[0] : mins[0];
+		float y = (f & 2) ? maxs[1] : mins[1];
+		float z = (f & 4) ? maxs[2] : mins[2];
 		if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < 0)
 			return true;
 	}
@@ -785,13 +794,14 @@ static bool cull_box(const float *planes, const float *mins, const float *maxs)
 }
 
 /* left, right, bottom, top planes of a clip matrix (rows combined) */
-static void frustum_planes(const float *m, float *planes)
+static void frustum_planes(const float *m, frustum_t *fr)
 {
 	for (int i = 0; i < 4; i++) {
 		int row = i / 2;
 		float sign = (i & 1) ? -1.0f : 1.0f;
 		for (int k = 0; k < 4; k++)
-			planes[i * 4 + k] = m[k * 4 + 3] + sign * m[k * 4 + row];
+			fr->p[i][k] = m[k * 4 + 3] + sign * m[k * 4 + row];
+		fr->far[i] = (fr->p[i][0] > 0) | (fr->p[i][1] > 0) << 1 | (fr->p[i][2] > 0) << 2;
 	}
 }
 
@@ -820,7 +830,7 @@ static void set_lights(const glprog_t *p, const float *model)
 
 /* marks the surfaces in leafs the view's cluster can see and the frustum
  * holds; false when there is nothing to cull with, so everything draws */
-static bool mark_visible(const float *planes)
+static bool mark_leafs(const frustum_t *planes)
 {
 	bspmap_t *bsp = r_world.bsp;
 	const uint8_t *row;
@@ -849,6 +859,36 @@ static bool mark_visible(const float *planes)
 		}
 	}
 	return true;
+}
+
+/* mark_leafs, done once for the opaque and the translucent pass of a view:
+ * the marks stand while nothing it read has changed */
+static bool mark_visible(const frustum_t *planes)
+{
+	static struct {
+		unsigned frame;
+		frustum_t planes;
+		float origin[3];
+		const bspmap_t *bsp, *world;
+		int novis, culled;
+		bool result;
+	} last;
+	int culled = r_stats.culled;
+	if (last.frame == r_framenum && last.bsp == r_world.bsp && last.world == cl.world &&
+	    last.novis == r_novis->ivalue && !memcmp(&last.planes, planes, sizeof(*planes)) &&
+	    !memcmp(last.origin, r_scene.origin, sizeof(last.origin))) {
+		r_stats.culled += last.culled;
+		return last.result;
+	}
+	last.result = mark_leafs(planes);
+	last.frame = r_framenum;
+	last.planes = *planes;
+	memcpy(last.origin, r_scene.origin, sizeof(last.origin));
+	last.bsp = r_world.bsp;
+	last.world = cl.world;
+	last.novis = r_novis->ivalue;
+	last.culled = r_stats.culled - culled;
+	return last.result;
 }
 
 /* surfaces drawn with the same state go to GL in one call */
@@ -880,13 +920,13 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 	const glprog_t *p = &r_progs[PROG_WORLD];
 	material_t *cur = NULL;
 	int curlm = -2;
-	float planes[16];
+	frustum_t planes;
 	bool isworld = m == &r_world.submodels[0], usevis = false;
 	if (!r_world.loaded || !r_world.vao || !m)
 		return;
-	frustum_planes(mvp, planes);
+	frustum_planes(mvp, &planes);
 	if (isworld)
-		usevis = mark_visible(planes);
+		usevis = mark_visible(&planes);
 	R_UseProgram(PROG_WORLD);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
@@ -906,7 +946,7 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 			r_stats.culled++;
 			continue;
 		}
-		if (isworld && cull_box(planes, s->mins, s->maxs)) {
+		if (isworld && cull_box(&planes, s->mins, s->maxs)) {
 			r_stats.culled++;
 			continue;
 		}
