@@ -10,6 +10,10 @@
 #include "../common/cvar.h"
 
 #include <math.h>
+#if defined(__SSE__) && !defined(BW_NO_SSE)
+#include <xmmintrin.h>
+#define QC_SKEL_SSE 1
+#endif
 
 typedef struct {
 	qcvm_t *owner;
@@ -248,9 +252,20 @@ static void bi_skel_build(qcvm_t *vm)
 				d[i] = 0;
 		}
 	} else {
-		for (int b = first; b <= last; b++)
-			for (int k = 0; k < 12; k++)
-				s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
+#ifdef QC_SKEL_SSE
+		if (retain != 0) {
+			/* four at a time, the same multiplies and add in each lane */
+			const __m128 r = _mm_set1_ps(retain), a = _mm_set1_ps(add);
+			for (int b = first; b <= last; b++)
+				for (int k = 0; k < 12; k += 4) {
+					__m128 v = _mm_mul_ps(_mm_loadu_ps(s->bones[b] + k), r);
+					_mm_storeu_ps(s->bones[b] + k, _mm_add_ps(v, _mm_mul_ps(_mm_loadu_ps(pose[b] + k), a)));
+				}
+		} else
+#endif
+			for (int b = first; b <= last; b++)
+				for (int k = 0; k < 12; k++)
+					s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
 	}
 	QC_ReturnFloat(vm, QC_PFLOAT(vm, 0));
 }
