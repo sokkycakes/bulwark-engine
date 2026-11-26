@@ -11,6 +11,20 @@
 
 #include <math.h>
 
+/* A skel_build not done yet. Nuclide builds every player's skeleton in
+ * each of its commands, on the server too, and reads it only for the odd
+ * attachment (gettaginfo), so a build waits until something reads or
+ * changes the bones, with the entity fields it would have read; a build
+ * that replaces every bone drops the ones waiting before it. */
+typedef struct {
+	skelmodel_t *src;
+	int first, last; /* 0-based; last < first blends nothing */
+	float retain, add;
+	int frame, frame2;
+	float frame1time, frame2time, lerpfrac;
+} skelbuild_t;
+#define SKEL_PENDING 4
+
 typedef struct {
 	qcvm_t *owner;
 	skelmodel_t *model;
@@ -18,6 +32,8 @@ typedef struct {
 	bool absolute;      /* bones are relative to the entity, not the parent */
 	bool deleted;
 	double deletetime;
+	skelbuild_t *pending; /* SKEL_PENDING of them, made on the first build */
+	int npending;
 } skelobj_t;
 
 #define MAX_SKELOBJS 4096
@@ -53,6 +69,8 @@ static skelmodel_t *model_for_index(qcvm_t *vm, int index)
 	return name ? Skel_LoadModel(name) : NULL;
 }
 
+static void settle(skelobj_t *s);
+
 static skelobj_t *get_skel(qcvm_t *vm, int id)
 {
 	skelobj_t *s;
@@ -63,9 +81,18 @@ static skelobj_t *get_skel(qcvm_t *vm, int id)
 	return s->owner == vm && s->model ? s : NULL;
 }
 
-bool QC_SkelBones(qcvm_t *vm, int id, skelmodel_t **model, const float (**bones)[12], bool *absolute)
+/* get_skel for a builtin that reads or changes the bones */
+static skelobj_t *get_bones(qcvm_t *vm, int id)
 {
 	skelobj_t *s = get_skel(vm, id);
+	if (s)
+		settle(s);
+	return s;
+}
+
+bool QC_SkelBones(qcvm_t *vm, int id, skelmodel_t **model, const float (**bones)[12], bool *absolute)
+{
+	skelobj_t *s = get_bones(vm, id);
 	if (!s)
 		return false;
 	*model = s->model;
@@ -77,6 +104,7 @@ bool QC_SkelBones(qcvm_t *vm, int id, skelmodel_t **model, const float (**bones)
 static void free_skel(skelobj_t *s)
 {
 	Mem_Free(s->bones);
+	Mem_Free(s->pending);
 	memset(s, 0, sizeof(*s));
 }
 
@@ -206,31 +234,22 @@ static void entity_pose(qcvm_t *vm, int ent, skelmodel_t *m, int first, int last
 	                     QC_EFloat(vm, ent, c->lerpfrac), first, last, out);
 }
 
-/* skel_build(skel, ent, modelindex, retainfrac, firstbone, lastbone, addfrac):
- * bones = bones * retainfrac + the entity's animation * addfrac */
-static void bi_skel_build(qcvm_t *vm)
+/* what a skel_build does to the bones */
+static void apply_build(skelobj_t *s, const skelbuild_t *b)
 {
-	skelobj_t *s = get_skel(vm, (int)QC_PFLOAT(vm, 0));
-	int ent = QC_PENT(vm, 1);
-	skelmodel_t *src = model_for_index(vm, (int)QC_PFLOAT(vm, 2));
-	float retain = QC_PFLOAT(vm, 3), add = vm->argc > 6 ? QC_PFLOAT(vm, 6) : 1;
-	int first = (int)QC_PFLOAT(vm, 4), last = (int)QC_PFLOAT(vm, 5), n;
-	bonemat_t *pose;
-	if (!s || !src) {
-		QC_ReturnFloat(vm, 0);
-		return;
-	}
-	n = BW_MIN(s->model->numjoints, src->numjoints);
-	first = first <= 0 ? 0 : first - 1;
-	last = last <= 0 ? n - 1 : BW_MIN(last - 1, n - 1);
-	pose = pose_scratch(src->numjoints);
+	skelmodel_t *src = b->src;
+	int first = b->first, last = b->last;
+	float retain = b->retain, add = b->add;
+	bonemat_t *pose = pose_scratch(src->numjoints);
 	if (s->absolute) {
 		/* every parent is needed */
-		entity_pose(vm, ent, src, 0, src->numjoints - 1, pose);
+		Skel_EntityPoseRange(src, b->frame, b->frame1time, b->frame2, b->frame2time, b->lerpfrac, 0,
+		                     src->numjoints - 1, pose);
 		Skel_ToAbsolute(src, pose, pose);
 	} else {
 		/* just the bones it blends in: a player's torso, on its second build */
-		entity_pose(vm, ent, src, first, last, pose);
+		Skel_EntityPoseRange(src, b->frame, b->frame1time, b->frame2, b->frame2time, b->lerpfrac, first, last,
+		                     pose);
 	}
 	if (last < first) {
 		/* nothing to blend */
@@ -248,10 +267,59 @@ static void bi_skel_build(qcvm_t *vm)
 				d[i] = 0;
 		}
 	} else {
-		for (int b = first; b <= last; b++)
+		for (int j = first; j <= last; j++)
 			for (int k = 0; k < 12; k++)
-				s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
+				s->bones[j][k] = (retain != 0 ? s->bones[j][k] * retain : 0) + pose[j][k] * add;
 	}
+}
+
+/* the builds still waiting, in order */
+static void settle(skelobj_t *s)
+{
+	for (int i = 0; i < s->npending; i++)
+		apply_build(s, &s->pending[i]);
+	s->npending = 0;
+}
+
+/* skel_build(skel, ent, modelindex, retainfrac, firstbone, lastbone, addfrac):
+ * bones = bones * retainfrac + the entity's animation * addfrac */
+static void bi_skel_build(qcvm_t *vm)
+{
+	skelobj_t *s = get_skel(vm, (int)QC_PFLOAT(vm, 0));
+	int ent = QC_PENT(vm, 1);
+	skelmodel_t *src = model_for_index(vm, (int)QC_PFLOAT(vm, 2));
+	struct fieldcache_s *c = fields(vm);
+	skelbuild_t *b;
+	int first = (int)QC_PFLOAT(vm, 4), last = (int)QC_PFLOAT(vm, 5), n;
+	if (!s || !src) {
+		QC_ReturnFloat(vm, 0);
+		return;
+	}
+	n = BW_MIN(s->model->numjoints, src->numjoints);
+	first = first <= 0 ? 0 : first - 1;
+	last = last <= 0 ? n - 1 : BW_MIN(last - 1, n - 1);
+	if (!s->pending)
+		s->pending = Mem_Alloc(sizeof(*s->pending) * SKEL_PENDING);
+	/* keeping nothing of the bones, it replaces every one: what waits
+	   before it would be lost anyway */
+	if (QC_PFLOAT(vm, 3) == 0 && first == 0 && last == s->model->numjoints - 1)
+		s->npending = 0;
+	if (s->npending == SKEL_PENDING) {
+		apply_build(s, &s->pending[0]);
+		memmove(s->pending, s->pending + 1, sizeof(*s->pending) * (SKEL_PENDING - 1));
+		s->npending--;
+	}
+	b = &s->pending[s->npending++];
+	b->src = src;
+	b->first = first;
+	b->last = last;
+	b->retain = QC_PFLOAT(vm, 3);
+	b->add = vm->argc > 6 ? QC_PFLOAT(vm, 6) : 1;
+	b->frame = (int)QC_EFloat(vm, ent, c->frame);
+	b->frame1time = QC_EFloat(vm, ent, c->frame1time);
+	b->frame2 = (int)QC_EFloat(vm, ent, c->frame2);
+	b->frame2time = QC_EFloat(vm, ent, c->frame2time);
+	b->lerpfrac = QC_EFloat(vm, ent, c->lerpfrac);
 	QC_ReturnFloat(vm, QC_PFLOAT(vm, 0));
 }
 
@@ -292,7 +360,7 @@ static void bi_skel_find_bone(qcvm_t *vm)
 
 static void bi_skel_get_bonerel(qcvm_t *vm)
 {
-	skelobj_t *s = get_skel(vm, (int)QC_PFLOAT(vm, 0));
+	skelobj_t *s = get_bones(vm, (int)QC_PFLOAT(vm, 0));
 	float *b = bone_arg(s, QC_PFLOAT(vm, 1));
 	bonemat_t m;
 	Bone_Identity(m);
@@ -312,7 +380,7 @@ static void bi_skel_get_bonerel(qcvm_t *vm)
 
 static void bi_skel_get_boneabs(qcvm_t *vm)
 {
-	skelobj_t *s = get_skel(vm, (int)QC_PFLOAT(vm, 0));
+	skelobj_t *s = get_bones(vm, (int)QC_PFLOAT(vm, 0));
 	bonemat_t m;
 	Bone_Identity(m);
 	if (bone_arg(s, QC_PFLOAT(vm, 1)))
@@ -322,14 +390,14 @@ static void bi_skel_get_boneabs(qcvm_t *vm)
 
 static void bi_skel_set_bone(qcvm_t *vm)
 {
-	float *b = bone_arg(get_skel(vm, (int)QC_PFLOAT(vm, 0)), QC_PFLOAT(vm, 1));
+	float *b = bone_arg(get_bones(vm, (int)QC_PFLOAT(vm, 0)), QC_PFLOAT(vm, 1));
 	if (b)
 		matrix_args(vm, 2, b);
 }
 
 static void bi_skel_premul_bone(qcvm_t *vm)
 {
-	float *b = bone_arg(get_skel(vm, (int)QC_PFLOAT(vm, 0)), QC_PFLOAT(vm, 1));
+	float *b = bone_arg(get_bones(vm, (int)QC_PFLOAT(vm, 0)), QC_PFLOAT(vm, 1));
 	bonemat_t m;
 	if (!b)
 		return;
@@ -339,7 +407,7 @@ static void bi_skel_premul_bone(qcvm_t *vm)
 
 static void bi_skel_postmul_bone(qcvm_t *vm)
 {
-	float *b = bone_arg(get_skel(vm, (int)QC_PFLOAT(vm, 0)), QC_PFLOAT(vm, 1));
+	float *b = bone_arg(get_bones(vm, (int)QC_PFLOAT(vm, 0)), QC_PFLOAT(vm, 1));
 	bonemat_t m;
 	if (!b)
 		return;
@@ -349,7 +417,7 @@ static void bi_skel_postmul_bone(qcvm_t *vm)
 
 static void bi_skel_premul_bones(qcvm_t *vm)
 {
-	skelobj_t *s = get_skel(vm, (int)QC_PFLOAT(vm, 0));
+	skelobj_t *s = get_bones(vm, (int)QC_PFLOAT(vm, 0));
 	int first, last;
 	bonemat_t m;
 	if (!s)
@@ -364,7 +432,7 @@ static void bi_skel_premul_bones(qcvm_t *vm)
 
 static void bi_skel_copybones(qcvm_t *vm)
 {
-	skelobj_t *d = get_skel(vm, (int)QC_PFLOAT(vm, 0)), *s = get_skel(vm, (int)QC_PFLOAT(vm, 1));
+	skelobj_t *d = get_bones(vm, (int)QC_PFLOAT(vm, 0)), *s = get_bones(vm, (int)QC_PFLOAT(vm, 1));
 	int first, last;
 	if (!d || !s)
 		return;
@@ -457,7 +525,7 @@ static void bi_gettaginfo(qcvm_t *vm)
 	int ent = QC_PENT(vm, 0), tag = (int)QC_PFLOAT(vm, 1) - 1;
 	int modelindex = (int)QC_EFloat(vm, ent, vm->fofs.modelindex);
 	struct fieldcache_s *c = fields(vm);
-	skelobj_t *s = get_skel(vm, (int)QC_EFloat(vm, ent, c->skeletonindex));
+	skelobj_t *s = get_bones(vm, (int)QC_EFloat(vm, ent, c->skeletonindex));
 	skelmodel_t *m = model_for_index(vm, modelindex);
 	int numjoints = s ? s->model->numjoints : m ? m->numjoints : 0;
 	const studio_model_t *st = tag >= numjoints && numjoints > 0 ? QC_StudioModel(vm, modelindex) : NULL;
