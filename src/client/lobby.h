@@ -38,6 +38,10 @@ void Lobby_GameArrived(void);
 /* CL_Connect is about to connect to this server: once that is not the
  * lobby game's, the password and rcon settings the lobby set go back */
 void Lobby_ClientConnecting(const netadr_t *to);
+/* this client is leaving that server (the "disconnect" command, or the
+ * server dropped it or shut down; not a timeout): the lobby's game is over
+ * for it, so the password and rcon settings go back */
+void Lobby_ClientDisconnecting(const netadr_t *from);
 
 /* the WebCore bridge requests: getlobby, getlobbychat, lobby_action:<a>,
  * hostcache_refresh, gethostcache; false for other requests */

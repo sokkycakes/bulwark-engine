@@ -132,13 +132,16 @@ the countdown like any other.
   (`close` gives up). The `start` message carries the password, which the
   guest sets as its `password` userinfo before it connects; the server runs
   with `sv_password` set to it. The lobby's password stays while the guest
-  is out of that game, so `reconnect` after a drop still gets in (as in
-  FTE, where the userinfo simply stays). The guest's own `password` comes
-  back as soon as it connects to any other server (the address differs
-  from the one it connected to after `start`; the client's own local game,
-  such as the title's backdrop map, doesn't count, since a local client
-  never needs a password), or the start fails, so the lobby's password is
-  never sent to another server.
+  may still go back to that game: after a connection timeout, `reconnect`
+  still gets in (as in FTE, where the userinfo simply stays), and the
+  title's backdrop map in between doesn't change that (a local client never
+  needs a password). The guest's own `password` comes back as soon as the
+  lobby's game is over for it, whatever comes next: it disconnects from that
+  server (`disconnect`, Leave, or the server drops it or shuts down), it
+  connects to any other server (the address differs from the one it
+  connected to after `start`), it starts a local game of its own other than
+  the backdrop, or the start fails. So the lobby's password is never sent
+  to another server.
 - **Starting** adds `hostname` (the host's name, else "<host>'s server"),
   `sv_password`, `sv_public` and bots to the commands above. Bots use the
   game's own quota, Nuclide's `bot_minClients`: the lobby's players plus the
@@ -169,8 +172,13 @@ the countdown like any other.
   standard input from /dev/null, its output in `dedicated.log` beside the
   config, in a session of its own. The host then sets `password`,
   `rcon_password` and `rcon_address` (so `rcon` reaches the server, also
-  after the host drops out of it; all three go back to what they were once
-  the host connects to any other non-local server, or the start fails) and
+  after a timeout drops the host out of it). All three go back to what they
+  were once the lobby's game is over for the host: it disconnects from that
+  server or the server drops it, the server stops (`ded_stop`, or it exits),
+  the host connects to any other server, the start fails, or the host
+  starts a local game of its own. `rcon_password` is also the cvar a listen
+  server checks, so even the title's backdrop map takes the rcon settings
+  back (the password stays there, as for a guest). The host
   connects to 127.0.0.1 on that port straight away (not through the command
   buffer, which a script's `wait` holds), again every 12 s while it isn't in.
   Guests get that port in `start`. If the program exits first, the lobby

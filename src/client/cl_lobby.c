@@ -417,6 +417,12 @@ static void restore_overrides(void)
 		Con_DPrintf("lobby: the host's server settings are back as they were\n");
 }
 
+static bool sv_background_on(void)
+{
+	cvar_t *v = Cvar_Find("sv_background");
+	return v && v->ivalue;
+}
+
 void Lobby_ServerCheck(void)
 {
 	if (saved.up && !sv.active)
@@ -426,12 +432,19 @@ void Lobby_ServerCheck(void)
 /* The client side: the "password" userinfo a guest (or a host joining its
  * own dedicated server) connects with, and the host's rcon_password and
  * rcon_address for that server. They stay while this client may still go
- * back to that game (a dropped guest's "reconnect" needs the password, as
- * in FTE, and the host can rcon its server), and go back once it connects
- * to any other server (a local game doesn't count), or the start fails. */
+ * back to that game: a guest whose connection timed out can "reconnect"
+ * with the password, as in FTE, and the host can rcon its server. They go
+ * back once that game is over for this client, whatever comes next: it
+ * disconnects from it (the "disconnect" command, Leave, or the server
+ * dropping it or shutting down), connects to any other server, starts a
+ * local game of its own (rcon_password is the listen server's too), the
+ * host's dedicated server stops, or the start fails. Only the title's
+ * backdrop, which never checks a password, keeps the password for a
+ * reconnect; it still takes the rcon settings back. */
 static struct {
-	cvarkeep_t k;
-	bool has_server; /* the lobby's game server is known */
+	cvarkeep_t k;     /* password */
+	cvarkeep_t rcon;  /* rcon_password, rcon_address: the host's dedicated server */
+	bool has_server;  /* the lobby's game server is known */
 	netadr_t server;
 } clkept;
 
@@ -439,22 +452,31 @@ static struct {
 static void set_client_cvar(const char *name, const char *value)
 {
 	clkept.has_server = false;
-	keep_cvar(&clkept.k, name);
+	keep_cvar(!Str_NICmp(name, "rcon_", 5) ? &clkept.rcon : &clkept.k, name);
 	Cvar_Set(name, value);
+}
+
+static void restore_rcon(void)
+{
+	if (put_back(&clkept.rcon))
+		Con_DPrintf("lobby: this client's rcon settings are back as they were\n");
 }
 
 static void restore_client(void)
 {
 	clkept.has_server = false;
+	restore_rcon();
 	if (put_back(&clkept.k))
-		Con_DPrintf("lobby: this client's password and rcon settings are back as they were\n");
+		Con_DPrintf("lobby: this client's password is back as it was\n");
 }
+
+static bool client_kept(void) { return clkept.k.armed || clkept.rcon.armed; }
 
 void Lobby_ClientConnecting(const netadr_t *to)
 {
 	/* this client's own local game (the title's backdrop) doesn't count:
 	 * it never checks a password, and the lobby's server may be rejoined */
-	if (!clkept.k.armed || to->type == NA_LOOPBACK)
+	if (!client_kept() || to->type == NA_LOOPBACK)
 		return;
 	/* the first connect once they are set is the lobby's game */
 	if (!clkept.has_server) {
@@ -462,6 +484,30 @@ void Lobby_ClientConnecting(const netadr_t *to)
 		clkept.has_server = true;
 	} else if (!NET_CompareAdr(&clkept.server, to))
 		restore_client();
+}
+
+void Lobby_ClientDisconnecting(const netadr_t *from)
+{
+	if (client_kept() && clkept.has_server && NET_CompareAdr(&clkept.server, from))
+		restore_client();
+}
+
+/* once a frame: the other ways the lobby's game ends for this client */
+static void client_check(void)
+{
+	if (!client_kept() || Lobby_GameStarting())
+		return; /* nothing kept, or the lobby's game is still on its way */
+	if (clkept.rcon.armed && !DedLaunch_Running()) {
+		/* the host's dedicated server is gone, and the game with it */
+		restore_client();
+		return;
+	}
+	if (sv.active) {
+		if (sv_background_on())
+			restore_rcon();
+		else
+			restore_client();
+	}
 }
 
 /* --- the hand-off ----------------------------------------------------------------------
@@ -2293,6 +2339,7 @@ void Lobby_Frame(void)
 {
 	double now = Sys_Seconds();
 	Lobby_ServerCheck();
+	client_check();
 	receive();
 	switch (L.phase) {
 	case LOBBY_IDLE:

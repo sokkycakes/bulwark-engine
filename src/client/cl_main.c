@@ -704,6 +704,7 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_nop:
 			break;
 		case svc_disconnect:
+			Lobby_ClientDisconnecting(&cl.server);
 			CL_Disconnect(MSG_ReadString(m));
 			return;
 		case svc_print: {
@@ -1246,6 +1247,8 @@ static void CL_Connect_f(int argc, const char **argv)
 static void CL_Disconnect_f(int argc, const char **argv)
 {
 	bool host = cl.listen && sv.active;
+	if (cl.state != ca_disconnected)
+		Lobby_ClientDisconnecting(&cl.server);
 	CL_Disconnect(NULL);
 	if (host && Cmd_Exists("killserver"))
 		Cmd_ExecuteString("killserver");
