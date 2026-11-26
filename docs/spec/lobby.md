@@ -135,9 +135,14 @@ the countdown like any other.
   may still go back to that game: after a connection timeout, `reconnect`
   still gets in (as in FTE, where the userinfo simply stays), and the
   title's backdrop map in between doesn't change that (a local client never
-  needs a password). The guest's own `password` comes back as soon as the
-  lobby's game is over for it, whatever comes next: it disconnects from that
-  server (`disconnect`, Leave, or the server drops it or shuts down), it
+  needs a password). The backdrop is told by the local server's
+  `sv_background` cvar until the map spawns and by its `background`
+  serverinfo key after that, since Nuclide's worldspawn sets the key and
+  puts the cvar back to 0. Playing or stopping a demo doesn't count as
+  leaving the lobby's server either. The guest's own `password` comes back
+  as soon as the lobby's game is over for it, whatever comes next: it
+  disconnects from that server (`disconnect`, Leave, or the server drops it
+  or shuts down), it
   connects to any other server (the address differs from the one it
   connected to after `start`), it starts a local game of its own other than
   the backdrop, or the start fails. So the lobby's password is never sent

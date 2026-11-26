@@ -704,7 +704,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_nop:
 			break;
 		case svc_disconnect:
-			Lobby_ClientDisconnecting(&cl.server);
+			/* a demo's own svc_disconnect isn't a server dropping us */
+			if (!cl.demoplayback)
+				Lobby_ClientDisconnecting(&cl.server);
 			CL_Disconnect(MSG_ReadString(m));
 			return;
 		case svc_print: {
@@ -1247,7 +1249,9 @@ static void CL_Connect_f(int argc, const char **argv)
 static void CL_Disconnect_f(int argc, const char **argv)
 {
 	bool host = cl.listen && sv.active;
-	if (cl.state != ca_disconnected)
+	/* stopping a demo isn't leaving a server: cl.server is still the last
+	 * one connected to, perhaps the lobby's */
+	if (cl.state != ca_disconnected && !cl.demoplayback)
 		Lobby_ClientDisconnecting(&cl.server);
 	CL_Disconnect(NULL);
 	if (host && Cmd_Exists("killserver"))

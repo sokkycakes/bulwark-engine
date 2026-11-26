@@ -423,6 +423,21 @@ static bool sv_background_on(void)
 	return v && v->ivalue;
 }
 
+/* the local server runs the title's backdrop. Nuclide's worldspawn trades
+ * the sv_background cvar in for the "background" serverinfo key (and sets
+ * the cvar back to 0) as the map spawns, so the cvar only tells until then
+ * and the key from then on. Serverinfo carries over between levels, and
+ * the next level's worldspawn sets the key again. */
+static bool sv_on_backdrop(void)
+{
+	char buf[16];
+	const char *v;
+	if (sv_background_on())
+		return true;
+	v = SV_InfoGet(sv.serverinfo, "background", buf, sizeof(buf));
+	return v && atof(v) == 1;
+}
+
 void Lobby_ServerCheck(void)
 {
 	if (saved.up && !sv.active)
@@ -503,7 +518,7 @@ static void client_check(void)
 		return;
 	}
 	if (sv.active) {
-		if (sv_background_on())
+		if (sv_on_backdrop())
 			restore_rcon();
 		else
 			restore_client();
