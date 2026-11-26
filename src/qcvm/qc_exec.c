@@ -177,18 +177,31 @@ typedef struct {
 	uint32_t words; /* edict_words */
 } edictspace_t;
 
-/* a slot backed since the call began, or none at all */
-static qcval_t *field_far(qcvm_t *vm, int32_t e, int32_t f, uint32_t words)
+#ifdef MEM_PAGE_LAZY
+/* a slot backed since the call began, or none at all. Out of line, cold
+ * and returning nothing, so the interpreter's field loads stay about as
+ * cheap as before the lazy slots (the pointer version cost 4% of run) */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline, cold))
+#endif
+static void field_far(qcvm_t *vm, int32_t e, int32_t f, uint32_t words)
 {
 	if ((uint32_t)e >= (uint32_t)vm->max_edicts || (uint32_t)f > (uint32_t)vm->edict_words - words)
 		field_error(vm, e, f);
-	return QC_EdictFields(vm, e) + f;
+	QC_EdictFields(vm, e);
 }
+#endif
 
 static inline qcval_t *field_ptr(qcvm_t *vm, const edictspace_t *es, int32_t e, int32_t f, uint32_t words)
 {
-	if ((uint32_t)e >= es->count || (uint32_t)f > es->words - words)
-		return field_far(vm, e, f, words);
+	if ((uint32_t)e >= es->count || (uint32_t)f > es->words - words) {
+#ifdef MEM_PAGE_LAZY
+		field_far(vm, e, f, words); /* the slot is then where base says */
+#else
+		/* every slot is backed, so count is max_edicts */
+		field_error(vm, e, f);
+#endif
+	}
 	return (qcval_t *)(es->base + ((size_t)(uint32_t)e * es->words + (uint32_t)f) * 4);
 }
 
