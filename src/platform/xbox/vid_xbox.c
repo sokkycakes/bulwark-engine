@@ -189,7 +189,11 @@ bool VID_PumpEvents(void)
 			loops = 0;
 		}
 	}
-	while (SDL_PollEvent(&ev)) {
+	/* one pump a frame: SDL_PollEvent pumps on every call, and each pump
+	 * polls the USB root hubs and re-reads every pad, so a moving stick's
+	 * several events a frame would do that several times */
+	SDL_PumpEvents();
+	while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) > 0) {
 		switch (ev.type) {
 		case SDL_CONTROLLERDEVICEADDED: pad_open(ev.cdevice.which); break;
 		case SDL_CONTROLLERDEVICEREMOVED: pad_close(ev.cdevice.which); break;
