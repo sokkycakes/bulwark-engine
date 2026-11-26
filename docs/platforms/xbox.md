@@ -389,6 +389,13 @@ desktop:
   each hand-over flushes the write-combine buffers. `gl_xbox_stats` also
   prints the hand-overs, the time spent waiting for the GPU, and how much
   a frame streams.
+- **Flips:** pbkit's three colour buffers, shown by pbkit's vblank
+  handler. The GPU draws into a buffer named by its address in pbkit's
+  DMA object over all of memory, rather than through pbkit's
+  `pb_finished()`, which retargets the colour and blit DMA objects with
+  eight GPU interrupts a frame (see "Interrupts" below). With a frame
+  under 33 ms (hero select, about 13 ms of work in xemu) a frame is shown
+  every second vblank: at most one late frame in a 5 s report.
 
 ### Sound
 
@@ -398,6 +405,54 @@ the next ready buffer and wakes a mixing thread. The engine mixes at 24 kHz,
 and the thread doubles that to 48 kHz by linear interpolation. That halves
 the mixing work, and the game's samples are mostly 22 or 11 kHz anyway.
 There are four buffers of 21 ms, so about 85 ms of latency.
+
+In xemu, with the benchmark's settings, the codec never asks for a
+buffer, so the mixer's cost doesn't show in xemu's timings or profiles.
+
+### Interrupts
+
+In a match the CPU takes these interrupts (counted in xemu with the QEMU
+monitor's `info irq`):
+
+| Source | Rate | Notes |
+|---|---|---|
+| Clock (IRQ 0) | 1000/s | the kernel's 1 ms tick; a title can't change it |
+| GPU (IRQ 3) | 60/s plus one a frame | each vblank, and the one that queues a frame's flip |
+| IDE (IRQ 14) | none | while loading only (see "Files" below) |
+| USB, AC'97 | | per controller report and per 21 ms sound buffer on a console; none in xemu without a pad or sound output |
+
+pbkit's `pb_finished()` used to add eight more GPU interrupts a frame,
+about 200 a second in the benchmark (see "Flips" under "Renderer").
+Each one stopped the GPU until the CPU's DPC had answered it. Measured in
+one xemu run by adding those eight interrupts back every other 20
+seconds, they cost 3.3 ms of a 52 ms frame (24.4 against 26.1 fps,
+worst frame 96 against 85 ms). On a console they are cheaper, since
+xemu's 8259 and GPU registers are slow to reach, but they still held up
+the GPU.
+
+In the match's xemu profile the kernel now has about 12% of the samples:
+7% the clock tick (the debug Roswell kernel the benchmark boots also polls
+its serial debugger on each tick; a retail kernel doesn't), and about 5%
+the GPU's interrupts with pbkit's ISR, DPC and vblank handler, mostly
+because xemu is slow to answer GPU register reads. Nothing the engine
+does allocates from the kernel's pool during a frame: the samples the
+kernel's symbol map gives to `xbv_malloc` are code the kernel runs from
+its data section, beside `XeInterruptShadows`, and their stacks are
+interrupt dispatch.
+
+### Files
+
+The engine looks for many files that don't exist: each search path
+(`stbuilt`, `base`, `data`) and each image type in turn, and in a match
+the game asks for files such as a model's `.phy` when things first spawn.
+Each miss was a lookup through the file system (in xemu 1.5 to 5 ms, on a
+DVD possibly a seek), which stalled the frame that asked. `posix_xbox.c`
+lists a folder the first time a file in it is asked for, and answers
+misses there from the list. Files that are there still go to the
+kernel. Any write by the engine forgets the lists. Loading `lqdm1` made
+about 8300 file system calls and now makes about 2500, which saves about
+4 s of loading in xemu. In a match only sounds the game loads on first
+use still read the disc.
 
 ### Collision
 
