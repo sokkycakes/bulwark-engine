@@ -25,6 +25,10 @@ void FS_SetGameDirs(const char *const *dirs, int count);
 
 /* returns a NUL-terminated Mem_Alloc'd buffer, or NULL */
 char *FS_LoadFile(const char *path, size_t *len);
+/* bytes [ofs, ofs + n) of the file FS_LoadFile would read, as it returns
+ * them; NULL if the file is shorter. Reads only those bytes from a loose
+ * file, which is what a low-memory platform pages its models from. */
+char *FS_LoadRange(const char *path, size_t ofs, size_t n);
 bool FS_FileExists(const char *path);
 /* name of the search path that provides path, or NULL */
 const char *FS_WhichPath(const char *path);

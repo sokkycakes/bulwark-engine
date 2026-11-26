@@ -306,6 +306,8 @@ static void bi_r_readimage(qcvm_t *vm)
 	uint32_t ptr = 0;
 	if (data && (px = R_DecodeImage(data, len, &w, &h))) {
 		size_t bytes = (size_t)w * (size_t)h * 4;
+		Mem_Free(data); /* before the heap block: a map overview is 3 MB */
+		data = NULL;
 		ptr = QC_HeapAlloc(vm, bytes);
 		if (ptr)
 			memcpy(QC_Pointer(vm, ptr, bytes), px, bytes);

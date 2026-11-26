@@ -64,18 +64,13 @@
 #include "xbox.h"
 
 #define RVERT_STRIDE 44 /* sizeof(rvert_t): pos 3f, st 2f, lm 2f, normal 3f, colour 4ub */
-#ifdef BW_LOWMEM
-/* a frame of lqdm1 is about 350 draws and 38000 indices (under 1 MB of
- * stream even at the 600 words a draw reserves) and 700 KB of streamed
- * vertices; a full push buffer resets mid-frame and a full ring falls back
- * to pool memory, so these cost time, not correctness */
-#define PB_SIZE (2u << 20)
-#define RING_HALF (1536u << 10)
-#else
-#define PB_SIZE (4u << 20)
-#define RING_HALF (2u << 20)
-#endif
-#define PB_DWORDS (PB_SIZE / 4)
+/* The command stream and vertex ring. A match on lqdm1 writes 50-60 KB of
+ * commands and streams 85-110 KB of vertices a frame (gl_xbox_stats); the
+ * stream is a ring, so it only needs room for the frames in flight, and a
+ * full vertex ring falls back to pool memory, so these sizes cost time, not
+ * correctness. A 64 MB console takes the smaller pair (3 MB less). */
+static uint32_t pb_bytes = 2u << 20, ring_half = 1536u << 10;
+#define PB_DWORDS (pb_bytes / 4)
 #define ZMAX 16777215.0f
 #define GPU_MAXRAM 0x03FFAFFF
 
@@ -116,7 +111,9 @@ static size_t gpu_used;
 
 static void *contig_alloc(size_t size)
 {
-	return MmAllocateContiguousMemoryEx(size, 0, GPU_MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+	void *p = MmAllocateContiguousMemoryEx(size, 0, GPU_MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+	XBX_NoteFreeMemory(__builtin_return_address(0));
+	return p;
 }
 
 static void chunk_insert(gchunk_t *c, int at, gblock_t b)
@@ -264,9 +261,9 @@ static size_t st_stream, st_replace, st_index, st_copies; /* what buffer uploads
 
 static void *ring_alloc(size_t size)
 {
-	uint8_t *half = ring + (framenum & 1) * RING_HALF;
+	uint8_t *half = ring + (framenum & 1) * ring_half;
 	size = (size + 15) & ~(size_t)15;
-	if (ringused + size <= RING_HALF) {
+	if (ringused + size <= ring_half) {
 		void *p = half + ringused;
 		ringused += size;
 		ringpeak = BW_MAX(ringpeak, ringused);
@@ -330,13 +327,13 @@ static uint64_t gpu_pos(void)
 {
 	uint32_t base = (uint32_t)pbbase & 0x03FFFFFF;
 	uint32_t get = (DMA_GET & 0x03FFFFFF) - base;
-	if (get >= PB_SIZE) {
+	if (get >= pb_bytes) {
 		/* inside a called index run: GET points into pool memory, so take
 		 * the return address, the ring word after the call; the GPU has
 		 * read up to there. If that is not in the ring either, report no
 		 * new progress and let the caller poll again. */
 		get = (VIDEOREG(NV_PFIFO_CACHE1_DMA_SUBROUTINE) & NV_PFIFO_CACHE1_DMA_SUBROUTINE_RETURN_OFFSET & 0x03FFFFFF) - base;
-		if (get >= PB_SIZE)
+		if (get >= pb_bytes)
 			return gpu_seen;
 	}
 	get /= 4;
@@ -504,6 +501,19 @@ typedef struct {
 	bool updated;     /* re-specified or sub-updated since it was made: stays 32-bit */
 	uint32_t usedframe; /* the last frame that drew with it */
 } xtex_t;
+
+/* A texture's storage, being replaced or dropped: straight back to the pool
+ * when no frame the GPU may still be drawing used it. Loading replaces most
+ * textures' first storage (mipmaps, compression, palettes) before they are
+ * ever drawn, and frames come slowly then, so holding all of that for two
+ * frames was several MB at the worst moment of a 64 MB console's load. */
+static void tex_release(const xtex_t *t)
+{
+	if (!t->usedframe || framenum - t->usedframe >= 2)
+		gpu_free_now(t->data, t->bytes);
+	else
+		gpu_free(t->data, t->bytes);
+}
 
 /* a run of a static index buffer as GPU commands, called from the stream */
 typedef struct {
@@ -698,11 +708,16 @@ static uint8_t *resample(const uint8_t *src, int sw, int sh, int dw, int dh)
 #define FMT_A1R5G5B5 0x02
 #define FMT_DXT1 0x0C /* COLOR_L_DXT1_A1R5G5B5: 4x4 blocks of 8 bytes, not swizzled */
 #define FMT_DXT5 0x0F /* COLOR_L_DXT45_A8R8G8B8: 4x4 blocks of 16 bytes */
+#define FMT_I8 0x0B   /* SZ_I8_A8R8G8B8: swizzled bytes indexing a palette */
+#define PAL_BYTES 1024 /* the palette, 256 A8R8G8B8 words, sits before the texels */
 
 static bool fmt_dxt(uint32_t fmt) { return fmt == FMT_DXT1 || fmt == FMT_DXT5; }
 static int dxt_block_bytes(uint32_t fmt) { return fmt == FMT_DXT1 ? DXT1_BLOCK_BYTES : DXT5_BLOCK_BYTES; }
 /* bits per texel, for the memory report */
-static int fmt_bits(uint32_t fmt) { return fmt == FMT_A8B8G8R8 ? 32 : fmt == FMT_DXT1 ? 4 : fmt == FMT_DXT5 ? 8 : 16; }
+static int fmt_bits(uint32_t fmt)
+{
+	return fmt == FMT_A8B8G8R8 ? 32 : fmt == FMT_DXT1 ? 4 : fmt == FMT_DXT5 || fmt == FMT_I8 ? 8 : 16;
+}
 static bool texcompress(void) { return !gl_xbox_texcompress || gl_xbox_texcompress->ivalue; }
 
 /* The GPU's swizzled layout: the bits of x and y interleaved, x first,
@@ -842,7 +857,7 @@ static GLuint tex_id(const xtex_t *t)
 static void free_tex_storage(xtex_t *t)
 {
 	if (t->data)
-		gpu_free(t->data, t->bytes);
+		tex_release(t);
 	t->data = NULL;
 	t->bytes = 0;
 	free(t->pending);
@@ -918,12 +933,29 @@ static float dxt_psnr(const uint8_t *blocks, const uint8_t *rgba, int w, int h, 
 	return (float)(10.0 * log10(255.0 * 255.0 * 4.0 * (double)shown / se));
 }
 
+/* A big picture waits for its first draw (or glGenerateMipmap) in main
+ * memory only: its 32-bit GPU copy is made here if it ends up needing one.
+ * A map overview is 4 MB at 32 bits and 1 MB as DXT5. */
+static void materialize(xtex_t *t)
+{
+	if (t->data || !t->pending || t->cube)
+		return;
+	size_t bytes = level_bytes(t->tw, t->th, FMT_A8B8G8R8);
+	if (!(t->data = gpu_alloc(bytes)))
+		return;
+	swizzle_rect(t->data, t->tw, t->th, t->pending, t->tw, 0, 0, t->tw, t->th, FMT_A8B8G8R8);
+	t->bytes = bytes;
+	t->fmt = FMT_A8B8G8R8;
+}
+
 /* a big picture that nothing mipmapped: to DXT if that is near-lossless */
 static void compress_picture(xtex_t *t)
 {
 	t->try_dxt = false;
-	if (!t->pending || !t->data || t->cube || t->mipped || t->updated || t->fmt != FMT_A8B8G8R8)
+	if (!t->pending || t->cube || t->mipped || t->updated || t->fmt != FMT_A8B8G8R8) {
+		materialize(t);
 		return;
+	}
 	bool alpha = false, grey = true;
 	for (int i = 0; i < t->tw * t->th; i++) {
 		const uint8_t *px = t->pending + (size_t)i * 4;
@@ -932,23 +964,28 @@ static void compress_picture(xtex_t *t)
 	}
 	/* grey with alpha is a coverage atlas (fonts: white texels, or
 	 * premultiplied coverage in every channel), whose glyph edges DXT smears */
-	if (alpha && grey)
+	if (alpha && grey) {
+		materialize(t);
 		return;
+	}
 	uint32_t fmt = alpha ? FMT_DXT5 : FMT_DXT1;
 	size_t bytes = level_bytes(t->tw, t->th, fmt);
 	uint8_t *blocks = malloc(bytes);
-	if (!blocks)
+	if (!blocks) {
+		materialize(t);
 		return;
+	}
 	DXT_EncodeImage(blocks, t->pending, t->tw, t->th, dxt_block_bytes(fmt), 0);
 	uint8_t *data = dxt_psnr(blocks, t->pending, t->tw, t->th, fmt) >= 40 ? gpu_alloc(bytes) : NULL;
 	if (data) {
 		memcpy(data, blocks, bytes);
-		gpu_free(t->data, t->bytes);
+		tex_release(t);
 		t->data = data;
 		t->bytes = bytes;
 		t->fmt = fmt;
 	}
 	free(blocks);
+	materialize(t); /* not compressed: 32 bits after all */
 }
 
 static void drop_pending(void)
@@ -966,7 +1003,7 @@ static void drop_pending(void)
 /* level 0 of a 32-bit or DXT texture back to linear RGBA */
 static uint8_t *unswizzle(const xtex_t *t)
 {
-	if ((t->fmt != FMT_A8B8G8R8 && !fmt_dxt(t->fmt)) || !t->data)
+	if ((t->fmt != FMT_A8B8G8R8 && t->fmt != FMT_I8 && !fmt_dxt(t->fmt)) || !t->data)
 		return NULL;
 	if (fmt_dxt(t->fmt)) {
 		uint8_t *rgba = malloc((size_t)t->tw * t->th * 4);
@@ -981,6 +1018,19 @@ static uint8_t *unswizzle(const xtex_t *t)
 		return NULL;
 	}
 	swizzle_tables(t->tw, t->th, xo, yo);
+	if (t->fmt == FMT_I8) {
+		uint32_t pal[256];
+		memcpy(pal, t->data, PAL_BYTES); /* one read of write-combined memory */
+		const uint8_t *idx = t->data + PAL_BYTES;
+		for (int y = 0; y < t->th; y++)
+			for (int x = 0; x < t->tw; x++) {
+				uint32_t c = pal[idx[yo[y] | xo[x]]]; /* A8R8G8B8 back to bytes R G B A */
+				uint8_t *o = out + ((size_t)y * t->tw + x) * 4;
+				o[0] = (uint8_t)(c >> 16), o[1] = (uint8_t)(c >> 8), o[2] = (uint8_t)c, o[3] = (uint8_t)(c >> 24);
+			}
+		free(xo), free(yo);
+		return out;
+	}
 	const uint32_t *src = (const uint32_t *)t->data;
 	for (int y = 0; y < t->th; y++)
 		for (int x = 0; x < t->tw; x++)
@@ -997,12 +1047,70 @@ static void decompress_picture(xtex_t *t)
 	uint8_t *data = rgba ? gpu_alloc(bytes) : NULL;
 	if (data) {
 		swizzle_rect(data, t->tw, t->th, rgba, t->tw, 0, 0, t->tw, t->th, FMT_A8B8G8R8);
-		gpu_free(t->data, t->bytes);
+		tex_release(t);
 		t->data = data;
 		t->bytes = bytes;
 		t->fmt = FMT_A8B8G8R8;
 	}
 	free(rgba);
+}
+
+/* A picture of 256 colours or fewer (Quake's palette sprites, the HUD's
+ * sheets, flat fonts) as indices into a palette: a quarter of the memory
+ * and exactly the same texels. false leaves the texture as it was. */
+static bool palettize(xtex_t *t, const uint8_t *img)
+{
+	enum { HASH = 1024 };
+	uint32_t keys[HASH], pal[256];
+	int16_t slot[HASH];
+	int n = 0, count = t->tw * t->th;
+	memset(slot, 0xff, sizeof(slot));
+	uint8_t *idx = malloc((size_t)count);
+	if (!idx)
+		return false;
+	for (int i = 0; i < count; i++) {
+		uint32_t c;
+		memcpy(&c, img + (size_t)i * 4, 4);
+		uint32_t h = (c * 2654435761u) >> 22;
+		while (slot[h] >= 0 && keys[h] != c)
+			h = (h + 1) & (HASH - 1);
+		if (slot[h] < 0) {
+			if (n == 256) {
+				free(idx);
+				return false;
+			}
+			keys[h] = c;
+			slot[h] = (int16_t)n;
+			const uint8_t *p = img + (size_t)i * 4;
+			pal[n++] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+		}
+		idx[i] = (uint8_t)slot[h];
+	}
+	size_t bytes = PAL_BYTES + (size_t)count;
+	uint8_t *data = gpu_alloc(bytes);
+	if (!data) {
+		free(idx);
+		return false;
+	}
+	memset(pal + n, 0, sizeof(uint32_t) * (size_t)(256 - n));
+	memcpy(data, pal, PAL_BYTES);
+	uint32_t *xo = malloc(sizeof(uint32_t) * (size_t)t->tw), *yo = malloc(sizeof(uint32_t) * (size_t)t->th);
+	if (!xo || !yo) {
+		free(xo), free(yo), free(idx);
+		gpu_free_now(data, bytes);
+		return false;
+	}
+	swizzle_tables(t->tw, t->th, xo, yo);
+	uint8_t *texels = data + PAL_BYTES;
+	for (int y = 0; y < t->th; y++)
+		for (int x = 0; x < t->tw; x++)
+			texels[yo[y] | xo[x]] = idx[(size_t)y * t->tw + x];
+	free(xo), free(yo), free(idx);
+	tex_release(t);
+	t->data = data;
+	t->bytes = bytes;
+	t->fmt = FMT_I8;
+	return true;
 }
 
 static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint internal, bool dynamic)
@@ -1022,27 +1130,35 @@ static void upload_2d(xtex_t *t, const uint8_t *rgba, int w, int h, GLint intern
 	t->fmt = dynamic ? FMT_A8B8G8R8 : pick_format(img, tw * th, internal, false);
 	t->levels = 1;
 	t->mipped = false;
-	t->bytes = level_bytes(tw, th, t->fmt);
-	t->data = gpu_alloc(t->bytes);
-	if (!t->data) {
-		Con_Printf("^3gl_xbox: out of memory for a %dx%d texture\n", tw, th);
-		free(img);
-		set_error(GL_OUT_OF_MEMORY);
-		return;
-	}
-	swizzle_rect(t->data, tw, th, img, tw, 0, 0, tw, th, t->fmt);
-	/* glGenerateMipmap usually follows right away: keep the RGBA for it, but
-	 * only for the latest upload, or every HUD picture and lightmap would hold
-	 * a second copy in main memory. Mips for an older one come back out of
-	 * the GPU copy (unswizzle). */
-	drop_pending();
-	t->pending = img;
-	pending_id = tex_id(t);
 	/* lightmaps (RGB), pictures under 512 x 512 (HUD sheets, small fonts) and
 	 * textures updated before stay as they are; compress_picture also leaves
 	 * coverage atlases */
-	t->try_dxt = !dynamic && !t->updated && texcompress() && !(gl_xbox_texquality && gl_xbox_texquality->ivalue) &&
-	             internal != GL_RGB8 && internal != GL_RGB && tw * th >= 512 * 512;
+	bool try_dxt = !dynamic && !t->updated && texcompress() && !(gl_xbox_texquality && gl_xbox_texquality->ivalue) &&
+	               internal != GL_RGB8 && internal != GL_RGB && tw * th >= 512 * 512;
+	/* glGenerateMipmap usually follows right away: keep the RGBA for it, but
+	 * only for the latest upload, or every HUD picture and lightmap would hold
+	 * a second copy in main memory. Mips for an older one come back out of
+	 * the GPU copy (unswizzle). The copy goes first, as dropping it may
+	 * compress the picture before. */
+	drop_pending();
+	if (!try_dxt) {
+		t->bytes = level_bytes(tw, th, t->fmt);
+		t->data = gpu_alloc(t->bytes);
+		if (!t->data) {
+			Con_Printf("^3gl_xbox: out of memory for a %dx%d texture\n", tw, th);
+			free(img);
+			set_error(GL_OUT_OF_MEMORY);
+			return;
+		}
+		swizzle_rect(t->data, tw, th, img, tw, 0, 0, tw, th, t->fmt);
+	}
+	t->pending = img;
+	pending_id = tex_id(t);
+	t->try_dxt = try_dxt;
+	/* the rest of the 32-bit pictures go to a palette when they have few
+	 * enough colours; world textures still get their mipmaps from pending */
+	if (!t->try_dxt && !dynamic && !t->updated && t->fmt == FMT_A8B8G8R8 && internal != GL_RGB8 && internal != GL_RGB)
+		palettize(t, img);
 }
 
 /* a world texture: capped to gl_max_size, maybe 16-bit, with its mip chain */
@@ -1051,7 +1167,7 @@ static void generate_mips(xtex_t *t)
 	int maxsz = world_max_size(), nw = t->tw, nh = t->th, levels = 1;
 	uint8_t *cur, *img;
 	uint32_t fmt;
-	if (!t->data || t->cube)
+	if ((!t->data && !t->pending) || t->cube)
 		return;
 	if (!t->pending && !(t->pending = unswizzle(t)))
 		return;
@@ -1108,7 +1224,7 @@ static void generate_mips(xtex_t *t)
 		free(cur);
 	if (img != t->pending)
 		free(img);
-	gpu_free(t->data, t->bytes);
+	tex_release(t);
 	free(t->pending);
 	t->pending = NULL;
 	t->data = data;
@@ -1273,6 +1389,8 @@ static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLin
 	xtex_t *t = bound_tex(target);
 	const uint8_t *src = pixels;
 	uint8_t *expanded = NULL;
+	if (t && t->try_dxt)
+		materialize(t);
 	if (!t || !t->data || t->cube || level != 0 || type != GL_UNSIGNED_BYTE || !pixels || w <= 0 || h <= 0)
 		return;
 	if (fmt == GL_RGB)
@@ -1284,8 +1402,12 @@ static void BWGLAPI xb_glTexSubImage2D(GLenum target, GLint level, GLint x, GLin
 	t->try_dxt = false;
 	t->updated = true;
 	gpu_done_with(t->usedframe);
-	if (fmt_dxt(t->fmt) && !t->mipped)
+	if ((fmt_dxt(t->fmt) && !t->mipped) || t->fmt == FMT_I8)
 		decompress_picture(t);
+	if (t->fmt == FMT_I8) {
+		free(expanded); /* no memory for 32 bits: keep the old picture */
+		return;
+	}
 	if (t->pending && t->tw == t->w && t->th == t->h) {
 		/* keep the copy that glGenerateMipmap works from up to date */
 		for (int r = 0; r < h; r++)
@@ -1925,7 +2047,13 @@ static void bind_unit(int unit, xtex_t *t)
 	int aniso = gl_xbox_aniso ? BW_CLAMP(gl_xbox_aniso->ivalue, 0, 3) : 0;
 	uint32_t control0 = NV097_SET_TEXTURE_CONTROL0_ENABLE | (0xFFFu << 6) | (t->mipped ? (uint32_t)aniso << 4 : 0);
 	t->usedframe = framenum;
-	reg(NV097_SET_TEXTURE_OFFSET + base, (uint32_t)t->data & 0x03FFFFFF);
+	if (t->fmt == FMT_I8) {
+		/* DMA B, 256 entries, at the start of the storage */
+		reg(NV097_SET_TEXTURE_PALETTE + base, ((uint32_t)t->data & 0x03FFFFC0) | NV097_SET_TEXTURE_PALETTE_CONTEXT_DMA);
+		reg(NV097_SET_TEXTURE_OFFSET + base, ((uint32_t)t->data + PAL_BYTES) & 0x03FFFFFF);
+	} else {
+		reg(NV097_SET_TEXTURE_OFFSET + base, (uint32_t)t->data & 0x03FFFFFF);
+	}
 	reg(NV097_SET_TEXTURE_FORMAT + base, format);
 	reg(NV097_SET_TEXTURE_ADDRESS + base, address);
 	reg(NV097_SET_TEXTURE_CONTROL0 + base, control0);
@@ -3018,7 +3146,7 @@ static void frame_stats(ULONGLONG t0, size_t pbused, int missed)
 		           "%d kicks, pb %u of %u KB, ring %u of %u KB (%u KB spilled), GPU %u KB, %u KB free\n",
 		           fst.frames / secs, fst.work / fst.frames, fst.worst, (double)sync_ticks * ms / fst.frames,
 		           fst.wait / fst.frames, fst.missed, fst.draws / fst.frames, fst.tris / fst.frames, fst.kicks / fst.frames,
-		           (unsigned)(fst.pb * 4 / 1024), PB_SIZE >> 10, (unsigned)(ringpeak >> 10), RING_HALF >> 10,
+		           (unsigned)(fst.pb * 4 / 1024), pb_bytes >> 10, (unsigned)(ringpeak >> 10), ring_half >> 10,
 		           (unsigned)(ringspill >> 10), (unsigned)(gpu_used >> 10), (unsigned)(XBX_FreeMemory() >> 10));
 		Con_Printf("xbox: a frame streams %u KB draws, %u KB replaced buffers, %u KB indices; %u buffer copies, "
 		           "%d texture update waits\n",
@@ -3136,8 +3264,16 @@ void XBGL_PrintGpuMemory(void)
 
 static void meminfo_gpu_f(int argc, const char **argv)
 {
-	(void)argc, (void)argv;
 	XBGL_PrintGpuMemory();
+	/* "all": every texture, by GL name, to match against r_imagelist */
+	if (argc > 1 && !strcmp(argv[1], "all"))
+		for (int i = 1; i < num_texs; i++) {
+			xtex_t *t = &texs[i];
+			if (t->used && t->data)
+				Con_Printf("  tex %d: %dx%d as %dx%d, %d levels, %d bits%s%s, %u KB\n", i, t->w, t->h, t->tw, t->th,
+				           t->levels, fmt_bits(t->fmt), t->cube ? ", cube" : "", t->dynamic ? ", dynamic" : "",
+				           (unsigned)(t->bytes >> 10));
+		}
 	Con_Printf("last frame %d draws, %d triangles\n", draws_this_frame, tris_this_frame);
 }
 
@@ -3164,7 +3300,9 @@ void XBGL_RegisterCvars(void)
 bool XBGL_Init(void)
 {
 	int err;
-	pb_size(PB_SIZE);
+	if (BW_SMALL_MEMORY())
+		pb_bytes = 1u << 20, ring_half = 512u << 10;
+	pb_size(pb_bytes);
 	if ((err = pb_init()) != 0) {
 		Con_Printf("pbkit failed to start (%d)\n", err);
 		return false;
@@ -3172,7 +3310,7 @@ bool XBGL_Init(void)
 	pb_show_front_screen();
 	fbw = (int)pb_back_buffer_width();
 	fbh = (int)pb_back_buffer_height();
-	ring = contig_alloc(RING_HALF * 2);
+	ring = contig_alloc(ring_half * 2);
 	if (!ring) {
 		Con_Printf("gl_xbox: no memory for the vertex ring\n");
 		return false;
@@ -3214,7 +3352,7 @@ bool XBGL_Init(void)
 	skin_init();
 	last_swap = pb_get_vbl_counter();
 	ready = true;
-	Con_Printf("NV2A at %dx%d, %u KB push buffer\n", fbw, fbh, PB_SIZE >> 10);
+	Con_Printf("NV2A at %dx%d, %u KB push buffer\n", fbw, fbh, pb_bytes >> 10);
 	return true;
 }
 

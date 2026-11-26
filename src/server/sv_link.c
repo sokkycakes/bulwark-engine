@@ -3532,7 +3532,7 @@ static void update_hud(link_t *l)
 		p_bytes(&p, nn, (int)BW_MIN(strlen(nn), HUD_NAME));
 		n++;
 	}
-	p.data[nat] = (uint8_t)n;
+	p.data[BW_MIN(nat, (int)sizeof(p.data) - 1)] = (uint8_t)n; /* nat < len: clamped for GCC */
 	/* the crosshair */
 	p_u8(&p, l->xw), p_u8(&p, l->xh);
 	if (l->xw) {

@@ -217,12 +217,14 @@ struct qcvm_s {
 	int edict_words; /* field storage per entity in words */
 	int edict_words_used; /* the rest is spare room for fields added progs declare */
 	int max_edicts;
+	int edicts_backed; /* slots below this have memory behind them (QC_BackEdict) */
 	int num_edicts; /* highest slot in use + 1 */
 	int reserved_edicts; /* slots 1..reserved are never handed out by spawn() (player slots) */
 	float quick_reuse_before; /* slots freed before this time can be reused at once (map load) */
 	qcedict_t *edicts;
 	size_t heap_ofs, heap_size;
 	size_t heap_used, heap_peak; /* bytes in use by memalloc blocks, and the most ever */
+	size_t committed; /* mem is backed up to here; past it only a free heap tail */
 	int edicts_peak; /* most entity slots ever in use (num_edicts high-water mark) */
 
 	qcfieldofs_t fofs;
@@ -303,6 +305,7 @@ void QC_Free(qcvm_t *vm);
 /* developer report of what a VM used against what it was given, for sizing
  * BW_*_MAXEDICTS and BW_*_HEAP_MB */
 void QC_PrintMemStats(qcvm_t *vm);
+void QC_PrintAllMemStats(void); /* every VM and the string table */
 /* every loaded VM (server, client game, menu) */
 int QC_VMCount(void);
 qcvm_t *QC_VMAt(int i);
@@ -348,11 +351,13 @@ void QC_CollectGarbage(qcvm_t *vm, bool force);
 int QC_LiveStrings(void);
 
 /* entities */
+/* QC_EdictFields of a slot at or past edicts_backed: backs it first */
+qcval_t *QC_BackEdict(qcvm_t *vm, int e);
 /* inline: the interpreter calls this for every field access */
 static inline qcval_t *QC_EdictFields(qcvm_t *vm, int e)
 {
-	if ((unsigned)e >= (unsigned)vm->max_edicts)
-		QC_RunError(vm, "entity %d out of range", e);
+	if ((unsigned)e >= (unsigned)vm->edicts_backed)
+		return QC_BackEdict(vm, e);
 	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * vm->edict_words * 4);
 }
 int QC_SpawnEdict(qcvm_t *vm);

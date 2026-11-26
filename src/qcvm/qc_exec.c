@@ -173,14 +173,22 @@ static BW_NORETURN void field_error(qcvm_t *vm, int32_t e, int32_t f)
  * field offset wraps to a huge one (edict_words is always above 3) */
 typedef struct {
 	uint8_t *base; /* entity 0's fields */
-	uint32_t count; /* max_edicts */
+	uint32_t count; /* edicts_backed when the call began */
 	uint32_t words; /* edict_words */
 } edictspace_t;
+
+/* a slot backed since the call began, or none at all */
+static qcval_t *field_far(qcvm_t *vm, int32_t e, int32_t f, uint32_t words)
+{
+	if ((uint32_t)e >= (uint32_t)vm->max_edicts || (uint32_t)f > (uint32_t)vm->edict_words - words)
+		field_error(vm, e, f);
+	return QC_EdictFields(vm, e) + f;
+}
 
 static inline qcval_t *field_ptr(qcvm_t *vm, const edictspace_t *es, int32_t e, int32_t f, uint32_t words)
 {
 	if ((uint32_t)e >= es->count || (uint32_t)f > es->words - words)
-		field_error(vm, e, f);
+		return field_far(vm, e, f, words);
 	return (qcval_t *)(es->base + ((size_t)(uint32_t)e * es->words + (uint32_t)f) * 4);
 }
 
@@ -426,7 +434,7 @@ int QC_JIT_CC QC_JitStepFused(qcvm_t *vm, int s)
 int QC_JIT_CC QC_JitCall(qcvm_t *vm, int s)
 {
 	const qcstatement_t *st = vm->statements + s;
-	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->max_edicts, (uint32_t)vm->edict_words};
+	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->edicts_backed, (uint32_t)vm->edict_words};
 	int caller = vm->curprogs, fnum;
 	qcfunc_t *f = call_begin(vm, st, s, &es, &fnum);
 	if (f) {
@@ -488,7 +496,7 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 	const qcstatement_t *stmts, *st;
 	qcval_t *G;
 	/* fixed for the life of the VM, so kept out of the loop's loads */
-	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->max_edicts, (uint32_t)vm->edict_words};
+	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->edicts_backed, (uint32_t)vm->edict_words};
 	unsigned nst;
 	uint32_t looped = 0;
 #ifdef QC_THREADED

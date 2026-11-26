@@ -97,6 +97,49 @@ static bool atlas_alloc(int w, int h, int *page, int *x, int *y)
 	return true;
 }
 
+#ifdef BW_LOWMEM
+static const q1face_t *repack_faces;
+
+static int repack_cmp(const void *a, const void *b)
+{
+	const q1face_t *x = &repack_faces[*(const int *)a], *y = &repack_faces[*(const int *)b];
+	if (x->h != y->h)
+		return y->h - x->h;
+	return *(const int *)a - *(const int *)b;
+}
+
+/* Faces were placed on shelves in file order, so each shelf is as tall as
+ * its tallest face and the pages run long. Placed again tallest first, the
+ * same luxels take far fewer rows, and a page is uploaded only as tall as
+ * its rows (page_height): lqdm1's page goes from 1024x512 to 1024x256, 1 MB
+ * of GPU memory. The texels and their filtering are the same. */
+static void repack_lightmaps(int numfaces, const int *fvert, rvert_t *verts, rsurface_t *surfs)
+{
+	int *order = Mem_Alloc(sizeof(int) * (size_t)(numfaces + 1)), n = 0;
+	for (int f = 0; f < numfaces; f++)
+		if (q1.faces[f].page >= 0)
+			order[n++] = f;
+	repack_faces = q1.faces;
+	qsort(order, (size_t)n, sizeof(int), repack_cmp);
+	Mem_Free(q1.pageused);
+	q1.pageused = NULL;
+	q1.numpages = 0;
+	memset(&shelf, 0, sizeof(shelf));
+	for (int i = 0; i < n; i++) {
+		q1face_t *qf = &q1.faces[order[i]];
+		int ox = qf->x, oy = qf->y;
+		if (!atlas_alloc(qf->w, qf->h, &qf->page, &qf->x, &qf->y))
+			continue; /* it fitted before, so it fits again */
+		surfs[order[i]].lightmap = qf->page;
+		for (int k = fvert[order[i] * 2], end = k + fvert[order[i] * 2 + 1]; k < end; k++) {
+			verts[k].lm[0] += (float)(qf->x - ox);
+			verts[k].lm[1] += (float)(qf->y - oy);
+		}
+	}
+	Mem_Free(order);
+}
+#endif
+
 /* the height a page is uploaded at: low-memory builds trim the rows no
  * face reached, to a power of two for consoles that swizzle textures */
 static int page_height(int page)
@@ -544,6 +587,9 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 				rs->maxs[a] = BW_MAX(rs->maxs[a], g.v[k].xyz[a]);
 			}
 	}
+#ifdef BW_LOWMEM
+	repack_lightmaps(numfaces, fvert, g.v, r_world.surfaces);
+#endif
 	Mem_Free(styled);
 	Mem_Free(lit);
 	Mem_Free(texs);
@@ -634,7 +680,8 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 	}
 	(void)bsp;
 	R_WorldUpload(g.v, g.num, g.i, g.numi);
-	Con_DPrintf("%s: %d faces, %d lightmap pages%s\n", path, numfaces, q1.numpages, lit ? " (coloured)" : "");
+	Con_DPrintf("%s: %d faces, %d lightmap pages (%d rows)%s\n", path, numfaces, q1.numpages, r_world.lightmaprows,
+	            lit ? " (coloured)" : "");
 	Mem_Free(g.v);
 	Mem_Free(g.i);
 	return true;

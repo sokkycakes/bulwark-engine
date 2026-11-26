@@ -109,6 +109,27 @@ when the game hangs.
 
 Look at `bulwark.log`, or the serial file, for the engine's output.
 
+Roswell only starts on 128 MB: its loader puts the kernel and the page
+tables in the upper 64 MB, and on 64 MB the debug build loops at boot and
+the release build stays black. A 64 MB console is played on a 128 MB one
+instead, with switches in `args.txt` (or on the command line):
+
+- `-xmem 64` commits the difference at start-up as memory nothing uses, so
+  the game has what a retail console leaves it (53 MB free after start-up,
+  against 118.7 MB), and takes the 64 MB settings. The ballast is virtual
+  memory: a contiguous one would starve pbkit, which only gets memory
+  below the upper 64 MB.
+- `-xmemsizes 64` takes the 64 MB settings without holding the memory, to
+  measure a 64 MB layout with room to spare.
+- `-xmemlog` prints each new low of free memory (in 512 KB steps) with the
+  address of the code that took it; look the address up in
+  `build-xbox/bulwark.map`. `xbox_meminfo` also prints the lowest free
+  memory so far, and `xbox_meminfo regions` lists the committed regions of
+  64 KB and more.
+
+`xbench.sh` takes `XMEM=<MB>` for the console xemu emulates and `FLASH=` for
+another kernel image.
+
 ### In-match benchmark
 
 The deathmatch rules spawn the local player at once and then ask for the
@@ -594,24 +615,88 @@ menu edicts, QuakeC heaps of 2 MB (server), 4 MB (CSQC) and 512 KB (menu),
 On a console with more than 96 MB the server gets 1536 edicts, because
 Stiletto leaks entities (see "Game bug: FindXRInput leaks entities"): a
 server slot is about 5 KB (1176 words of Stiletto's fields and 64 spare,
-plus the engine's own tables), and in the in-match benchmark the 768 more
-leave 47.9-48.5 MB free instead of 51.7-52.3 MB, with the same frame
-times. `pr_maxedicts` and `pr_heapsize` still override the server's.
+plus the engine's own tables). `pr_maxedicts` and `pr_heapsize` still
+override the server's.
+
+A retail console leaves the game about 53 MB once the kernel, the XBE
+(8.5 MB with its static data) and the thread stacks are in. The 8-bot match
+on `lqdm1` used to take about 70 MB; it now fits like this (in-match
+benchmark, `-xmem 64`):
+
+| | before, 128 MB | now, 128 MB | now, `-xmem 64` |
+|---|---|---|---|
+| free memory in the match | 47.6 MB | 72.1 MB | 9.4-9.6 MB, 8.9 MB after 11 minutes |
+| GPU objects (textures, buffers) | 16.0 MB | 10.7 MB | 10.8 MB |
+| push buffer and vertex ring | 5 MB | 5 MB | 2 MB |
+| QuakeC VMs (backed) | 17 MB | 5 MB | 5 MB |
+| player models (cached files) | 3.8 MB | 0.5 MB | 0.5 MB |
+| client entity table | 2.6 MB | 0.2 MB | 0.2 MB |
+
+The before column is the in-match benchmark at the parent of this work; a
+64 MB console couldn't load the match at all (it ran out in the client
+game's VM, then in the player models). Frame times are the same as before
+within xemu's run-to-run noise.
+
+What made the difference, all without changing what is drawn or what the
+game computes:
+
+- **QuakeC memory is committed as it is used.** Each VM's entity slots and
+  heap are reserved address space; a slot gets its pages the first time
+  anything reaches it (`QC_BackEdict`), and the heap's free tail goes back
+  to the system once 256 KB or more of it is free. The server game uses
+  about 450 of its 768 slots and the client game 340, and the client
+  game's 4 MB heap only fills while it loads the map overview. `pr_jit 1`
+  backs every slot at once, since native code checks entity numbers
+  against the slot count only.
+- **Player models keep only the animation they play.** A hero's .mdl is
+  2.2 MB, 1.7 MB of it the coded frames of 174 sequences. The model cache
+  cuts them out of the file it keeps and reads a sequence back from the
+  file (`FS_LoadRange`) the first time a frame of it is asked for; it then
+  stays. Skin pixels are read back the same way, only their bytes, when
+  the renderer uploads them.
+- **Big pictures wait for their first draw.** A picture of 512 x 512 or
+  more that may become DXT keeps only its RGBA until it is mipmapped or
+  drawn, so it is never held at 32 bits and compressed as well. Other
+  pictures with 256 colours or fewer (the HUD sprites, the map overview)
+  become palettized 8-bit textures, which the NV2A samples like the 32-bit
+  ones (3.7 MB less for the HUD).
+- **The lightmap pages are packed again**, tallest face first, which halves
+  them on `lqdm1` (1 MB).
+- **The UI atlas pages are uploaded down to the rows a layout uses** (768 KB
+  rather than 1.5 MB at 480 lines).
+- **Client entities hold their interpolation samples only once they have
+  any** (2.4 MB of the 2.6 MB table).
+- **On a 64 MB console the push buffer and vertex ring are 1 MB and 512 KB**
+  (3 MB less); the match uses under 100 KB of the push buffer a frame.
+- **On a 64 MB console the QuakeC string region is 1 MB** rather than 2:
+  a map load fills it and the match keeps a fifth of that alive, so the
+  load's overflow goes through malloc and back.
+- Smaller things: the QuakeC call stack starts at 16 KB and grows, the
+  console's Tab completion table is made when the console first opens,
+  freed textures go back at once when the GPU hasn't used them in two
+  frames, and a map overview's file is freed before its pixels are copied
+  into the game's heap.
+
+The lowest point is while the players' models load at the start of the
+match (about 6 MB free). Over a match the server's leaked entities (about
+20 a minute, 5 KB each) and the sequences played so far take about 0.7 MB
+more in ten minutes. `pr_memstats` prints each VM's entity and heap peaks
+and how much of it is backed.
 
 GPU memory comes out of the same 64 MB as everything else. Small objects
-share 1 MB chunks, and `xbox_gpuinfo` shows the total. Use `xbox_meminfo`,
-or `gl_xbox_stats 1`, to watch what is left.
+share 1 MB chunks, and `xbox_gpuinfo` shows the total (`xbox_gpuinfo all`
+lists every texture). Use `xbox_meminfo`, or `gl_xbox_stats 1`, to watch
+what is left.
 
-The native UI keeps no heap of its own between frames. Its atlas is about
-1.5 MB of GPU memory, and its vertex batch and tables are static data
-(about 95 KB, by the design's estimate).
+The native UI keeps no heap of its own between frames. Its atlas is 768 KB
+to 1.5 MB of GPU memory, depending on the screen height, and its vertex
+batch and tables are static data (about 95 KB, by the design's estimate).
 
 ## Known limits
 
-- **Memory:** in the bring-up runs in xemu (128 MB, Stiletto on `lqdm1`),
-  loading ran out of memory even with `gl_max_size 128` and a smaller
-  QuakeC heap. Getting a map to fit in 64 MB is the next piece of work.
-  `xbox_meminfo` and `gl_xbox_stats` are there to measure it.
+- **Memory:** the 8-bot match on `lqdm1` fits in 64 MB with about 9 MB free
+  (see "Memory"), measured with `-xmem 64` on a 128 MB xemu console, since
+  the kernel xemu boots needs 128. Bigger maps haven't been measured.
 - **Not checked on hardware:** quitting to the dashboard, controller
   hot-plugging, and the frame rate. Everything so far is from xemu, which
   doesn't model the console's timing.

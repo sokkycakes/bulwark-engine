@@ -429,7 +429,10 @@ static bool os_path_lower(int dir, const char *path, char *out, size_t outsize)
 	return strcmp(out + base, path) != 0; /* nothing new to try otherwise */
 }
 
-static char *load_os_file(const char *ospath, size_t *len)
+#define WHOLE ((size_t)-1)
+
+/* bytes [ofs, ofs + n) of a file, or all of it when n is WHOLE */
+static char *load_os_file(const char *ospath, size_t ofs, size_t n, size_t *len)
 {
 	FILE *f = fopen(ospath, "rb");
 	long size;
@@ -443,21 +446,46 @@ static char *load_os_file(const char *ospath, size_t *len)
 	}
 	fseek(f, 0, SEEK_END);
 	size = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (size < 0) {
+	if (size < 0 || ofs > (size_t)size || (n != WHOLE && n > (size_t)size - ofs)) {
 		fclose(f);
 		return NULL;
 	}
-	buf = Mem_Alloc((size_t)size + 1);
-	if (size && fread(buf, 1, (size_t)size, f) != (size_t)size) {
+	if (n == WHOLE)
+		n = (size_t)size - ofs;
+	fseek(f, (long)ofs, SEEK_SET);
+	buf = Mem_Alloc(n + 1);
+	if (n && fread(buf, 1, n, f) != n) {
 		Mem_Free(buf);
 		fclose(f);
 		return NULL;
 	}
 	fclose(f);
-	buf[size] = 0;
+	buf[n] = 0;
 	if (len)
-		*len = (size_t)size;
+		*len = n;
+	return buf;
+}
+
+/* part of a package's file: the whole file is read (and inflated) first */
+static char *pack_read_part(pack_t *pk, packfile_t *pf, size_t ofs, size_t n, size_t *len)
+{
+	size_t size = 0;
+	char *whole = pack_read(pk, pf, &size), *buf;
+	if (!whole || n == WHOLE) {
+		if (whole && len)
+			*len = size;
+		return whole;
+	}
+	if (ofs > size || n > size - ofs) {
+		Mem_Free(whole);
+		return NULL;
+	}
+	buf = Mem_Alloc(n + 1);
+	memcpy(buf, whole + ofs, n);
+	buf[n] = 0;
+	Mem_Free(whole);
+	if (len)
+		*len = n;
 	return buf;
 }
 
@@ -551,7 +579,7 @@ void FS_NoteWrite(void)
 void FS_NoteWrite(void) {}
 #endif
 
-char *FS_LoadFile(const char *path, size_t *len)
+static char *load_part(const char *path, size_t ofs, size_t n, size_t *len)
 {
 	char ospath[2048];
 	if (!FS_SafeName(path))
@@ -567,9 +595,9 @@ char *FS_LoadFile(const char *path, size_t *len)
 		char *buf;
 		if (!os_path(i, path, ospath, sizeof(ospath)))
 			continue;
-		buf = load_os_file(ospath, len);
+		buf = load_os_file(ospath, ofs, n, len);
 		if (!buf && os_path_lower(i, path, ospath, sizeof(ospath)))
-			buf = load_os_file(ospath, len);
+			buf = load_os_file(ospath, ofs, n, len);
 		if (buf)
 			return buf;
 		/* loose files override the game dir's own packages, which makes
@@ -577,17 +605,21 @@ char *FS_LoadFile(const char *path, size_t *len)
 		{
 			pack_t *pk;
 			packfile_t *pf = find_in_packs(i, path, &pk);
-			if (pf && (buf = pack_read(pk, pf, len)))
+			if (pf && (buf = pack_read_part(pk, pf, ofs, n, len)))
 				return buf;
 		}
 	}
 	if (fs_enginedir[0]) {
 		int n = snprintf(ospath, sizeof(ospath), "%s/%s", fs_enginedir, path);
 		if (n > 0 && (size_t)n < sizeof(ospath))
-			return load_os_file(ospath, len);
+			return load_os_file(ospath, ofs, n, len);
 	}
 	return NULL;
 }
+
+char *FS_LoadFile(const char *path, size_t *len) { return load_part(path, 0, WHOLE, len); }
+
+char *FS_LoadRange(const char *path, size_t ofs, size_t n) { return load_part(path, ofs, n, NULL); }
 
 int FS_WhichGameDir(const char *path)
 {

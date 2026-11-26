@@ -49,7 +49,12 @@ static uint32_t text_len(const char *text) { return ((const uint32_t *)(const vo
 #else
 #define POOL_BYTES (8u << 20)
 #endif
+/* A map load fills the region (90k strings at once on lqdm1) and a match
+ * then keeps a fifth of that alive, so on a 64 MB Xbox the region is 1 MB:
+ * the load's overflow goes to malloc and back when it is collected. */
+#define POOL_BYTES_SMALL (1u << 20)
 static char *pool, *pool_next;
+static size_t pool_bytes;
 static void *pool_free[POOL_CLASSES]; /* each free block holds the next */
 
 static int pool_class(size_t bytes)
@@ -68,9 +73,11 @@ static uint32_t *block_alloc(size_t bytes)
 	}
 	if (k >= 0) {
 		size_t size = (size_t)16 << k;
-		if (!pool)
-			pool = pool_next = Mem_Realloc(NULL, POOL_BYTES);
-		if ((size_t)(pool + POOL_BYTES - pool_next) >= size) {
+		if (!pool) {
+			pool_bytes = BW_SMALL_MEMORY() ? POOL_BYTES_SMALL : POOL_BYTES;
+			pool = pool_next = Mem_Realloc(NULL, pool_bytes);
+		}
+		if ((size_t)(pool + pool_bytes - pool_next) >= size) {
 			b = pool_next;
 			pool_next += size;
 			return b;
@@ -82,7 +89,7 @@ static uint32_t *block_alloc(size_t bytes)
 static void block_free(uint32_t *block)
 {
 	int k = pool_class(sizeof(uint32_t) + (block[0] & ~LEN_SHORTENED) + 1);
-	if (!pool || (uintptr_t)block - (uintptr_t)pool >= POOL_BYTES) {
+	if (!pool || (uintptr_t)block - (uintptr_t)pool >= pool_bytes) {
 		Mem_Free(block);
 		return;
 	}
@@ -91,6 +98,12 @@ static void block_free(uint32_t *block)
 }
 
 int QC_LiveStrings(void) { return (int)live; }
+
+void QC_PrintStringStats(void)
+{
+	Con_Printf("strings: %u live, %u slots of %u, pool %u of %u KB used\n", (unsigned)live, (unsigned)nstrs,
+	           (unsigned)capstrs, (unsigned)(pool ? (pool_next - pool) >> 10 : 0), (unsigned)(pool_bytes >> 10));
+}
 
 const char *QC_GetString(qcvm_t *vm, string_t s)
 {

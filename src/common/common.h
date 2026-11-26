@@ -48,6 +48,29 @@ typedef float vec3_t[3];
 #define BW_CL_MAXENTS 65536
 #endif
 
+/* An Xbox with 64 MB (retail) rather than 128 (upgraded or development):
+ * where memory is short enough to matter, sizes follow the console. Under
+ * -xmem a 128 MB console plays a 64 MB one. */
+#ifdef BW_XBOX
+size_t XBX_TotalMemory(void);
+#define BW_SMALL_MEMORY() (XBX_TotalMemory() < (size_t)96 << 20)
+#else
+#define BW_SMALL_MEMORY() false
+#endif
+/* Whole pages, zeroed, for big blocks whose unused tail can be handed back
+ * to the system (Mem_PageDecommit) and taken again (Mem_PageCommit, zeroed
+ * again). Only the first commit bytes are backed at first; the rest must be
+ * committed before use. Where the platform can't, they are Mem_Alloc and
+ * the others do nothing. */
+void *Mem_PageAlloc(size_t size, size_t commit);
+#ifdef BW_XBOX
+#define MEM_PAGE_LAZY 1 /* uncommitted pages fault, so they are worth leaving out */
+#endif
+void Mem_PageFree(void *p);
+bool Mem_PageCommit(void *p, size_t size);
+void Mem_PageDecommit(void *p, size_t size);
+#define MEM_PAGE 4096
+
 #if defined(__GNUC__) || defined(__clang__)
 #define BW_PRINTF(f, a) __attribute__((format(__printf__, f, a)))
 #define BW_NORETURN __attribute__((noreturn))
@@ -86,6 +109,9 @@ void *Mem_Alloc(size_t size);        /* zeroed, aborts on failure */
 void *Mem_Realloc(void *p, size_t size);
 void Mem_Free(void *p);
 char *Mem_Strdup(const char *s);
+#ifdef BW_MEMTRACE
+void Mem_TraceReport(void); /* live allocations by caller */
+#endif
 
 /* bounded string helpers */
 size_t Str_Copy(char *dst, const char *src, size_t dstsize);

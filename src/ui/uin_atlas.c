@@ -1156,11 +1156,37 @@ static void region_uvs(void)
 	}
 }
 
+/* The pages are sized for the tallest layouts, and a 480-line screen fills
+ * the top 96 and 193 rows of them: low-memory builds upload only the rows
+ * down to the smallest power of two that leaves an empty row under the
+ * last one used, so sampling and wrapping see the same texels (2 MB of
+ * texture memory down to 768 KB). UVs follow A.ph. */
+static int used_height(const uint8_t *px, int w, int h)
+{
+#ifdef BW_LOWMEM
+	int last = -1, out = 1;
+	const uint32_t *row = (const uint32_t *)(const void *)px;
+	for (int y = h - 1; y >= 0 && last < 0; y--)
+		for (int x = 0; x < w; x++)
+			if (row[(size_t)y * w + x]) {
+				last = y;
+				break;
+			}
+	while (out < last + 2)
+		out <<= 1;
+	return BW_MIN(out, h);
+#else
+	(void)px, (void)w;
+	return h;
+#endif
+}
+
 static bool upload(uint8_t *const *px)
 {
 	for (int p = 0; p < UIN_NUM_PAGES; p++) {
 		char name[32];
 		snprintf(name, sizeof(name), "$uin_page%d", p);
+		A.ph[p] = used_height(px[p], A.pw[p], A.ph[p]);
 		A.image[p] = R_UploadImage(name, px[p], A.pw[p], A.ph[p]);
 		if (!A.image[p])
 			return false;
@@ -1187,6 +1213,7 @@ static bool load_cache(int h)
 		if (ok) {
 			char name[32];
 			snprintf(name, sizeof(name), "$uin_page%d", p);
+			A.ph[p] = hh = used_height(px[p], w, hh);
 			A.image[p] = R_UploadImage(name, px[p], w, hh);
 			ok = A.image[p] != 0;
 		}

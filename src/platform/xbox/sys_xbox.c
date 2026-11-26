@@ -51,18 +51,42 @@ void XBX_Log(const char *text)
 	}
 }
 
+static size_t lowest_free = (size_t)-1, logged_free = (size_t)-1;
+static bool memlog; /* -xmemlog: log each new low of free memory, by 512 KB steps */
+
 size_t XBX_FreeMemory(void)
 {
 	MM_STATISTICS ms;
 	ms.Length = sizeof(ms);
 	if (!NT_SUCCESS(MmQueryStatistics(&ms)))
 		return 0;
-	return (size_t)ms.AvailablePages * 4096;
+	size_t f = (size_t)ms.AvailablePages * 4096;
+	if (f < lowest_free)
+		lowest_free = f;
+	return f;
 }
+
+/* after a big allocation: the least memory there has been free shows how
+ * close loading came to running out */
+void XBX_NoteFreeMemory(const void *from)
+{
+	size_t f = XBX_FreeMemory();
+	if (memlog && f + (512u << 10) <= logged_free) {
+		char b[96];
+		logged_free = f;
+		snprintf(b, sizeof(b), "xmemlog: %u KB free, from %p\n", (unsigned)(f >> 10), from);
+		XBX_Log(b);
+	}
+}
+
+/* set by -xmem: the size of console being played */
+static size_t sim_total;
 
 /* 64 MB on a retail console, 128 on an upgraded or development one */
 size_t XBX_TotalMemory(void)
 {
+	if (sim_total)
+		return sim_total;
 	MM_STATISTICS ms;
 	ms.Length = sizeof(ms);
 	if (!NT_SUCCESS(MmQueryStatistics(&ms)))
@@ -86,6 +110,20 @@ static size_t heap_bytes(void)
 	return total;
 }
 
+/* xbox_meminfo regions: the committed private regions of 64 KB or more,
+ * to tell malloc's from other users' */
+void XBX_PrintRegions(void)
+{
+	MEMORY_BASIC_INFORMATION mbi;
+	for (uintptr_t a = 0x10000; a < 0x80000000u; a += mbi.RegionSize) {
+		if (!VirtualQuery((void *)a, &mbi, sizeof(mbi)) || !mbi.RegionSize)
+			break;
+		if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && mbi.RegionSize >= 65536)
+			Con_Printf("  region %p: %u KB (allocation base %p)\n", mbi.BaseAddress, (unsigned)(mbi.RegionSize >> 10),
+			           mbi.AllocationBase);
+	}
+}
+
 /* PDCLib's malloc is dlmalloc 2.8.6 over NtAllocateVirtualMemory: 64 KB
  * segments for the heap, requests of 256 KB and more mapped on their own
  * and returned on free, whole free segments released. Its statistics are
@@ -101,8 +139,9 @@ void XBX_PrintMemory(const char *when)
 	ms.Length = sizeof(ms);
 	if (!NT_SUCCESS(MmQueryStatistics(&ms)))
 		return;
-	Con_Printf("memory %s: %u KB free of %u KB (pool %u KB, images %u KB, stacks %u KB, cache %u KB)\n", when,
-	           (unsigned)(ms.AvailablePages * 4), (unsigned)(ms.TotalPhysicalPages * 4), (unsigned)(ms.PoolPagesCommitted * 4),
+	Con_Printf("memory %s: %u KB free (lowest %u KB) of %u KB (pool %u KB, images %u KB, stacks %u KB, cache %u KB)\n",
+	           when, (unsigned)(ms.AvailablePages * 4), (unsigned)(BW_MIN(lowest_free, (size_t)ms.AvailablePages * 4096) >> 10),
+	           (unsigned)(ms.TotalPhysicalPages * 4), (unsigned)(ms.PoolPagesCommitted * 4),
 	           (unsigned)(ms.ImagePagesCommitted * 4), (unsigned)(ms.StackPagesCommitted * 4),
 	           (unsigned)(ms.CachePagesCommitted * 4));
 	struct bwx_mallinfo mi = dlmallinfo();
@@ -188,6 +227,59 @@ static void cpu_bench(void)
 	}
 }
 
+/* the kernel commits and releases memory a page at a time, and gives
+ * committed pages zeroed */
+void *Mem_PageAlloc(size_t size, size_t commit)
+{
+	void *p = VirtualAlloc(NULL, size ? size : 1, MEM_RESERVE, PAGE_READWRITE);
+	commit = commit < size ? commit : size;
+	if (!p || (commit && !VirtualAlloc(p, commit, MEM_COMMIT, PAGE_READWRITE)))
+		Sys_Error("out of memory allocating %u pages", (unsigned)(commit / 4096));
+	return p;
+}
+
+void Mem_PageFree(void *p)
+{
+	if (p)
+		VirtualFree(p, 0, MEM_RELEASE);
+}
+
+bool Mem_PageCommit(void *p, size_t size) { return !size || VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE); }
+
+void Mem_PageDecommit(void *p, size_t size)
+{
+	if (size)
+		VirtualFree(p, size, MEM_DECOMMIT);
+}
+
+/* -xmem <MB>: play a smaller console on a bigger one. The kernel xemu
+ * boots (Roswell) only starts on 128 MB, so a 64 MB retail console is
+ * tested by committing the difference as memory nobody uses and reporting
+ * the smaller size to the engine. The kernel gives committed pages from
+ * its upper 64 MB first, which titles can't get contiguous memory from,
+ * so what is left looks like a retail console's RAM. -xmemsizes <MB> only
+ * takes the smaller console's settings, to measure what they use. */
+static void limit_memory(unsigned mb, bool hold)
+{
+	size_t total = XBX_TotalMemory(), target = (size_t)mb << 20, held = 0;
+	if (!mb || total <= target)
+		return;
+	size_t want = hold ? total - target : 0;
+	for (size_t chunk = 4u << 20; chunk >= (64u << 10) && held < want;) {
+		size_t n = BW_MIN(chunk, want - held);
+		volatile uint8_t *p = VirtualAlloc(NULL, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		if (!p) {
+			chunk >>= 1;
+			continue;
+		}
+		for (size_t o = 0; o < n; o += 4096)
+			p[o] = 1;
+		held += n;
+	}
+	sim_total = target;
+	Con_Printf("xmem: holding %u KB, playing a %u MB console\n", (unsigned)(held >> 10), mb);
+}
+
 /* words separated by spaces, "quoted" words keep theirs */
 static int split_args(char *s, char **out, int max)
 {
@@ -245,11 +337,19 @@ void Plat_Init(int *argc, char ***argv)
 			cpu_bench();
 		else if (!strcmp(args[i], "-fstest") && i + 1 < n)
 			fs_test(args[++i]);
+		else if (!strcmp(args[i], "-xmem") && i + 1 < n)
+			limit_memory((unsigned)atoi(args[++i]), true);
+		else if (!strcmp(args[i], "-xmemlog"))
+			memlog = true;
+		else if (!strcmp(args[i], "-xmemsizes") && i + 1 < n)
+			limit_memory((unsigned)atoi(args[++i]), false);
 		else
 			args[kept++] = args[i];
 	}
 	n = kept;
 	args[n] = NULL;
+	if (sim_total)
+		Con_Printf("%u KB free after -xmem\n", (unsigned)(XBX_FreeMemory() >> 10));
 	*argc = n;
 	*argv = args;
 	/* LAN games need the network; it starts in the background (DHCP) */

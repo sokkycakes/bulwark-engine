@@ -177,6 +177,7 @@ void QC_BindAutocvars(qcvm_t *vm, int progs);
 void QC_SyncAutocvars(qcvm_t *vm);
 void QC_ExtraFree(qcvm_t *vm);
 void QC_HeapInit(qcvm_t *vm);
+void QC_PrintStringStats(void);
 bool QC_HeapBlockUsed(qcvm_t *vm, size_t ofs, size_t *size);
 const char *QC_ProgsString(qcvm_t *vm, int32_t ofs);
 void QC_MarkHashTables(qcvm_t *vm, void (*mark)(uint32_t value));

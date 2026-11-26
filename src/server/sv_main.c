@@ -42,10 +42,16 @@ static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsi
 static const char *default_maxedicts(void)
 {
 #ifdef BW_XBOX
-	if (XBX_TotalMemory() >= (size_t)96 << 20)
+	if (!BW_SMALL_MEMORY())
 		return "1536";
 #endif
 	return BW_SV_MAXEDICTS;
+}
+
+static void pr_memstats_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	QC_PrintAllMemStats();
 }
 
 /* --- info strings ---------------------------------------------------- */
@@ -1158,6 +1164,7 @@ void SV_Init(void)
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);
+	Cmd_AddD("pr_memstats", pr_memstats_f, "Each QuakeC VM's entity and heap peaks, and the string table");
 	SV_InitCommands();
 	SV_InitSaves();
 	SV_InitCompat();

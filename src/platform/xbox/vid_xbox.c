@@ -110,8 +110,9 @@ static void pad_axis(int slot, int axis, int16_t raw)
 
 static void meminfo_f(int argc, const char **argv)
 {
-	(void)argc, (void)argv;
 	XBX_PrintMemory("now");
+	if (argc > 1 && !strcmp(argv[1], "regions"))
+		XBX_PrintRegions();
 }
 
 bool VID_Init(int width, int height, bool fullscreen)

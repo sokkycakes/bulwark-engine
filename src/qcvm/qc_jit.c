@@ -1667,6 +1667,9 @@ qc_jitfn_t QC_JitCompile(qcvm_t *vm, qcfunc_t *f)
 	const bool callable = f->d.locals <= CALL_MAX_LOCALS;
 	uint32_t *stubat = NULL;
 	uint8_t *code = NULL;
+	/* native code checks entity numbers against max_edicts, not the
+	   backed slots, so they all get their memory now (pr_jit is opt-in) */
+	QC_EdictFields(vm, vm->max_edicts - 1);
 
 	f->jit_failed = true;
 	if (vm->stmt32 || f->builtin || f->d.first_statement <= 0 || n <= 0 || n > MAX_FUNCTION_STATEMENTS)
