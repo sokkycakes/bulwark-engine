@@ -399,6 +399,7 @@ static void call_shape(qcprogs_t *p, qcfunc_t *f)
 		f->getter = 3;
 }
 
+#ifdef QC_JIT
 static int cmp_int(const void *a, const void *b)
 {
 	int x = *(const int *)a, y = *(const int *)b;
@@ -433,6 +434,7 @@ static void function_ends(qcprogs_t *p)
 	}
 	Mem_Free(firsts);
 }
+#endif
 
 static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t size)
 {
@@ -546,7 +548,9 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 		}
 	}
 
+#ifdef QC_JIT
 	function_ends(p);
+#endif
 
 	build_hash(&p->globalhash, p->numglobaldefs, gdef_name, p);
 	build_hash(&p->fieldhash, p->numfielddefs, fdef_name, p);

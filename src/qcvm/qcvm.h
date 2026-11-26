@@ -15,6 +15,16 @@
 
 #include <stdio.h>
 
+/* QuakeC to x86 machine code (qc_jit.h). Native code rounds every float
+ * operation to single precision in SSE, so an i386 build needs SSE math too
+ * or the interpreter's x87 results would differ. QC_NO_JIT builds the
+ * interpreter alone. */
+#if !defined(QC_NO_JIT) && (defined(__GNUC__) || defined(__clang__)) &&                                                   \
+	((defined(__i386__) && defined(__SSE_MATH__) && (defined(BW_XBOX) || defined(__linux__))) ||                          \
+	 (defined(__x86_64__) && defined(__linux__)))
+#define QC_JIT 1
+#endif
+
 typedef int32_t string_t;
 typedef int32_t func_t;
 
@@ -39,9 +49,23 @@ typedef struct {
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
 	int callparms; /* how many parameters a call copies in (see enter_function) */
-	/* 1 or 3: the body is only "return self.field" of that many words,
-	 * which a call can do without a frame; 0 otherwise */
+	/* getter, 1 or 3: the body is only "return self.field" of that many
+	 * words, which a call can do without a frame; 0 otherwise. jit_try:
+	 * pr_jit is on, so a call offers the function to native code. A call
+	 * tests both at once (call_slow), which keeps pr_jit 0 as cheap as an
+	 * interpreter without native code. */
+#ifdef QC_JIT
+	union {
+		struct {
+			uint8_t getter;
+			uint8_t jit_try;
+		};
+		uint16_t call_slow;
+	};
+#else
 	int getter;
+#endif
+#ifdef QC_JIT
 	/* native code (qc_jit.c), once compiled; jit_end is the statement
 	 * after the function's code, where the next function starts */
 	void *jit;
@@ -49,6 +73,7 @@ typedef struct {
 	int jit_end;
 	uint16_t jit_count; /* calls so far, until it is worth compiling */
 	bool jit_failed;
+#endif
 	uint64_t profile; /* statements run in this function while qc_profiling */
 	/* profile_ssqc and friends */
 	uint64_t prof_statements, prof_calls;
@@ -251,12 +276,17 @@ struct qcvm_s {
 	char breakpoint[64];
 	struct qc_watch_s *watch;
 
+#ifdef QC_JIT
 	/* native code (qc_jit.c): its memory, the backward jumps it may still
 	 * take before handing a loop back to the interpreter's runaway check,
-	 * and how deep native calls are nested */
+	 * and how deep native calls are nested. jit_on is pr_jit as it was when
+	 * the outermost QC_Execute began, so the off path costs one test. */
 	struct qc_jitmem_s *jitmem;
 	int32_t jit_budget;
 	int jit_nest;
+	bool jit_on;
+	int jit_progs; /* progs whose functions have jit_try set to jit_on */
+#endif
 
 	/* called as an entity slot is freed, before its fields are cleared */
 	void (*free_hook)(qcvm_t *vm, int e);

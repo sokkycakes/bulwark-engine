@@ -20,11 +20,7 @@
 #include "qcvm.h"
 #include "../common/cvar.h"
 
-/* QC_NO_JIT builds the interpreter alone */
-#if !defined(QC_NO_JIT) && (defined(__GNUC__) || defined(__clang__)) &&                                                   \
-	((defined(__i386__) && (defined(BW_XBOX) || defined(__linux__))) || (defined(__x86_64__) && defined(__linux__)))
-#define QC_JIT 1
-#endif
+/* QC_JIT itself is decided in qcvm.h */
 
 #ifdef QC_JIT
 #ifdef __i386__

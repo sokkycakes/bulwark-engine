@@ -773,7 +773,6 @@ static void emit_call(emit_t *e, int s, const qcstatement_t *st, unsigned op)
 		 * and other indirect calls take this path too. Its entry makes
 		 * the frame (see call_entry): 0 is done, 1 is hooks on (the rest
 		 * of this function is the interpreter's), 2 is not entered */
-		call_args(e, s, argc, h, b, c); /* the slow path redoes this, to the same effect */
 		ldg(e, RAX, a);
 		alurr(e, 0x8b, RDX, RAX);
 		opr(e, 0, 0, 0xc1, 5, RDX); /* shr edx, progs shift */
@@ -791,6 +790,12 @@ static void emit_call(emit_t *e, int s, const qcstatement_t *st, unsigned op)
 		opm(e, 0, 1, 0x8b, RCX, RCX, RAX, 1, (int32_t)offsetof(qcfunc_t, jit_call));
 		opr(e, 0, 1, 0x85, RCX, RCX);
 		slow[nslow++] = jcc32(e, CC_E);
+		/* the arguments only once nothing can take the slow path, which
+		 * copies them itself: a copy run twice differs when b or c
+		 * overlaps the parameters. call_args uses eax, ecx and edx. */
+		b1(e, 0x51); /* push rcx */
+		call_args(e, s, argc, h, b, c);
+		b1(e, 0x59); /* pop rcx */
 		movri(e, RAX, (uint32_t)(s + 1));
 		b1(e, 0xff);
 		b1(e, 0xd1); /* call rcx */

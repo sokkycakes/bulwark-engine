@@ -181,6 +181,12 @@ helps there. `pr_jitstats` shows how many functions each VM has compiled
 and how much code they take, and `pr_jit_map 1` (2: each statement too) prints
 where each one went, so that EIPs sampled with the QEMU monitor can be
 matched to QC functions.
+It is built for the Xbox and for x86 Linux only, and on 32-bit only with
+SSE float maths: native code rounds each float operation as SSE does, which
+x87 code would not match. `-DQC_NO_JIT` leaves it out. With `pr_jit 0` a
+call statement makes the same single test it makes for a field getter, so
+the interpreter costs what it did without the translator (callgrind, 1500
+frames of the 8-bot match: 0.3% fewer instructions in all than before it).
 
 ## Installing on a console
 

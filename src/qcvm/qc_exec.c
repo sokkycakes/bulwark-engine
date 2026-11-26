@@ -354,7 +354,7 @@ static qcfunc_t *call_begin(qcvm_t *vm, const qcstatement_t *st, int s, const ed
  * NULL while the interpreter must run it */
 static inline qc_jitfn_t native_code(qcvm_t *vm, qcfunc_t *f)
 {
-	if (!qc_jit_cvar || !qc_jit_cvar->ivalue || vm->debug_hooks || qc_profiling || vm->jit_nest >= QC_JIT_NEST)
+	if (!vm->jit_on || vm->debug_hooks || qc_profiling || vm->jit_nest >= QC_JIT_NEST)
 		return NULL;
 	if (f->jit)
 		return (qc_jitfn_t)f->jit;
@@ -370,6 +370,39 @@ static inline int run_native(qcvm_t *vm, qc_jitfn_t fn)
 	r = fn(vm);
 	vm->jit_nest--;
 	return r;
+}
+
+/* the interpreter's call into QC function fnum while pr_jit is on: makes
+ * the frame and runs its native code if it has any. Returns the statement
+ * the interpreter carries on from. Out of line, so that run()'s loop is
+ * what it was without native code. */
+static __attribute__((noinline)) int call_native(qcvm_t *vm, int fnum, int ret, int caller)
+{
+	qcfunc_t *f = &vm->functions[fnum];
+	qc_jitfn_t fn;
+	int r;
+	enter_function(vm, fnum, ret, caller);
+	fn = native_code(vm, f);
+	if (!fn)
+		return f->d.first_statement;
+	r = run_native(vm, fn);
+	return r < 0 ? leave_function(vm) : r;
+}
+
+/* at the start of the outermost QC_Execute: pr_jit, and jit_try on every
+ * QC function to match */
+static void update_jit_on(qcvm_t *vm)
+{
+	bool on = qc_jit_cvar && qc_jit_cvar->ivalue;
+	if (on == vm->jit_on && (!on || vm->jit_progs == vm->numprogs))
+		return;
+	vm->jit_on = on;
+	vm->jit_progs = vm->numprogs;
+	for (int i = 0; i < vm->numprogs; i++)
+		for (int k = 0; k < vm->progs[i].numfunctions; k++) {
+			qcfunc_t *f = &vm->progs[i].functions[k];
+			f->jit_try = on && !f->builtin && f->d.first_statement > 0;
+		}
 }
 
 /* run's step: 0 runs on, STEP_ONE runs one plain statement, STEP_FUSED one
@@ -438,6 +471,9 @@ int QC_JIT_CC QC_JitStrEmpty(qcvm_t *vm, int s)
 {
 	return str_empty(vm, vm->globals[vm->statements[s].a].i);
 }
+#define CALL_SLOW(f) ((f)->call_slow)
+#else
+#define CALL_SLOW(f) ((f)->getter)
 #endif
 
 /* Labels as values let every handler end in its own indirect jump, which
@@ -458,8 +494,10 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 #ifdef QC_THREADED
 	/* plaintable runs fused statements one at a time, for the debugger */
 	static const void *optable[QCOP_COUNT], *debugtable[QCOP_COUNT], *plaintable[QCOP_COUNT];
+#ifdef QC_JIT
 	/* step: one statement, then back to the caller (QC_JitStep) */
 	static const void *steptable[QCOP_COUNT];
+#endif
 	const void *const *disp;
 #else
 	bool hooks;
@@ -498,7 +536,9 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 		for (int i = 0; i < QCOP_COUNT; i++) {
 			optable[i] = &&L_unsupported;
 			debugtable[i] = &&L_debug;
+#ifdef QC_JIT
 			steptable[i] = &&L_stepped;
+#endif
 		}
 #define T(x) optable[x] = &&L_##x;
 		T(OP_ADD_F) T(OP_SUB_F) T(OP_MUL_F) T(OP_DIV_F) T(OP_ADD_V) T(OP_SUB_V) T(OP_MUL_V)
@@ -556,7 +596,7 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 #endif
 
 	RELOAD();
-#ifdef QC_THREADED
+#if defined(QC_THREADED) && defined(QC_JIT)
 	if (step) {
 		disp = steptable;
 		st = stmts + s0;
@@ -570,8 +610,10 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 	DISPATCH();
 
 #ifdef QC_THREADED
+#ifdef QC_JIT
 L_stepped:
 	return SINDEX();
+#endif
 L_debug:
 	debug_statement(vm, SINDEX());
 	goto *plaintable[st->op];
@@ -1158,30 +1200,42 @@ dispatch:
 			QC_SwitchProgs(vm, pn);
 		}
 		f = &vm->functions[fnum];
-		/* "return self.field": the frame would only save and restore the
-		 * locals around one load, so do just that */
-		if (f->getter && pn == caller && !(vm->debug_hooks || qc_profiling || qc_tracefilter[0]) &&
-		    vm->depth < QC_MAX_DEPTH) {
-			const qcstatement_t *gs = stmts + f->d.first_statement;
-			int32_t e = G[gs->a].i, fo = G[gs->b].i;
-			uint32_t w = (uint32_t)f->getter;
-			if ((uint32_t)e < es.count && (uint32_t)fo <= es.words - w) {
-				const qcval_t *p = (const qcval_t *)(es.base + ((size_t)(uint32_t)e * es.words + (uint32_t)fo) * 4);
-				qcval_t saved[8], *t = G + gs->c;
-				int locals = f->d.locals, ps = f->d.parm_start;
-				copy_words(saved, G + ps, locals);
-				t[0] = p[0];
-				if (w == 3) {
-					t[1] = p[1];
-					t[2] = p[2];
+		if (CALL_SLOW(f)) {
+			/* "return self.field": the frame would only save and restore
+			 * the locals around one load, so do just that */
+			if (f->getter && pn == caller && !(vm->debug_hooks || qc_profiling || qc_tracefilter[0]) &&
+			    vm->depth < QC_MAX_DEPTH) {
+				const qcstatement_t *gs = stmts + f->d.first_statement;
+				int32_t e = G[gs->a].i, fo = G[gs->b].i;
+				uint32_t w = (uint32_t)f->getter;
+				if ((uint32_t)e < es.count && (uint32_t)fo <= es.words - w) {
+					const qcval_t *p =
+						(const qcval_t *)(es.base + ((size_t)(uint32_t)e * es.words + (uint32_t)fo) * 4);
+					qcval_t saved[8], *t = G + gs->c;
+					int locals = f->d.locals, ps = f->d.parm_start;
+					copy_words(saved, G + ps, locals);
+					t[0] = p[0];
+					if (w == 3) {
+						t[1] = p[1];
+						t[2] = p[2];
+					}
+					G[OFS_RETURN] = t[0];
+					G[OFS_RETURN + 1] = t[1];
+					G[OFS_RETURN + 2] = t[2];
+					copy_words(G + ps, saved, locals);
+					st = stmts + s;
+					NEXT();
 				}
-				G[OFS_RETURN] = t[0];
-				G[OFS_RETURN + 1] = t[1];
-				G[OFS_RETURN + 2] = t[2];
-				copy_words(G + ps, saved, locals);
-				st = stmts + s;
-				NEXT();
 			}
+#ifdef QC_JIT
+			if (f->jit_try) {
+				int r = call_native(vm, fnum, s + 1, caller);
+				RELOAD();
+				CHECK_HOOKS();
+				st = stmts + r;
+				DISPATCH();
+			}
+#endif
 		}
 		if (f->builtin) {
 			vm->extra->calling_builtin = fnum;
@@ -1204,20 +1258,6 @@ dispatch:
 			NEXT();
 		}
 		enter_function(vm, fnum, s + 1, caller);
-#ifdef QC_JIT
-		{
-			qc_jitfn_t fn = native_code(vm, f);
-			if (fn) {
-				int r = run_native(vm, fn);
-				if (r < 0)
-					r = leave_function(vm);
-				RELOAD();
-				CHECK_HOOKS();
-				st = stmts + r;
-				DISPATCH();
-			}
-		}
-#endif
 		RELOAD();
 		CHECK_HOOKS();
 		st = stmts + f->d.first_statement;
@@ -1270,7 +1310,9 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	int oldfunc = vm->xfunction, oldstmt = vm->xstatement;
 	int oldlocals = vm->localstack_used;
 	int oldprogs = vm->curprogs, pn = QC_FUNC_PROGS(fnum);
+#ifdef QC_JIT
 	int oldnest = vm->jit_nest;
+#endif
 	qcfunc_t *f = QC_Function(vm, fnum);
 
 
@@ -1281,7 +1323,10 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	const int idx = QC_FUNC_INDEX(fnum);
 	if (!vm->exec_depth) {
 		QC_SyncAutocvars(vm);
+#ifdef QC_JIT
 		vm->jit_budget = (int32_t)QC_MAX_INSTRUCTIONS;
+		update_jit_on(vm);
+#endif
 	}
 	executing_count++;
 	vm->exec_depth++;
@@ -1298,7 +1343,9 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 		if (vm->curprogs != oldprogs)
 			QC_SwitchProgs(vm, oldprogs);
 		vm->localstack_used = oldlocals;
+#ifdef QC_JIT
 		vm->jit_nest = oldnest;
+#endif
 		vm->xfunction = oldfunc;
 		vm->xstatement = oldstmt;
 		vm->abort_jmp = oldjmp;
