@@ -903,14 +903,19 @@ var QlMenu = (function ()
 		var canReady = playerState === 0 && !!local.hero && !needsHero;
 		var chipX = 468;
 		var joinX = 445;
+		// the game names its arena mode ("mode": duel, freezetag, archstiletto;
+		// "modeName": FREEZE TAG ...); a snapshot without one is Duel's
+		var modeId = String( a.mode || "duel" ).toLowerCase();
+		var isDuel = modeId === "duel";
+		var modeTitle = String( a.modeName || a.mode || "DUEL" ).toUpperCase() + " ARENA";
 
 		scoreInset( 68, 58, 504, 332 );
-		text( "DUEL ARENA", 84, 88, { scale: 0.35, fontSize: 24, color: "#fff" } );
+		text( modeTitle, 84, 88, { scale: 0.35, fontSize: 24, color: "#fff" } );
 		text( String( a.map || "unknown" ).toUpperCase(), 84, 108, { scale: 0.2, fontSize: 16, color: FOCUS } );
 		text( phase, 550, 88, { scale: 0.26, fontSize: 24, align: "right", color: phase === "LIVE" ? "#7dff9a" : FOCUS } );
 		text( String( a.round || "Warmup" ), 550, 108, { scale: 0.18, fontSize: 16, align: "right", color: "#aaa" } );
 
-		text( "CURRENT DUEL", 92, 145, { scale: 0.18, fontSize: 16, color: "#aaa" } );
+		text( isDuel ? "CURRENT DUEL" : "CURRENT MATCH", 92, 145, { scale: 0.18, fontSize: 16, color: "#aaa" } );
 		if ( players.length )
 			players.forEach( function ( n, i ) { text( n, 105, 170 + i * 24, { scale: 0.24, fontSize: 24, color: i ? "#ff8a78" : "#9ecfff" } ); } );
 		else

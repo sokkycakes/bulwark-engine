@@ -326,6 +326,7 @@ void CL_Connect(const char *address)
 		return;
 	}
 	Str_Copy(cl.servername, address, sizeof(cl.servername));
+	Lobby_ClientConnecting(&cl.server);
 	CL_MasterNoteConnect(&cl.server);
 	/* rand() is never seeded, so every client process would pick the same
 	 * qport, and a second game from the same address (two on one PC, or

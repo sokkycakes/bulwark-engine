@@ -131,7 +131,14 @@ the countdown like any other.
   page stays open and asks, and `joinpass:<hex>` joins again with it
   (`close` gives up). The `start` message carries the password, which the
   guest sets as its `password` userinfo before it connects; the server runs
-  with `sv_password` set to it.
+  with `sv_password` set to it. The lobby's password stays while the guest
+  is out of that game, so `reconnect` after a drop still gets in (as in
+  FTE, where the userinfo simply stays). The guest's own `password` comes
+  back as soon as it connects to any other server (the address differs
+  from the one it connected to after `start`; the client's own local game,
+  such as the title's backdrop map, doesn't count, since a local client
+  never needs a password), or the start fails, so the lobby's password is
+  never sent to another server.
 - **Starting** adds `hostname` (the host's name, else "<host>'s server"),
   `sv_password`, `sv_public` and bots to the commands above. Bots use the
   game's own quota, Nuclide's `bot_minClients`: the lobby's players plus the
@@ -143,9 +150,14 @@ the countdown like any other.
   fight it: it gets `bot_minClients -1` and `arena_bots` 1 (any bots) or 0.
   On a listen server these are the host's own cvars: the lobby keeps what
   `hostname`, `sv_password`, `sv_public`, `bot_minClients`, `arena_bots`,
-  `maxplayers`, `sv_playerslots`, `timelimit` and `fraglimit` were and puts
-  them back once that game's server stops (`disconnect`, `killserver`), or
-  when the start fails, so a later console `map` doesn't inherit them.
+  `maxplayers`, `sv_playerslots`, `timelimit`, `fraglimit`, `g_gametype`,
+  `deathmatch`, `coop` and `sv_background` were, and every cvar the mode's
+  start commands set (`set`/`seta`/`sets`/`setu <cvar>`, or `<cvar>
+  <value>`), and puts them back once that game's server stops
+  (`disconnect`, `killserver`), or when the start fails, so a later console
+  `map` doesn't inherit them. A cvar that didn't exist before goes back to
+  its default. The values kept are those from before the first lobby game,
+  however many follow before the server stops.
   A player joining a server that bots fill takes a bot's slot
   (`sv_botsyield`, server side).
 - **Dedicated** (`src/client/cl_dedlaunch.c`): instead of `map`, the host
@@ -156,13 +168,25 @@ the countdown like any other.
   first free port from ded_port>` and `+exec lobby_dedicated.cfg`, its
   standard input from /dev/null, its output in `dedicated.log` beside the
   config, in a session of its own. The host then sets `password`,
-  `rcon_password` and `rcon_address` (so `rcon` reaches the server) and
+  `rcon_password` and `rcon_address` (so `rcon` reaches the server, also
+  after the host drops out of it; all three go back to what they were once
+  the host connects to any other non-local server, or the start fails) and
   connects to 127.0.0.1 on that port straight away (not through the command
   buffer, which a script's `wait` holds), again every 12 s while it isn't in.
   Guests get that port in `start`. If the program exits first, the lobby
   closes with "The dedicated server stopped"; if the game doesn't start in
   30 s the lobby stops the server it launched. The server keeps running when
   the host leaves, as a dedicated server does; `ded_stop` stops it.
+- **The hand-off.** From Start until this client is in the lobby's game
+  (or the start fails, or 90 s pass), the session can already be over
+  (every guest has the address) while the title map still runs and the
+  game loads. The lobby page stays open meanwhile, showing STARTING and
+  "Starting the game..." with only Leave to press; the title page does not
+  come back over it. Leave (`lobby_close`) then abandons the start for this
+  client: it disconnects from the game, stops its own listen server (or a
+  dedicated server no guest has heard of yet), puts back the cvars the
+  lobby set, and only then is the title page back. A dedicated server the
+  guests already have keeps running, as above.
 - **Online without Bulwark Live.** An `online` lobby's host whose Live isn't
   connected gets `warning` ("Online services are not connected in this
   build: this room code works on this network only."), and a room code not

@@ -277,7 +277,7 @@ starts with two pages for the game:
   palette row (0-13) is shown as its colour and left alone until it is
   changed. The hue a slider set is remembered while the colour is grey or
   black, which have no hue of their own. A preview row shows both colours
-  and the tints the game draws from them. The spray is chosen from the
+  and, captioned "In game", the tints the game draws from them. The spray is chosen from the
   images under `logos/` that the renderer can decode (png, jpg, tga, bmp;
   no webp) and that fit a server's user info limit (at most 7680 bytes,
   under FTE's default `sv_userinfo_bytelimit` of 8192) with a preview; choosing one sets
@@ -290,6 +290,11 @@ starts with two pages for the game:
   `cg_viewmodelFov`, `cg_viewmodelFlip`, `cg_viewmodelOffset` and
   `cg_viewmodelPass`, but its client never reads them, so the page leaves
   them out.
+
+The engine's pages keep every row's text inside the panel: a label too
+wide for its room (up to the value column, or the panel's edge on a row
+without a value) is drawn up to 15% smaller, and past that cut short with
+"...". Headers and the footer line work the same way.
 
 A setting a game made with `set` in its default configs is marked to be
 saved once a menu page changes it, as if it had been made with `seta`.

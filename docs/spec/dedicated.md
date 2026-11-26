@@ -48,8 +48,11 @@ A `map` (or `changelevel`, `devmap`, `spmap`, `gamemap`) in steps 1 to 3 is
 held, not run: the last one held starts after the command line, so
 `+set g_gametype freezetag` still applies to the map `server.cfg` names.
 When the command line starts a map itself, the held one is dropped with a
-note ("server.cfg: "map duel_alley" skipped, the command line starts a
-map"), so only one map loads. FTE runs `server.cfg` before the command
+note. That is any map run in step 4: a literal `+map`, or a `map` line in
+a cfg the command line runs (`+exec lobby_dedicated.cfg`, which is how the
+lobby starts its dedicated server). The note reads
+"server.cfg: "map duel_alley" skipped, the command line starts a map",
+and only one map loads. FTE runs `server.cfg` before the command
 line and loads both maps. With no map anywhere the server says how to
 start one and waits.
 
