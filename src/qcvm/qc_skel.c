@@ -197,12 +197,13 @@ static bonemat_t *pose_scratch(int n)
 	return pose;
 }
 
-static void entity_pose(qcvm_t *vm, int ent, skelmodel_t *m, bonemat_t *out)
+/* bones first..last of the entity's animation pose */
+static void entity_pose(qcvm_t *vm, int ent, skelmodel_t *m, int first, int last, bonemat_t *out)
 {
 	struct fieldcache_s *c = fields(vm);
-	Skel_EntityPose(m, (int)QC_EFloat(vm, ent, c->frame), QC_EFloat(vm, ent, c->frame1time),
-	                (int)QC_EFloat(vm, ent, c->frame2), QC_EFloat(vm, ent, c->frame2time),
-	                QC_EFloat(vm, ent, c->lerpfrac), out);
+	Skel_EntityPoseRange(m, (int)QC_EFloat(vm, ent, c->frame), QC_EFloat(vm, ent, c->frame1time),
+	                     (int)QC_EFloat(vm, ent, c->frame2), QC_EFloat(vm, ent, c->frame2time),
+	                     QC_EFloat(vm, ent, c->lerpfrac), first, last, out);
 }
 
 /* skel_build(skel, ent, modelindex, retainfrac, firstbone, lastbone, addfrac):
@@ -223,12 +224,34 @@ static void bi_skel_build(qcvm_t *vm)
 	first = first <= 0 ? 0 : first - 1;
 	last = last <= 0 ? n - 1 : BW_MIN(last - 1, n - 1);
 	pose = pose_scratch(src->numjoints);
-	entity_pose(vm, ent, src, pose);
-	if (s->absolute)
+	if (s->absolute) {
+		/* every parent is needed */
+		entity_pose(vm, ent, src, 0, src->numjoints - 1, pose);
 		Skel_ToAbsolute(src, pose, pose);
-	for (int b = first; b <= last; b++)
-		for (int k = 0; k < 12; k++)
-			s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
+	} else {
+		/* just the bones it blends in: a player's torso, on its second build */
+		entity_pose(vm, ent, src, first, last, pose);
+	}
+	if (last < first) {
+		/* nothing to blend */
+	} else if (retain == 0 && add == 1) {
+		/* 0 + x * 1 is x, except that -0 comes out +0: done on the bits,
+		   as float maths is slow on the Xbox (an arithmetic result is
+		   never a signalling NaN, which the multiply would have quietened) */
+		size_t words = (size_t)(last - first + 1) * 12;
+		float *d = (float *)(s->bones + first);
+		memcpy(d, pose + first, sizeof(float) * words);
+		for (size_t i = 0; i < words; i++) {
+			uint32_t u;
+			memcpy(&u, d + i, 4);
+			if (u == 0x80000000u)
+				d[i] = 0;
+		}
+	} else {
+		for (int b = first; b <= last; b++)
+			for (int k = 0; k < 12; k++)
+				s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
+	}
 	QC_ReturnFloat(vm, QC_PFLOAT(vm, 0));
 }
 
@@ -418,7 +441,7 @@ static bool entity_bone(qcvm_t *vm, int ent, skelobj_t *s, skelmodel_t *m, int b
 	}
 	if (m && b >= 0 && b < m->numjoints) {
 		bonemat_t *pose = pose_scratch(m->numjoints);
-		entity_pose(vm, ent, m, pose);
+		entity_pose(vm, ent, m, 0, m->numjoints - 1, pose);
 		Skel_ToAbsolute(m, pose, pose);
 		memcpy(out, pose[b], sizeof(bonemat_t));
 		return true;

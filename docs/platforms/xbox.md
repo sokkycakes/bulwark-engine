@@ -362,6 +362,7 @@ The targets are a HUD under 0.2 ms and menus under 1 ms per frame.
 | `gl_xbox_texquality` | 0 | 0 stores world textures at 16 bits (half the memory), 1 keeps 32 |
 | `gl_xbox_mipmaps` | 1 | make mipmaps for textures that ask for them |
 | `gl_xbox_aniso` | 1 | anisotropic filtering of mipmapped textures: 0 off, 1 2x, 2 4x, 3 8x |
+| `gl_xbox_gpuskin` | 1 | lit skinned models whose vertices follow a single bone are posed by a vertex program on the GPU; 0 poses them on the CPU as before |
 | `gl_xbox_stats` | 0 | every 5 s, print the frame rate, frame and wait times, draws, triangles, push buffer use, GPU memory and free memory |
 | `snd_xbox_rate` | 24000 | rate the mixer runs at, 24000 or 48000 |
 | `sv_tickrate` | 30 | server ticks a second (72 on the desktop); players move by their own commands either way |
@@ -410,6 +411,13 @@ desktop:
   command runs in GPU memory the first time they are drawn, which the
   stream calls; streamed indices go inline, 16 bits each where the draw
   allows it.
+- **Skinning:** a lit skinned model with one bone per vertex and at most
+  60 bones (the heroes in Stiletto Proto) is posed on the GPU. Its bone
+  matrices go into the vertex program constants, and the program does the
+  transform, lighting and fog that the fixed-function path does. Its
+  vertices then stay in GPU memory, so the CPU streams nothing for it.
+  Models with blend weights or more bones are still skinned on the CPU.
+  `gl_xbox_gpuskin 0` turns this off.
 - **Command stream:** a ring the CPU writes a frame ahead of the GPU in.
   It is handed to the GPU every 32 KB and before any wait for it, since
   each hand-over flushes the write-combine buffers. `gl_xbox_stats` also
