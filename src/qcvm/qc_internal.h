@@ -32,7 +32,31 @@
 #define QCOP_ADDI_GOTO (OP_NUMOPS + 10)
 /* a whole search loop, for (i = ..; i < n; i++) if (s == table[i].f) */
 #define QCOP_FIND_S (OP_NUMOPS + 11)
-#define QCOP_COUNT (OP_NUMOPS + 12)
+/* more compares, and a one-word field load, whose result only feeds the
+ * IFNOT after them (as QCOP_NEF_IFNOT) */
+#define QCOP_LTIF_IFNOT (OP_NUMOPS + 12)
+#define QCOP_GTF_IFNOT (OP_NUMOPS + 13)
+#define QCOP_LTF_IFNOT (OP_NUMOPS + 14)
+#define QCOP_GEF_IFNOT (OP_NUMOPS + 15)
+#define QCOP_LEF_IFNOT (OP_NUMOPS + 16)
+#define QCOP_ANDF_IFNOT (OP_NUMOPS + 17)
+#define QCOP_ORF_IFNOT (OP_NUMOPS + 18)
+#define QCOP_NEI_IFNOT (OP_NUMOPS + 19)
+#define QCOP_EQI_IFNOT (OP_NUMOPS + 20)
+#define QCOP_ANDI_IFNOT (OP_NUMOPS + 21)
+#define QCOP_NEIF_IFNOT (OP_NUMOPS + 22)
+#define QCOP_NEE_IFNOT (OP_NUMOPS + 23)
+#define QCOP_LOADF_IFNOT (OP_NUMOPS + 24)
+/* a loop over a builtin's results, as Nuclide reads a split string:
+ * for (c = 0; c < n; c += k) if (argv(c) == key) ... */
+#define QCOP_CALL_SCAN (OP_NUMOPS + 25)
+/* QCOP_FIELDS_NEF_IFNOT whose IFNOT skips one statement, as EvaluateEntity
+ * tests each field: if (x != x_net) SetSendFlags(..); x_net = x */
+#define QCOP_FIELD_SYNC (OP_NUMOPS + 26)
+/* a one-word store followed by another, or by a call */
+#define QCOP_STORE_RUN (OP_NUMOPS + 27)
+#define QCOP_STORE_CALL (OP_NUMOPS + 28)
+#define QCOP_COUNT (OP_NUMOPS + 29)
 
 /* the opcode a statement had before the loader fused it */
 static inline unsigned QC_PlainOp(unsigned op)
@@ -48,6 +72,23 @@ static inline unsigned QC_PlainOp(unsigned op)
 	case QCOP_FIELDS_NEF_IFNOT: return OP_LOADF_F;
 	case QCOP_ADDI_GOTO: return OP_ADD_I;
 	case QCOP_FIND_S: return OP_LT_I;
+	case QCOP_LTIF_IFNOT: return OP_LT_IF;
+	case QCOP_GTF_IFNOT: return OP_GT_F;
+	case QCOP_LTF_IFNOT: return OP_LT_F;
+	case QCOP_GEF_IFNOT: return OP_GE_F;
+	case QCOP_LEF_IFNOT: return OP_LE_F;
+	case QCOP_ANDF_IFNOT: return OP_AND_F;
+	case QCOP_ORF_IFNOT: return OP_OR_F;
+	case QCOP_NEI_IFNOT: return OP_NE_I;
+	case QCOP_EQI_IFNOT: return OP_EQ_I;
+	case QCOP_ANDI_IFNOT: return OP_AND_I;
+	case QCOP_NEIF_IFNOT: return OP_NE_IF;
+	case QCOP_NEE_IFNOT: return OP_NE_E;
+	case QCOP_LOADF_IFNOT: return OP_LOADF_F;
+	case QCOP_CALL_SCAN: return OP_LT_IF;
+	case QCOP_FIELD_SYNC: return OP_LOADF_F;
+	case QCOP_STORE_RUN: return OP_STORE_F;
+	case QCOP_STORE_CALL: return OP_STORE_F;
 	default: return op;
 	}
 }

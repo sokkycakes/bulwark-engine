@@ -516,7 +516,7 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 #endif
 #define NEXT() do { st++; DISPATCH(); } while (0)
 /* a relative jump; targets are checked here rather than on every statement */
-#define JUMPBY(off)                                                                                \
+#define JUMPTO(off)                                                                                \
 	do {                                                                                           \
 		int32_t o_ = (off);                                                                        \
 		uintptr_t np_ = (uintptr_t)st + (uintptr_t)(intptr_t)o_ * sizeof(*st);                     \
@@ -525,11 +525,34 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 		if (np_ - (uintptr_t)stmts >= (uintptr_t)nst * sizeof(*st))                                \
 			bad_statement(vm, SINDEX() + o_, 0);                                                   \
 		st = (const qcstatement_t *)np_;                                                           \
-		DISPATCH();                                                                                \
 	} while (0)
+#define JUMPBY(off) do { JUMPTO(off); DISPATCH(); } while (0)
 #define OPS                                                                                        \
 	qcval_t *a = G + st->a, *b = G + st->b, *c = G + st->c;                                        \
 	(void)a, (void)b, (void)c
+#ifdef QC_THREADED
+#define HOOKS_ON() (disp != optable)
+#else
+#define HOOKS_ON() (hooks)
+#endif
+/* a call statement's call to builtin f, once its arguments are in place */
+#define CALL_BUILTIN(f, fnum, caller)                                                              \
+	do {                                                                                           \
+		vm->extra->calling_builtin = (fnum);                                                       \
+		if (vm->profiling) {                                                                       \
+			double t0_ = Sys_Seconds();                                                            \
+			(f)->builtin(vm);                                                                      \
+			(f)->prof_time += Sys_Seconds() - t0_;                                                 \
+			(f)->prof_calls++;                                                                     \
+		} else {                                                                                   \
+			(f)->builtin(vm);                                                                      \
+		}                                                                                          \
+		if (vm->curprogs != (caller))                                                              \
+			QC_SwitchProgs(vm, (caller));                                                          \
+		/* a builtin may have changed a cvar the progs reads as an autocvar */                     \
+		if (vm->autocvar_gen != cvar_generation)                                                   \
+			QC_SyncAutocvars(vm);                                                                  \
+	} while (0)
 
 #ifdef QC_THREADED
 	if (!optable[0]) {
@@ -591,6 +614,10 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 			plaintable[i] = optable[QC_PlainOp((unsigned)i)];
 		T(QCOP_NEF_IFNOT) T(QCOP_EQF_IFNOT) T(QCOP_EQS_IFNOT) T(QCOP_LTI_IFNOT) T(QCOP_BITAND_IFNOTF)
 		T(QCOP_FIELD_COPY) T(QCOP_FIELD_COPYV) T(QCOP_FIELDS_NEF_IFNOT) T(QCOP_ADDI_GOTO) T(QCOP_FIND_S)
+		T(QCOP_LTIF_IFNOT) T(QCOP_GTF_IFNOT) T(QCOP_LTF_IFNOT) T(QCOP_GEF_IFNOT) T(QCOP_LEF_IFNOT)
+		T(QCOP_ANDF_IFNOT) T(QCOP_ORF_IFNOT) T(QCOP_NEI_IFNOT) T(QCOP_EQI_IFNOT) T(QCOP_ANDI_IFNOT)
+		T(QCOP_NEIF_IFNOT) T(QCOP_NEE_IFNOT) T(QCOP_LOADF_IFNOT) T(QCOP_CALL_SCAN) T(QCOP_FIELD_SYNC)
+		T(QCOP_STORE_RUN) T(QCOP_STORE_CALL)
 #undef T
 	}
 #endif
@@ -1038,32 +1065,91 @@ dispatch:
 	OPCODE(QCOP_EQF_IFNOT) FUSED_IFNOT(c->f = feq(a, b))
 	OPCODE(QCOP_EQS_IFNOT) FUSED_IFNOT(c->f = str_eq(vm, a->i, b->i))
 	OPCODE(QCOP_LTI_IFNOT) FUSED_IFNOT(c->i = a->i < b->i)
+	/* one-word stores followed by more of them, or by a call, as a method
+	 * call saves and sets self: the loader checked what follows each */
+	OPCODE(QCOP_STORE_RUN) {
+		do {
+			G[st->b].i = G[st->a].i;
+			st++;
+		} while (st->op == QCOP_STORE_RUN);
+		/* the last of the run: a plain one-word store, or QCOP_STORE_CALL */
+		G[st->b].i = G[st->a].i;
+		if (st->op == QCOP_STORE_CALL) {
+			st++;
+			goto call_statement;
+		}
+		NEXT();
+	}
+	OPCODE(QCOP_STORE_CALL) {
+		G[st->b].i = G[st->a].i;
+		st++;
+		goto call_statement;
+	}
+	OPCODE(QCOP_LTIF_IFNOT) FUSED_IFNOT(c->i = (float)a->i < b->f)
+	OPCODE(QCOP_GTF_IFNOT) FUSED_IFNOT(c->f = a->f > b->f)
+	OPCODE(QCOP_LTF_IFNOT) FUSED_IFNOT(c->f = a->f < b->f)
+	OPCODE(QCOP_GEF_IFNOT) FUSED_IFNOT(c->f = a->f >= b->f)
+	OPCODE(QCOP_LEF_IFNOT) FUSED_IFNOT(c->f = a->f <= b->f)
+	OPCODE(QCOP_ANDF_IFNOT) FUSED_IFNOT(c->f = (ftrue(a) && ftrue(b)))
+	OPCODE(QCOP_ORF_IFNOT) FUSED_IFNOT(c->f = (ftrue(a) || ftrue(b)))
+	OPCODE(QCOP_NEI_IFNOT) FUSED_IFNOT(c->i = a->i != b->i)
+	OPCODE(QCOP_EQI_IFNOT) FUSED_IFNOT(c->i = a->i == b->i)
+	OPCODE(QCOP_ANDI_IFNOT) FUSED_IFNOT(c->i = a->i && b->i)
+	OPCODE(QCOP_NEIF_IFNOT) FUSED_IFNOT(c->i = (float)a->i != b->f)
+	OPCODE(QCOP_NEE_IFNOT) FUSED_IFNOT(c->f = a->i != b->i)
+	OPCODE(QCOP_LOADF_IFNOT) FUSED_IFNOT(c->i = field_ptr(vm, &es, a->i, b->i, 1)->i)
 #undef FUSED_IFNOT
 	OPCODE(QCOP_BITAND_IFNOTF) {
-		OPS;
-		c->f = (float)(f2i(a->f) & f2i(b->f));
-		st++;
-		if (!ftrue(&G[st->a]))
-			JUMPBY(JUMP(st->b));
-		NEXT();
+		/* flag tests come in runs: if (f & A) ..; if (f & B) .. */
+		for (;;) {
+			OPS;
+			c->f = (float)(f2i(a->f) & f2i(b->f));
+			st++;
+			if (!ftrue(&G[st->a]))
+				JUMPTO(JUMP(st->b));
+			else
+				st++;
+			if (st->op != QCOP_BITAND_IFNOTF)
+				break;
+		}
+		DISPATCH();
 	}
 
 	/* --- longer sequences, see QCOP_FIELD_COPY --- */
 #define LOADF1(s) (G[(s)->c].i = field_ptr(vm, &es, G[(s)->a].i, G[(s)->b].i, 1)->i)
-	OPCODE(QCOP_FIELD_COPY) {
-		LOADF1(st);
-		st++;
-		field_ptr(vm, &es, G[st->a].i, G[st->b].i, 1)->i = G[st->c].i;
-		NEXT();
-	}
-	OPCODE(QCOP_FIELD_COPYV) {
-		qcval_t *p = field_ptr(vm, &es, G[st->a].i, G[st->b].i, 3), *v = G + st->c;
-		v[0] = p[0]; v[1] = p[1]; v[2] = p[2];
-		st++;
-		p = field_ptr(vm, &es, G[st->a].i, G[st->b].i, 3);
-		v = G + st->c;
-		p[0] = v[0]; p[1] = v[1]; p[2] = v[2];
-		NEXT();
+	/* runs of field copies and EvaluateEntity's field tests, one after
+	 * another without a dispatch between them */
+	OPCODE(QCOP_FIELD_COPY) OPCODE(QCOP_FIELD_COPYV) OPCODE(QCOP_FIELD_SYNC) {
+		for (;;) {
+			unsigned op = st->op;
+			if (op == QCOP_FIELD_COPY) {
+				LOADF1(st);
+				st++;
+				field_ptr(vm, &es, G[st->a].i, G[st->b].i, 1)->i = G[st->c].i;
+				st++;
+			} else if (op == QCOP_FIELD_SYNC) {
+				LOADF1(st);
+				LOADF1(st + 1);
+				G[st[2].c].f = !feq(G + st[2].a, G + st[2].b);
+				/* changed: on to the statement the IFNOT skips */
+				if (G[st[3].a].i) {
+					st += 4;
+					break;
+				}
+				st += 5;
+			} else if (op == QCOP_FIELD_COPYV) {
+				qcval_t *p = field_ptr(vm, &es, G[st->a].i, G[st->b].i, 3), *v = G + st->c;
+				v[0] = p[0]; v[1] = p[1]; v[2] = p[2];
+				st++;
+				p = field_ptr(vm, &es, G[st->a].i, G[st->b].i, 3);
+				v = G + st->c;
+				p[0] = v[0]; p[1] = v[1]; p[2] = v[2];
+				st++;
+			} else {
+				break;
+			}
+		}
+		DISPATCH();
 	}
 	OPCODE(QCOP_FIELDS_NEF_IFNOT) {
 		LOADF1(st);
@@ -1109,6 +1195,53 @@ dispatch:
 				runaway(vm, (int)(step + 1 - stmts));
 		}
 	}
+	OPCODE(QCOP_CALL_SCAN) {
+		/* 0 LT_IF, 1 IFNOT out of the loop, 2 CONV_IF, 3 CALL1H, 4 EQ_S,
+		 * 5 IFNOT to the step, which is an ADD_I and a GOTO back to 0; the
+		 * loader checked where the jumps go. A call to a builtin of the
+		 * running progs is made here as the call handler makes it; any
+		 * other call goes to that handler. */
+		const int i0 = SINDEX();
+		for (;;) {
+			const qcstatement_t *s0 = stmts + i0, *cs = s0 + 3, *step;
+			int target, fnum, caller = vm->curprogs;
+			qcfunc_t *f;
+			G[s0[0].c].i = (float)G[s0[0].a].i < G[s0[0].b].f;
+			if (!G[s0[1].a].i) {
+				st = s0 + 1;
+				JUMPBY(JUMP(st->b));
+			}
+			G[s0[2].c].f = (float)G[s0[2].a].i;
+			target = G[cs->a].i;
+			fnum = QC_FUNC_INDEX(target);
+			if (QC_FUNC_PROGS(target) != caller || (unsigned)fnum - 1u >= (unsigned)vm->numfunctions - 1u ||
+			    !vm->functions[fnum].builtin) {
+				st = cs;
+				DISPATCH();
+			}
+			f = &vm->functions[fnum];
+			vm->argc = 1;
+			copy3(G + OFS_PARM(0), G + cs->b);
+			vm->xstatement = i0 + 3;
+			CALL_BUILTIN(f, fnum, caller);
+			RELOAD();
+			CHECK_HOOKS();
+			s0 = stmts + i0;
+			if (HOOKS_ON()) {
+				st = s0 + 4;
+				DISPATCH();
+			}
+			G[s0[4].c].f = str_eq(vm, G[s0[4].a].i, G[s0[4].b].i);
+			if (G[s0[5].a].i) {
+				st = s0 + 6;
+				DISPATCH();
+			}
+			step = s0 + 5 + JUMP(s0[5].b);
+			G[step->c].i = (int32_t)((uint32_t)G[step->a].i + (uint32_t)G[step->b].i);
+			if ((looped += 1u - (uint32_t)JUMP(step[1].a)) >= QC_MAX_INSTRUCTIONS)
+				runaway(vm, (int)(step + 1 - stmts));
+		}
+	}
 #undef LOADF1
 
 	OPCODE(OP_SWITCH_F) OPCODE(OP_SWITCH_V) OPCODE(OP_SWITCH_S) OPCODE(OP_SWITCH_E)
@@ -1123,6 +1256,7 @@ dispatch:
 		JUMPBY(JUMP(st->b));
 	}
 	OPCODE(OP_CASE) {
+	L_case:;
 		OPS;
 		bool match;
 		qcval_t sv[3];
@@ -1137,7 +1271,11 @@ dispatch:
 		}
 		if (match)
 			JUMPBY(JUMP(st->b));
-		NEXT();
+		/* a switch tests its cases one after another */
+		st++;
+		if (st->op == OP_CASE && !HOOKS_ON())
+			goto L_case;
+		DISPATCH();
 	}
 	OPCODE(OP_CASERANGE) {
 		OPS;
@@ -1174,7 +1312,8 @@ dispatch:
 	OPCODE(OP_CALL0) OPCODE(OP_CALL1) OPCODE(OP_CALL2) OPCODE(OP_CALL3) OPCODE(OP_CALL4)
 	OPCODE(OP_CALL5) OPCODE(OP_CALL6) OPCODE(OP_CALL7) OPCODE(OP_CALL8)
 	OPCODE(OP_CALL1H) OPCODE(OP_CALL2H) OPCODE(OP_CALL3H) OPCODE(OP_CALL4H)
-	OPCODE(OP_CALL5H) OPCODE(OP_CALL6H) OPCODE(OP_CALL7H) OPCODE(OP_CALL8H) {
+	OPCODE(OP_CALL5H) OPCODE(OP_CALL6H) OPCODE(OP_CALL7H) OPCODE(OP_CALL8H)
+	call_statement: {
 		OPS;
 		int target = a->i, caller = vm->curprogs, s = SINDEX();
 		int fnum = QC_FUNC_INDEX(target), pn = QC_FUNC_PROGS(target);
@@ -1238,20 +1377,7 @@ dispatch:
 #endif
 		}
 		if (f->builtin) {
-			vm->extra->calling_builtin = fnum;
-			if (vm->profiling) {
-				double t0 = Sys_Seconds();
-				f->builtin(vm);
-				f->prof_time += Sys_Seconds() - t0;
-				f->prof_calls++;
-			} else {
-				f->builtin(vm);
-			}
-			if (vm->curprogs != caller)
-				QC_SwitchProgs(vm, caller);
-			/* a builtin may have changed a cvar the progs reads as an autocvar */
-			if (vm->autocvar_gen != cvar_generation)
-				QC_SyncAutocvars(vm);
+			CALL_BUILTIN(f, fnum, caller);
 			RELOAD();
 			CHECK_HOOKS();
 			st = stmts + s;

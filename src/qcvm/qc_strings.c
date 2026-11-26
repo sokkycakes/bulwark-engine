@@ -92,18 +92,26 @@ static void block_free(uint32_t *block)
 
 int QC_LiveStrings(void) { return (int)live; }
 
-const char *QC_GetString(qcvm_t *vm, string_t s)
+/* QC_GetString, inline for the string compares (QC_ProgsString's work too) */
+static inline const char *text_of(qcvm_t *vm, string_t s)
 {
 	uint32_t u = (uint32_t)s;
-	if (!s)
-		return "";
-	if (!(u & QC_STRING_RUNTIME))
-		return QC_ProgsString(vm, s);
+	if (!(u & QC_STRING_RUNTIME)) {
+		int pn = QC_FUNC_PROGS(s);
+		int32_t ofs = QC_FUNC_INDEX(s);
+		const qcprogs_t *p;
+		if (pn >= vm->numprogs)
+			return "";
+		p = &vm->progs[pn];
+		return ofs <= 0 || ofs >= p->stringsize ? "" : p->strings + ofs;
+	}
 	u &= SLOT_MASK;
 	if (!u || u >= nstrs || !strs[u])
 		return "";
 	return strs[u];
 }
+
+const char *QC_GetString(qcvm_t *vm, string_t s) { return text_of(vm, s); }
 
 /* the interpreter's string ==. Two engine strings of different lengths
  * differ, unless QC stored a NUL into one of them. */
@@ -124,8 +132,8 @@ bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b)
 				return lx == ly && x[0] == y[0] && !memcmp(x, y, lx);
 		}
 	}
-	x = QC_GetString(vm, a);
-	y = QC_GetString(vm, b);
+	x = text_of(vm, a);
+	y = text_of(vm, b);
 	return x[0] == y[0] && !strcmp(x, y);
 }
 

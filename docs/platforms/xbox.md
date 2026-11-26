@@ -241,6 +241,25 @@ QC core dumps after a 12000-frame headless match with 8 bots (`pr_seed`,
 from about 10 to 15 fps, with server time from 80 to 55 ms a frame;
 `_run` is still about a sixth of the samples, a quarter of that in calls.
 
+The loader also fuses the other compares (and a one-word field load) with
+the `IFNOT` that tests them, a store followed by more stores or by a call,
+the `argv` loop of `EntityDef_GetKeyValue` with its builtin call, and
+`EvaluateEntity`'s "load two fields, compare, skip one statement" tests,
+and runs of field copies, flag tests and `case` statements go on in one
+handler. A handler that loops never runs a statement the debugger or
+profiler should see, because with hooks on fused statements run as
+their plain statements, one at a time, and a loop over plain `case` statements stops when hooks
+are on. In the 8-bot match this takes a third of the dispatches away
+(377 to 247 million in 3000 frames of both VMs), and a cachegrind branch
+simulation of the 32-bit server shows 18% fewer mispredicted indirect
+jumps and 2% fewer instructions. In xemu the change was within the
+run-to-run noise. On a busy host the QC share of the samples, measured
+against fixed engine work (collision and skeleton code), went from 1.57
+to 1.80 between runs of the same build, because the server runs more
+30 Hz ticks in each slow frame. Most of what xemu spends in `_run` goes
+on the guest memory accesses each statement makes, and fusing does not
+remove those.
+
 `pr_jit 1` runs QC functions as x86 code instead (`src/qcvm/qc_jit.c`),
 once they have been called 64 times. It keeps the interpreter's checks and
 errors, hands anything it has no code for back to the interpreter, and
@@ -249,6 +268,9 @@ gives the same core dumps as the interpreter on 64-bit Linux and on a
 32-bit server runs in about three quarters of the interpreter's time.
 In xemu it does not pay: a match with it on was about as fast as one
 without, or up to a tenth slower, and it takes about 3 MB more memory.
+Sampled in the 8-bot match, QC took 2.07 times the time of the fixed
+engine work with it on and 1.78 to 1.80 times with it off, so it costs
+about 15% more QC time there.
 xemu translates each piece of guest code it jumps into, and looks up a
 jump whose target it can't link directly (a return, or a jump to
 another page) in a 4096-entry cache. The interpreter's few handlers stay
