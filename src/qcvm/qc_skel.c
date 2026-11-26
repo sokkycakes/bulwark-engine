@@ -232,9 +232,26 @@ static void bi_skel_build(qcvm_t *vm)
 		/* just the bones it blends in: a player's torso, on its second build */
 		entity_pose(vm, ent, src, first, last, pose);
 	}
-	for (int b = first; b <= last; b++)
-		for (int k = 0; k < 12; k++)
-			s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
+	if (last < first) {
+		/* nothing to blend */
+	} else if (retain == 0 && add == 1) {
+		/* 0 + x * 1 is x, except that -0 comes out +0: done on the bits,
+		   as float maths is slow on the Xbox (an arithmetic result is
+		   never a signalling NaN, which the multiply would have quietened) */
+		size_t words = (size_t)(last - first + 1) * 12;
+		float *d = (float *)(s->bones + first);
+		memcpy(d, pose + first, sizeof(float) * words);
+		for (size_t i = 0; i < words; i++) {
+			uint32_t u;
+			memcpy(&u, d + i, 4);
+			if (u == 0x80000000u)
+				d[i] = 0;
+		}
+	} else {
+		for (int b = first; b <= last; b++)
+			for (int k = 0; k < 12; k++)
+				s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
+	}
 	QC_ReturnFloat(vm, QC_PFLOAT(vm, 0));
 }
 
