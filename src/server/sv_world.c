@@ -481,7 +481,7 @@ static void area_done(arealist_t *l)
 /* the k'th slot of a list, or past the end: -1 */
 static inline int area_at(const arealist_t *l, int k, int num_edicts)
 {
-	if (!l->a)
+	if (!l->a && !l->ids)
 		return k + 1 < num_edicts ? k + 1 : -1;
 	return k < l->n ? l->ids[k] : -1;
 }
@@ -873,8 +873,15 @@ static void move(const float *start, const float *mins, const float *maxs, const
 		tmax[i] = BW_MAX(start[i], end[i]) + maxs[i] + 1;
 	}
 	arealist_t l = {NULL, NULL, 0};
-	if (onlyent < 0)
+	int only[1];
+	if (onlyent < 0) {
 		area_query(&l, tmin, tmax, true);
+	} else {
+		/* the one entity it may hit, rather than a walk past every slot */
+		l.ids = only;
+		only[0] = onlyent;
+		l.n = onlyent > 0 ? 1 : 0;
+	}
 	for (int k = 0, e; tr->fraction > 0 && (e = area_at(&l, k, cur()->vm->num_edicts)) >= 0; k++) {
 		int solid, owner;
 		float *amin, *amax;
