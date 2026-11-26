@@ -613,7 +613,8 @@ static void physics_toss(int e, int movetype)
 			ang[i] += avel[i] * dt;
 	for (int i = 0; i < 3; i++)
 		end[i] = org[i] + vel[i] * dt;
-	SV_Move(org, ev(e, PF.mins), ev(e, PF.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
+	/* with the water test, for the trace globals the impact below sets */
+	SV_MoveWater(org, ev(e, PF.mins), ev(e, PF.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
 	VectorCopy(tr.endpos, org);
 	SV_LinkEdict(e, true);
 	if (pv->edicts[e].free || tr.fraction == 1)

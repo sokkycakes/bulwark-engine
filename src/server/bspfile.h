@@ -92,6 +92,9 @@ typedef struct {
 	char *entities;
 	cplane_t *planes;
 	int numplanes;
+	/* Q1: per plane 0-2 when its normal is exactly that axis, else 3; then
+	 * numplanes more that are all 3 */
+	uint8_t *planetypes;
 	cbrushside_t *brushsides;
 	int numbrushsides;
 	cbrush_t *brushes;
@@ -122,6 +125,7 @@ typedef struct {
 	bool hl;
 	/* Source BSP (VBSP): loaded into the Q3 structures, see bsp_source.c */
 	bool source;
+	struct bspcache_s *cache; /* BSP_TraceWorld's and BSP_WorldContents', made on first use */
 } bspmap_t;
 
 bspmap_t *BSP_Load(const char *path);
@@ -151,6 +155,14 @@ int BSP_QuakeContentsToBits(int contents);
 void BSP_TraceModel(const bspmap_t *map, int model, const float *origin, const float *start,
                     const float *mins, const float *maxs, const float *end, int mask, bsptrace_t *tr);
 int BSP_PointContents(const bspmap_t *map, int model, const float *origin, const float *p);
+/* The same for the world model (0, not moved), remembering recent answers:
+ * a map never changes once loaded, so the same input bits always give the
+ * same result bits, and bots and resting entities ask the same things tick
+ * after tick. Not thread safe: the main thread's server and client game
+ * only. */
+void BSP_TraceWorld(bspmap_t *map, const float *start, const float *mins, const float *maxs, const float *end,
+                    int mask, bsptrace_t *tr);
+int BSP_WorldContents(bspmap_t *map, const float *p);
 
 /* visibility: the leaf holding p, its cluster's potentially visible set
  * (NULL when everything is visible) and a point-to-point check */
