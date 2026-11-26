@@ -475,6 +475,7 @@ typedef struct {
 } lookup_t;
 static lookup_t lookups[LOOKUPS];
 static int numlookups, lookupgen = -1;
+static unsigned lookupwrites; /* FS_NoteWrite calls, under the lock */
 static volatile int lookuplock; /* a worker thread may load files too */
 
 static void lookup_lock(void)
@@ -504,21 +505,30 @@ static lookup_t *lookup_slot(const char *path)
 	return &lookups[i];
 }
 
-/* true with *where set when path has been looked up already */
-static bool lookup_find(const char *path, const char **where)
+/* true with *where set when path has been looked up already; *stamp tells
+ * lookup_add whether a write or search path change came in between */
+static bool lookup_find(const char *path, const char **where, unsigned *stamp)
 {
 	lookup_lock();
 	lookup_t *l = lookup_slot(path);
 	bool found = l->path != NULL;
 	if (found)
 		*where = l->where;
+	if (stamp)
+		*stamp = lookupwrites;
 	lookup_unlock();
 	return found;
 }
 
-static void lookup_add(const char *path, const char *where)
+static void lookup_add(const char *path, const char *where, unsigned stamp)
 {
 	lookup_lock();
+	/* the answer may be stale if a file was written, or the search path
+	 * changed, while it was being looked up */
+	if (stamp != lookupwrites || lookupgen != fs_generation) {
+		lookup_unlock();
+		return;
+	}
 	if (numlookups >= LOOKUPS * 3 / 4)
 		forget_lookups();
 	lookup_t *l = lookup_slot(path);
@@ -534,6 +544,7 @@ void FS_NoteWrite(void)
 {
 	lookup_lock();
 	lookupgen = -1;
+	lookupwrites++;
 	lookup_unlock();
 }
 #else
@@ -548,7 +559,7 @@ char *FS_LoadFile(const char *path, size_t *len)
 #ifdef BW_XBOX
 	{
 		const char *where;
-		if (lookup_find(path, &where) && !where)
+		if (lookup_find(path, &where, NULL) && !where)
 			return NULL; /* known to be missing */
 	}
 #endif
@@ -603,11 +614,12 @@ const char *FS_WhichPath(const char *path)
 {
 #ifdef BW_XBOX
 	const char *where;
-	if (lookup_find(path, &where))
+	unsigned stamp;
+	if (lookup_find(path, &where, &stamp))
 		return where;
 	where = which_path(path);
 	if (FS_SafeName(path))
-		lookup_add(path, where);
+		lookup_add(path, where, stamp);
 	return where;
 #else
 	return which_path(path);

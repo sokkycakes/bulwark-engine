@@ -29,7 +29,7 @@ bool FS_FileExists(const char *path);
 /* name of the search path that provides path, or NULL */
 const char *FS_WhichPath(const char *path);
 /* a file may have been created, written or removed: forgets the lookups
- * the Xbox keeps (called by its fopen, remove, rename and mkdir) */
+ * the Xbox keeps (called by its fopen for writing, remove and rename) */
 void FS_NoteWrite(void);
 /* index of the game directory that provides path (0 is the base game), or
  * -1 if none does */

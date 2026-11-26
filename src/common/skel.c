@@ -519,7 +519,8 @@ void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t 
 	int f0, f1;
 	float t;
 	if (!m->numframes || group < 0 || group >= m->numanims) {
-		memcpy(out, m->baserel, sizeof(bonemat_t) * m->numjoints);
+		if (m->numjoints) /* baserel is NULL without a skeleton */
+			memcpy(out, m->baserel, sizeof(bonemat_t) * m->numjoints);
 		return;
 	}
 	g = &m->anims[group];
