@@ -33,6 +33,21 @@ static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsi
 #define SV_MAXTICKS_DEFAULT "0"
 #endif
 
+/* Stiletto (Nuclide's FindXRInput) never frees the three NSXRInput
+ * entities it makes each time a player spawns as a hero, about 20 a minute
+ * with 8 bots, so 768 slots fill in 15-20 minutes and the match stops with
+ * "no free entities". A slot costs about 5 KB, so a console with 128 MB
+ * takes twice as many (4 MB more, a match of 45 minutes or longer); a
+ * 64 MB one keeps 768. See docs/platforms/xbox.md "In-match benchmark". */
+static const char *default_maxedicts(void)
+{
+#ifdef BW_XBOX
+	if (XBX_TotalMemory() >= (size_t)96 << 20)
+		return "1536";
+#endif
+	return BW_SV_MAXEDICTS;
+}
+
 /* --- info strings ---------------------------------------------------- */
 
 const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outsize)
@@ -1130,7 +1145,7 @@ void SV_Init(void)
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
-	pr_maxedicts = Cvar_Get("pr_maxedicts", BW_SV_MAXEDICTS, 0, "Entity slots in the server game");
+	pr_maxedicts = Cvar_Get("pr_maxedicts", default_maxedicts(), 0, "Entity slots in the server game");
 	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
 	sv_tickrate = Cvar_Get("sv_tickrate", SV_TICKRATE_DEFAULT, 0, "Server frames per second");
 	sv_maxticks = Cvar_Get("sv_maxticks", SV_MAXTICKS_DEFAULT, 0,

@@ -165,6 +165,7 @@ void XBX_PrintMemory(const char *when);
 void XBX_Log(const char *text);
 void XBX_FatalScreen(const char *text);
 size_t XBX_FreeMemory(void);
+size_t XBX_TotalMemory(void);
 
 #ifdef __cplusplus
 }

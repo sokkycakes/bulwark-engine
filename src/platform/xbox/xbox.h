@@ -23,5 +23,6 @@ bool XBGL_SkinBones(const float (*bones)[12], int n);
 /* sys_xbox.c */
 void XBX_PrintMemory(const char *when);
 size_t XBX_FreeMemory(void);
+size_t XBX_TotalMemory(void);
 
 #endif

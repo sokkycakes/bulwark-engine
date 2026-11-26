@@ -60,6 +60,16 @@ size_t XBX_FreeMemory(void)
 	return (size_t)ms.AvailablePages * 4096;
 }
 
+/* 64 MB on a retail console, 128 on an upgraded or development one */
+size_t XBX_TotalMemory(void)
+{
+	MM_STATISTICS ms;
+	ms.Length = sizeof(ms);
+	if (!NT_SUCCESS(MmQueryStatistics(&ms)))
+		return 0;
+	return (size_t)ms.TotalPhysicalPages * 4096;
+}
+
 /* what malloc has taken from the kernel: PDCLib grows its heap with
  * NtAllocateVirtualMemory, so this is the virtual memory the title holds
  * outside its image and the GPU's contiguous blocks */
