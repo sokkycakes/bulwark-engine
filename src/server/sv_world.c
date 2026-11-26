@@ -69,7 +69,8 @@ static inline float *evec(int e, int ofs) { return ofs < 0 ? NULL : &QC_EdictFie
  * in xemu). A NaN, which fails every float compare, becomes the key that
  * fails the one compare made on that side of a box, so it overlaps
  * everything there as before. */
-#define TREE_DEPTH 5
+/* 6 visits a sixth fewer slots per query than 5; deeper walks more nodes than it saves */
+#define TREE_DEPTH 6
 #define TREE_NODES ((2 << TREE_DEPTH) - 1)
 
 /* a float's bits; a union, as nxdk builds without builtin memcpy */
@@ -91,6 +92,8 @@ static inline uint32_t fkey(float f)
 }
 
 static inline bool fnan(float f) { return f != f; }
+/* the same on the bits, without a float compare */
+static inline bool fnan_bits(float f) { return (fbits(f) & 0x7fffffffu) > 0x7f800000u; }
 
 /* a box's low side: a NaN there is never above anything */
 static inline uint32_t fkey_lo(float f) { return fnan(f) ? 0 : fkey(f); }
@@ -323,7 +326,7 @@ static void area_query(arealist_t *l, const float *lo, const float *hi, bool sor
 	l->n = 0;
 	l->ids = NULL;
 	for (int i = 0; i < 3 && a; i++)
-		if (lo[i] != lo[i] || hi[i] != hi[i])
+		if (fnan_bits(lo[i]) || fnan_bits(hi[i]))
 			a = NULL; /* NaN boxes overlap everything */
 	if (!a)
 		return;
