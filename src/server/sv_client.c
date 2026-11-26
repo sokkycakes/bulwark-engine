@@ -182,6 +182,22 @@ static void client_print(client_t *c, int level, const char *text)
 	client_reliable(c, &m);
 }
 
+/* The server's own copy of a print that also goes to every player. On a
+ * listen server the host's loopback client prints what it is sent into this
+ * same console, so the server copy is left out while that client is in the
+ * game and will get it: the host sees each line once, as on FTE. A dedicated
+ * server always prints it. */
+static void server_echo(const char *text)
+{
+	if (!sv_dedicated)
+		for (int i = 0; i < svs.maxclients; i++) {
+			const client_t *c = &svs.clients[i];
+			if (c->state == CS_SPAWNED && !c->bot && !is_seat(c) && c->chan.remote.type == NA_LOOPBACK &&
+			    (!sv_chat_only || c == sv_chat_only))
+				return;
+		}
+	Con_Print(text);
+}
 
 void SV_ClientPrint(client_t *c, int level, const char *text) { client_print(c, level, text); }
 
@@ -208,7 +224,7 @@ void SV_BroadcastPrint(int level, const char *text)
 	for (int i = 0; i < svs.maxclients; i++)
 		if (svs.clients[i].state == CS_SPAWNED && !is_seat(&svs.clients[i]))
 			client_print(&svs.clients[i], level, text);
-	Con_Print(text);
+	server_echo(text);
 }
 
 void SV_SetPaused(bool paused)
@@ -277,6 +293,11 @@ static void set_playerkey(client_t *c, const char *key, const char *value, bool 
 	SV_InfoSet(c->userinfo, sizeof(c->userinfo), key, value);
 	if (!strcmp(key, "name")) {
 		Str_Copy(c->name, value, sizeof(c->name));
+		/* the game reads names from .netname: keep it in step with every
+		 * rename, the game's own (forceinfokey, as bots get their profile
+		 * names) as well as the player's, as FTE does */
+		if (sv.vm && c->edict > 0 && F.netname >= 0)
+			QC_EdictFields(sv.vm, c->edict)[F.netname].i = QC_NewString(sv.vm, c->name);
 		SV_AdminRenamed(c, old);
 	}
 	if (broadcast)
@@ -284,6 +305,18 @@ static void set_playerkey(client_t *c, const char *key, const char *value, bool 
 }
 
 void SV_SetPlayerKey(client_t *c, const char *key, const char *value, bool broadcast) { set_playerkey(c, key, value, broadcast); }
+
+/* A rename the player asked for (setinfo or the name command) is announced to
+ * everyone once they are in the game, as on FTE. Renames by the game itself
+ * (forceinfokey) are not. */
+static void player_rename(client_t *c, const char *name)
+{
+	char old[64];
+	Str_Copy(old, c->name, sizeof(old));
+	set_playerkey(c, "name", name, true);
+	if (old[0] && strcmp(old, c->name) && c->state == CS_SPAWNED && !c->spectator)
+		SV_BroadcastPrint(2, va("%s changed their name to %s\n", old, c->name));
+}
 
 /* --- entity send state ------------------------------------------------- */
 
@@ -1524,7 +1557,10 @@ static void parse_stringcmd(client_t *c, const char *s)
 		 * passed on; '*' keys belong to the server */
 		if (!strcmp(t->argv[1], "password") || !strcmp(t->argv[1], "spectator") || t->argv[1][0] == '*')
 			goto done;
-		set_playerkey(c, t->argv[1], t->argv[2], true);
+		if (!strcmp(t->argv[1], "name"))
+			player_rename(c, t->argv[2]);
+		else
+			set_playerkey(c, t->argv[1], t->argv[2], true);
 		if (!strcmp(t->argv[1], "cl_updaterate"))
 			c->updaterate = (float)atof(t->argv[2]);
 		else if (!strcmp(t->argv[1], "rate")) {
@@ -1587,14 +1623,14 @@ static void execute_clientcommand(client_t *c, const char *s)
 		for (int i = 0; i < svs.maxclients; i++)
 			if (svs.clients[i].state == CS_SPAWNED && !is_seat(&svs.clients[i]))
 				client_print(&svs.clients[i], 3, text);
-		Con_Print(text);
+		server_echo(text);
 	} else if (!strcmp(t->argv[0], "kill")) {
 		if (QC_FindFunction(sv.vm, "ClientKill")) {
 			QC_SetGInt(sv.vm, G.self, c->edict);
 			QC_ExecuteByName(sv.vm, "ClientKill");
 		}
 	} else if (!strcmp(t->argv[0], "name") && t->argc > 1) {
-		set_playerkey(c, "name", t->argv[1], true);
+		player_rename(c, t->argv[1]);
 	} else if (!strcmp(t->argv[0], "pause")) {
 		if (!SV_RequestPause(c->edict, !sv.paused))
 			client_print(c, 2, "Pausing isn't allowed now.\n");
@@ -2063,7 +2099,7 @@ static void bi_bprint(qcvm_t *vm)
 	char text[4096];
 	int level = (int)QC_PFLOAT(vm, 0);
 	concat_from(vm, 1, text, sizeof(text));
-	Con_Print(text);
+	server_echo(text);
 	for (int i = 0; i < svs.maxclients; i++)
 		if (svs.clients[i].state == CS_SPAWNED)
 			client_print(&svs.clients[i], level, text);
@@ -2435,7 +2471,7 @@ bool SV_ConsoleSay(const char *msg)
 	if (!sv.active)
 		return false;
 	snprintf(text, sizeof(text), "console: %s\n", msg);
-	Con_Print(text);
+	server_echo(text);
 	for (int i = 0; i < svs.maxclients; i++)
 		if (svs.clients[i].state == CS_SPAWNED)
 			client_print(&svs.clients[i], 3, text);
@@ -2446,7 +2482,7 @@ static void SV_Say_f(int argc, const char **argv)
 {
 	char text[1024];
 	snprintf(text, sizeof(text), "console: %s\n", Cmd_Args());
-	Con_Print(text);
+	server_echo(text);
 	for (int i = 0; i < svs.maxclients; i++)
 		if (svs.clients[i].state == CS_SPAWNED)
 			client_print(&svs.clients[i], 3, text);
