@@ -130,7 +130,9 @@ static void console_input(void)
  * does), then server.cfg, then the command line. A map that the configs or
  * server.cfg start is held until the command line has run, so +set on the
  * command line still applies to it; when the command line starts a map of
- * its own, the held one is dropped and only one map loads. */
+ * its own, the held one is dropped and only one map loads. That counts any
+ * map run after server.cfg and before the held one is released: a literal
+ * +map, or a map inside a cfg the command line execs ("+exec lobby.cfg"). */
 static bool holding_maps, cmdline_has_map;
 static char held_map[CON_LINE];
 
@@ -166,6 +168,10 @@ static bool DedPreHook(const char *line, int argc, const char **argv)
 		Con_DPrintf("start-up: \"%s\" held until the command line has run\n", line);
 		return true;
 	}
+	/* the command line's own map, however it got there (+map, or a map
+	 * line in an +exec'd cfg): server.cfg's held map is dropped */
+	if (!holding_maps && held_map[0] && argc > 1 && starts_map(argv[0]))
+		cmdline_has_map = true;
 	return SV_ConsoleCommand(line);
 }
 
