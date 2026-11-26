@@ -136,7 +136,8 @@ typedef struct area_s {
 	 * slots whose filed boxes meet cache_lo..cache_hi, in slot order. A
 	 * query inside that box at the same generation takes its slots from
 	 * this list by the walk's own test (the bots' traces come in fans from
-	 * one spot, with nothing moved between them). */
+	 * one spot, with nothing moved between them). cache_ids holds up to
+	 * max_edicts slots: 4 bytes per edict per area tree. */
 	uint32_t cache_gen;
 	bool cache_valid;
 	uint32_t cache_lo[3], cache_hi[3];
