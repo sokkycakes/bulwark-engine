@@ -87,10 +87,12 @@ update (the same idea as Source's).
 
 A print sent to every player (QC `bprint`, chat, `say` from the server
 console, "game paused") goes out as `svc_print`. A dedicated server also
-prints its own copy on its console. A listen server leaves its own copy out
-while the host's loopback client is in the game, since that client prints
-the `svc_print` into the same console: the host sees each line once, as on
-FTE.
+prints its own copy on its console. A listen server keeps its own copy out
+of the console while the host's loopback client is in the game, since that
+client prints the `svc_print` into the same console: the host sees each line
+once, as on FTE. As on FTE, the server copy still goes to stdout and the
+console log, so a listen host's terminal and log may show a line twice (the
+server's copy and the client's).
 
 A player's name lives in the `name` user info key. Every change to it, the
 player's own (`setinfo name`, the `name` command) or the game's
@@ -98,7 +100,12 @@ player's own (`setinfo name`, the `name` command) or the game's
 rewrites the player entity's `.netname`, which is what the game reads for
 the HUD, obituaries and its serverinfo keys. A rename the player asked for
 is announced once they are in the game ("X changed their name to Y"), as
-FTE does; a rename by the game is not.
+FTE does; a rename by the game is not. As on FTE, a player who has a name
+may not change it while muted or stealthmuted ("Muted players may not change
+their names", not shown to a stealthmuted player), and a seventh rename
+within five seconds of the first is refused and mutes them for five minutes
+("Muted for name spam"; not counted while paused). Renames by the game are
+never refused.
 
 ### serverdata
 

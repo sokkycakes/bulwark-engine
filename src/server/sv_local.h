@@ -146,6 +146,8 @@ typedef struct client_s {
 	double chat_times[16];  /* recent chat, for flood protection */
 	int chat_head;
 	double silenced_until;
+	double rename_since;    /* start of the current burst of renames, for name spam */
+	int rename_count;
 	uint8_t stattype[MAX_CL_STATS]; /* what the client was last sent (sv_stats.c), 0 none */
 	uint32_t statval[MAX_CL_STATS];
 	char *statstr[MAX_CL_STATS];
@@ -245,6 +247,9 @@ void SV_InitLiveSets(void);
 void SV_LiveNoteDrop(const client_t *c, const char *reason);
 void SV_InitRoutes(void);
 int SV_Penalties(const client_t *c);
+/* a penalty for minutes (0: until the server stops); the player is told,
+ * unless it is a stealthmute */
+void SV_AdminAddPenalty(client_t *c, int kind, double minutes, const char *reason);
 void SV_AdminFilterMove(client_t *c, usercmd_t *cmd);
 int SV_AdminFilterChat(client_t *c);
 bool SV_AdminCheckConnect(const char *userinfo, char *why, size_t whysize);

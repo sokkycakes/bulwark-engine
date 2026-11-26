@@ -184,17 +184,21 @@ static void client_print(client_t *c, int level, const char *text)
 
 /* The server's own copy of a print that also goes to every player. On a
  * listen server the host's loopback client prints what it is sent into this
- * same console, so the server copy is left out while that client is in the
- * game and will get it: the host sees each line once, as on FTE. A dedicated
- * server always prints it. */
+ * same console, so while that client is in the game and will get it the
+ * server copy goes only to stdout and the console log, not the console
+ * itself: the host sees each line once in the console, as on FTE, and the
+ * terminal and log keep every line even when the client game doesn't print
+ * it. A dedicated server always prints it. */
 static void server_echo(const char *text)
 {
 	if (!sv_dedicated)
 		for (int i = 0; i < svs.maxclients; i++) {
 			const client_t *c = &svs.clients[i];
 			if (c->state == CS_SPAWNED && !c->bot && !is_seat(c) && c->chan.remote.type == NA_LOOPBACK &&
-			    (!sv_chat_only || c == sv_chat_only))
+			    (!sv_chat_only || c == sv_chat_only)) {
+				Con_PrintOutside(text);
 				return;
+			}
 		}
 	Con_Print(text);
 }
@@ -308,10 +312,31 @@ void SV_SetPlayerKey(client_t *c, const char *key, const char *value, bool broad
 
 /* A rename the player asked for (setinfo or the name command) is announced to
  * everyone once they are in the game, as on FTE. Renames by the game itself
- * (forceinfokey) are not. */
+ * (forceinfokey) are not, and are never refused. As on FTE, a player who
+ * already has a name may not change it while muted (a stealthmuted one isn't
+ * told), and a seventh rename within five seconds of the first is refused
+ * and mutes them for five minutes for name spam. */
 static void player_rename(client_t *c, const char *name)
 {
 	char old[64];
+	if (c->name[0] && strcmp(name, c->name)) {
+		int p = SV_Penalties(c);
+		double now = Sys_Seconds();
+		if (p & (PEN_MUTE | PEN_STEALTH)) {
+			if (!(p & PEN_STEALTH))
+				client_print(c, 2, "Muted players may not change their names\n");
+			return;
+		}
+		if (!sv.paused) {
+			if (!c->rename_since || now - c->rename_since > 5) {
+				c->rename_since = now;
+				c->rename_count = 0;
+			} else if (c->rename_count++ > 4) {
+				SV_AdminAddPenalty(c, PEN_KIND_MUTE, 5, "Muted for name spam");
+				return;
+			}
+		}
+	}
 	Str_Copy(old, c->name, sizeof(old));
 	set_playerkey(c, "name", name, true);
 	if (old[0] && strcmp(old, c->name) && c->state == CS_SPAWNED && !c->spectator)

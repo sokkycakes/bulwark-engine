@@ -82,6 +82,15 @@ static void fputs_plain(const char *s, FILE *f)
 	fputs(out, f);
 }
 
+static void print_stdout(const char *text)
+{
+	if (con_plain_stdout && strchr(text, '^'))
+		fputs_plain(text, stdout);
+	else
+		fputs(text, stdout);
+	fflush(stdout);
+}
+
 void Con_Print(const char *text)
 {
 	if (con_hook)
@@ -90,11 +99,14 @@ void Con_Print(const char *text)
 		con_log_hook(text);
 	if (con_redirect)
 		SB_AppendStr(con_redirect, text);
-	if (con_plain_stdout && strchr(text, '^'))
-		fputs_plain(text, stdout);
-	else
-		fputs(text, stdout);
-	fflush(stdout);
+	print_stdout(text);
+}
+
+void Con_PrintOutside(const char *text)
+{
+	if (con_log_hook)
+		con_log_hook(text);
+	print_stdout(text);
 }
 
 void Con_Printf(const char *fmt, ...)

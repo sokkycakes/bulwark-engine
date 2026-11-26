@@ -743,7 +743,7 @@ held and the matching `-` command when it's let go.
 | `music_fforward` | music_fforward [seconds]: skip ahead in the music (10 seconds) |
 | `music_next` | Play the next track of the playlist |
 | `music_rewind` | music_rewind [seconds]: go back in the music (10 seconds) |
-| `mute` | mute <player> [minutes] [reason]: no chat (0 minutes lifts it) |
+| `mute` | mute <player> [minutes] [reason]: no chat and no renames (0 minutes lifts it) |
 | `mvdcancel` | Stop the server demo and delete it |
 | `mvdlist` | mvdlist [filter]: list the server demos |
 | `mvdrecord` | mvdrecord <name>: record every player's view to demos/<name>.mvd |
@@ -941,7 +941,7 @@ held and the matching `-` command when it's let go.
 | `sqlstatus` | The database drivers and the server's open connections |
 | `startdemos` | startdemos <demo1> [demo2...]: play demos in a loop |
 | `status` | The map, time and entity counts |
-| `stealthmute` | stealthmute <player> [minutes]: their chat only reaches themselves, and they aren't told |
+| `stealthmute` | stealthmute <player> [minutes]: their chat only reaches themselves, their renames are refused, and they aren't told |
 | `stop` | Stop recording (or playing) a demo |
 | `stopdemo` | Stop the demo playing |
 | `stopmusic` | Stop the music |

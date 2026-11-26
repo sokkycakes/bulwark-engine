@@ -67,6 +67,9 @@ void Con_SetPlainStdout(bool plain);
 void Con_Printf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_DPrintf(const char *fmt, ...) BW_PRINTF(1, 2);
 void Con_Print(const char *text);
+/* to stdout and the console log only: not the in-game console's scrollback
+ * nor an rcon redirect */
+void Con_PrintOutside(const char *text);
 extern int developer;
 
 BW_NORETURN void Sys_Error(const char *fmt, ...) BW_PRINTF(1, 2);
