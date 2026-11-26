@@ -423,6 +423,8 @@ void WC_Frame(void)
 	wc.prevspawn = cl.spawncount;
 	wc.prevstate = cl.state;
 	/* a real game took over: title and lobby pages give way */
+	if (in_game())
+		Lobby_GameArrived();
 	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE))
 		close_menu();
 	/* the set view seats players and picks heroes: no arena menu over it */
@@ -437,10 +439,13 @@ void WC_Frame(void)
 			Con_SetActive(false);
 		}
 	}
-	/* the lobby ended without a game: back to the title */
-	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && !Lobby_AskingPassword() && idle())
+	/* the lobby ended without a game: back to the title. A session that
+	 * handed its game out is over too, while this client still runs the
+	 * backdrop and the game loads: the lobby page stays until it is up. */
+	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && !Lobby_AskingPassword() && !Lobby_GameStarting() && idle())
 		open_title();
-	if (wc.title_pending && !wc.menu && idle() && !Lobby_Active() && menus_enabled() && wc.startup_done) {
+	if (wc.title_pending && !wc.menu && idle() && !Lobby_Active() && !Lobby_GameStarting() && menus_enabled() &&
+	    wc.startup_done) {
 		wc.title_pending = false;
 		/* the console the engine shows when nothing else is up gives way */
 		if (open_title())

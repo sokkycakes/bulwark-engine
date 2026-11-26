@@ -28,6 +28,12 @@ bool Lobby_Active(void); /* a session exists (any phase but IDLE) */
 /* a host turned this guest away for its password: the lobby page asks for
  * it (joinpass:) and stays open meanwhile */
 bool Lobby_AskingPassword(void);
+/* a lobby game is on its way to this client (from Start until it is in
+ * that game, or the start fails): the title page stays shut meanwhile,
+ * though the session itself may already be over */
+bool Lobby_GameStarting(void);
+/* this client is in a real game: the hand-off is done */
+void Lobby_GameArrived(void);
 
 /* the WebCore bridge requests: getlobby, getlobbychat, lobby_action:<a>,
  * hostcache_refresh, gethostcache; false for other requests */
