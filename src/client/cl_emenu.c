@@ -621,7 +621,6 @@ static void draw_slider(const item_t *it, float x, float y, float w, float size,
 	R_Text(x + w + size, y, buf, size, sel ? c_sel : c_text, 1);
 }
 
-/* a framed box of a colour */
 /* text in at most maxw: a little smaller first, then cut short with "..."
  * (a row's label stays inside the panel, whatever the screen size) */
 static float text_fit(float x, float y, const char *text, float size, const float *col, float alpha, float maxw)
@@ -634,15 +633,23 @@ static float text_fit(float x, float y, const char *text, float size, const floa
 	if (w * 0.85f <= maxw)
 		return R_Text(x, y + size * (1 - maxw / w) * 0.5f, text, size * maxw / w, col, alpha);
 	Str_Copy(buf, text, sizeof(buf));
-	for (n = strlen(buf); n > 0; n--) {
+	/* room for "..." and its terminator is always kept at the end */
+	n = BW_MIN(strlen(buf), sizeof(buf) - 4);
+	for (;;) {
+		/* never cut inside a UTF-8 character, nor leave spaces before the dots */
+		while (n > 0 && ((unsigned char)buf[n] & 0xC0) == 0x80)
+			n--;
 		while (n > 0 && buf[n - 1] == ' ')
 			n--;
 		memcpy(buf + n, "...", 4);
-		if (R_TextWidth(buf, size) <= maxw)
+		if (n == 0 || R_TextWidth(buf, size) <= maxw)
 			break;
+		n--;
 	}
 	return R_Text(x, y, buf, size, col, alpha);
 }
+
+/* a framed box of a colour */
 
 static void draw_swatch(float x, float y, float w, float h, unsigned int color)
 {
