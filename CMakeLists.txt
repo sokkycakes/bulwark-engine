@@ -257,6 +257,11 @@ if(NOT BULWARK_CONSOLE)
 	add_executable(bsptest tests/bsp/bsptest.c)
 	target_link_libraries(bsptest bwserver)
 	add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+	# seeded random traces; compare two builds' output to prove a collision change exact
+	add_executable(tracefuzz tests/bsp/tracefuzz.c)
+	target_link_libraries(tracefuzz bwserver)
+	add_test(NAME tracefuzz COMMAND sh -c "$<TARGET_FILE:tracefuzz> tests data 20000 maps/q1test.bsp maps/hltest.bsp > /dev/null"
+	         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 	add_test(NAME bots COMMAND ${CMAKE_SOURCE_DIR}/tests/bots/run.sh $<TARGET_FILE:bulwark-ded>)
 	add_test(NAME uri COMMAND ${CMAKE_SOURCE_DIR}/tests/uri/run.sh $<TARGET_FILE:bulwark-ded>)
 	add_test(NAME scene COMMAND scenetest ${CMAKE_SOURCE_DIR}/tests/scene)
