@@ -980,6 +980,8 @@ static bool page_out_anims(studiocache_t *c)
 			const uint8_t *end = seq_end(m, s, hi);
 			c->animofs[i] = (uint32_t)(s->anim - b);
 			c->animlen[i] = (uint32_t)(end - s->anim);
+			/* Xbox only (and a desktop playing one); the 3DS pages them too */
+#if defined(BW_XBOX) || defined(BW_FORCE_LOWMEM)
 			if (s->activity > 0) {
 				/* idle, walk, run, jump, the deaths: every player plays
 				   them, so they stay rather than be read mid-match */
@@ -988,7 +990,9 @@ static bool page_out_anims(studiocache_t *c)
 				s->anim = d;
 				s->animlimit = d + c->animlen[i];
 				c->animlen[i] = 0;
-			} else {
+			} else
+#endif
+			{
 				s->anim = s->animlimit = NULL;
 			}
 		}

@@ -765,7 +765,8 @@ game computes:
   disc during play.
 - **Decoded animation frames are kept in a cache** of the most recently
   used ones: 2560 frames (about 4 MB) on a 128 MB console, 512 (0.8 MB) on
-  a 64 MB one, 96 on the PC. A match re-decodes almost none.
+  a 64 MB one, 96 on the 3DS and NDS; the PC decodes every frame at load
+  and has no cache. A match re-decodes almost none.
 - **Big pictures wait for their first draw.** A picture of 512 x 512 or
   more that may become DXT keeps only its RGBA until it is mipmapped or
   drawn, so it is never held at 32 bits and compressed as well. Other

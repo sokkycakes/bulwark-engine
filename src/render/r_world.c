@@ -693,6 +693,9 @@ fail:
 	r_world.loaded = false;
 }
 
+/* the surfaces the visibility bitmaps were built for; R_FreeWorld clears it */
+static const rsurface_t *visbits_for;
+
 void R_FreeWorld(void)
 {
 	R_FreeStaticProps();
@@ -707,6 +710,8 @@ void R_FreeWorld(void)
 			GL_DeleteTextures(r_world.numlightmaps, r_world.lightmaps);
 	}
 	Mem_Free(r_world.surfaces);
+	/* the next map's surfaces may land at the same address */
+	visbits_for = NULL;
 	Mem_Free(r_world.lightmaps);
 	Mem_Free(r_world.submodels);
 	Mem_Free(r_world.lightgrid);
@@ -848,7 +853,6 @@ static void set_lights(const glprog_t *p, const float *model)
  * so that a pass visits only those rather than every surface of the map */
 static uint32_t *visbits, *novisbits, *insidebits;
 static int visbitwords;
-static const rsurface_t *visbits_for;
 
 static void reset_visbits(void)
 {
