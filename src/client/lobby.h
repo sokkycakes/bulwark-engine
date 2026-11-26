@@ -5,6 +5,7 @@
 #define BW_LOBBY_H
 
 #include "../common/common.h"
+#include "../net/net.h"
 #include "../qcvm/qcvm.h"
 
 typedef enum {
@@ -34,6 +35,9 @@ bool Lobby_AskingPassword(void);
 bool Lobby_GameStarting(void);
 /* this client is in a real game: the hand-off is done */
 void Lobby_GameArrived(void);
+/* CL_Connect is about to connect to this server: once that is not the
+ * lobby game's, the password and rcon settings the lobby set go back */
+void Lobby_ClientConnecting(const netadr_t *to);
 
 /* the WebCore bridge requests: getlobby, getlobbychat, lobby_action:<a>,
  * hostcache_refresh, gethostcache; false for other requests */

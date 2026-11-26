@@ -425,36 +425,42 @@ void Lobby_ServerCheck(void)
 
 /* The client side: the "password" userinfo a guest (or a host joining its
  * own dedicated server) connects with, and the host's rcon_password and
- * rcon_address for that server. They go back once this client leaves the
- * lobby's game, or the start fails. */
+ * rcon_address for that server. They stay while this client may still go
+ * back to that game (a dropped guest's "reconnect" needs the password, as
+ * in FTE, and the host can rcon its server), and go back once it connects
+ * to any other server (a local game doesn't count), or the start fails. */
 static struct {
 	cvarkeep_t k;
-	bool connected; /* seen off ca_disconnected since they were set */
+	bool has_server; /* the lobby's game server is known */
+	netadr_t server;
 } clkept;
 
+/* a lobby game is on its way: the next connect is to it */
 static void set_client_cvar(const char *name, const char *value)
 {
-	if (!clkept.k.armed)
-		clkept.connected = false;
+	clkept.has_server = false;
 	keep_cvar(&clkept.k, name);
 	Cvar_Set(name, value);
 }
 
 static void restore_client(void)
 {
-	clkept.connected = false;
+	clkept.has_server = false;
 	if (put_back(&clkept.k))
 		Con_DPrintf("lobby: this client's password and rcon settings are back as they were\n");
 }
 
-static void client_check(void)
+void Lobby_ClientConnecting(const netadr_t *to)
 {
-	if (!clkept.k.armed)
+	/* this client's own local game (the title's backdrop) doesn't count:
+	 * it never checks a password, and the lobby's server may be rejoined */
+	if (!clkept.k.armed || to->type == NA_LOOPBACK)
 		return;
-	if (cl.state != ca_disconnected)
-		clkept.connected = true;
-	/* a host waits disconnected while its dedicated server starts */
-	else if (clkept.connected && L.phase != LOBBY_STARTING)
+	/* the first connect once they are set is the lobby's game */
+	if (!clkept.has_server) {
+		clkept.server = *to;
+		clkept.has_server = true;
+	} else if (!NET_CompareAdr(&clkept.server, to))
 		restore_client();
 }
 
@@ -1886,8 +1892,24 @@ static void LobbyStart_f(int argc, const char **argv)
 
 static void LobbyClose_f(int argc, const char **argv)
 {
+	/* Leave while the lobby's game is on its way to this client: it doesn't
+	 * go in after all, and the title comes back once nothing is running */
+	bool abandon = Lobby_GameStarting();
 	L.needpass = false; /* the page's password question is answered with Leave */
 	handoff_end();
+	if (abandon) {
+		/* guests haven't heard of a dedicated server yet: stop it */
+		if (L.host && L.phase == LOBBY_STARTING && L.dedicated && L.dedport && DedLaunch_Running())
+			DedLaunch_Stop();
+		L.dedpending = false;
+		if (cl.state != ca_disconnected)
+			Cmd_ExecuteString("disconnect");
+		if (sv.active)
+			Cmd_ExecuteString("killserver");
+		restore_overrides();
+		restore_client();
+		Con_Printf("lobby: left before the game started\n");
+	}
 	if (L.phase == LOBBY_IDLE)
 		return;
 	if (L.host) {
@@ -2271,7 +2293,6 @@ void Lobby_Frame(void)
 {
 	double now = Sys_Seconds();
 	Lobby_ServerCheck();
-	client_check();
 	receive();
 	switch (L.phase) {
 	case LOBBY_IDLE:
@@ -2406,5 +2427,6 @@ void Lobby_Init(void)
 
 void Lobby_Shutdown(void)
 {
+	handoff_end(); /* quitting: nothing to abandon */
 	LobbyClose_f(1, (const char *[]){"lobby_close"});
 }
