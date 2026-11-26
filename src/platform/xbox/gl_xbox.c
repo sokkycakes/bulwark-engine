@@ -2635,6 +2635,11 @@ static void BWGLAPI xb_glGetIntegerv(GLenum p, GLint *v)
 	}
 }
 
+/* the colour buffers (see queue_flip) */
+static bool ownflip;       /* false: pbkit's pb_finished(), if its buffers aren't as expected */
+static uint32_t fbaddr[3]; /* pbkit's three colour buffers, in the order its flips number them */
+static int backbuf;        /* the one being drawn */
+
 /* from the frame being drawn: waits for the GPU */
 static void BWGLAPI xb_glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum f, GLenum t, void *px)
 {
@@ -2644,7 +2649,7 @@ static void BWGLAPI xb_glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLen
 	pb_kick();
 	while (pb_busy())
 		;
-	const uint8_t *fb = (const uint8_t *)pb_back_buffer();
+	const uint8_t *fb = ownflip ? (const uint8_t *)fbaddr[backbuf] : (const uint8_t *)pb_back_buffer();
 	int pitch = (int)pb_back_buffer_pitch();
 	for (int r = 0; r < h; r++) {
 		int sy = fbh - 1 - (y + r);
@@ -2716,6 +2721,59 @@ void *XBGL_GetProc(const char *name)
 /* --- frames and set-up ------------------------------------------------------------------------ */
 
 static uint32_t last_swap;
+
+/* Flips. pbkit's pb_finished() queues a frame for its vblank handler with
+ * one GPU interrupt, then points the GPU at the next back buffer with
+ * pb_target_back_buffer(), which rewrites the colour and blit DMA objects
+ * through eight more: the GPU raises each one in turn and stalls until the
+ * CPU's DPC has written the word it asks for. That is nine interrupt
+ * entries, 8259 end-of-interrupts and DPCs a frame, most of the GPU's
+ * interrupt load. So the GPU draws into a buffer named by its offset in
+ * pbkit's DMA object over all of memory (3, which also serves vertices):
+ * the offset is an ordinary method, which PGRAPH applies in order after
+ * the drawing before it, where a DMA object has to be rewritten from the
+ * CPU once the GPU has stopped using it. The frame is queued with the
+ * same commands pb_finished() writes, so pbkit's vblank handler shows it
+ * as before. That keeps one interrupt a frame, plus the vblanks. */
+#define PB_SUBPROG_FINISHED 0xFAB /* pbkit's subprogram id that queues a flip (pbkit.c) */
+#define PB_DMA_ALLMEM 3           /* pbkit's 3D-class DMA object over all of memory */
+
+/* pbkit makes its three buffers one after another in one allocation
+ * (pb_init), shows the first and targets the second; check that before
+ * relying on it */
+static void own_flip_init(void)
+{
+	uint32_t size = pb_back_buffer_pitch() * pb_back_buffer_height();
+	uint32_t b1 = (uint32_t)pb_back_buffer();
+	fbaddr[0] = b1 - size, fbaddr[1] = b1, fbaddr[2] = b1 + size;
+	backbuf = 1;
+	ownflip = (VIDEOREG(PCRTC_START) & 0x03FFFFFF) == (fbaddr[0] & 0x03FFFFFF);
+	if (!ownflip)
+		return;
+	pb_open(8);
+	put1(NV097_SET_CONTEXT_DMA_COLOR, PB_DMA_ALLMEM);
+	put1(NV097_SET_SURFACE_COLOR_OFFSET, fbaddr[backbuf] & 0x03FFFFFF);
+	pb_close();
+}
+
+/* what pb_finished() writes, then the next buffer as the target. pbkit's
+ * table of queued flips has a slot per buffer and its vblank handler
+ * empties one a vblank; frames are at least one vblank apart (the
+ * interval is at least 1) and the CPU waits for the GPU to finish the
+ * frame before last, so a slot is always free again when reused. */
+static void queue_flip(void)
+{
+	pb_open(16);
+	put1(NV097_FLIP_INCREMENT_WRITE, 0);
+	put1(NV097_NO_OPERATION, 0);
+	put1(NV097_WAIT_FOR_IDLE, 0);
+	put1(NV097_SET_ZSTENCIL_CLEAR_VALUE, (uint32_t)backbuf); /* pbkit reads its parameter from here */
+	put1(NV097_NO_OPERATION, PB_SUBPROG_FINISHED);           /* a non-zero argument raises the interrupt */
+	backbuf = (backbuf + 1) % 3;
+	put1(NV097_SET_SURFACE_COLOR_OFFSET, fbaddr[backbuf] & 0x03FFFFFF);
+	pb_close();
+	pb_kick();
+}
 
 /* pbkit's own set-up after it targets a new back buffer: it turns depth
  * and stencil tests on and sets a z mode we don't use */
@@ -2790,20 +2848,28 @@ void XBGL_EndFrame(void)
 		return;
 	/* timing for gl_xbox_stats: the frame's work, then the wait for the GPU and the vblank */
 	ULONGLONG t0 = KeQueryPerformanceCounter();
-	pb_kick();
 	size_t pbused = (size_t)(stream_pos(P) - pbframe);
 	/* frame pacing: flips land every vid_xbox_swapinterval vblanks */
-	int interval = vid_xbox_swapinterval ? BW_CLAMP(vid_xbox_swapinterval->ivalue, 0, 4) : 2;
+	int interval = vid_xbox_swapinterval ? BW_CLAMP(vid_xbox_swapinterval->ivalue, ownflip, 4) : 2;
 	DWORD now = pb_get_vbl_counter();
+	/* before waiting for a vblank, hand the frame to the GPU so it draws
+	 * meanwhile; with no wait, queue_flip's hand-over is soon enough, and
+	 * each one costs a write-combine flush */
+	if (!ownflip || (int)(now - last_swap) < interval)
+		pb_kick();
 	while ((int)(now - last_swap) < interval)
 		now = pb_wait_for_vbl();
 	int missed = (int)(now - last_swap) - interval;
 	last_swap = now;
-	pb_open(0);
-	pb_kick();
-	while (pb_finished())
-		; /* every back buffer is waiting to be shown */
-	pb_resync();
+	if (ownflip) {
+		queue_flip();
+	} else {
+		pb_open(0);
+		pb_kick();
+		while (pb_finished())
+			; /* every back buffer is waiting to be shown */
+		pb_resync();
+	}
 	frame_end[framenum & 1] = stream_pos(P);
 	if (gl_xbox_stats && gl_xbox_stats->ivalue)
 		frame_stats(t0, pbused, missed);
@@ -2939,6 +3005,7 @@ bool XBGL_Init(void)
 	pb_target_back_buffer();
 	pb_resync();
 	pbframe = stream_pos(P);
+	own_flip_init();
 	pb_open(64);
 	put1(NV097_SET_TRANSFORM_PROGRAM_START, 0);
 	float zero4[4] = {0, 0, 0, 0}, one4[4] = {1, 1, 1, 1};

@@ -53,21 +53,47 @@ char *bwx_ospath(const char *path, char *out, size_t size)
 #undef rename
 
 void FS_NoteWrite(void); /* fs.c: the engine's file lookups are stale */
+static bool known_missing(const char *os);
+static void forget_listings(void);
+
+/* the engine is about to change a folder (wrote is false), or has (true):
+ * fs.c's remembered lookups and the folder listings here are stale. The
+ * listings are forgotten again afterwards, in case another thread listed
+ * the folder in between. */
+static void note_write(bool wrote)
+{
+	if (!wrote)
+		FS_NoteWrite();
+	forget_listings();
+}
 
 FILE *bwx_fopen(const char *path, const char *mode)
 {
 	char os[MAX_PATH];
-	if (strpbrk(mode, "wa+"))
-		FS_NoteWrite();
-	return fopen(bwx_ospath(path, os, sizeof(os)), mode);
+	FILE *f;
+	bwx_ospath(path, os, sizeof(os));
+	if (!strpbrk(mode, "wa+")) {
+		if (known_missing(os)) {
+			errno = ENOENT;
+			return NULL;
+		}
+		return fopen(os, mode);
+	}
+	note_write(false);
+	f = fopen(os, mode);
+	note_write(true);
+	return f;
 }
 
 int bwx_remove(const char *path)
 {
 	char os[MAX_PATH];
-	FS_NoteWrite();
+	bool ok;
+	note_write(false);
 	bwx_ospath(path, os, sizeof(os));
-	if (DeleteFileA(os) || RemoveDirectoryA(os))
+	ok = DeleteFileA(os) || RemoveDirectoryA(os);
+	note_write(true);
+	if (ok)
 		return 0;
 	errno = ENOENT;
 	return -1;
@@ -76,11 +102,14 @@ int bwx_remove(const char *path)
 int bwx_rename(const char *from, const char *to)
 {
 	char a[MAX_PATH], b[MAX_PATH];
-	FS_NoteWrite();
+	bool ok;
+	note_write(false);
 	bwx_ospath(from, a, sizeof(a));
 	bwx_ospath(to, b, sizeof(b));
 	DeleteFileA(b); /* POSIX rename replaces the target */
-	if (MoveFileA(a, b))
+	ok = MoveFileA(a, b);
+	note_write(true);
+	if (ok)
 		return 0;
 	errno = ENOENT;
 	return -1;
@@ -91,7 +120,11 @@ int unlink(const char *path) { return bwx_remove(path); }
 int rmdir(const char *path)
 {
 	char os[MAX_PATH];
-	return RemoveDirectoryA(bwx_ospath(path, os, sizeof(os))) ? 0 : -1;
+	bool ok;
+	note_write(false);
+	ok = RemoveDirectoryA(bwx_ospath(path, os, sizeof(os)));
+	note_write(true);
+	return ok ? 0 : -1;
 }
 
 int bwx_fileno(FILE *f) { return (int)(intptr_t)f; }
@@ -135,7 +168,7 @@ int stat(const char *path, struct stat *st)
 		st->st_mode = S_IFDIR;
 		return 0;
 	}
-	if (!GetFileAttributesExA(os, GetFileExInfoStandard, &d)) {
+	if (known_missing(os) || !GetFileAttributesExA(os, GetFileExInfoStandard, &d)) {
 		errno = ENOENT;
 		return -1;
 	}
@@ -166,11 +199,16 @@ int fstat(int fd, struct stat *st)
 int mkdir(const char *path, mode_t mode)
 {
 	char os[MAX_PATH];
+	bool ok;
 	(void)mode;
+	note_write(false);
 	bwx_ospath(path, os, sizeof(os));
-	if (CreateDirectoryA(os, NULL))
+	ok = CreateDirectoryA(os, NULL);
+	DWORD err = ok ? 0 : GetLastError();
+	note_write(true);
+	if (ok)
 		return 0;
-	errno = GetLastError() == ERROR_ALREADY_EXISTS ? EEXIST : ENOENT;
+	errno = err == ERROR_ALREADY_EXISTS ? EEXIST : ENOENT;
 	return -1;
 }
 
@@ -210,28 +248,37 @@ struct bwx_dir {
 	struct dirent de;
 };
 
-DIR *opendir(const char *path)
+/* a folder by its kernel name, for listing */
+static NTSTATUS open_folder(const char *os, HANDLE *h)
 {
-	char os[MAX_PATH];
-	size_t n;
-	DIR *d;
+	char buf[MAX_PATH];
+	size_t n = strlen(os);
 	ANSI_STRING name;
 	OBJECT_ATTRIBUTES attr;
 	IO_STATUS_BLOCK io;
+	if (n + 2 > sizeof(buf))
+		return STATUS_OBJECT_NAME_INVALID;
+	memcpy(buf, os, n + 1);
+	while (n > 3 && buf[n - 1] == '\\')
+		buf[--n] = 0;
+	if (n == 2) /* "D:" is the drive's root */
+		buf[n++] = '\\', buf[n] = 0;
+	RtlInitAnsiString(&name, buf);
+	InitializeObjectAttributes(&attr, &name, OBJ_CASE_INSENSITIVE, ObDosDevicesDirectory(), NULL);
+	return NtOpenFile(h, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE,
+	                  FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+}
+
+DIR *opendir(const char *path)
+{
+	char os[MAX_PATH];
+	DIR *d;
 	NTSTATUS st;
 	bwx_ospath(path, os, sizeof(os));
-	n = strlen(os);
-	while (n > 3 && os[n - 1] == '\\')
-		os[--n] = 0;
-	if (n == 2) /* "D:" is the drive's root */
-		os[n++] = '\\', os[n] = 0;
 	d = calloc(1, sizeof(*d));
 	if (!d)
 		return NULL;
-	RtlInitAnsiString(&name, os);
-	InitializeObjectAttributes(&attr, &name, OBJ_CASE_INSENSITIVE, ObDosDevicesDirectory(), NULL);
-	st = NtOpenFile(&d->h, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE,
-	                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+	st = open_folder(os, &d->h);
 	if (!NT_SUCCESS(st)) {
 		free(d);
 		errno = ENOENT;
@@ -270,6 +317,196 @@ int closedir(DIR *d)
 		NtClose(d->h);
 	free(d);
 	return 0;
+}
+
+/* --- remembered folder listings ---------------------------------------------------------
+ * The engine asks for many files that aren't there: it tries each search
+ * path (stbuilt, base, data) and each image type in turn, and in a match
+ * the game looks for files such as a model's .phy as things first spawn.
+ * Each miss is a walk through the file system's folders, and on a DVD can
+ * be a seek, which stalls the frame that asked. Nothing changes a
+ * console's game folders but the engine, so the first look into a folder
+ * lists it once, and misses in it are answered from the list. Files that
+ * are there still go to the kernel. Any write by the engine forgets every
+ * list. */
+#ifndef STATUS_NO_SUCH_FILE
+#define STATUS_NO_SUCH_FILE ((NTSTATUS)0xC000000FL)
+#endif
+#define LISTINGS 512 /* folders, a power of two */
+
+typedef struct {
+	char *path;      /* lower case, no trailing backslash; NULL: a free slot */
+	bool missing;    /* the folder isn't there */
+	char *pool;      /* the names, lower case, each ended by a 0 */
+	uint32_t *slots; /* hash table of offsets into pool, plus one; 0 is empty */
+	uint32_t mask;
+} listing_t;
+
+static listing_t listings[LISTINGS];
+static int numlistings;
+static pthread_mutex_t listlock = PTHREAD_MUTEX_INITIALIZER;
+
+static uint32_t name_hash(const char *s, size_t n)
+{
+	uint32_t h = 2166136261u;
+	for (size_t i = 0; i < n; i++)
+		h = (h ^ (uint8_t)tolower((unsigned char)s[i])) * 16777619u;
+	return h;
+}
+
+static void forget_listings_locked(void)
+{
+	for (int i = 0; i < LISTINGS; i++) {
+		free(listings[i].path), free(listings[i].pool), free(listings[i].slots);
+		memset(&listings[i], 0, sizeof(listings[i]));
+	}
+	numlistings = 0;
+}
+
+static void forget_listings(void)
+{
+	pthread_mutex_lock(&listlock);
+	forget_listings_locked();
+	pthread_mutex_unlock(&listlock);
+}
+
+static bool listing_has(const listing_t *l, const char *name, size_t n)
+{
+	for (uint32_t i = name_hash(name, n) & l->mask; l->slots[i]; i = (i + 1) & l->mask) {
+		const char *e = l->pool + l->slots[i] - 1;
+		if (!strncasecmp(e, name, n) && !e[n])
+			return true;
+	}
+	return false;
+}
+
+/* reads a folder's names into l; false if they couldn't all be read */
+static bool list_folder(const char *os, listing_t *l)
+{
+	HANDLE h;
+	NTSTATUS st = open_folder(os, &h);
+	if (st == STATUS_OBJECT_NAME_NOT_FOUND || st == STATUS_OBJECT_PATH_NOT_FOUND) {
+		l->missing = true;
+		return true;
+	}
+	if (!NT_SUCCESS(st))
+		return false;
+	size_t used = 0, cap = 1024;
+	uint32_t count = 0;
+	char *pool = malloc(cap);
+	bool first = true, ok = pool != NULL;
+	struct {
+		FILE_DIRECTORY_INFORMATION info;
+		char name[MAX_PATH];
+	} buf;
+	ANSI_STRING all;
+	RtlInitAnsiString(&all, "*");
+	while (ok) {
+		IO_STATUS_BLOCK io;
+		memset(&buf, 0, sizeof(buf));
+		st = NtQueryDirectoryFile(h, NULL, NULL, NULL, &io, &buf, sizeof(buf), FileDirectoryInformation, first ? &all : NULL,
+		                          first);
+		first = false;
+		if (st == STATUS_NO_MORE_FILES || st == STATUS_NO_SUCH_FILE)
+			break;
+		if (!NT_SUCCESS(st)) {
+			ok = false;
+			break;
+		}
+		size_t n = (size_t)buf.info.FileNameLength < sizeof(buf.name) - 1 ? (size_t)buf.info.FileNameLength : sizeof(buf.name) - 1;
+		if (used + n + 1 > cap) {
+			char *grown = realloc(pool, cap = (used + n + 1) * 2);
+			if (!grown) {
+				ok = false;
+				break;
+			}
+			pool = grown;
+		}
+		for (size_t i = 0; i < n; i++)
+			pool[used + i] = (char)tolower((unsigned char)buf.info.FileName[i]);
+		pool[used + n] = 0;
+		used += n + 1;
+		count++;
+	}
+	NtClose(h);
+	uint32_t size = 16;
+	while (size < count * 2)
+		size *= 2;
+	uint32_t *slots = ok ? calloc(size, sizeof(*slots)) : NULL;
+	if (!slots) {
+		free(pool);
+		return false;
+	}
+	for (size_t o = 0; o < used; o += strlen(pool + o) + 1) {
+		uint32_t i = name_hash(pool + o, strlen(pool + o)) & (size - 1);
+		while (slots[i])
+			i = (i + 1) & (size - 1);
+		slots[i] = (uint32_t)o + 1;
+	}
+	l->pool = pool, l->slots = slots, l->mask = size - 1;
+	return true;
+}
+
+static bool missing_locked(const char *os, size_t n, int depth);
+
+/* the listing of the folder os[0..n), made if need be; NULL if unknown */
+static listing_t *folder_listing(const char *os, size_t n, int depth)
+{
+	char dir[MAX_PATH];
+	if (n < 2 || n >= sizeof(dir) || depth > 32)
+		return NULL;
+	for (size_t i = 0; i < n; i++)
+		dir[i] = (char)tolower((unsigned char)os[i]);
+	dir[n] = 0;
+	uint32_t h = name_hash(dir, n) & (LISTINGS - 1), i = h;
+	while (listings[i].path && strcmp(listings[i].path, dir))
+		i = (i + 1) & (LISTINGS - 1);
+	if (listings[i].path)
+		return &listings[i];
+	listing_t l = {0};
+	/* a folder its parent's list doesn't name isn't there; a drive's root always is */
+	if (n > 2 && missing_locked(dir, n, depth + 1))
+		l.missing = true;
+	else if (!list_folder(dir, &l))
+		return NULL;
+	if (numlistings >= LISTINGS * 3 / 4)
+		forget_listings_locked();
+	/* probe again: listing the parent may have taken slot i, or forgotten all */
+	for (i = h; listings[i].path; i = (i + 1) & (LISTINGS - 1))
+		;
+	l.path = strdup(dir);
+	if (!l.path) {
+		free(l.pool), free(l.slots);
+		return NULL;
+	}
+	listings[i] = l;
+	numlistings++;
+	return &listings[i];
+}
+
+/* true when os[0..n) surely isn't there: its folder's list doesn't name it */
+static bool missing_locked(const char *os, size_t n, int depth)
+{
+	size_t slash = n;
+	while (slash > 0 && os[slash - 1] != '\\')
+		slash--;
+	if (slash < 3 || slash == n) /* a drive, or a name ending in a backslash */
+		return false;
+	/* "D:\x" is in the folder "D:", the others in the path before the backslash */
+	listing_t *l = folder_listing(os, slash == 3 ? 2 : slash - 1, depth);
+	if (!l)
+		return false;
+	return l->missing || !listing_has(l, os + slash, n - slash);
+}
+
+static bool known_missing(const char *os)
+{
+	if (!(os[0] && os[1] == ':' && os[2] == '\\'))
+		return false;
+	pthread_mutex_lock(&listlock);
+	bool missing = missing_locked(os, strlen(os), 0);
+	pthread_mutex_unlock(&listlock);
+	return missing;
 }
 
 /* --- time ------------------------------------------------------------------------- */

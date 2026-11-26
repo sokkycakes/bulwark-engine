@@ -27,6 +27,8 @@ void MmFreeContiguousMemory(void *p) { free(p); }
 ULONGLONG KeQueryPerformanceCounter(void) { return 0; }
 ULONGLONG KeQueryPerformanceFrequency(void) { return 1; }
 DWORD GetTickCount(void) { return 0; }
+/* covers the register offsets gl_xbox.c reads (NV_USER + 0x44 the furthest) */
+uint32_t bw_stub_videoregs[(0x00800000 + 0x1000) / 4];
 static uint32_t pbuf[1 << 16];
 uint32_t *pb_begin(void) { return pbuf; }
 void pb_end(uint32_t *p) { (void)p; }

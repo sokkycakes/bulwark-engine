@@ -80,8 +80,13 @@ static DWORD WINAPI mixer_main(LPVOID p)
 			mix_into(b);
 			filled++;
 		}
+		/* the codec's callback sets the event once a buffer is played, and
+		 * the event stays set until this wait takes it, so none is lost:
+		 * the timeout is only a safety net, kept long so an idle mixer
+		 * doesn't wake (a timer, a DPC and two thread switches) 100 times
+		 * a second */
 		LARGE_INTEGER timeout;
-		timeout.QuadPart = -100000; /* 10 ms */
+		timeout.QuadPart = -1000000; /* 100 ms */
 		KeWaitForSingleObject(&wake, Executive, KernelMode, FALSE, &timeout);
 	}
 	return 0;
