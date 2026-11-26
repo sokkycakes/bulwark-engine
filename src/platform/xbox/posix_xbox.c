@@ -458,7 +458,7 @@ static listing_t *folder_listing(const char *os, size_t n, int depth)
 	for (size_t i = 0; i < n; i++)
 		dir[i] = (char)tolower((unsigned char)os[i]);
 	dir[n] = 0;
-	uint32_t i = name_hash(dir, n) & (LISTINGS - 1);
+	uint32_t h = name_hash(dir, n) & (LISTINGS - 1), i = h;
 	while (listings[i].path && strcmp(listings[i].path, dir))
 		i = (i + 1) & (LISTINGS - 1);
 	if (listings[i].path)
@@ -469,10 +469,11 @@ static listing_t *folder_listing(const char *os, size_t n, int depth)
 		l.missing = true;
 	else if (!list_folder(dir, &l))
 		return NULL;
-	if (numlistings >= LISTINGS * 3 / 4) {
+	if (numlistings >= LISTINGS * 3 / 4)
 		forget_listings_locked();
-		i = name_hash(dir, n) & (LISTINGS - 1);
-	}
+	/* probe again: listing the parent may have taken slot i, or forgotten all */
+	for (i = h; listings[i].path; i = (i + 1) & (LISTINGS - 1))
+		;
 	l.path = strdup(dir);
 	if (!l.path) {
 		free(l.pool), free(l.slots);
