@@ -170,6 +170,18 @@ enum {
 	H_NUM_EXTENSIONS, H_OFS_EXTENSIONS, H_COUNT
 };
 
+/* the bind pose's relative matrices, kept for every pose that asks for
+ * it, and its inverse in model space */
+static void bind_pose(skelmodel_t *m)
+{
+	m->baserel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
+	for (int j = 0; j < m->numjoints; j++)
+		Bone_FromTRS(m->baserel[j], m->base + j * 10);
+	Skel_ToAbsolute(m, m->baserel, m->invbind);
+	for (int j = 0; j < m->numjoints; j++)
+		Bone_Invert(m->invbind[j], m->invbind[j]);
+}
+
 static bool parse_iqm(skelmodel_t *m, const uint8_t *d, size_t size)
 {
 	uint32_t h[H_COUNT];
@@ -199,15 +211,7 @@ static bool parse_iqm(skelmodel_t *m, const uint8_t *d, size_t size)
 		for (int k = 0; k < 10; k++)
 			m->base[j * 10 + k] = rdf(jp + 8 + k * 4);
 	}
-	{
-		bonemat_t *rel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_FromTRS(rel[j], m->base + j * 10);
-		Skel_ToAbsolute(m, rel, m->invbind);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_Invert(m->invbind[j], m->invbind[j]);
-		Mem_Free(rel);
-	}
+	bind_pose(m);
 	/* poses: each of the ten channels is offset + frame value * scale when
 	 * its mask bit is set, otherwise just the offset */
 	if (h[H_NUM_POSES] == h[H_NUM_JOINTS] && h[H_NUM_FRAMES] &&
@@ -251,6 +255,7 @@ static void free_skelmodel(skelmodel_t *m)
 {
 	Mem_Free(m->joints);
 	Mem_Free(m->base);
+	Mem_Free(m->baserel);
 	Mem_Free(m->invbind);
 	Mem_Free(m->frames);
 	Mem_Free(m->seqfirst);
@@ -275,15 +280,7 @@ static bool from_studio(skelmodel_t *m, const studio_model_t *st)
 		m->joints[j].parent = st->bones[j].parent;
 	}
 	Studio_RestPose(st, m->base);
-	{
-		bonemat_t *rel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_FromTRS(rel[j], m->base + j * 10);
-		Skel_ToAbsolute(m, rel, m->invbind);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_Invert(m->invbind[j], m->invbind[j]);
-		Mem_Free(rel);
-	}
+	bind_pose(m);
 	for (int i = 0; i < st->numseqs; i++)
 		total += BW_MAX(1, st->seqs[i].numframes);
 	m->numframes = total;
@@ -327,57 +324,89 @@ static bool from_studio(skelmodel_t *m, const studio_model_t *st)
 }
 
 #ifdef BW_LOWMEM
-/* decoded studio frames, most recently used first; a pose takes two at a
- * time, and several entities on one model tend to share them */
-#define FRAMECACHE 8
+/* decoded studio frames, found by a hash of model and frame and replaced
+ * least recently used first. A pose takes two at a time, and with a full
+ * match each player and the view model hold a few (upper and lower body,
+ * blends), so the cache holds enough for all of them; a frame decodes with
+ * six sines and cosines a bone. */
+#define FRAMECACHE 96
+#define FRAMEHASH 256
 typedef struct {
 	const skelmodel_t *model;
-	int frame, size;
+	int frame, size, next;
+	unsigned used;
 	float *trs;
 } cachedframe_t;
 static cachedframe_t framecache[FRAMECACHE];
+static int framehash[FRAMEHASH]; /* first entry + 1 of each chain, 0 for none */
+static unsigned frameclock;
+
+static unsigned frame_bucket(const skelmodel_t *m, int f)
+{
+	return ((uint32_t)(uintptr_t)m * 2654435761u ^ (uint32_t)f * 40503u) >> 8 & (FRAMEHASH - 1);
+}
+
+static void unhash_frame(int i)
+{
+	int *link = &framehash[frame_bucket(framecache[i].model, framecache[i].frame)];
+	while (*link && *link != i + 1)
+		link = &framecache[*link - 1].next;
+	if (*link)
+		*link = framecache[i].next;
+	framecache[i].model = NULL;
+}
 
 static const float *decode_frame(const skelmodel_t *m, int f)
 {
 	int i, s, lo = 0, hi = m->numseqs - 1, n = m->numjoints * 10;
-	for (i = 0; i < FRAMECACHE; i++)
-		if (framecache[i].model == m && framecache[i].frame == f)
+	unsigned h = frame_bucket(m, f);
+	for (i = framehash[h]; i; i = framecache[i - 1].next)
+		if (framecache[i - 1].model == m && framecache[i - 1].frame == f) {
+			framecache[i - 1].used = ++frameclock;
+			return framecache[i - 1].trs;
+		}
+	/* a free entry, or the one used longest ago */
+	i = 0;
+	for (int k = 0; k < FRAMECACHE; k++) {
+		if (!framecache[k].model) {
+			i = k;
 			break;
-	if (i == FRAMECACHE) {
-		i = FRAMECACHE - 1;
-		if (framecache[i].size < n) {
-			framecache[i].trs = Mem_Realloc(framecache[i].trs, sizeof(float) * n);
-			framecache[i].size = n;
 		}
-		/* the sequence holding frame f: the last one starting at or before it */
-		while (lo < hi) {
-			int mid = (lo + hi + 1) / 2;
-			if (m->seqfirst[mid] <= f)
-				lo = mid;
-			else
-				hi = mid - 1;
-		}
-		s = lo;
-		/* a sequence kept in another file stands in its rest pose */
-		if (!Studio_DecodeFrame(m->studio, s, 0, f - m->seqfirst[s], framecache[i].trs))
-			Studio_RestPose(m->studio, framecache[i].trs);
-		framecache[i].model = m;
-		framecache[i].frame = f;
+		if (framecache[k].used - framecache[i].used > 0x80000000u)
+			i = k;
 	}
-	if (i) {
-		/* to the front */
-		cachedframe_t e = framecache[i];
-		memmove(&framecache[1], &framecache[0], sizeof(framecache[0]) * i);
-		framecache[0] = e;
+	cachedframe_t *c = &framecache[i];
+	if (c->model)
+		unhash_frame(i);
+	if (c->size < n) {
+		c->trs = Mem_Realloc(c->trs, sizeof(float) * n);
+		c->size = n;
 	}
-	return framecache[0].trs;
+	/* the sequence holding frame f: the last one starting at or before it */
+	while (lo < hi) {
+		int mid = (lo + hi + 1) / 2;
+		if (m->seqfirst[mid] <= f)
+			lo = mid;
+		else
+			hi = mid - 1;
+	}
+	s = lo;
+	/* a sequence kept in another file stands in its rest pose */
+	if (!Studio_DecodeFrame(m->studio, s, 0, f - m->seqfirst[s], c->trs))
+		Studio_RestPose(m->studio, c->trs);
+	c->model = m;
+	c->frame = f;
+	c->used = ++frameclock;
+	c->next = framehash[h];
+	framehash[h] = i + 1;
+	return c->trs;
 }
 
 static void forget_frames(const skelmodel_t *m)
 {
 	for (int i = 0; i < FRAMECACHE; i++)
 		if (framecache[i].model == m)
-			framecache[i].model = NULL;
+			unhash_frame(i);
 }
 #endif
 
@@ -433,6 +462,7 @@ skelmodel_t *Skel_LoadModel(const char *name)
 		/* remembered as having no skeleton */
 		Mem_Free(m->joints), m->joints = NULL;
 		Mem_Free(m->base), m->base = NULL;
+		Mem_Free(m->baserel), m->baserel = NULL;
 		Mem_Free(m->invbind), m->invbind = NULL;
 		m->numjoints = 0;
 		return NULL;
@@ -489,8 +519,8 @@ void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t 
 	int f0, f1;
 	float t;
 	if (!m->numframes || group < 0 || group >= m->numanims) {
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_FromTRS(out[j], m->base + j * 10);
+		if (m->numjoints) /* baserel is NULL without a skeleton */
+			memcpy(out, m->baserel, sizeof(bonemat_t) * m->numjoints);
 		return;
 	}
 	g = &m->anims[group];
@@ -509,28 +539,31 @@ void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t 
 	}
 	f0 = BW_MAX(0, BW_MIN(g->first + f0, m->numframes - 1));
 	f1 = BW_MAX(0, BW_MIN(g->first + f1, m->numframes - 1));
-	{
-		const float *a = frame_trs(m, f0), *b = frame_trs(m, f1);
-		for (int j = 0; j < m->numjoints; j++) {
-			float trs[10];
-			lerp_trs(a + j * 10, b + j * 10, t, trs);
-			Bone_FromTRS(out[j], trs);
-		}
+	/* a is the most recently used cache entry, so decoding b keeps it */
+	const float *a = frame_trs(m, f0), *b = frame_trs(m, f1);
+	for (int j = 0; j < m->numjoints; j++) {
+		float trs[10];
+		lerp_trs(a + j * 10, b + j * 10, t, trs);
+		Bone_FromTRS(out[j], trs);
 	}
 }
 
 void Skel_EntityPose(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
                      float lerpfrac, bonemat_t *out)
 {
+	static bonemat_t *b;
+	static int maxb;
 	Skel_SampleRelative(m, frame, frame1time, out);
 	if (lerpfrac > 0 && frame2 != frame) {
-		bonemat_t *b = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
 		float l = BW_MIN(lerpfrac, 1);
+		if (m->numjoints > maxb) {
+			maxb = m->numjoints;
+			b = Mem_Realloc(b, sizeof(bonemat_t) * maxb);
+		}
 		Skel_SampleRelative(m, frame2, frame2time, b);
 		for (int j = 0; j < m->numjoints; j++)
 			for (int k = 0; k < 12; k++)
 				out[j][k] += (b[j][k] - out[j][k]) * l;
-		Mem_Free(b);
 	}
 }
 

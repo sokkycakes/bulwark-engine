@@ -52,6 +52,13 @@ typedef struct alias_s {
 	int8_t *qnorm;       /* numposes * numverts * 3 */
 	float *qxform;       /* numposes * 6: scale xyz, origin xyz */
 #endif
+	/* the last pose drawn this frame: copies of the model in step with
+	   it (a map's torches) draw it again without lerping and sending
+	   the vertices again; the indices are sent once */
+	GLuint vao, vbo, ebo;
+	int lastp1, lastp2;
+	float lastlerp;
+	unsigned lastframe;
 } alias_t;
 
 static uint8_t palette[768];
@@ -1406,6 +1413,11 @@ static void free_model(rmodel_t *m)
 	}
 	if (m->alias) {
 		alias_t *a = m->alias;
+		if (R_Active() && a->vao) {
+			qglDeleteVertexArrays(1, &a->vao);
+			qglDeleteBuffers(1, &a->vbo);
+			qglDeleteBuffers(1, &a->ebo);
+		}
 		Mem_Free(a->poses);
 		Mem_Free(a->normals);
 #ifdef BW_LOWMEM
@@ -1602,11 +1614,12 @@ static skinvert_t *skin_out(iqm_t *q)
 }
 
 /* rest vertices lo..hi-1 of q moved by the bones into skin_out(q). Each
- * vertex follows one bone (q->blendw is NULL) through sb when every bone is
- * rigid; otherwise the bones' weighted matrices from skin move it and
- * normals are renormalised. Both add up in the same order, so the SSE path
- * gives the plain C one's results */
-static void skin_verts(iqm_t *q, const bonemat_t *skin, const skinbone_t *sb, int lo, int hi)
+ * vertex follows one bone (q->blendw is NULL) through sb; when a bone isn't
+ * rigid (renorm), sb holds its plain matrix and the normals are
+ * renormalised after. Otherwise the bones' weighted matrices from skin
+ * move the vertex and normals are renormalised. Both add up in the same
+ * order, so the SSE path gives the plain C one's results */
+static void skin_verts(iqm_t *q, const bonemat_t *skin, const skinbone_t *sb, bool renorm, int lo, int hi)
 {
 	const float(*rest)[8] = q->rest;
 	const uint8_t(*bi)[4] = q->blendidx;
@@ -1636,6 +1649,13 @@ static void skin_verts(iqm_t *q, const bonemat_t *skin, const skinbone_t *sb, in
 				on[k] = b->ncol[0][k] * r[4] + b->ncol[1][k] * r[5] + b->ncol[2][k] * r[6];
 			}
 #endif
+			if (renorm) {
+				float l = on[0] * on[0] + on[1] * on[1] + on[2] * on[2];
+				if (l > 0) {
+					l = 1 / sqrtf(l);
+					on[0] *= l, on[1] *= l, on[2] *= l;
+				}
+			}
 		}
 		return;
 	}
@@ -1802,13 +1822,24 @@ static void skin_posed(iqm_t *q, const rentity_t *e)
 				cols[j].ncol[c][r] = a[r * 4 + c] * inv;
 		}
 	}
+	if (!rigid && !q->blendw) {
+		/* one bone a vertex still: its plain matrix by columns, and the
+		 * normals renormalised as the weighted path does */
+		for (int j = 0; j < n; j++)
+			for (int r = 0; r < 3; r++) {
+				for (int c = 0; c < 4; c++)
+					cols[j].col[c][r] = skin[j][r * 4 + c];
+				for (int c = 0; c < 3; c++)
+					cols[j].ncol[c][r] = skin[j][r * 4 + c];
+			}
+	}
 	if (!bymesh) {
-		skin_verts(q, skin, rigid ? cols : NULL, lo, hi);
+		skin_verts(q, skin, cols, !rigid, lo, hi);
 	} else {
 		/* mesh by mesh, leaving out the sub-models that don't draw */
 		for (int i = 0; i < q->nummeshes; i++)
 			if (shown[i])
-				skin_verts(q, skin, rigid ? cols : NULL, q->meshes[i].firstvert,
+				skin_verts(q, skin, cols, !rigid, q->meshes[i].firstvert,
 				           q->meshes[i].firstvert + q->meshes[i].numverts);
 	}
 upload:
@@ -1898,6 +1929,35 @@ static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
 	}
 #endif
 	return buf;
+}
+
+/* an alias model in the entity's pose, from its own buffers */
+static void draw_alias(const rentity_t *e, alias_t *a)
+{
+	int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
+	if (!a->vao) {
+		qglGenVertexArrays(1, &a->vao);
+		qglGenBuffers(1, &a->vbo);
+		qglGenBuffers(1, &a->ebo);
+		qglBindVertexArray(a->vao);
+		qglBindBuffer(GL_ARRAY_BUFFER, a->vbo);
+		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, a->ebo);
+		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint16_t) * a->numtris * 3), a->indices,
+		              GL_STATIC_DRAW);
+		R_SetupVertexAttribs();
+		a->lastframe = r_framenum - 1;
+	}
+	qglBindVertexArray(a->vao);
+	if (a->lastframe != r_framenum || a->lastp1 != p1 || a->lastp2 != p2 || a->lastlerp != e->lerpfrac) {
+		qglBindBuffer(GL_ARRAY_BUFFER, a->vbo);
+		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * a->numoutverts), alias_verts(e, a),
+		              GL_STREAM_DRAW);
+		a->lastframe = r_framenum;
+		a->lastp1 = p1, a->lastp2 = p2;
+		a->lastlerp = e->lerpfrac;
+	}
+	qglDrawElements(GL_TRIANGLES, a->numtris * 3, GL_UNSIGNED_SHORT, NULL);
+	qglBindVertexArray(0);
 }
 
 static void set_model_lighting(const glprog_t *p, rentity_t *e)
@@ -2043,13 +2103,12 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 	if (m->type == MOD_ALIAS) {
 		alias_t *a = m->alias;
-		rvert_t *buf = alias_verts(e, a);
 		material_t *skin;
 		skin = e->forceshader ? e->forceshader
 		       : a->numskins ? a->skins[e->skin >= 0 && e->skin < a->numskins ? e->skin : 0]
 		                     : R_FindMaterial("$default", MATF_MODEL);
 		bind_material(p, skin, e->alpha, translucentpass);
-		R_StreamDraw(GL_TRIANGLES, buf, a->numoutverts, a->indices, a->numtris * 3);
+		draw_alias(e, a);
 	} else if (m->type == MOD_IQM && m->iqm->vao) {
 		iqm_t *q = m->iqm;
 		if (skinned)

@@ -461,11 +461,108 @@ static char *load_os_file(const char *ospath, size_t *len)
 	return buf;
 }
 
+/* The Xbox remembers which search path provides a file, and which files
+ * are missing. Its stat goes through the kernel and the disc's directories
+ * each time, and the game asks often: Nuclide looks for a .propdata and a
+ * .phy file each time a projectile spawns. Nothing changes the files under
+ * a console's game, except the engine itself, which forgets the lookups
+ * whenever it writes. */
+#ifdef BW_XBOX
+#define LOOKUPS 1024 /* a power of two */
+typedef struct {
+	char *path;
+	const char *where; /* FS_WhichPath's answer: NULL when missing */
+} lookup_t;
+static lookup_t lookups[LOOKUPS];
+static int numlookups, lookupgen = -1;
+static unsigned lookupwrites; /* FS_NoteWrite calls, under the lock */
+static volatile int lookuplock; /* a worker thread may load files too */
+
+static void lookup_lock(void)
+{
+	while (__sync_lock_test_and_set(&lookuplock, 1))
+		;
+}
+
+static void lookup_unlock(void) { __sync_lock_release(&lookuplock); }
+
+static void forget_lookups(void)
+{
+	for (int i = 0; i < LOOKUPS; i++)
+		Mem_Free(lookups[i].path), lookups[i].path = NULL;
+	numlookups = 0;
+}
+
+static lookup_t *lookup_slot(const char *path)
+{
+	unsigned i = name_hash(path) & (LOOKUPS - 1);
+	if (lookupgen != fs_generation) {
+		forget_lookups();
+		lookupgen = fs_generation;
+	}
+	while (lookups[i].path && strcmp(lookups[i].path, path))
+		i = (i + 1) & (LOOKUPS - 1);
+	return &lookups[i];
+}
+
+/* true with *where set when path has been looked up already; *stamp tells
+ * lookup_add whether a write or search path change came in between */
+static bool lookup_find(const char *path, const char **where, unsigned *stamp)
+{
+	lookup_lock();
+	lookup_t *l = lookup_slot(path);
+	bool found = l->path != NULL;
+	if (found)
+		*where = l->where;
+	if (stamp)
+		*stamp = lookupwrites;
+	lookup_unlock();
+	return found;
+}
+
+static void lookup_add(const char *path, const char *where, unsigned stamp)
+{
+	lookup_lock();
+	/* the answer may be stale if a file was written, or the search path
+	 * changed, while it was being looked up */
+	if (stamp != lookupwrites || lookupgen != fs_generation) {
+		lookup_unlock();
+		return;
+	}
+	if (numlookups >= LOOKUPS * 3 / 4)
+		forget_lookups();
+	lookup_t *l = lookup_slot(path);
+	if (!l->path) {
+		l->path = Mem_Strdup(path);
+		numlookups++;
+	}
+	l->where = where;
+	lookup_unlock();
+}
+
+void FS_NoteWrite(void)
+{
+	lookup_lock();
+	lookupgen = -1;
+	lookupwrites++;
+	lookup_unlock();
+}
+#else
+void FS_NoteWrite(void) {}
+#endif
+
 char *FS_LoadFile(const char *path, size_t *len)
 {
 	char ospath[2048];
 	if (!FS_SafeName(path))
 		return NULL;
+#ifdef BW_XBOX
+	{
+		const char *where;
+		if (lookup_find(path, &where, NULL) && !where)
+			return NULL; /* known to be missing */
+	}
+#endif
 	for (int i = fs_numgamedirs - 1; i >= 0; i--) {
 		char *buf;
 		if (!os_path(i, path, ospath, sizeof(ospath)))
@@ -510,7 +607,26 @@ int FS_WhichGameDir(const char *path)
 	return -1;
 }
 
+
+static const char *which_path(const char *path);
+
 const char *FS_WhichPath(const char *path)
+{
+#ifdef BW_XBOX
+	const char *where;
+	unsigned stamp;
+	if (lookup_find(path, &where, &stamp))
+		return where;
+	where = which_path(path);
+	if (FS_SafeName(path))
+		lookup_add(path, where, stamp);
+	return where;
+#else
+	return which_path(path);
+#endif
+}
+
+static const char *which_path(const char *path)
 {
 	char ospath[2048];
 	struct stat st;

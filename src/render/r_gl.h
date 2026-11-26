@@ -209,5 +209,7 @@ int GL_LoadFunctions(void *(*getproc)(const char *name));
 
 /* optional entry points: NULL where the platform's GL lacks them */
 extern void(BWGLAPI *qglFramebufferTexture2D_opt)(GLenum t, GLenum a, GLenum tt, GLuint tex, GLint l);
+extern void(BWGLAPI *qglMultiDrawElements_opt)(GLenum mode, const GLsizei *count, GLenum type, const void *const *ofs,
+                                                GLsizei n);
 
 #endif

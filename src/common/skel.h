@@ -31,6 +31,7 @@ typedef struct skelmodel_s {
 	int numjoints;
 	skeljoint_t *joints;
 	float *base;          /* numjoints x 10: translate, rotate (xyzw), scale */
+	bonemat_t *baserel;   /* base as relative matrices, for the bind pose */
 	bonemat_t *invbind;   /* inverse of the bind pose, absolute */
 	int numframes;
 	float *frames;        /* numframes x numjoints x 10, as base; NULL when

@@ -1668,10 +1668,30 @@ static xprog_t *cur_prog(void) { return get_progs(st.prog); }
 
 static void set_uniform(GLint loc, int n, const float *v)
 {
-	state_gen++;
 	xprog_t *p = cur_prog();
-	if (!p || loc <= 0)
+	if (!p || loc <= 0) {
+		state_gen++;
 		return;
+	}
+	/* a value the program has already: nothing to send again */
+	const float *cur = NULL;
+	int w = 1;
+	switch (loc) {
+	case U_COLOR: cur = p->color, w = 4; break;
+	case U_TCMOD: cur = p->tcmod, w = 4; break;
+	case U_FOG: cur = p->fog, w = 4; break;
+	case U_VIEWORG: cur = p->vieworg, w = 3; break;
+	case U_LIGHT_AMBIENT: cur = p->lamb, w = 3; break;
+	case U_LIGHT_DIFFUSE: cur = p->ldiff, w = 3; break;
+	case U_LIGHT_DIR: cur = p->ldir, w = 3; break;
+	case U_LMSCALE: cur = &p->lmscale; break;
+	case U_ALPHATEST: cur = &p->alphatest; break;
+	case U_USEFULLBRIGHT: cur = &p->usefullbright; break;
+	default: break;
+	}
+	if (cur && !memcmp(cur, v, sizeof(float) * (size_t)BW_MIN(n, w)))
+		return;
+	state_gen++;
 	switch (loc) {
 	case U_COLOR: memcpy(p->color, v, sizeof(float) * BW_MIN(n, 4)); break;
 	case U_TCMOD: memcpy(p->tcmod, v, sizeof(float) * BW_MIN(n, 4)); break;
@@ -2357,6 +2377,10 @@ static iseg_t *find_seg(xbuf_t *b, size_t ofs, int count, const uint32_t *idx32,
 	}
 	uint32_t lo, hi;
 	index_range(count, idx32, idx16, &lo, &hi);
+	/* runs of one buffer that all fit 16 bits share the vertex arrays'
+	 * offsets, so draws in a row (the world's surfaces) send none */
+	if (hi <= 0xFFFF)
+		lo = 0;
 	bool wide = hi - lo > 0xFFFF;
 	uint32_t bytes = (uint32_t)(index_words(count, wide) + 1) * 4;
 	uint32_t *cmds = gpu_alloc(bytes);
@@ -2368,6 +2392,22 @@ static iseg_t *find_seg(xbuf_t *b, size_t ofs, int count, const uint32_t *idx32,
 	*g = (iseg_t){ofs, count, idx32 != NULL, wide, lo, hi, cmds, bytes};
 	b->numsegs++;
 	return g;
+}
+
+/* the fixed state and program for a draw, sent when anything changed
+ * since the last; false if the program draws nothing */
+static bool draw_state(void)
+{
+	static uint32_t drawn_gen;
+	static int drawn_aniso;
+	static bool drawn_ok;
+	int aniso = gl_xbox_aniso ? gl_xbox_aniso->ivalue : 0;
+	if (state_gen != drawn_gen || aniso != drawn_aniso) {
+		set_fixed_state();
+		drawn_ok = set_program();
+		drawn_gen = state_gen, drawn_aniso = aniso;
+	}
+	return drawn_ok;
 }
 
 /* eb: the element buffer the indices are in, at byte ofs, or NULL */
@@ -2395,16 +2435,7 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 		return;
 
 	pb_open(600 + (seg || !(idx32 || idx16) ? (size_t)count / 256 : index_words(count, wide)));
-	static uint32_t drawn_gen;
-	static int drawn_aniso;
-	static bool drawn_ok;
-	int aniso = gl_xbox_aniso ? gl_xbox_aniso->ivalue : 0;
-	if (state_gen != drawn_gen || aniso != drawn_aniso) {
-		set_fixed_state();
-		drawn_ok = set_program();
-		drawn_gen = state_gen, drawn_aniso = aniso;
-	}
-	if (!drawn_ok) {
+	if (!draw_state()) {
 		pb_close();
 		return;
 	}
@@ -2467,6 +2498,79 @@ static void BWGLAPI xb_glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLen
 static void BWGLAPI xb_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *ofs)
 {
 	xb_glDrawElementsBaseVertex(mode, count, type, ofs, 0);
+}
+
+/* triangle runs of a static index buffer whose commands start at vertex 0
+ * (find_seg), called one after another inside one begin and end: the
+ * world's surfaces of one texture and lightmap are one draw */
+typedef struct {
+	const uint32_t *cmds;
+	int count;
+} run_t; /* a copy: finding the next run may move the hash its iseg_t is in */
+
+static void draw_runs(const run_t *runs, int n, uint32_t hi)
+{
+	vsrc_t src[NATTRS];
+	bool ring;
+	if (!vertex_sources(src, hi, &ring))
+		return;
+	pb_open(600 + (size_t)n);
+	if (!draw_state()) {
+		pb_close();
+		return;
+	}
+	set_arrays(src, 0);
+	if (ring)
+		put1(NV097_BREAK_VERTEX_BUFFER_CACHE, 0);
+	put1(NV097_SET_BEGIN_END, GL_TRIANGLES + 1);
+	for (int i = 0; i < n; i++) {
+		*P++ = ((uint32_t)runs[i].cmds & 0x03FFFFFF) | 2; /* call */
+		tris_this_frame += runs[i].count / 3;
+	}
+	put1(NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
+	pb_close();
+	for (int i = 0; i < NATTRS; i++)
+		src[i].b->usedframe = framenum;
+	draws_this_frame++;
+}
+
+static void BWGLAPI xb_glMultiDrawElements(GLenum mode, const GLsizei *count, GLenum type, const void *const *ofs,
+                                           GLsizei n)
+{
+	enum { MAXRUNS = 256 };
+	run_t runs[MAXRUNS];
+	int nr = 0;
+	uint32_t hi = 0;
+	xbuf_t *eb = get_bufs(cur_vao()->ebo);
+	size_t sz = type == GL_UNSIGNED_INT ? 4 : 2;
+	if (mode != GL_TRIANGLES || !ready || !eb || !eb->data || eb->stream ||
+	    (type != GL_UNSIGNED_INT && type != GL_UNSIGNED_SHORT)) {
+		for (int i = 0; i < n; i++)
+			xb_glDrawElements(mode, count[i], type, ofs[i]);
+		return;
+	}
+	for (int i = 0; i < n; i++) {
+		size_t o = (size_t)ofs[i];
+		iseg_t *g = NULL;
+		if (count[i] > 0 && count[i] % 3 == 0 && o + sz * (size_t)count[i] <= eb->size)
+			g = find_seg(eb, o, count[i], sz == 4 ? (const uint32_t *)(eb->data + o) : NULL,
+			             sz == 2 ? (const uint16_t *)(eb->data + o) : NULL);
+		if (g && g->lo == 0 && nr < MAXRUNS) {
+			runs[nr++] = (run_t){g->cmds, g->count};
+			hi = BW_MAX(hi, g->hi);
+			continue;
+		}
+		/* in order: what is gathered first, then this one alone */
+		if (nr)
+			draw_runs(runs, nr, hi);
+		nr = 0, hi = 0;
+		if (g && g->lo == 0)
+			runs[nr++] = (run_t){g->cmds, g->count}, hi = g->hi;
+		else
+			xb_glDrawElements(mode, count[i], type, ofs[i]);
+	}
+	if (nr)
+		draw_runs(runs, nr, hi);
 }
 
 static void BWGLAPI xb_glClear(GLbitfield mask)
@@ -2598,6 +2702,7 @@ static const struct {
 #define X(ret, name, args) {#name, (void *)xb_##name},
 	BW_GL_FUNCS(X)
 #undef X
+	{"glMultiDrawElements", (void *)xb_glMultiDrawElements},
 };
 
 void *XBGL_GetProc(const char *name)

@@ -28,8 +28,11 @@ include_directories(${NXDK_DIR}/lib/net/lwip/src/include ${NXDK_DIR}/lib/net/nfo
 # path translation and the POSIX names, in every C file
 add_compile_options("SHELL:-include ${BW_XBOX_DIR}/compat/bw_xbox.h")
 # nxdk-cc passes -fno-builtin; give memcpy, sqrtf and friends back to the
-# optimiser. The Pentium III has SSE (single precision): use it for floats.
-add_compile_options(-fbuiltin -mfpmath=sse -Wno-unused-function)
+# optimiser. -ffreestanding, which it passes too, still keeps them off:
+# compat/bw_xbox.h names the hot ones as builtins. The Pentium III has SSE
+# (single precision): use it for floats. nxdk's maths never sets errno, so
+# __builtin_sqrtf can be the sqrtss instruction.
+add_compile_options(-fbuiltin -mfpmath=sse -fno-math-errno -Wno-unused-function)
 # nxdk's toolchain leaves the per-configuration flags empty, so without this
 # every file builds at -O0: the engine ran several times slower for it
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
