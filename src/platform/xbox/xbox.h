@@ -16,9 +16,13 @@ int XBGL_Width(void);
 int XBGL_Height(void);
 size_t XBGL_GpuMemoryUsed(void); /* bytes of contiguous memory the GPU objects hold */
 void XBGL_PrintGpuMemory(void);
+unsigned long XBGL_VblankCount(void); /* vertical blanks since the GPU started */
 /* the bones (3 x 4, row major) the next model draws are posed by on the GPU,
  * until it is called with none; false when they must be posed on the CPU */
 bool XBGL_SkinBones(const float (*bones)[12], int n);
+
+/* snd_xbox.c: buffers the codec has finished playing, one interrupt each */
+unsigned long XBX_SoundBuffersPlayed(void);
 
 /* sys_xbox.c */
 void XBX_PrintMemory(const char *when);

@@ -15,6 +15,7 @@
 
 #include "../../common/cvar.h"
 #include "../../sound/snd_local.h"
+#include "xbox.h"
 
 #define OUT_RATE 48000
 #define NUMBUFS 4
@@ -48,6 +49,8 @@ static void codec_done(void *dev, void *data)
 	}
 	KeSetEvent(&wake, 0, FALSE);
 }
+
+unsigned long XBX_SoundBuffersPlayed(void) { return (unsigned long)played; }
 
 static void mix_into(int16_t *out)
 {

@@ -267,6 +267,14 @@ bool SV_SpawnServer(const char *mapname);
 void SV_Shutdown(void);
 void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);
+extern int sv_frameticks; /* server frames the last SV_Frame ran (host_speeds) */
+/* where the server's part of a host frame went, for host_speeds' slowest
+ * frame: the host clears it each frame */
+enum { SVP_READ, SVP_START, SVP_ROUTES, SVP_PRETHINK, SVP_ENTITIES, SVP_POSTTHINK, SVP_END, SVP_CLIENTS, SVP_GC, SVP_SEND, SVP_COUNT };
+extern double sv_phase_seconds[SVP_COUNT];
+extern const char *const sv_phase_names[SVP_COUNT];
+extern double sv_slowest_cmd;        /* the longest player command in it */
+extern char sv_slowest_cmd_who[64]; /* whose it was */
 int SV_ModelIndex(const char *name, bool precache);
 int SV_SoundIndex(const char *name, bool precache);
 void SV_InfoSet(char *info, size_t size, const char *key, const char *value);

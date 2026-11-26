@@ -10,7 +10,9 @@
  * BACK + START together toggles the console. */
 #include <SDL.h>
 #include <windows.h>
+#include <stdlib.h>
 #include <string.h>
+#include <x86intrin.h>
 
 #include "../../client/client.h"
 #include "../../client/console.h"
@@ -114,6 +116,58 @@ static void meminfo_f(int argc, const char **argv)
 	XBX_PrintMemory("now");
 }
 
+/* xbox_irqtime [seconds]: spins reading the time stamp counter, and counts
+ * every gap in it as time the CPU spent elsewhere: interrupts, their DPCs,
+ * and other threads. That measures what interrupts cost the game without a
+ * profiler, on a console or in an emulator. The game stops meanwhile. */
+static void irqtime_f(int argc, const char **argv)
+{
+	double secs = argc > 1 ? atof(argv[1]) : 1;
+	static const unsigned edges[] = {2, 5, 10, 20, 50, 100, 1000}; /* microseconds */
+	unsigned counts[8] = {0};
+	double stolen[8] = {0};
+	secs = BW_CLAMP(secs, 0.1, 10);
+	LARGE_INTEGER pf;
+	QueryPerformanceFrequency(&pf);
+	LARGE_INTEGER p0, p1;
+	QueryPerformanceCounter(&p0);
+	uint64_t c0 = __rdtsc(), last = c0;
+	/* calibrate the counter's rate against the performance counter first */
+	for (;;) {
+		QueryPerformanceCounter(&p1);
+		if (p1.QuadPart - p0.QuadPart > pf.QuadPart / 20)
+			break;
+	}
+	double tsc_hz = (double)(__rdtsc() - c0) * (double)pf.QuadPart / (double)(p1.QuadPart - p0.QuadPart);
+	uint64_t gap_min = (uint64_t)(tsc_hz * 2e-6), end;
+	c0 = last = __rdtsc();
+	end = c0 + (uint64_t)(tsc_hz * secs);
+	DWORD tick0 = GetTickCount(), vbl0 = XBGL_VblankCount();
+	while (last < end) {
+		uint64_t now = __rdtsc();
+		uint64_t d = now - last;
+		last = now;
+		if (d >= gap_min) {
+			double us = (double)d * 1e6 / tsc_hz;
+			int b = 0;
+			while (b < 7 && us >= edges[b])
+				b++;
+			counts[b]++, stolen[b] += us;
+		}
+	}
+	DWORD ticks = GetTickCount() - tick0, vbls = XBGL_VblankCount() - vbl0;
+	double total = 0;
+	unsigned n = 0;
+	for (int b = 0; b < 8; b++)
+		total += stolen[b], n += counts[b];
+	Con_Printf("irqtime: %.2f s at %.0f MHz: %u gaps took %.1f%% (%.1f us each); kernel ticks %lu, vblanks %lu\n", secs,
+	           tsc_hz / 1e6, n, total / (secs * 1e4), n ? total / n : 0, (unsigned long)ticks, (unsigned long)vbls);
+	for (int b = 1; b < 8; b++)
+		if (counts[b])
+			Con_Printf("  %4u-%-4u us: %6u gaps, %.1f%%\n", edges[b - 1], b < 7 ? edges[b] : 99999, counts[b],
+			           stolen[b] / (secs * 1e4));
+}
+
 bool VID_Init(int width, int height, bool fullscreen)
 {
 	(void)width, (void)height, (void)fullscreen;
@@ -124,6 +178,7 @@ bool VID_Init(int width, int height, bool fullscreen)
 		Con_Printf("SDL controllers: %s\n", SDL_GetError());
 	active = true;
 	Cmd_AddD("xbox_meminfo", meminfo_f, "xbox_meminfo: print how much of the Xbox's memory is free");
+	Cmd_AddD("xbox_irqtime", irqtime_f, "xbox_irqtime [seconds]: how much of the CPU's time interrupts take");
 	return true;
 }
 
@@ -177,15 +232,17 @@ bool VID_PumpEvents(void)
 	int slot, key;
 	{
 		/* gl_xbox_stats: how often the main loop comes round, even when no frame reaches the screen */
-		static DWORD since;
+		static double since;
 		static int loops;
 		static cvar_t *stats;
 		if (!stats)
 			stats = Cvar_Find("gl_xbox_stats");
 		loops++;
-		if (stats && stats->ivalue && GetTickCount() - since > 5000) {
-			Con_Printf("xbox: main loop %d times in %.1f s\n", loops, (GetTickCount() - since) / 1000.0);
-			since = GetTickCount();
+		/* Sys_Seconds, not GetTickCount, which lags when clock interrupts are late (see frame_stats) */
+		double now = Sys_Seconds();
+		if (stats && stats->ivalue && now - since > 5) {
+			Con_Printf("xbox: main loop %d times in %.1f s\n", loops, now - since);
+			since = now;
 			loops = 0;
 		}
 	}

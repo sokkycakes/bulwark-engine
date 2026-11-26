@@ -63,20 +63,55 @@ static cvar_t *host_speeds;
 static void host_speeds_add(const double *t)
 {
 	static const char *names[7] = {"misc", "server", "client", "csqc+3d", "ui", "2d+swap", "sound"};
-	static double sum[7], since;
-	static int frames;
+	static double sum[7], since, worst[8], worst_files, worst_sv[SVP_COUNT], worst_cmd;
+	static char worst_cmd_who[64];
+	static int frames, worst_ticks, worst_loads, noticks, moreticks;
+	int loads;
+	double files;
+	FS_TakeLoadStats(&loads, &files);
 	for (int i = 0; i < 7; i++)
 		sum[i] += t[i + 1] - t[i];
+	/* the slowest frame's parts, to tell what makes the spikes */
+	if (t[7] - t[0] > worst[7]) {
+		for (int i = 0; i < 7; i++)
+			worst[i] = t[i + 1] - t[i];
+		worst[7] = t[7] - t[0];
+		worst_ticks = sv_frameticks;
+		worst_files = files, worst_loads = loads;
+		memcpy(worst_sv, sv_phase_seconds, sizeof(worst_sv));
+		worst_cmd = sv_slowest_cmd;
+		Str_Copy(worst_cmd_who, sv_slowest_cmd_who, sizeof(worst_cmd_who));
+	}
+	if (sv.active) {
+		noticks += sv_frameticks == 0;
+		moreticks += sv_frameticks > 1;
+	}
 	frames++;
 	if (!since)
 		since = t[0];
 	if (t[7] - since >= 5 && frames) {
-		char line[256];
+		char line[384];
 		int o = snprintf(line, sizeof(line), "host_speeds: %.1f fps;", frames / (t[7] - since));
 		for (int i = 0; i < 7 && o < (int)sizeof(line); i++)
 			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", names[i], sum[i] * 1000 / frames);
 		Con_Printf("%s ms\n", line);
+		/* not "host_speeds:", which scripts count reports by */
+		o = snprintf(line, sizeof(line),
+		             "host_speeds slowest %.1f ms (%d server frames, %d files %.1f ms; %d frames ran no server frame, "
+		             "%d more than one):",
+		             worst[7] * 1000, worst_ticks, worst_loads, worst_files * 1000, noticks, moreticks);
+		for (int i = 0; i < 7 && o < (int)sizeof(line); i++)
+			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", names[i], worst[i] * 1000);
+		Con_Printf("%s\n", line);
+		o = snprintf(line, sizeof(line), "host_speeds slowest server:");
+		for (int i = 0; i < SVP_COUNT && o < (int)sizeof(line); i++)
+			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", sv_phase_names[i], worst_sv[i] * 1000);
+		if (worst_cmd > 0 && o < (int)sizeof(line))
+			snprintf(line + o, sizeof(line) - (size_t)o, "; longest command %.1f (%s)", worst_cmd * 1000, worst_cmd_who);
+		Con_Printf("%s\n", line);
 		memset(sum, 0, sizeof(sum));
+		memset(worst, 0, sizeof(worst));
+		noticks = moreticks = 0;
 		frames = 0;
 		since = t[7];
 	}
@@ -210,7 +245,15 @@ int main(int argc, char **argv)
 				break;
 			dt = 1.0 / 72;
 		} else {
+#ifdef BW_XBOX
+			/* the flip paces frames to vblanks (vid_xbox_swapinterval); a
+			 * cap here as well (a config's fps_max 30) beats against it,
+			 * sleeping past the vblank a frame was due for */
+			float cap = 0;
+			(void)fps_max, (void)cl_maxfps;
+#else
 			float cap = fps_max->value > 0 ? fps_max->value : cl_maxfps->value;
+#endif
 			double mindt = cap > 0 ? 1.0 / BW_MAX(cap, 10) : 0.001;
 			now = Sys_Seconds();
 			dt = now - last;
@@ -252,6 +295,14 @@ int main(int argc, char **argv)
 		/* host_speeds 1: where the frame goes, every 5 seconds */
 		double hs[8];
 #define HS(i) (hs[i] = host_speeds->ivalue ? Sys_Seconds() : 0)
+		if (host_speeds->ivalue) {
+			int loads;
+			double files;
+			FS_TakeLoadStats(&loads, &files); /* count from the frame's start */
+		}
+		memset(sv_phase_seconds, 0, sizeof(sv_phase_seconds));
+		sv_slowest_cmd = 0;
+		sv_frameticks = 0;
 		HS(0);
 		NET_RunDelayed();
 		PKG_Frame();

@@ -2987,7 +2987,9 @@ static struct {
 	int frames, missed, draws, tris, kicks, waits;
 	double work, wait, worst;
 	size_t pb;
-	DWORD since;
+	ULONGLONG since;
+	DWORD ticks0, vbl0;   /* the kernel's tick count and pbkit's vblank count at since */
+	unsigned long audio0; /* sound buffers played at since */
 } fst;
 
 /* every 5 seconds: frames per second, the CPU's share of a frame and the
@@ -3009,11 +3011,16 @@ static void frame_stats(ULONGLONG t0, size_t pbused, int missed)
 			fst.pb = pbused;
 	}
 	stat_start = t1;
-	DWORD now = GetTickCount();
-	if (!fst.since)
+	/* the performance counter, not GetTickCount: the kernel's tick count
+	 * only advances by clock interrupts, which an emulator under load
+	 * delivers late or merges, and then 5 s of ticks is longer than 5 s */
+	ULONGLONG now = t1;
+	if (!fst.since) {
 		fst.since = now;
-	if (now - fst.since >= 5000 && fst.frames) {
-		double secs = (now - fst.since) / 1000.0;
+		fst.ticks0 = KeTickCount, fst.vbl0 = pb_get_vbl_counter(), fst.audio0 = XBX_SoundBuffersPlayed();
+	}
+	if ((double)(now - fst.since) * ms >= 5000 && fst.frames) {
+		double secs = (double)(now - fst.since) * ms / 1000.0;
 		Con_Printf("xbox: %.1f fps, frame work %.1f ms (worst %.1f, GPU sync %.1f), wait %.1f ms, %d late, %d draws, %d tris, "
 		           "%d kicks, pb %u of %u KB, ring %u of %u KB (%u KB spilled), GPU %u KB, %u KB free\n",
 		           fst.frames / secs, fst.work / fst.frames, fst.worst, (double)sync_ticks * ms / fst.frames,
@@ -3024,11 +3031,21 @@ static void frame_stats(ULONGLONG t0, size_t pbused, int missed)
 		           "%d texture update waits\n",
 		           (unsigned)(st_stream / fst.frames >> 10), (unsigned)(st_replace / fst.frames >> 10),
 		           (unsigned)(st_index / fst.frames >> 10), (unsigned)(st_copies / fst.frames), fst.waits);
+		/* the interrupts the CPU takes a second, by source: the kernel's
+		 * clock (1000 on a console; fewer means ticks were late or merged),
+		 * the GPU's vblanks and the one a flip raises, and the codec's
+		 * buffer completions. USB adds one a controller report. */
+		DWORD ticks = KeTickCount, vbl = pb_get_vbl_counter();
+		unsigned long audio = XBX_SoundBuffersPlayed();
+		Con_Printf("xbox: interrupts a second: clock %.0f, GPU vblank %.0f + flip %.0f, sound %.0f\n",
+		           (ticks - fst.ticks0) / secs, (vbl - fst.vbl0) / secs, ownflip ? fst.frames / secs : 0.0,
+		           (audio - fst.audio0) / secs);
 		st_stream = st_replace = st_index = st_copies = 0;
 		sync_ticks = 0;
 		memset(&fst, 0, sizeof(fst));
 		ringpeak = ringspill = 0;
 		fst.since = now;
+		fst.ticks0 = ticks, fst.vbl0 = vbl, fst.audio0 = audio;
 	}
 }
 
@@ -3073,6 +3090,7 @@ void XBGL_EndFrame(void)
 	draws_this_frame = tris_this_frame = kicks = gpu_waits = 0;
 }
 
+unsigned long XBGL_VblankCount(void) { return pb_get_vbl_counter(); }
 int XBGL_Width(void) { return fbw; }
 int XBGL_Height(void) { return fbh; }
 

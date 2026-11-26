@@ -25,6 +25,9 @@ void FS_SetGameDirs(const char *const *dirs, int count);
 
 /* returns a NUL-terminated Mem_Alloc'd buffer, or NULL */
 char *FS_LoadFile(const char *path, size_t *len);
+/* the calling thread's FS_LoadFile calls and the seconds they took since
+ * the last call, for host_speeds' slowest frame */
+void FS_TakeLoadStats(int *loads, double *seconds);
 bool FS_FileExists(const char *path);
 /* name of the search path that provides path, or NULL */
 const char *FS_WhichPath(const char *path);

@@ -1102,7 +1102,7 @@ static void lag_restore(lagrestore_t *restore)
 
 void SV_RunStandardPlayerPhysics(int e);
 
-static void run_usercmd(client_t *c, const usercmd_t *u)
+static void run_usercmd_now(client_t *c, const usercmd_t *u)
 {
 	qcvm_t *vm = sv.vm;
 	lagrestore_t restore[256];
@@ -1142,6 +1142,19 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 	c->lastucmd = cmd;
 	c->lastcmd = cmd.sequence;
 	SV_MVDUsercmd(c, &cmd);
+}
+
+/* timed for host_speeds' slowest frame: a player's command runs the game's
+ * movement, weapons and, for a bot, its AI */
+static void run_usercmd(client_t *c, const usercmd_t *u)
+{
+	double t0 = Sys_Seconds();
+	run_usercmd_now(c, u);
+	double t = Sys_Seconds() - t0;
+	if (t > sv_slowest_cmd) {
+		sv_slowest_cmd = t;
+		Str_Copy(sv_slowest_cmd_who, c->name, sizeof(sv_slowest_cmd_who));
+	}
 }
 
 void SV_RunUsercmd(client_t *c, const usercmd_t *u) { run_usercmd(c, u); }

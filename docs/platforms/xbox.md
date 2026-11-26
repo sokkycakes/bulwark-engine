@@ -134,6 +134,22 @@ nothing once it is closed). The player then stands, invulnerable, in the
 courtyard where the bots fight most, looking across it. Times are wall
 time: under heavy host load the spawn can come later.
 
+Each `host_speeds` report is followed by two lines on its slowest frame
+(they start "host_speeds slowest", not "host_speeds:", which scripts
+count reports by): its parts, how many server ticks it ran, the files it
+loaded, how many frames in the report ran no tick or more than one, then
+where its server time went (`read` is the local player's commands,
+`prethink` the game's PlayerPreThink and the bots' commands, which run
+their AI) and the longest single player command. In the benchmark the
+slowest frames are of three kinds: frames that catch up with two or
+three ticks after late frames (most of them while xemu runs below 30
+fps); single ticks of 40 to 90 ms, nearly all of it in the bots'
+commands, with no one command over 20 ms (several bots' AI, the game's
+code, in the same tick), and now and then the local player's command
+(once 79 ms); a string collection, 14 ms in xemu when one runs; and,
+once the heroes spawn, frames that load models on first use (8 files,
+65 ms). Files are not read in the match after that.
+
 Two things make a match slower as it goes on. The game leaks entities (see
 "Game bug: FindXRInput leaks entities" below), and sampling the guest with
 the QEMU monitor (`info registers`) slows it, so take profiles in a run
@@ -441,10 +457,12 @@ The targets are a HUD under 0.2 ms and menus under 1 ms per frame.
 | `gl_xbox_mipmaps` | 1 | make mipmaps for textures that ask for them |
 | `gl_xbox_aniso` | 1 | anisotropic filtering of mipmapped textures: 0 off, 1 2x, 2 4x, 3 8x |
 | `gl_xbox_gpuskin` | 1 | lit skinned models whose vertices follow a single bone are posed by a vertex program on the GPU; 0 poses them on the CPU as before |
-| `gl_xbox_stats` | 0 | every 5 s, print the frame rate, frame and wait times, draws, triangles, push buffer use, GPU memory and free memory |
+| `gl_xbox_stats` | 0 | every 5 s, print the frame rate, frame and wait times, draws, triangles, push buffer use, GPU memory and free memory, and the interrupts a second by source |
 | `snd_xbox_rate` | 24000 | rate the mixer runs at, 24000 or 48000 |
 | `sv_tickrate` | 30 | server ticks a second (72 on the desktop); players move by their own commands either way |
 | `sv_maxticks` | 3 | most server ticks in one frame (no limit on the desktop); past it the world drops the time rather than catching up; players and bots still get the dropped time as movement, so only thinks, physics and projectiles slow |
+| `sv_tickslack` | 0.25 | fraction of a tick (up to 0.5) a server tick may run early or late, so frames as long as a tick run one each rather than none, then two (0 on the desktop; see "Frame pacing" under "Renderer") |
+| `xbox_irqtime` | | `xbox_irqtime [seconds]`: spins reading the CPU's time stamp counter and reports the gaps, the time interrupts and other threads took (the game stops meanwhile) |
 | `pr_jit` | 0 | 1 runs often-called QC functions as native code (see "In-match benchmark"); results are the same either way |
 | `xbox_meminfo` | | free memory, the kernel's pools, the C heap and GPU memory |
 | `xbox_gpuinfo` | | GPU memory in use and the last frame's draws and triangles |
@@ -508,6 +526,27 @@ desktop:
   eight GPU interrupts a frame (see "Interrupts" below). With a frame
   under 33 ms (hero select, about 13 ms of work in xemu) a frame is shown
   every second vblank: at most one late frame in a 5 s report.
+- **Frame pacing:** the flip is the only frame cap. The main loop's
+  `fps_max` / `cl_maxfps` cap is ignored on the Xbox: with a desktop
+  config's `fps_max 30` it slept from the end of one frame's vblank wait
+  to 33.3 ms after the last loop start, and the frame then reached its
+  flip after the vblank it was due for, so hero select (12 ms of work)
+  ran at 28 fps with 20 late frames in 5 s. While the CPU is ahead it
+  sleeps in pbkit's vblank wait (an event its vblank DPC pulses), not in
+  a spin.
+- **Server ticks against frames:** at 30 fps and `sv_tickrate 30` the
+  time left over after the ticks drifts by 0.03 ms a frame (two vblanks
+  are 33.37 ms at 59.94 Hz), so it sits near a tick boundary for long
+  stretches, and a millisecond of jitter in when the loop wakes then
+  gives a frame no tick and the next one two: a frame with twice the
+  server work, which misses its vblank. `sv_tickslack 0.25` lets a tick
+  run up to a quarter of a tick early or late instead, so such a frame
+  still runs one. Ticks keep their length and their count over time (the
+  time owed stays within the slack); only which frame runs a tick
+  changes. Modelled with frames on every second 59.94 Hz vblank and 2 ms
+  of wake-up jitter, ten minutes have 165 frames with no tick and 182 with
+  two; with the slack, 1 and 17 (the 17 are the drift itself: 29.97
+  frames a second against 30 ticks).
 
 ### Sound
 
@@ -523,15 +562,38 @@ buffer, so the mixer's cost doesn't show in xemu's timings or profiles.
 
 ### Interrupts
 
-In a match the CPU takes these interrupts (counted in xemu with the QEMU
-monitor's `info irq`):
+In a match the CPU takes these interrupts. `gl_xbox_stats` prints the
+clock, GPU and sound rates every 5 s ("xbox: interrupts a second").
 
 | Source | Rate | Notes |
 |---|---|---|
-| Clock (IRQ 0) | 1000/s | the kernel's 1 ms tick; a title can't change it |
+| Clock (IRQ 0) | 1000/s | the kernel's 1 ms tick |
 | GPU (IRQ 3) | 60/s plus one a frame | each vblank, and the one that queues a frame's flip |
+| AC'97 | 47/s | one a 21 ms sound buffer; none in xemu without sound output |
+| USB | one a controller report | none in xemu without a pad |
 | IDE (IRQ 14) | none | while loading only (see "Files" below) |
-| USB, AC'97 | | per controller report and per 21 ms sound buffer on a console; none in xemu without a pad or sound output |
+
+Each of these is kept, for reasons that hold on a console:
+
+- **Clock:** the kernel counts time by it at a fixed 1 ms a tick (its
+  tick count, timers, `Sleep`, the USB stack's delays). Reprogramming the
+  timer chip for fewer ticks would slow all of that down with it.
+- **GPU:** the vblank interrupt is what shows a queued frame (pbkit's ISR
+  writes the start address at the vblank) and what wakes the main loop
+  from its vblank wait; the flip interrupt marks the frame ready. Both
+  vblanks of a 30 fps frame are used: one shows the last frame, the next
+  starts the one after. PGRAPH and PFIFO errors raise none in a working
+  frame.
+- **Sound:** bigger buffers would halve the codec's interrupts and
+  double the latency (to 170 ms, which shows on gunfire); at 47 a second
+  they cost a few hundredths of a per cent of a 733 MHz CPU.
+- **USB:** the controller reports at the rate its descriptor asks, and
+  the pad's state is read from those reports once a frame (see
+  `VID_PumpEvents`); the root hubs are polled once a frame by SDL.
+
+At a few microseconds each, the console's roughly 1100 interrupts a
+second come to well under 1% of the CPU. In xemu they look much bigger
+than that, for reasons of the emulator:
 
 pbkit's `pb_finished()` used to add eight more GPU interrupts a frame,
 about 200 a second in the benchmark (see "Flips" under "Renderer").
@@ -542,15 +604,27 @@ worst frame 96 against 85 ms). On a console they are cheaper, since
 xemu's 8259 and GPU registers are slow to reach, but they still held up
 the GPU.
 
-In the match's xemu profile the kernel now has about 12% of the samples:
-7% the clock tick (the debug Roswell kernel the benchmark boots also polls
-its serial debugger on each tick; a retail kernel doesn't), and about 5%
-the GPU's interrupts with pbkit's ISR, DPC and vblank handler, mostly
-because xemu is slow to answer GPU register reads. Nothing the engine
+In the match's xemu profile the kernel has 12 to 19% of the samples:
+the clock tick (the debug Roswell kernel the benchmark boots also polls
+its serial debugger on each tick; a retail kernel doesn't), and the GPU's
+interrupts with pbkit's ISR, DPC and vblank handler, mostly because xemu
+is slow to answer GPU register reads. The profile also overstates them:
+it reads the guest's EIP from the QEMU monitor, and QEMU updates that
+EIP mostly when it leaves translated code, which it always does to take
+an interrupt; nearly half the kernel's samples are on the first
+instruction of `HalEndSystemInterrupt2` or `HalpClockInterrupt`. Nothing the engine
 does allocates from the kernel's pool during a frame: the samples the
 kernel's symbol map gives to `xbv_malloc` are code the kernel runs from
-its data section, beside `XeInterruptShadows`, and their stacks are
-interrupt dispatch.
+its data section (the dispatch code inside its interrupt objects, beside
+`XeInterruptShadows`), and their stacks are interrupt dispatch.
+
+Two more xemu effects: under host load xemu delivers 720 to 790 clock
+ticks a second rather than 1000, so the kernel's tick count runs slow
+(`gl_xbox_stats` times its reports with the performance counter for that
+reason), and `xbox_irqtime` in the match finds 1000 or more gaps of 0.1
+to 1 ms in 3 s against about 360 interrupts, so most of the time it loses
+is the emulator's own (its GPU thread and the host), not the guest's
+interrupt handlers.
 
 ### Files
 

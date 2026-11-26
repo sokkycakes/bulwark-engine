@@ -17,7 +17,22 @@
 server_t sv;
 int sv_spawncount;
 
-static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate, *sv_maxticks;
+static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate, *sv_maxticks, *sv_tickslack;
+int sv_frameticks;
+double sv_phase_seconds[SVP_COUNT];
+const char *const sv_phase_names[SVP_COUNT] = {"read",      "startframe", "routes", "prethink", "entities",
+                                               "postthink", "endframe",   "clients", "gc",      "send"};
+static double phase_t0;
+double sv_slowest_cmd;
+char sv_slowest_cmd_who[64];
+
+/* the time since the last phase mark goes to phase p */
+static void phase_mark(int p)
+{
+	double now = Sys_Seconds();
+	sv_phase_seconds[p] += now - phase_t0;
+	phase_t0 = now;
+}
 
 /* The Xbox runs the world at 30 ticks a second rather than 72. Most of a
  * tick is the game's own walk over every entity (Nuclide's StartFrame), and
@@ -28,9 +43,11 @@ static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsi
 #ifdef BW_XBOX
 #define SV_TICKRATE_DEFAULT "30"
 #define SV_MAXTICKS_DEFAULT "3"
+#define SV_TICKSLACK_DEFAULT "0.25"
 #else
 #define SV_TICKRATE_DEFAULT "72"
 #define SV_MAXTICKS_DEFAULT "0"
+#define SV_TICKSLACK_DEFAULT "0"
 #endif
 
 /* Stiletto (Nuclide's FindXRInput) never frees the three NSXRInput
@@ -893,13 +910,17 @@ void SV_Physics(void)
 	pmove_ents = true;
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGFloat(vm, G.frametime, sv.frametime);
+	phase_mark(SVP_READ);
 	if (QC_FindFunction(vm, "StartFrame")) {
 		QC_SetGInt(vm, G.self, 0);
 		QC_SetGInt(vm, G.other, 0);
 		QC_ExecuteByName(vm, "StartFrame");
 	}
+	phase_mark(SVP_START);
 	SV_RunRoutes();
+	phase_mark(SVP_ROUTES);
 	SV_ClientsPreThink();
+	phase_mark(SVP_PRETHINK);
 	for (int e = 1; e < vm->num_edicts; e++) {
 		if (vm->edicts[e].free)
 			continue;
@@ -914,14 +935,17 @@ void SV_Physics(void)
 		}
 		run_entity(e);
 	}
+	phase_mark(SVP_ENTITIES);
 	SV_ClientsPostThink();
 	Script_Frame(sv.time);
+	phase_mark(SVP_POSTTHINK);
 	if (QC_GFloat(vm, G.force_retouch) > 0)
 		QC_SetGFloat(vm, G.force_retouch, QC_GFloat(vm, G.force_retouch) - 1);
 	if (QC_FindFunction(vm, "EndFrame")) {
 		QC_SetGInt(vm, G.self, 0);
 		QC_ExecuteByName(vm, "EndFrame");
 	}
+	phase_mark(SVP_END);
 }
 
 void SV_Frame(double dt)
@@ -929,6 +953,7 @@ void SV_Frame(double dt)
 	static double accum;
 	if (!sv.active)
 		return;
+	phase_t0 = Sys_Seconds();
 	SV_ReadPackets();
 	SV_LinkReadPackets();
 	if (!sv.active)
@@ -943,7 +968,30 @@ void SV_Frame(double dt)
 		accum -= drop * sv.frametime;
 		SV_ClientsDroppedTime(drop * sv.frametime);
 	}
-	while (accum >= sv.frametime) {
+	/* With frames as long as ticks (30 fps against 30 ticks a second on the
+	 * Xbox), the time left over can sit near a tick boundary for seconds at
+	 * a time as the two clocks drift, and a millisecond of jitter in a
+	 * frame's length then gives no tick in one frame and two in the next:
+	 * a frame twice as slow, which misses its vblank. sv_tickslack lets a
+	 * tick run up to that fraction of a tick early or late instead, so a
+	 * frame near the boundary still runs one. Ticks keep their length, and
+	 * their count over time (the time owed stays within the slack); only
+	 * which frame a tick runs in changes. Ticks are counted by the same
+	 * subtractions that run them, so with no slack they fall exactly where
+	 * they always did. */
+	int ticks = 0;
+	double left = accum;
+	for (; left >= sv.frametime; left -= sv.frametime)
+		ticks++;
+	double slack = BW_CLAMP(sv_tickslack->value, 0, 0.5f) * sv.frametime;
+	if (slack > 0) {
+		if (ticks == 0 && accum >= sv.frametime - slack)
+			ticks = 1;
+		else if (ticks >= 2 && left < slack)
+			ticks--;
+	}
+	sv_frameticks = ticks;
+	for (; ticks > 0; ticks--) {
 		accum -= sv.frametime;
 		if (!sv.paused) {
 			SV_CompatFrame();
@@ -951,11 +999,16 @@ void SV_Frame(double dt)
 			sv.time += sv.frametime;
 			sv.frames++;
 		}
+		phase_mark(SVP_READ); /* a paused tick's time stays with the reads */
 		SV_ClientsAfterPhysics();
+		phase_mark(SVP_CLIENTS);
 		QC_CollectGarbage(sv.vm, false);
+		phase_mark(SVP_GC);
 	}
+	phase_mark(SVP_READ);
 	SV_SendClientMessages();
 	SV_LinkSend();
+	phase_mark(SVP_SEND);
 }
 
 /* commands registered with registercommand go to the progs' ConsoleCmd */
@@ -1150,6 +1203,9 @@ void SV_Init(void)
 	sv_tickrate = Cvar_Get("sv_tickrate", SV_TICKRATE_DEFAULT, 0, "Server frames per second");
 	sv_maxticks = Cvar_Get("sv_maxticks", SV_MAXTICKS_DEFAULT, 0,
 	                       "Most server frames run in one host frame, 0 for no limit; the rest of the time is dropped");
+	sv_tickslack = Cvar_Get("sv_tickslack", SV_TICKSLACK_DEFAULT, 0,
+	                        "Fraction of a server frame (up to 0.5) one may run early or late, so host frames as long "
+	                        "as server frames run one each rather than none, then two");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);

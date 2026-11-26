@@ -551,7 +551,7 @@ void FS_NoteWrite(void)
 void FS_NoteWrite(void) {}
 #endif
 
-char *FS_LoadFile(const char *path, size_t *len)
+static char *load_file(const char *path, size_t *len)
 {
 	char ospath[2048];
 	if (!FS_SafeName(path))
@@ -587,6 +587,25 @@ char *FS_LoadFile(const char *path, size_t *len)
 			return load_os_file(ospath, len);
 	}
 	return NULL;
+}
+
+/* per thread: the host reads the main thread's, and a worker's loads don't hold up a frame */
+static _Thread_local int fs_loads;
+static _Thread_local double fs_load_seconds;
+
+void FS_TakeLoadStats(int *loads, double *seconds)
+{
+	*loads = fs_loads, *seconds = fs_load_seconds;
+	fs_loads = 0, fs_load_seconds = 0;
+}
+
+char *FS_LoadFile(const char *path, size_t *len)
+{
+	double t0 = Sys_Seconds();
+	char *buf = load_file(path, len);
+	fs_load_seconds += Sys_Seconds() - t0;
+	fs_loads++;
+	return buf;
 }
 
 int FS_WhichGameDir(const char *path)
