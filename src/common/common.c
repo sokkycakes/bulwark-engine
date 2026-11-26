@@ -9,6 +9,11 @@
 #ifdef __3DS__
 void CTR_PrintMemory(const char *when);
 #endif
+#ifdef BW_XBOX
+void XBX_Log(const char *text);
+void XBX_NoteFreeMemory(const void *from);
+extern bool xbx_memlog;
+#endif
 
 int developer = 0;
 static con_hook_fn con_hook, con_log_hook;
@@ -37,8 +42,12 @@ void Con_Print(const char *text)
 		con_log_hook(text);
 	if (con_redirect)
 		SB_AppendStr(con_redirect, text);
+#ifdef BW_XBOX
+	XBX_Log(text); /* no stdout: the log file and the kernel debugger */
+#else
 	fputs(text, stdout);
 	fflush(stdout);
+#endif
 }
 
 void Con_Printf(const char *fmt, ...)
@@ -74,6 +83,13 @@ void Sys_Error(const char *fmt, ...)
 #ifdef __3DS__
 	CTR_PrintMemory("at the error");
 #endif
+#ifdef BW_XBOX
+	XBX_Log("FATAL: ");
+	XBX_Log(buf);
+	XBX_Log("\n");
+	XBX_PrintMemory("at the error");
+	XBX_FatalScreen(buf);
+#endif
 	exit(1);
 }
 
@@ -98,9 +114,94 @@ void Sys_Sleep(double seconds)
 	nanosleep(&ts, NULL);
 }
 
+#ifdef BW_MEMTRACE
+/* BW_MEMTRACE builds remember every live allocation of 1 KB or more and who
+ * made it; "memtrace_live" sums them by caller. Debug only: no lock. */
+#define TRACE_SLOTS (1 << 17)
+typedef struct {
+	void *p, *from;
+	size_t n;
+} trace_t;
+static trace_t *trace;
+
+static void trace_add(void *p, size_t n, void *from)
+{
+	if (!p || n < 1024)
+		return;
+	if (!trace && !(trace = calloc(TRACE_SLOTS, sizeof(*trace))))
+		return;
+	for (size_t i = ((uintptr_t)p >> 4) & (TRACE_SLOTS - 1), k = 0; k < TRACE_SLOTS; k++, i = (i + 1) & (TRACE_SLOTS - 1))
+		if (!trace[i].p || trace[i].p == (void *)1) {
+			trace[i] = (trace_t){p, from, n};
+			return;
+		}
+}
+
+static void trace_remove(void *p)
+{
+	if (!p || !trace)
+		return;
+	for (size_t i = ((uintptr_t)p >> 4) & (TRACE_SLOTS - 1), k = 0; k < TRACE_SLOTS; k++, i = (i + 1) & (TRACE_SLOTS - 1)) {
+		if (!trace[i].p)
+			return;
+		if (trace[i].p == p) {
+			trace[i].p = (void *)1; /* a tombstone keeps later probes going */
+			trace[i].n = 0;
+			return;
+		}
+	}
+}
+
+void Mem_TraceReport(void)
+{
+	enum { MAXC = 512 };
+	static void *from[MAXC];
+	static size_t bytes[MAXC], count[MAXC];
+	int nc = 0;
+	size_t total = 0;
+	if (!trace)
+		return;
+	for (size_t i = 0; i < TRACE_SLOTS; i++) {
+		if ((uintptr_t)trace[i].p <= 1)
+			continue;
+		int c;
+		for (c = 0; c < nc && from[c] != trace[i].from; c++)
+			;
+		if (c == nc) {
+			if (nc == MAXC)
+				continue;
+			from[nc] = trace[i].from, bytes[nc] = count[nc] = 0, nc++;
+		}
+		bytes[c] += trace[i].n, count[c]++;
+		total += trace[i].n;
+	}
+	for (int done = 0; done < 60 && done < nc; done++) {
+		int best = done;
+		for (int c = done + 1; c < nc; c++)
+			if (bytes[c] > bytes[best])
+				best = c;
+		void *f = from[best];
+		size_t b = bytes[best], n = count[best];
+		from[best] = from[done], bytes[best] = bytes[done], count[best] = count[done];
+		from[done] = f, bytes[done] = b, count[done] = n;
+		/* the offset from Mem_Alloc places the caller in a relocated binary */
+		Con_Printf("memlive %7u KB %5u from %p (Mem_Alloc%+ld)\n", (unsigned)(b >> 10), (unsigned)n, f,
+		           (long)((char *)f - (char *)(void *)Mem_Alloc));
+	}
+	Con_Printf("memlive total %u KB in blocks of 1 KB or more\n", (unsigned)(total >> 10));
+}
+#endif
+
 void *Mem_Alloc(size_t size)
 {
 	void *p = calloc(1, size ? size : 1);
+#ifdef BW_MEMTRACE
+	trace_add(p, size, __builtin_return_address(0));
+#endif
+#ifdef BW_XBOX
+	if (xbx_memlog && size >= (64u << 10))
+		XBX_NoteFreeMemory(__builtin_return_address(0));
+#endif
 	if (!p)
 		Sys_Error("out of memory allocating %zu bytes (from %p)", size, __builtin_return_address(0));
 	return p;
@@ -108,13 +209,36 @@ void *Mem_Alloc(size_t size)
 
 void *Mem_Realloc(void *p, size_t size)
 {
+#ifdef BW_MEMTRACE
+	trace_remove(p); /* a failed realloc is fatal below anyway */
+#endif
 	void *n = realloc(p, size ? size : 1);
+#ifdef BW_MEMTRACE
+	trace_add(n, size, __builtin_return_address(0));
+#endif
+#ifdef BW_XBOX
+	if (xbx_memlog && size >= (64u << 10))
+		XBX_NoteFreeMemory(__builtin_return_address(0));
+#endif
 	if (!n)
 		Sys_Error("out of memory reallocating %zu bytes", size);
 	return n;
 }
 
-void Mem_Free(void *p) { free(p); }
+void Mem_Free(void *p)
+{
+#ifdef BW_MEMTRACE
+	trace_remove(p);
+#endif
+	free(p);
+}
+
+#ifndef BW_XBOX
+void *Mem_PageAlloc(size_t size, size_t commit) { return (void)commit, Mem_Alloc(size); }
+void Mem_PageFree(void *p) { Mem_Free(p); }
+bool Mem_PageCommit(void *p, size_t size) { return (void)p, (void)size, true; }
+void Mem_PageDecommit(void *p, size_t size) { (void)p, (void)size; }
+#endif
 
 char *Mem_Strdup(const char *s)
 {
@@ -143,21 +267,37 @@ size_t Str_Cat(char *dst, const char *src, size_t dstsize)
 	return l + Str_Copy(dst + l, src, dstsize - l);
 }
 
+/* tolower as the C locale the engine runs in has it; folding only on a
+ * mismatch keeps the equal-byte path free of calls */
+static inline int ascii_lower(int c) { return (unsigned)c - 'A' < 26u ? c + ('a' - 'A') : c; }
+
 int Str_ICmp(const char *a, const char *b)
 {
 	for (;; a++, b++) {
-		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
-		if (ca != cb || !ca)
-			return ca - cb;
+		int ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if (ca != cb) {
+			ca = ascii_lower(ca);
+			cb = ascii_lower(cb);
+			if (ca != cb)
+				return ca - cb;
+		}
+		if (!ca)
+			return 0;
 	}
 }
 
 int Str_NICmp(const char *a, const char *b, size_t n)
 {
 	for (; n; n--, a++, b++) {
-		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
-		if (ca != cb || !ca)
-			return ca - cb;
+		int ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if (ca != cb) {
+			ca = ascii_lower(ca);
+			cb = ascii_lower(cb);
+			if (ca != cb)
+				return ca - cb;
+		}
+		if (!ca)
+			return 0;
 	}
 	return 0;
 }
@@ -317,12 +457,26 @@ const char *COM_Parse(const char *data, char *token, size_t tokensize)
 	return data;
 }
 
+/* the sine and cosine of a in degrees; a zero angle (most rolls and many
+ * pitches) gives what sinf and cosf give for it, without the calls */
+static inline void sincos_deg(float a, float *s, float *c)
+{
+	float r = a * (float)(M_PI / 180.0);
+	if (r == 0) {
+		*s = r; /* keeps the sign of zero, as sinf does */
+		*c = 1;
+	} else {
+		*s = sinf(r);
+		*c = cosf(r);
+	}
+}
+
 void AngleVectors(const float *angles, float *forward, float *right, float *up)
 {
-	const float d2r = (float)(M_PI / 180.0);
-	float sy = sinf(angles[1] * d2r), cy = cosf(angles[1] * d2r);
-	float sp = sinf(angles[0] * d2r), cp = cosf(angles[0] * d2r);
-	float sr = sinf(angles[2] * d2r), cr = cosf(angles[2] * d2r);
+	float sy, cy, sp, cp, sr, cr;
+	sincos_deg(angles[1], &sy, &cy);
+	sincos_deg(angles[0], &sp, &cp);
+	sincos_deg(angles[2], &sr, &cr);
 	if (forward) {
 		forward[0] = cp * cy;
 		forward[1] = cp * sy;

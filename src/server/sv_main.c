@@ -17,7 +17,59 @@
 server_t sv;
 int sv_spawncount;
 
-static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate;
+static cvar_t *sv_gravity, *sv_maxvelocity, *sv_progs, *pr_maxedicts, *pr_heapsize, *sv_tickrate, *sv_maxticks, *sv_tickslack;
+int sv_frameticks;
+double sv_phase_seconds[SVP_COUNT];
+const char *const sv_phase_names[SVP_COUNT] = {"read",      "startframe", "routes", "prethink", "entities",
+                                               "postthink", "endframe",   "clients", "gc",      "send"};
+static double phase_t0;
+double sv_slowest_cmd;
+char sv_slowest_cmd_who[64];
+
+/* the time since the last phase mark goes to phase p */
+static void phase_mark(int p)
+{
+	double now = Sys_Seconds();
+	sv_phase_seconds[p] += now - phase_t0;
+	phase_t0 = now;
+}
+
+/* The Xbox runs the world at 30 ticks a second rather than 72. Most of a
+ * tick is the game's own walk over every entity (Nuclide's StartFrame), and
+ * players move by their own commands at the client's frame rate either way,
+ * so this costs little but think and toss timing granularity. At most three
+ * ticks run in one frame there; time beyond that is dropped, so a slow frame
+ * slows the world rather than making the next frame slower still. */
+#ifdef BW_XBOX
+#define SV_TICKRATE_DEFAULT "30"
+#define SV_MAXTICKS_DEFAULT "3"
+#define SV_TICKSLACK_DEFAULT "0.25"
+#else
+#define SV_TICKRATE_DEFAULT "72"
+#define SV_MAXTICKS_DEFAULT "0"
+#define SV_TICKSLACK_DEFAULT "0"
+#endif
+
+/* Stiletto (Nuclide's FindXRInput) never frees the three NSXRInput
+ * entities it makes each time a player spawns as a hero, about 20 a minute
+ * with 8 bots, so 768 slots fill in 15-20 minutes and the match stops with
+ * "no free entities". A slot costs about 5 KB, so a console with 128 MB
+ * takes twice as many (4 MB more, a match of 45 minutes or longer); a
+ * 64 MB one keeps 768. See docs/platforms/xbox.md "In-match benchmark". */
+static const char *default_maxedicts(void)
+{
+#ifdef BW_XBOX
+	if (!BW_SMALL_MEMORY())
+		return "1536";
+#endif
+	return BW_SV_MAXEDICTS;
+}
+
+static void pr_memstats_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	QC_PrintAllMemStats();
+}
 
 /* --- info strings ---------------------------------------------------- */
 
@@ -599,7 +651,8 @@ static void physics_toss(int e, int movetype)
 			ang[i] += avel[i] * dt;
 	for (int i = 0; i < 3; i++)
 		end[i] = org[i] + vel[i] * dt;
-	SV_Move(org, ev(e, PF.mins), ev(e, PF.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
+	/* with the water test, for the trace globals the impact below sets */
+	SV_MoveWater(org, ev(e, PF.mins), ev(e, PF.maxs), end, movetype == MOVETYPE_FLYMISSILE ? MOVE_MISSILE : MOVE_NORMAL, e, &tr);
 	VectorCopy(tr.endpos, org);
 	SV_LinkEdict(e, true);
 	if (pv->edicts[e].free || tr.fraction == 1)
@@ -863,13 +916,17 @@ void SV_Physics(void)
 	pmove_ents = true;
 	QC_SetGFloat(vm, G.time, (float)sv.time);
 	QC_SetGFloat(vm, G.frametime, sv.frametime);
+	phase_mark(SVP_READ);
 	if (QC_FindFunction(vm, "StartFrame")) {
 		QC_SetGInt(vm, G.self, 0);
 		QC_SetGInt(vm, G.other, 0);
 		QC_ExecuteByName(vm, "StartFrame");
 	}
+	phase_mark(SVP_START);
 	SV_RunRoutes();
+	phase_mark(SVP_ROUTES);
 	SV_ClientsPreThink();
+	phase_mark(SVP_PRETHINK);
 	for (int e = 1; e < vm->num_edicts; e++) {
 		if (vm->edicts[e].free)
 			continue;
@@ -884,14 +941,17 @@ void SV_Physics(void)
 		}
 		run_entity(e);
 	}
+	phase_mark(SVP_ENTITIES);
 	SV_ClientsPostThink();
 	Script_Frame(sv.time);
+	phase_mark(SVP_POSTTHINK);
 	if (QC_GFloat(vm, G.force_retouch) > 0)
 		QC_SetGFloat(vm, G.force_retouch, QC_GFloat(vm, G.force_retouch) - 1);
 	if (QC_FindFunction(vm, "EndFrame")) {
 		QC_SetGInt(vm, G.self, 0);
 		QC_ExecuteByName(vm, "EndFrame");
 	}
+	phase_mark(SVP_END);
 }
 
 void SV_Frame(double dt)
@@ -899,6 +959,7 @@ void SV_Frame(double dt)
 	static double accum;
 	if (!sv.active)
 		return;
+	phase_t0 = Sys_Seconds();
 	SV_ReadPackets();
 	SV_LinkReadPackets();
 	if (!sv.active)
@@ -906,7 +967,38 @@ void SV_Frame(double dt)
 	accum += dt;
 	if (accum > 0.25)
 		accum = 0.25; /* after a stall, drop time rather than spiral */
-	while (accum >= sv.frametime) {
+	if (sv_maxticks->ivalue > 0 && accum >= sv.frametime * (sv_maxticks->ivalue + 1)) {
+		/* past the frame's tick limit: the world loses the time, but players
+		   keep moving at the rate their commands say, as their clients do */
+		int drop = (int)(accum / sv.frametime) - sv_maxticks->ivalue;
+		accum -= drop * sv.frametime;
+		SV_ClientsDroppedTime(drop * sv.frametime);
+	}
+	/* With frames as long as ticks (30 fps against 30 ticks a second on the
+	 * Xbox), the time left over can sit near a tick boundary for seconds at
+	 * a time as the two clocks drift, and a millisecond of jitter in a
+	 * frame's length then gives no tick in one frame and two in the next:
+	 * a frame twice as slow, which misses its vblank. sv_tickslack lets a
+	 * tick run up to that fraction of a tick early or late instead, so a
+	 * frame near the boundary still runs one. Ticks keep their length, and
+	 * their count over time (what is owed stays under one tick plus the
+	 * slack); only which frame a tick runs in changes, and each runs within
+	 * the slack of the frame it would have run in. Ticks are counted by the same
+	 * subtractions that run them, so with no slack they fall exactly where
+	 * they always did. */
+	int ticks = 0;
+	double left = accum;
+	for (; left >= sv.frametime; left -= sv.frametime)
+		ticks++;
+	double slack = BW_CLAMP(sv_tickslack->value, 0, 0.5f) * sv.frametime;
+	if (slack > 0) {
+		if (ticks == 0 && accum >= sv.frametime - slack)
+			ticks = 1;
+		else if (ticks >= 2 && left < slack)
+			ticks--;
+	}
+	sv_frameticks = ticks;
+	for (; ticks > 0; ticks--) {
 		accum -= sv.frametime;
 		if (!sv.paused) {
 			SV_CompatFrame();
@@ -914,11 +1006,16 @@ void SV_Frame(double dt)
 			sv.time += sv.frametime;
 			sv.frames++;
 		}
+		phase_mark(SVP_READ); /* a paused tick's time stays with the reads */
 		SV_ClientsAfterPhysics();
+		phase_mark(SVP_CLIENTS);
 		QC_CollectGarbage(sv.vm, false);
+		phase_mark(SVP_GC);
 	}
+	phase_mark(SVP_READ);
 	SV_SendClientMessages();
 	SV_LinkSend();
+	phase_mark(SVP_SEND);
 }
 
 /* commands registered with registercommand go to the progs' ConsoleCmd */
@@ -1108,9 +1205,14 @@ void SV_Init(void)
 	sv_gravity = Cvar_Get("sv_gravity", "800", CVAR_SERVERINFO, "Downward acceleration for tossed entities");
 	sv_maxvelocity = Cvar_Get("sv_maxvelocity", "2000", 0, "Velocity clamp per axis");
 	sv_progs = Cvar_Get("sv_progs", "progs.dat", 0, "Server game module");
-	pr_maxedicts = Cvar_Get("pr_maxedicts", BW_SV_MAXEDICTS, 0, "Entity slots in the server game");
+	pr_maxedicts = Cvar_Get("pr_maxedicts", default_maxedicts(), 0, "Entity slots in the server game");
 	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
-	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
+	sv_tickrate = Cvar_Get("sv_tickrate", SV_TICKRATE_DEFAULT, 0, "Server frames per second");
+	sv_maxticks = Cvar_Get("sv_maxticks", SV_MAXTICKS_DEFAULT, 0,
+	                       "Most server frames run in one host frame, 0 for no limit; the rest of the time is dropped");
+	sv_tickslack = Cvar_Get("sv_tickslack", SV_TICKSLACK_DEFAULT, 0,
+	                        "Fraction of a server frame (up to 0.5) one may run early or late, so host frames as long "
+	                        "as server frames run one each rather than none, then two");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);
@@ -1119,6 +1221,7 @@ void SV_Init(void)
 	Cmd_Add("status", SV_Status_f);
 	Cmd_Add("edicts", SV_Edicts_f);
 	Cmd_Add("edict", SV_Edict_f);
+	Cmd_AddD("pr_memstats", pr_memstats_f, "Each QuakeC VM's entity and heap peaks, and the string table");
 	SV_InitCommands();
 	SV_InitSaves();
 	SV_InitCompat();

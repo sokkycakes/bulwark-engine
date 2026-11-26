@@ -230,7 +230,19 @@ typedef struct {
 	char hint[160]; /* the command's description, when there's nothing to list */
 } completion_t;
 
+#ifdef BW_LOWMEM
+/* 192 KB, taken the first time the console is open */
+static completion_t *comp_p;
+static completion_t *comp_get(void)
+{
+	if (!comp_p)
+		comp_p = Mem_Alloc(sizeof(*comp_p));
+	return comp_p;
+}
+#define comp (*comp_get())
+#else
 static completion_t comp;
+#endif
 static char comp_for[CON_INPUT] = "\1"; /* the input comp was made for */
 static int comp_cursor = -1;
 static int cycle = -1, cycle_end; /* the match Tab put in, and where it ends */

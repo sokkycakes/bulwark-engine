@@ -32,6 +32,7 @@ typedef struct {
 	float vecs[2][4];
 	int smin, tmin, w, h; /* lightmap extents in luxels */
 	int page, x, y;       /* place in the atlas, page -1 for none */
+	int lmofs;            /* its luxels in q1.luxels, w * h RGB triples */
 } q1face_t;
 
 typedef struct {
@@ -47,16 +48,31 @@ static struct {
 	int numnodes;
 	float (*planes)[4];
 	int numplanes;
-	uint8_t **pages; /* RGB copies of the lightmap pages */
+	/* every lit face's luxels packed end to end, for model lighting: the
+	 * atlas pages themselves are built only to upload, then freed */
+	uint8_t *luxels;
+	size_t numluxels, maxluxels; /* bytes */
+	int *pageused; /* rows of each page in use */
 	int numpages;
 	int headnode;
 } q1;
 
+/* the lightmap colours under the points asked for lately, by their exact
+ * bits: models that stand still are lit from the same point every frame,
+ * and a model drawn in two passes twice in one */
+#define LIGHTCACHE 64
+static struct {
+	uint32_t key[3];
+	bool used;
+	bool hit;
+	float rgb[3];
+} lightcache[LIGHTCACHE];
+
 void R_FreeQ1World(void)
 {
-	for (int i = 0; i < q1.numpages; i++)
-		Mem_Free(q1.pages[i]);
-	Mem_Free(q1.pages);
+	memset(lightcache, 0, sizeof(lightcache));
+	Mem_Free(q1.luxels);
+	Mem_Free(q1.pageused);
 	Mem_Free(q1.faces);
 	Mem_Free(q1.nodes);
 	Mem_Free(q1.planes);
@@ -80,16 +96,75 @@ static bool atlas_alloc(int w, int h, int *page, int *x, int *y)
 		shelf.rowh = 0;
 	}
 	if (!q1.numpages || shelf.y + h > LM_PAGE) {
-		q1.pages = Mem_Realloc(q1.pages, sizeof(uint8_t *) * (q1.numpages + 1));
-		q1.pages[q1.numpages++] = Mem_Alloc(LM_PAGE * LM_PAGE * 3);
+		q1.pageused = Mem_Realloc(q1.pageused, sizeof(int) * (q1.numpages + 1));
+		q1.pageused[q1.numpages++] = 0;
 		shelf.x = shelf.y = shelf.rowh = 0;
 	}
 	*page = q1.numpages - 1;
 	*x = shelf.x;
 	*y = shelf.y;
+	q1.pageused[*page] = BW_MAX(q1.pageused[*page], shelf.y + h);
 	shelf.x += w + 1; /* a gap keeps filtering from bleeding between faces */
 	shelf.rowh = BW_MAX(shelf.rowh, h + 1);
 	return true;
+}
+
+#ifdef BW_LOWMEM
+static const q1face_t *repack_faces;
+
+static int repack_cmp(const void *a, const void *b)
+{
+	const q1face_t *x = &repack_faces[*(const int *)a], *y = &repack_faces[*(const int *)b];
+	if (x->h != y->h)
+		return y->h - x->h;
+	return *(const int *)a - *(const int *)b;
+}
+
+/* Faces were placed on shelves in file order, so each shelf is as tall as
+ * its tallest face and the pages run long. Placed again tallest first, the
+ * same luxels take far fewer rows, and a page is uploaded only as tall as
+ * its rows (page_height): lqdm1's page goes from 1024x512 to 1024x256, 1 MB
+ * of GPU memory. The texels and their filtering are the same. */
+static void repack_lightmaps(int numfaces, const int *fvert, rvert_t *verts, rsurface_t *surfs)
+{
+	int *order = Mem_Alloc(sizeof(int) * (size_t)(numfaces + 1)), n = 0;
+	for (int f = 0; f < numfaces; f++)
+		if (q1.faces[f].page >= 0)
+			order[n++] = f;
+	repack_faces = q1.faces;
+	qsort(order, (size_t)n, sizeof(int), repack_cmp);
+	Mem_Free(q1.pageused);
+	q1.pageused = NULL;
+	q1.numpages = 0;
+	memset(&shelf, 0, sizeof(shelf));
+	for (int i = 0; i < n; i++) {
+		q1face_t *qf = &q1.faces[order[i]];
+		int ox = qf->x, oy = qf->y;
+		if (!atlas_alloc(qf->w, qf->h, &qf->page, &qf->x, &qf->y))
+			continue; /* it fitted before, so it fits again */
+		surfs[order[i]].lightmap = qf->page;
+		for (int k = fvert[order[i] * 2], end = k + fvert[order[i] * 2 + 1]; k < end; k++) {
+			verts[k].lm[0] += (float)(qf->x - ox);
+			verts[k].lm[1] += (float)(qf->y - oy);
+		}
+	}
+	Mem_Free(order);
+}
+#endif
+
+/* the height a page is uploaded at: low-memory builds trim the rows no
+ * face reached, to a power of two for consoles that swizzle textures */
+static int page_height(int page)
+{
+#ifdef BW_LOWMEM
+	int h = 16;
+	while (h < q1.pageused[page] && h < LM_PAGE)
+		h *= 2;
+	return h;
+#else
+	(void)page;
+	return LM_PAGE;
+#endif
 }
 
 /* --- WAD3 texture files ------------------------------------------------------ */
@@ -327,6 +402,7 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 	size_t litlen = 0;
 	geom_t g = {0};
 	char litname[160];
+	int *fvert = NULL; /* each face's first vertex (-1 for none) and vertex count */
 
 	R_FreeQ1World();
 	memset(&shelf, 0, sizeof(shelf));
@@ -388,6 +464,7 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 	q1.faces = Mem_Alloc(sizeof(q1face_t) * (numfaces + 1));
 	r_world.surfaces = Mem_Alloc(sizeof(rsurface_t) * (numfaces + 1));
 	r_world.numsurfaces = numfaces;
+	fvert = Mem_Alloc(sizeof(int) * 2 * (numfaces + 1));
 	styled = Mem_Alloc(64 * 64 * 3);
 	for (int f = 0; f < numfaces; f++) {
 		const uint8_t *fp = d + l[L_FACES].ofs + f * facesize;
@@ -405,6 +482,8 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 		rs->orig = f;
 		rs->lightmap = -1;
 		qf->page = -1;
+		qf->lmofs = -1;
+		fvert[f * 2] = -1;
 		if (ti < 0 || ti >= numtexinfo || nedges < 3 || nedges > 256 || firstedge < 0 ||
 		    firstedge + nedges > numsurfedges || plane < 0 || plane >= q1.numplanes) {
 			rs->material = R_FindMaterial("$default", 0);
@@ -461,7 +540,6 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 		if (!(tflags & TEX_SPECIAL) && lightofs >= 0 && qf->w <= 64 && qf->h <= 64 &&
 		    atlas_alloc(qf->w, qf->h, &qf->page, &qf->x, &qf->y)) {
 			int n = qf->w * qf->h;
-			uint8_t *page = q1.pages[qf->page];
 			memset(styled, 0, (size_t)n * 3);
 			/* every style at its normal strength, added up. GoldSrc light is
 			 * RGB with lightofs counting bytes, and full brightness at 255
@@ -479,19 +557,26 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 						styled[i * 3 + c] = (uint8_t)BW_MIN(v, 255);
 					}
 			}
-			for (int y = 0; y < qf->h; y++)
-				memcpy(page + ((size_t)(qf->y + y) * LM_PAGE + qf->x) * 3, styled + (size_t)y * qf->w * 3,
-				       (size_t)qf->w * 3);
+			if (q1.numluxels + (size_t)n * 3 > q1.maxluxels) {
+				q1.maxluxels = BW_MAX(q1.maxluxels * 2, q1.numluxels + (size_t)n * 3 + 65536);
+				q1.luxels = Mem_Realloc(q1.luxels, q1.maxluxels);
+			}
+			qf->lmofs = (int)q1.numluxels;
+			memcpy(q1.luxels + q1.numluxels, styled, (size_t)n * 3);
+			q1.numluxels += (size_t)n * 3;
 			rs->lightmap = qf->page;
 		} else if (!(tflags & TEX_SPECIAL) && lightofs < 0) {
 			/* compiled without light: full bright */
 			rs->lightmap = -1;
 		}
+		/* in luxels here, turned into page coordinates once the pages' sizes are known */
+		fvert[f * 2] = base;
+		fvert[f * 2 + 1] = nedges;
 		for (int k = base; k < g.num; k++) {
 			rvert_t *v = &g.v[k];
 			if (qf->page >= 0) {
-				v->lm[0] = (qf->x + (v->lm[0] / 16 - qf->smin) + 0.5f) / LM_PAGE;
-				v->lm[1] = (qf->y + (v->lm[1] / 16 - qf->tmin) + 0.5f) / LM_PAGE;
+				v->lm[0] = qf->x + (v->lm[0] / 16 - qf->smin) + 0.5f;
+				v->lm[1] = qf->y + (v->lm[1] / 16 - qf->tmin) + 0.5f;
 			} else {
 				v->lm[0] = v->lm[1] = 0;
 			}
@@ -514,11 +599,30 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 				rs->maxs[a] = BW_MAX(rs->maxs[a], g.v[k].xyz[a]);
 			}
 	}
+#ifdef BW_LOWMEM
+	repack_lightmaps(numfaces, fvert, g.v, r_world.surfaces);
+#endif
 	Mem_Free(styled);
 	Mem_Free(lit);
 	Mem_Free(texs);
+	if (q1.luxels) {
+		q1.luxels = Mem_Realloc(q1.luxels, q1.numluxels + 1);
+		q1.maxluxels = q1.numluxels + 1;
+	}
+	for (int f = 0; f < numfaces; f++) {
+		const q1face_t *qf = &q1.faces[f];
+		float ph;
+		if (qf->page < 0 || fvert[f * 2] < 0)
+			continue;
+		ph = (float)page_height(qf->page);
+		for (int k = fvert[f * 2], end = k + fvert[f * 2 + 1]; k < end; k++) {
+			g.v[k].lm[0] /= LM_PAGE;
+			g.v[k].lm[1] /= ph;
+		}
+	}
+	Mem_Free(fvert);
 
-	/* lightmap pages */
+	/* lightmap pages, built one at a time from the faces' luxels */
 	r_world.lightmapsize = LM_PAGE;
 	r_world.numlightmaps = q1.numpages;
 	if (q1.numpages) {
@@ -527,12 +631,24 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 			qglGenTextures(q1.numpages, r_world.lightmaps);
 			qglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			for (int i = 0; i < q1.numpages; i++) {
+				int ph = page_height(i);
+				r_world.lightmaprows += ph;
+				uint8_t *page = Mem_Alloc((size_t)LM_PAGE * ph * 3);
+				for (int f = 0; f < numfaces; f++) {
+					const q1face_t *qf = &q1.faces[f];
+					if (qf->page != i || qf->lmofs < 0)
+						continue;
+					for (int y = 0; y < qf->h; y++)
+						memcpy(page + ((size_t)(qf->y + y) * LM_PAGE + qf->x) * 3,
+						       q1.luxels + qf->lmofs + (size_t)y * qf->w * 3, (size_t)qf->w * 3);
+				}
 				GL_BindTexture(1, GL_TEXTURE_2D, r_world.lightmaps[i]);
-				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, LM_PAGE, LM_PAGE, 0, GL_RGB, GL_UNSIGNED_BYTE, q1.pages[i]);
+				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, LM_PAGE, ph, 0, GL_RGB, GL_UNSIGNED_BYTE, page);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+				Mem_Free(page);
 			}
 		}
 	}
@@ -576,7 +692,8 @@ bool R_LoadQ1World(bspmap_t *bsp, const char *path, const uint8_t *d, size_t siz
 	}
 	(void)bsp;
 	R_WorldUpload(g.v, g.num, g.i, g.numi);
-	Con_DPrintf("%s: %d faces, %d lightmap pages%s\n", path, numfaces, q1.numpages, lit ? " (coloured)" : "");
+	Con_DPrintf("%s: %d faces, %d lightmap pages (%d rows)%s\n", path, numfaces, q1.numpages, r_world.lightmaprows,
+	            lit ? " (coloured)" : "");
 	Mem_Free(g.v);
 	Mem_Free(g.i);
 	return true;
@@ -611,7 +728,7 @@ static int light_recurse(int num, const float *start, const float *end, float *r
 		float s, t;
 		int ls, lt;
 		const uint8_t *px;
-		if (f->page < 0)
+		if (f->lmofs < 0)
 			continue;
 		s = (DotProduct(mid, f->vecs[0]) + f->vecs[0][3]) / 16 - f->smin;
 		t = (DotProduct(mid, f->vecs[1]) + f->vecs[1][3]) / 16 - f->tmin;
@@ -619,7 +736,7 @@ static int light_recurse(int num, const float *start, const float *end, float *r
 			continue;
 		ls = (int)(s + 0.5f);
 		lt = (int)(t + 0.5f);
-		px = q1.pages[f->page] + ((size_t)(f->y + lt) * LM_PAGE + f->x + ls) * 3;
+		px = q1.luxels + f->lmofs + ((size_t)lt * f->w + ls) * 3;
 		for (int k = 0; k < 3; k++)
 			rgb[k] = px[k] / 255.0f;
 		return 1;
@@ -627,11 +744,30 @@ static int light_recurse(int num, const float *start, const float *end, float *r
 	return light_recurse(n->children[!side], mid, end, rgb);
 }
 
+static bool light_below(const float *p, float *rgb)
+{
+	uint32_t k[3];
+	memcpy(k, p, sizeof(k));
+	unsigned h = (k[0] * 2654435761u ^ k[1] * 40503u ^ k[2] * 2246822519u) >> 16 & (LIGHTCACHE - 1);
+	if (lightcache[h].used && !memcmp(lightcache[h].key, k, sizeof(k))) {
+		memcpy(rgb, lightcache[h].rgb, sizeof(float) * 3);
+		return lightcache[h].hit;
+	}
+	float end[3] = {p[0], p[1], p[2] - 2048};
+	rgb[0] = rgb[1] = rgb[2] = 0;
+	bool hit = light_recurse(q1.headnode, p, end, rgb) != 0;
+	memcpy(lightcache[h].key, k, sizeof(k));
+	lightcache[h].used = true;
+	lightcache[h].hit = hit;
+	memcpy(lightcache[h].rgb, rgb, sizeof(float) * 3);
+	return hit;
+}
+
 bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 {
-	float end[3] = {p[0], p[1], p[2] - 2048}, rgb[3] = {0, 0, 0};
+	float rgb[3];
 	float scale = r_lightmapscale ? r_lightmapscale->value : 2;
-	if (!q1.nodes || !light_recurse(q1.headnode, p, end, rgb))
+	if (!q1.nodes || !light_below(p, rgb))
 		return false;
 	/* no direction is stored: mostly ambient, a little from above */
 	for (int k = 0; k < 3; k++) {

@@ -582,10 +582,16 @@ static bool cheats_allowed(client_t *c)
 	return false;
 }
 
-static void toggle_flag(client_t *c, int flag, const char *name)
+/* "god" flips it; "god 1" and "god 0" set it, so a script can repeat
+ * the command without knowing the state (a benchmark that must not die) */
+static void toggle_flag(client_t *c, int argc, const char **argv, int flag, const char *name)
 {
 	int e = c->edict;
-	int flags = (int)QC_EFloat(sv.vm, e, F.flags) ^ flag;
+	int flags = (int)QC_EFloat(sv.vm, e, F.flags);
+	if (argc > 1)
+		flags = atoi(argv[1]) ? flags | flag : flags & ~flag;
+	else
+		flags ^= flag;
 	QC_SetEFloat(sv.vm, e, F.flags, (float)flags);
 	SV_ClientPrint(c, 2, va("%s %s\n", name, flags & flag ? "ON" : "OFF"));
 }
@@ -611,9 +617,9 @@ bool SV_ClientCheatCommand(client_t *c, int argc, const char **argv)
 	if (!cheats_allowed(c))
 		return true;
 	if (!Str_ICmp(cmd, "god"))
-		toggle_flag(c, FL_GODMODE, "godmode");
+		toggle_flag(c, argc, argv, FL_GODMODE, "godmode");
 	else if (!Str_ICmp(cmd, "notarget"))
-		toggle_flag(c, FL_NOTARGET, "notarget");
+		toggle_flag(c, argc, argv, FL_NOTARGET, "notarget");
 	else if (!Str_ICmp(cmd, "noclip"))
 		toggle_movetype(c, MOVETYPE_NOCLIP, "noclip");
 	else if (!Str_ICmp(cmd, "fly"))
@@ -621,7 +627,7 @@ bool SV_ClientCheatCommand(client_t *c, int argc, const char **argv)
 	else if (!Str_ICmp(cmd, "buddha")) {
 		/* Source's buddha: damage stops at 1 health; the closest the
 		 * engine can do is godmode */
-		toggle_flag(c, FL_GODMODE, "buddha (godmode)");
+		toggle_flag(c, argc, argv, FL_GODMODE, "buddha (godmode)");
 	} else if (!Str_ICmp(cmd, "give")) {
 		/* give health/h <amount>; anything else is the game's */
 		if (argc > 1 && (!Str_ICmp(argv[1], "h") || !Str_ICmp(argv[1], "health")) && F.health >= 0) {

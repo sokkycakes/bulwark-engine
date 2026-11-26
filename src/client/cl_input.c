@@ -491,7 +491,13 @@ static void stick_nav(int axis, float value)
 		stick_held[axis] = 0;
 		IN_KeyEvent(keys[axis][held > 0], false, 0);
 	}
+#ifdef BW_UI_NATIVE
+	/* the native UI hands settings to the engine's menus (menu_options),
+	 * which a pad-only console must reach with the stick too */
+	if (dir && (UI_WantsInput() || EM_Active())) {
+#else
 	if (dir && UI_WantsInput()) {
+#endif
 		stick_held[axis] = dir;
 		IN_KeyEvent(keys[axis][dir > 0], true, 0);
 	}
@@ -523,7 +529,7 @@ static const struct {
 	{K_GP_DPAD_DOWN, "slot3"}, {K_GP_DPAD_LEFT, "slot4"},
 };
 
-void IN_ControllerAdded(int dev)
+static void pad_defaults_if_unbound(void)
 {
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
 		if (bindings[pad_defaults[i].key])
@@ -531,6 +537,29 @@ void IN_ControllerAdded(int dev)
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
 		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
 }
+
+void IN_ControllerAdded(int dev) { pad_defaults_if_unbound(); }
+
+#ifdef BW_UI_NATIVE
+/* in_paddefaults: every pad button back to the layout above, for the
+ * Controller page's "Reset pad layout" (and after cfg_reset, whose
+ * unbindall leaves a console's pad with nothing bound).
+ * in_paddefaults unbound: the layout only if no pad button is bound, as a
+ * pad's arrival does. xbox_ui.cfg runs it: on the console the pads are
+ * found inside VID_Init, so IN_ControllerAdded binds them before the
+ * first Cbuf_Execute, and then the game's configs start with unbindall. */
+static void PadDefaults_f(int argc, const char **argv)
+{
+	if (argc > 1 && !Str_ICmp(argv[1], "unbound")) {
+		pad_defaults_if_unbound();
+		return;
+	}
+	for (int k = K_GP_DPAD_UP; k <= K_GP_RTRIGGER; k++)
+		Key_SetBinding(k, "");
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
+		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
+}
+#endif
 
 void IN_ControllerRemoved(int dev)
 {
@@ -734,6 +763,9 @@ void IN_Init(void)
 	Cmd_Add("unbindall", Unbindall_f);
 	Cmd_Add("bindlist", Bindlist_f);
 	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");
+#ifdef BW_UI_NATIVE
+	Cmd_AddD("in_paddefaults", PadDefaults_f, "in_paddefaults [unbound]: bind the controller's buttons to the default pad layout (unbound: only if none is bound)");
+#endif
 	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
 	Cmd_Add("impulse", Impulse_f);
 #define ADD(n)                                                                                                         \

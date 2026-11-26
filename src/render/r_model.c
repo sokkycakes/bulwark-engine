@@ -6,8 +6,14 @@
 #include "../common/cmd.h"
 #include "../common/skel.h"
 #include "../common/studio.h"
+#ifdef BW_XBOX
+#include "../platform/xbox/xbox.h"
+#endif
 
 #include <math.h>
+#ifdef __SSE__
+#include <xmmintrin.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -42,6 +48,24 @@ typedef struct alias_s {
 	material_t **skins;
 	framegroup_t *groups;
 	int numgroups;
+#ifdef BW_LOWMEM
+	/* poses and normals as the file codes them, in place of poses and
+	   normals: position = qpos * scale + origin, normal = qnorm / 127 */
+	uint8_t *qpos;       /* numposes * numverts * 3 */
+	int8_t *qnorm;       /* numposes * numverts * 3 */
+	float *qxform;       /* numposes * 6: scale xyz, origin xyz */
+#endif
+	/* the last pose drawn this frame: copies of the model in step with
+	   it (a map's torches) draw it again without lerping and sending
+	   the vertices again; the indices are sent once */
+	GLuint vao, vbo, ebo;
+	int lastp1, lastp2;
+	float lastlerp;
+	unsigned lastframe;
+	/* the pose stayed from one frame to the next, so it went to a static
+	   buffer, which later frames draw from until it changes (an item on
+	   the floor, never animated, is lerped and sent once) */
+	bool held;
 } alias_t;
 
 static uint8_t palette[768];
@@ -135,6 +159,33 @@ static void compute_normals(alias_t *a, const int *tris)
 		}
 	}
 }
+
+#ifdef BW_LOWMEM
+/* swaps the float poses and normals of a loaded model for their coded
+ * form. Every position was a byte times its pose's scale plus its origin
+ * (xform, six floats a pose), so the byte comes back exactly and decodes
+ * to the same float. */
+static void alias_compact(alias_t *a, const float *xform)
+{
+	size_t n = (size_t)a->numposes * a->numverts;
+	a->qpos = Mem_Alloc(n * 3);
+	a->qnorm = Mem_Alloc(n * 3);
+	a->qxform = Mem_Alloc(sizeof(float) * 6 * a->numposes);
+	memcpy(a->qxform, xform, sizeof(float) * 6 * a->numposes);
+	for (int p = 0; p < a->numposes; p++) {
+		const float *x = xform + p * 6;
+		for (size_t i = (size_t)p * a->numverts * 3; i < (size_t)(p + 1) * a->numverts * 3; i++) {
+			int k = (int)(i % 3);
+			float q = x[k] != 0 ? (a->poses[i] - x[3 + k]) / x[k] : 0;
+			float nv = a->normals[i] * 127.0f;
+			a->qpos[i] = (uint8_t)BW_MAX(0, BW_MIN(255, (int)lrintf(q)));
+			a->qnorm[i] = (int8_t)BW_MAX(-127, BW_MIN(127, (int)lrintf(nv)));
+		}
+	}
+	Mem_Free(a->poses), a->poses = NULL;
+	Mem_Free(a->normals), a->normals = NULL;
+}
+#endif
 
 static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 {
@@ -290,6 +341,8 @@ static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 			a->numposes++;
 		}
 	}
+	/* the doubling above leaves room that is never used */
+	a->poses = Mem_Realloc(a->poses, sizeof(float) * 3 * numverts * BW_MAX(1, a->numposes));
 	a->normals = Mem_Alloc(sizeof(float) * 3 * numverts * a->numposes);
 	compute_normals(a, tris);
 	Mem_Free(onseam);
@@ -308,6 +361,17 @@ static bool load_alias(rmodel_t *mod, const uint8_t *d, size_t size)
 			if (v > mod->maxs[k])
 				mod->maxs[k] = v;
 		}
+#ifdef BW_LOWMEM
+	{
+		/* one scale and origin for every pose */
+		float *xf = Mem_Alloc(sizeof(float) * 6 * a->numposes);
+		for (int i = 0; i < a->numposes; i++)
+			for (int k = 0; k < 3; k++)
+				xf[i * 6 + k] = scale[k], xf[i * 6 + 3 + k] = origin[k];
+		alias_compact(a, xf);
+		Mem_Free(xf);
+	}
+#endif
 	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
 	mod->alias = a;
 	mod->type = MOD_ALIAS;
@@ -447,6 +511,17 @@ static bool load_md2(rmodel_t *mod, const uint8_t *d, size_t size)
 			if (v > mod->maxs[k])
 				mod->maxs[k] = v;
 		}
+#ifdef BW_LOWMEM
+	{
+		/* each frame has its own scale and origin */
+		float *xf = Mem_Alloc(sizeof(float) * 6 * numframes);
+		for (int i = 0; i < numframes; i++)
+			for (int k = 0; k < 6; k++)
+				xf[i * 6 + k] = rdf(d + ofs_frames + (size_t)i * framesize + k * 4);
+		alias_compact(a, xf);
+		Mem_Free(xf);
+	}
+#endif
 	a->groups = Skel_LoadFramegroups(mod->name, &a->numgroups);
 	mod->alias = a;
 	mod->type = MOD_ALIAS;
@@ -464,7 +539,22 @@ typedef struct {
 	 * geomset a custom skin selects), -1 for meshes always drawn */
 	int geomgroup, geomvalue;
 	char name[64]; /* the surface a custom skin's "replace" names */
+	int firstvert, numverts; /* the vertices its triangles use; 0 verts: unknown */
 } iqmmesh_t;
+
+/* what skinning changes, apart from the rest of rvert_t, which stays put.
+ * The 3DS backend reads rvert_t's layout alone, so there skinning still
+ * replaces whole vertices. */
+#ifdef __3DS__
+#define SKIN_SPLIT 0
+typedef rvert_t skinvert_t;
+#else
+#define SKIN_SPLIT 1
+typedef struct {
+	float xyz[3];
+	float normal[3];
+} skinvert_t;
+#endif
 
 typedef struct iqm_s {
 	rvert_t *verts;
@@ -474,12 +564,25 @@ typedef struct iqm_s {
 	iqmmesh_t *meshes;
 	int nummeshes;
 	GLuint vao, vbo, ebo;
+	GLuint skinvbo; /* skinned models: the posed positions and normals (skinvert_t), streamed each draw */
+#ifdef BW_XBOX
+	GLuint gpuvao; /* the rest pose from vbo alone, posed by the GPU (XBGL_SkinBones); 0: not possible */
+#endif
 	framegroup_t *anims;  /* points into skel when there is one */
 	int numanims;
 	/* skinning: up to four joints per vertex */
 	skelmodel_t *skel;
 	uint8_t (*blendidx)[4];
-	float (*blendw)[4];
+	float (*blendw)[4];   /* NULL: each vertex follows blendidx[0] alone */
+	/* per joint, the bind position and the farthest vertex it moves from
+	 * there (radius < 0: none), to bound a pose for culling */
+	float (*jointsphere)[4];
+	float (*rest)[8];     /* position, 0, unit normal, 0 */
+	void *restmem;        /* rest, before aligning it for SSE loads */
+	skinvert_t *posed;    /* the skinned positions and normals, when skinvbo holds them */
+	float *lastskin;      /* the skinning matrices the vertices were last skinned with */
+	int lastlo, lasthi;   /* and the vertices that were */
+	uint8_t *lastshown;   /* and which meshes those were, one flag each */
 	/* studio models: numfamilies x numskinref materials, picked by .skin */
 	material_t **famskins;
 	int numfamilies, numskinref;
@@ -568,7 +671,7 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 	for (uint32_t m = 0; m < num_meshes; m++) {
 		const uint8_t *me = d + ofs_meshes + m * 24;
 		uint32_t mat = (uint32_t)rd32(me + 4), ft = (uint32_t)rd32(me + 16), nt = (uint32_t)rd32(me + 20);
-		uint32_t mname = (uint32_t)rd32(me);
+		uint32_t mname = (uint32_t)rd32(me), fv = (uint32_t)rd32(me + 8), nv = (uint32_t)rd32(me + 12);
 		const char *matname = mat < num_text ? text + mat : "";
 		char path[192];
 		q->meshes[m].geomgroup = q->meshes[m].geomvalue = -1;
@@ -587,6 +690,14 @@ static bool load_iqm(rmodel_t *mod, const uint8_t *d, size_t size)
 			nt = num_tris - ft;
 		q->meshes[m].firstindex = (int)ft * 3;
 		q->meshes[m].numindexes = (int)nt * 3;
+		/* a range that doesn't hold all its triangles' vertices is ignored */
+		if (fv < num_verts && nv <= num_verts - fv) {
+			bool inside = true;
+			for (uint32_t i = ft * 3; i < (ft + nt) * 3 && inside; i++)
+				inside = q->indices[i] >= fv && q->indices[i] < fv + nv;
+			if (inside)
+				q->meshes[m].firstvert = (int)fv, q->meshes[m].numverts = (int)nv;
+		}
 	}
 	finish_iqm(mod, q);
 	return true;
@@ -615,6 +726,54 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 		}
 	if (!num_verts)
 		memset(mod->mins, 0, sizeof(mod->mins)), memset(mod->maxs, 0, sizeof(mod->maxs));
+	if (q->skel) {
+		/* the rest pose apart, with unit normals: skinning then need not
+		 * renormalise what a rigid bone moves */
+		bool single = true;
+		q->restmem = Mem_Alloc(sizeof(*q->rest) * (num_verts + 1) + 16);
+		q->rest = (float(*)[8])(((uintptr_t)q->restmem + 15) & ~(uintptr_t)15);
+		for (int i = 0; i < num_verts; i++) {
+			float n[3];
+			VectorCopy(q->verts[i].normal, n);
+			if (VectorNormalize(n) == 0)
+				VectorCopy(q->verts[i].normal, n);
+			VectorCopy(q->verts[i].xyz, q->rest[i]);
+			VectorCopy(n, q->rest[i] + 4);
+			VectorCopy(n, q->verts[i].normal);
+			if (q->blendw)
+				single = single && q->blendw[i][0] == 1 && !q->blendw[i][1] && !q->blendw[i][2] && !q->blendw[i][3];
+		}
+		if (single)
+			Mem_Free(q->blendw), q->blendw = NULL; /* every vertex follows one bone */
+	}
+	if (q->skel && num_verts) {
+		int n = q->skel->numjoints;
+		q->jointsphere = Mem_Alloc(sizeof(*q->jointsphere) * n);
+		for (int j = 0; j < n; j++) {
+			bonemat_t bind;
+			Bone_Invert(bind, q->skel->invbind[j]);
+			q->jointsphere[j][0] = bind[3], q->jointsphere[j][1] = bind[7], q->jointsphere[j][2] = bind[11];
+			q->jointsphere[j][3] = -1;
+		}
+		for (int i = 0; i < num_verts; i++)
+			for (int k = 0; k < (q->blendw ? 4 : 1); k++) {
+				float *js, d[3];
+				if (q->blendidx[i][k] >= n || (q->blendw && !(q->blendw[i][k] > 0)))
+					continue;
+				js = q->jointsphere[q->blendidx[i][k]];
+				for (int c = 0; c < 3; c++)
+					d[c] = q->verts[i].xyz[c] - js[c];
+				js[3] = BW_MAX(js[3], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+			}
+	}
+#ifdef BW_XBOX
+	/* one bone a vertex and few enough bones: the GPU can pose them, reading
+	 * the bone's palette row from the lightmap st, which models don't use */
+	bool gpuskin = q->skel && !q->blendw && q->skel->numjoints <= 60;
+	if (gpuskin)
+		for (int i = 0; i < num_verts; i++)
+			q->verts[i].lm[0] = (float)(q->blendidx[i][0] * 3), q->verts[i].lm[1] = 0;
+#endif
 	if (R_Active() && num_verts) {
 		qglGenVertexArrays(1, &q->vao);
 		qglGenBuffers(1, &q->vbo);
@@ -622,11 +781,43 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 		qglBindVertexArray(q->vao);
 		qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
 		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * num_verts), q->verts,
-		              q->skel ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+		              q->skel && !SKIN_SPLIT ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, q->ebo);
 		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * q->numindexes), q->indices, GL_STATIC_DRAW);
 		R_SetupVertexAttribs();
+		if (q->skel && SKIN_SPLIT) {
+			/* positions and normals from their own buffer, which skinning
+			 * replaces: under half of rvert_t to send each draw. It starts
+			 * with the rest pose. */
+			q->posed = Mem_Alloc(sizeof(skinvert_t) * num_verts);
+			for (int i = 0; i < num_verts; i++) {
+				memcpy(q->posed[i].xyz, q->verts[i].xyz, sizeof(q->posed[i].xyz));
+				memcpy(q->posed[i].normal, q->verts[i].normal, sizeof(q->posed[i].normal));
+			}
+			qglGenBuffers(1, &q->skinvbo);
+			qglBindBuffer(GL_ARRAY_BUFFER, q->skinvbo);
+			qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(skinvert_t) * num_verts), q->posed, GL_STREAM_DRAW);
+			qglVertexAttribPointer(ATTR_POS, 3, GL_FLOAT, GL_FALSE, sizeof(skinvert_t), (void *)offsetof(skinvert_t, xyz));
+			qglVertexAttribPointer(ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(skinvert_t),
+			                       (void *)offsetof(skinvert_t, normal));
+		}
+#ifdef BW_XBOX
+		if (gpuskin) {
+			qglGenVertexArrays(1, &q->gpuvao);
+			qglBindVertexArray(q->gpuvao);
+			qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
+			qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, q->ebo);
+			R_SetupVertexAttribs();
+		}
+#endif
 		qglBindVertexArray(0);
+#ifdef BW_LOWMEM
+		/* GL has its own copies; skinning reads the rest pose and writes
+		 * whole vertices only when they have no posed buffer of their own */
+		Mem_Free(q->indices), q->indices = NULL;
+		if (!q->skel || SKIN_SPLIT)
+			Mem_Free(q->verts), q->verts = NULL;
+#endif
 	}
 	mod->iqm = q;
 	mod->type = MOD_IQM;
@@ -679,6 +870,8 @@ static material_t *studio_skin(const char *model, const studio_texture_t *t)
 		if (studio_extsize(t, &ew, &eh) && R_ImageExists(ext))
 			return R_FindMaterial(ext, MATF_MODEL);
 	}
+	if (!t->pixels)
+		return R_FindMaterial(name, MATF_MODEL); /* could not be read back */
 	rgba = Mem_Alloc((size_t)t->width * t->height * 4);
 	for (int i = 0; i < t->width * t->height; i++) {
 		uint8_t c = t->pixels[i];
@@ -731,7 +924,10 @@ static bool load_studio(rmodel_t *mod)
 	iqm_t *q;
 	bonemat_t *rest;
 	float *trs;
-	int maxverts = 0, nv = 0, ni = 0, nm = 0, nskins;
+	int maxverts = 0, nv = 0, ni = 0, nm = 0, nskins, hashsize = 1;
+	/* strip and fan corners repeat vertices: within a mesh, a vertex is
+	 * made once for each vertex, normal and texture coordinate it pairs */
+	struct weld { uint64_t key; int vert, mesh; } *weld;
 	if (!st)
 		return false;
 	for (int b = 0; b < st->numbodyparts; b++)
@@ -742,6 +938,9 @@ static bool load_studio(rmodel_t *mod)
 				nm++;
 			}
 		}
+	while (hashsize < maxverts * 2)
+		hashsize <<= 1;
+	weld = Mem_Alloc(sizeof(*weld) * hashsize);
 	q = Mem_Alloc(sizeof(*q));
 	q->skel = Skel_LoadModel(mod->name);
 	q->verts = Mem_Alloc(sizeof(rvert_t) * (maxverts + 1));
@@ -763,6 +962,9 @@ static bool load_studio(rmodel_t *mod)
 		else
 			memcpy(rest[j], rel, sizeof(bonemat_t));
 	}
+#ifdef BW_LOWMEM
+	Studio_LoadPixels(mod->name);
+#endif
 	/* skins: family x slot */
 	nskins = st->numskinref * BW_MAX(1, st->numskinfamilies);
 	q->numskinref = st->numskinref;
@@ -778,6 +980,9 @@ static bool load_studio(rmodel_t *mod)
 		}
 		Mem_Free(bytex);
 	}
+#ifdef BW_LOWMEM
+	Studio_DropPixels(mod->name); /* uploaded */
+#endif
 	for (int b = 0; b < st->numbodyparts; b++)
 	for (int s = 0; s < st->bodyparts[b].nummodels; s++) {
 		const studio_submodel_t *sm = &st->bodyparts[b].models[s];
@@ -794,38 +999,64 @@ static bool load_studio(rmodel_t *mod)
 			Str_Copy(out->name, t ? t->name : "", sizeof(out->name));
 			out->material = slot >= 0 && slot < q->numskinref ? q->famskins[slot] : R_FindMaterial("$default", MATF_MODEL);
 			out->firstindex = ni;
+			out->firstvert = nv;
 			/* strips (n > 0) and fans (n < 0) of n vertices, until 0 */
 			for (;;) {
-				int n = (int16_t)(p[0] | p[1] << 8), first = nv, fan = n < 0;
+				int n = (int16_t)(p[0] | p[1] << 8), fan = n < 0;
+				uint32_t corner[3] = {0, 0, 0};
 				p += 2;
 				if (!n)
 					break;
 				n = abs(n);
 				for (int i = 0; i < n; i++, p += 8) {
-					uint8_t bone;
-					studio_vert(sm, rest, t, p, &q->verts[nv], &bone);
-					if (q->skel) {
-						q->blendidx[nv][0] = bone;
-						q->blendw[nv][0] = 1;
+					uint64_t key = (uint64_t)rd32(p) | (uint64_t)(uint32_t)rd32(p + 4) << 32;
+					uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 32) & (uint32_t)(hashsize - 1);
+					uint32_t v;
+					while (weld[h].mesh == q->nummeshes && weld[h].key != key)
+						h = (h + 1) & (uint32_t)(hashsize - 1);
+					if (weld[h].mesh == q->nummeshes) {
+						v = (uint32_t)weld[h].vert;
+					} else {
+						uint8_t bone;
+						studio_vert(sm, rest, t, p, &q->verts[nv], &bone);
+						if (q->skel) {
+							q->blendidx[nv][0] = bone;
+							q->blendw[nv][0] = 1;
+						}
+						weld[h].key = key, weld[h].vert = nv, weld[h].mesh = q->nummeshes;
+						v = (uint32_t)nv++;
 					}
-					nv++;
-				}
-				for (int i = 2; i < n; i++) {
-					uint32_t a, b2, c = (uint32_t)(first + i);
-					if (fan)
-						a = (uint32_t)first, b2 = (uint32_t)(first + i - 1);
-					else if (i & 1)
-						a = (uint32_t)(first + i - 1), b2 = (uint32_t)(first + i - 2);
-					else
-						a = (uint32_t)(first + i - 2), b2 = (uint32_t)(first + i - 1);
-					q->indices[ni++] = a, q->indices[ni++] = b2, q->indices[ni++] = c;
+					/* corner: the first vertex, the one two back and the one before */
+					if (i >= 2) {
+						if (fan)
+							q->indices[ni++] = corner[0], q->indices[ni++] = corner[2], q->indices[ni++] = v;
+						else if (i & 1)
+							q->indices[ni++] = corner[2], q->indices[ni++] = corner[1], q->indices[ni++] = v;
+						else
+							q->indices[ni++] = corner[1], q->indices[ni++] = corner[2], q->indices[ni++] = v;
+					}
+					if (i == 0)
+						corner[0] = v;
+					corner[1] = corner[2], corner[2] = v;
 				}
 			}
 			out->numindexes = ni - out->firstindex;
+			out->numverts = nv - out->firstvert;
 		}
 	}
 	q->numverts = nv;
 	q->numindexes = ni;
+	/* the triangle count bounded the vertices; strips and fans share theirs */
+	q->verts = Mem_Realloc(q->verts, sizeof(rvert_t) * (nv + 1));
+	if (q->skel) {
+		q->blendidx = Mem_Realloc(q->blendidx, sizeof(*q->blendidx) * (nv + 1));
+#ifdef BW_LOWMEM
+		/* every studio vertex follows one bone with all its weight */
+		Mem_Free(q->blendw), q->blendw = NULL;
+#else
+		q->blendw = Mem_Realloc(q->blendw, sizeof(*q->blendw) * (nv + 1));
+#endif
+	}
 	{
 		/* face the triangles the way the IQM loader leaves its own: wound
 		 * with their vertex normals, GL's front. Counted, so one odd mesh
@@ -848,11 +1079,12 @@ static bool load_studio(rmodel_t *mod)
 				q->indices[i + 1] = q->indices[i + 2];
 				q->indices[i + 2] = tmp;
 			}
-		Con_DPrintf("%s: studio model, %d triangles, %d bones, %d sequences\n", mod->name, ni / 3, st->numbones,
-		            st->numseqs);
+		Con_DPrintf("%s: studio model, %d triangles, %d vertices, %d bones, %d sequences\n", mod->name, ni / 3, nv,
+		            st->numbones, st->numseqs);
 	}
 	Mem_Free(trs);
 	Mem_Free(rest);
+	Mem_Free(weld);
 	finish_iqm(mod, q);
 	return true;
 }
@@ -1208,8 +1440,18 @@ static void free_model(rmodel_t *m)
 	}
 	if (m->alias) {
 		alias_t *a = m->alias;
+		if (R_Active() && a->vao) {
+			qglDeleteVertexArrays(1, &a->vao);
+			qglDeleteBuffers(1, &a->vbo);
+			qglDeleteBuffers(1, &a->ebo);
+		}
 		Mem_Free(a->poses);
 		Mem_Free(a->normals);
+#ifdef BW_LOWMEM
+		Mem_Free(a->qpos);
+		Mem_Free(a->qnorm);
+		Mem_Free(a->qxform);
+#endif
 		Mem_Free(a->st);
 		Mem_Free(a->remap);
 		Mem_Free(a->indices);
@@ -1224,6 +1466,12 @@ static void free_model(rmodel_t *m)
 			qglDeleteVertexArrays(1, &q->vao);
 			qglDeleteBuffers(1, &q->vbo);
 			qglDeleteBuffers(1, &q->ebo);
+			if (q->skinvbo)
+				qglDeleteBuffers(1, &q->skinvbo);
+#ifdef BW_XBOX
+			if (q->gpuvao)
+				qglDeleteVertexArrays(1, &q->gpuvao);
+#endif
 		}
 		Mem_Free(q->verts);
 		Mem_Free(q->indices);
@@ -1232,6 +1480,11 @@ static void free_model(rmodel_t *m)
 			Mem_Free(q->anims);
 		Mem_Free(q->blendidx);
 		Mem_Free(q->blendw);
+		Mem_Free(q->jointsphere);
+		Mem_Free(q->restmem);
+		Mem_Free(q->posed);
+		Mem_Free(q->lastskin);
+		Mem_Free(q->lastshown);
 		Mem_Free(q->famskins);
 		Mem_Free(q);
 	}
@@ -1364,15 +1617,117 @@ float R_FrameDuration(rmodel_t *m, int frame)
 
 /* --- drawing ---------------------------------------------------------------- */
 
-/* poses a skeletal IQM for e and uploads the skinned vertices: the bones
- * come from the entity's skeleton object when it has one, otherwise from
- * its frame fields */
-static void skin_iqm(iqm_t *q, rentity_t *e)
+/* whether mesh i of q draws for e: a studio body part shows one of its
+ * sub-models, the one a custom skin's geomset picks */
+static bool mesh_shown(const iqm_t *q, const rentity_t *e, int i)
 {
-	static bonemat_t *bones, *skin;
+	const iqmmesh_t *me = &q->meshes[i];
+	return me->numindexes && (me->geomgroup < 0 || R_SkinGeomset(e->customskin, me->geomgroup) == me->geomvalue);
+}
+
+/* a bone's skinning matrix by columns, for vertices that follow it alone:
+ * the three axes and the origin, then the axes over the bone's uniform
+ * scale, for normals that stay unit length; the fourth lanes are 0 */
+typedef struct {
+	float col[4][4];
+	float ncol[3][4];
+} skinbone_t;
+
+/* where skinning writes: the posed positions and normals alone when they
+ * have their own buffer, otherwise whole vertices */
+static skinvert_t *skin_out(iqm_t *q)
+{
+#if SKIN_SPLIT
+	return q->posed;
+#else
+	return q->verts;
+#endif
+}
+
+/* rest vertices lo..hi-1 of q moved by the bones into skin_out(q). Each
+ * vertex follows one bone (q->blendw is NULL) through sb; when a bone isn't
+ * rigid (renorm), sb holds its plain matrix and the normals are
+ * renormalised after. Otherwise the bones' weighted matrices from skin
+ * move the vertex and normals are renormalised. Both add up in the same
+ * order, so the SSE path gives the plain C one's results */
+static void skin_verts(iqm_t *q, const bonemat_t *skin, const skinbone_t *sb, bool renorm, int lo, int hi)
+{
+	const float(*rest)[8] = q->rest;
+	const uint8_t(*bi)[4] = q->blendidx;
+	const float(*bw)[4] = q->blendw;
+	skinvert_t *out = skin_out(q);
+	if (sb && !bw) {
+		for (int i = lo; i < hi; i++) {
+			const skinbone_t *b = &sb[bi[i][0]];
+			const float *r = rest[i];
+			float *o = out[i].xyz, *on = out[i].normal;
+#ifdef __SSE__
+			__m128 p = _mm_load_ps(r), nv = _mm_load_ps(r + 4), v;
+			v = _mm_add_ps(_mm_mul_ps(_mm_load_ps(b->col[0]), _mm_shuffle_ps(p, p, 0x00)),
+			               _mm_mul_ps(_mm_load_ps(b->col[1]), _mm_shuffle_ps(p, p, 0x55)));
+			v = _mm_add_ps(v, _mm_mul_ps(_mm_load_ps(b->col[2]), _mm_shuffle_ps(p, p, 0xAA)));
+			v = _mm_add_ps(v, _mm_load_ps(b->col[3]));
+			_mm_storel_pi((__m64 *)o, v);
+			_mm_store_ss(o + 2, _mm_movehl_ps(v, v));
+			v = _mm_add_ps(_mm_mul_ps(_mm_load_ps(b->ncol[0]), _mm_shuffle_ps(nv, nv, 0x00)),
+			               _mm_mul_ps(_mm_load_ps(b->ncol[1]), _mm_shuffle_ps(nv, nv, 0x55)));
+			v = _mm_add_ps(v, _mm_mul_ps(_mm_load_ps(b->ncol[2]), _mm_shuffle_ps(nv, nv, 0xAA)));
+			_mm_storel_pi((__m64 *)on, v);
+			_mm_store_ss(on + 2, _mm_movehl_ps(v, v));
+#else
+			for (int k = 0; k < 3; k++) {
+				o[k] = b->col[0][k] * r[0] + b->col[1][k] * r[1] + b->col[2][k] * r[2] + b->col[3][k];
+				on[k] = b->ncol[0][k] * r[4] + b->ncol[1][k] * r[5] + b->ncol[2][k] * r[6];
+			}
+#endif
+			if (renorm) {
+				float l = on[0] * on[0] + on[1] * on[1] + on[2] * on[2];
+				if (l > 0) {
+					l = 1 / sqrtf(l);
+					on[0] *= l, on[1] *= l, on[2] *= l;
+				}
+			}
+		}
+		return;
+	}
+	for (int i = lo; i < hi; i++) {
+		const float *r = rest[i];
+		float *o = out[i].xyz, *on = out[i].normal, l;
+		float x = r[0], y = r[1], z = r[2], nx = r[4], ny = r[5], nz = r[6];
+		bonemat_t mat;
+		const float *m = mat;
+		const uint8_t *b = bi[i];
+		if (bw) {
+			/* the weighted sum of the bones' matrices */
+			const float *w = bw[i];
+			for (int k = 0; k < 12; k++)
+				mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
+		} else {
+			m = skin[b[0]];
+		}
+		o[0] = m[0] * x + m[1] * y + m[2] * z + m[3];
+		o[1] = m[4] * x + m[5] * y + m[6] * z + m[7];
+		o[2] = m[8] * x + m[9] * y + m[10] * z + m[11];
+		on[0] = m[0] * nx + m[1] * ny + m[2] * nz;
+		on[1] = m[4] * nx + m[5] * ny + m[6] * nz;
+		on[2] = m[8] * nx + m[9] * ny + m[10] * nz;
+		l = on[0] * on[0] + on[1] * on[1] + on[2] * on[2];
+		if (l > 0) {
+			l = 1 / sqrtf(l);
+			on[0] *= l, on[1] *= l, on[2] *= l;
+		}
+	}
+}
+
+/* the skinning matrices of the last pose_iqm */
+static bonemat_t *skin;
+
+/* poses a skeletal IQM for e into skin[]: the bones come from the
+ * entity's skeleton object when it has one, otherwise from its frame fields */
+static void pose_iqm(iqm_t *q, rentity_t *e)
+{
+	static bonemat_t *bones;
 	static int maxbones;
-	static rvert_t *out;
-	static int maxverts;
 	skelmodel_t *m = q->skel, *sm;
 	const float(*sb)[12];
 	bool absolute;
@@ -1382,15 +1737,13 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 		bones = Mem_Realloc(bones, sizeof(bonemat_t) * n);
 		skin = Mem_Realloc(skin, sizeof(bonemat_t) * n);
 	}
-	if (q->numverts > maxverts) {
-		maxverts = q->numverts;
-		out = Mem_Realloc(out, sizeof(rvert_t) * maxverts);
-	}
 	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
 		int k = BW_MIN(n, sm->numjoints);
-		Skel_SampleRelative(m, -1, 0, bones); /* any bones the object lacks */
+		if (k < n)
+			Skel_SampleRelative(m, -1, 0, bones); /* any bones the object lacks */
 		if (absolute) {
-			Skel_ToAbsolute(m, bones, bones);
+			if (k < n) /* else every bone is overwritten below */
+				Skel_ToAbsolute(m, bones, bones);
 			memcpy(bones, sb, sizeof(bonemat_t) * k);
 		} else {
 			memcpy(bones, sb, sizeof(bonemat_t) * k);
@@ -1402,22 +1755,142 @@ static void skin_iqm(iqm_t *q, rentity_t *e)
 	}
 	for (int j = 0; j < n; j++)
 		Bone_Multiply(skin[j], bones[j], m->invbind[j]);
-	for (int i = 0; i < q->numverts; i++) {
-		const rvert_t *v = &q->verts[i];
-		rvert_t *o = &out[i];
-		bonemat_t mat;
-		const float *w = q->blendw[i];
-		const uint8_t *b = q->blendidx[i];
-		*o = *v;
+}
+
+/* the box the vertices of pose_iqm's pose lie in: each vertex is a
+ * weighted mean of where its joints carry it, and each joint keeps its
+ * vertices within its radius, scaled by at most the matrix's norm */
+static void posed_bounds(const iqm_t *q, float *mins, float *maxs)
+{
+	for (int k = 0; k < 3; k++)
+		mins[k] = 1e30f, maxs[k] = -1e30f;
+	for (int j = 0; j < q->skel->numjoints; j++) {
+		const float *js = q->jointsphere[j], *b = skin[j];
+		float c[3], f = 0;
+		if (js[3] < 0)
+			continue;
 		for (int k = 0; k < 12; k++)
-			mat[k] = skin[b[0]][k] * w[0] + skin[b[1]][k] * w[1] + skin[b[2]][k] * w[2] + skin[b[3]][k] * w[3];
-		Bone_Transform(mat, v->xyz, o->xyz);
-		for (int r = 0; r < 3; r++)
-			o->normal[r] = mat[r * 4] * v->normal[0] + mat[r * 4 + 1] * v->normal[1] + mat[r * 4 + 2] * v->normal[2];
-		VectorNormalize(o->normal);
+			if ((k & 3) != 3)
+				f += b[k] * b[k];
+		Bone_Transform(b, js, c);
+		f = js[3] * sqrtf(f);
+		for (int k = 0; k < 3; k++)
+			mins[k] = BW_MIN(mins[k], c[k] - f), maxs[k] = BW_MAX(maxs[k], c[k] + f);
 	}
-	qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
-	qglBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(sizeof(rvert_t) * q->numverts), out);
+}
+
+/* skins the meshes e shows of q by pose_iqm's matrices and uploads them.
+ * Nothing is redone when the pose and meshes are the ones the vertices
+ * already hold. */
+static void skin_posed(iqm_t *q, const rentity_t *e)
+{
+	static void *sbmem;
+	static skinbone_t *cols;
+	static uint8_t *shown;
+	static int maxbones, maxmeshes;
+	bool rigid = true, bymesh = true;
+	int n = q->skel->numjoints, lo = q->numverts, hi = 0, end = 0;
+	if (n > maxbones) {
+		maxbones = n;
+		Mem_Free(sbmem);
+		sbmem = Mem_Alloc(sizeof(skinbone_t) * n + 16);
+		cols = (skinbone_t *)(((uintptr_t)sbmem + 15) & ~(uintptr_t)15);
+	}
+	if (q->nummeshes > maxmeshes) {
+		maxmeshes = q->nummeshes;
+		shown = Mem_Realloc(shown, (size_t)maxmeshes);
+	}
+
+	/* the vertices of the meshes that draw, when the meshes say which and
+	 * don't overlap; otherwise all of them. The set is kept exactly, as a
+	 * pose cache hit with other meshes would leave some unskinned */
+	for (int i = 0; i < q->nummeshes; i++)
+		shown[i] = mesh_shown(q, e, i);
+	for (int i = 0; i < q->nummeshes; i++) {
+		const iqmmesh_t *me = &q->meshes[i];
+		if (!shown[i])
+			continue;
+		if (!me->numverts || me->firstvert < end) {
+			bymesh = false;
+			break;
+		}
+		end = me->firstvert + me->numverts;
+		lo = BW_MIN(lo, me->firstvert);
+		hi = BW_MAX(hi, end);
+	}
+	if (!bymesh)
+		lo = 0, hi = q->numverts;
+	if (hi <= lo)
+		return;
+
+	if (q->lastskin && q->lastlo == lo && q->lasthi == hi && !memcmp(q->lastshown, shown, (size_t)q->nummeshes) &&
+	    !memcmp(q->lastskin, skin, sizeof(bonemat_t) * n))
+		goto upload; /* the same pose again: an outline, a still model */
+	if (!q->lastskin) {
+		q->lastskin = Mem_Alloc(sizeof(bonemat_t) * n);
+		q->lastshown = Mem_Alloc((size_t)q->nummeshes + 1);
+	}
+	memcpy(q->lastskin, skin, sizeof(bonemat_t) * n);
+	memcpy(q->lastshown, shown, (size_t)q->nummeshes);
+	q->lastlo = lo, q->lasthi = hi;
+
+	/* a bone that only rotates, maybe with a uniform scale s, turns unit
+	 * normals into normals of length s: its rotation over s keeps them unit */
+	for (int j = 0; j < n && rigid; j++) {
+		const float *a = skin[j];
+		float c0 = a[0] * a[0] + a[4] * a[4] + a[8] * a[8], c1 = a[1] * a[1] + a[5] * a[5] + a[9] * a[9];
+		float c2 = a[2] * a[2] + a[6] * a[6] + a[10] * a[10];
+		float d01 = a[0] * a[1] + a[4] * a[5] + a[8] * a[9], d02 = a[0] * a[2] + a[4] * a[6] + a[8] * a[10];
+		float d12 = a[1] * a[2] + a[5] * a[6] + a[9] * a[10], inv;
+		if (!(c0 > 1e-12f) || fabsf(c1 - c0) > 1e-4f * c0 || fabsf(c2 - c0) > 1e-4f * c0 ||
+		    fabsf(d01) > 1e-4f * c0 || fabsf(d02) > 1e-4f * c0 || fabsf(d12) > 1e-4f * c0) {
+			rigid = false;
+			break;
+		}
+		inv = 1 / sqrtf(c0);
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 4; c++)
+				cols[j].col[c][r] = a[r * 4 + c];
+			for (int c = 0; c < 3; c++)
+				cols[j].ncol[c][r] = a[r * 4 + c] * inv;
+		}
+	}
+	if (!rigid && !q->blendw) {
+		/* one bone a vertex still: its plain matrix by columns, and the
+		 * normals renormalised as the weighted path does */
+		for (int j = 0; j < n; j++)
+			for (int r = 0; r < 3; r++) {
+				for (int c = 0; c < 4; c++)
+					cols[j].col[c][r] = skin[j][r * 4 + c];
+				for (int c = 0; c < 3; c++)
+					cols[j].ncol[c][r] = skin[j][r * 4 + c];
+			}
+	}
+	if (!bymesh) {
+		skin_verts(q, skin, cols, !rigid, lo, hi);
+	} else {
+		/* mesh by mesh, leaving out the sub-models that don't draw */
+		for (int i = 0; i < q->nummeshes; i++)
+			if (shown[i])
+				skin_verts(q, skin, cols, !rigid, q->meshes[i].firstvert,
+				           q->meshes[i].firstvert + q->meshes[i].numverts);
+	}
+upload:
+	qglBindBuffer(GL_ARRAY_BUFFER, SKIN_SPLIT ? q->skinvbo : q->vbo);
+#ifdef BW_XBOX
+	/* new storage (the stream ring) rather than an update of part of the
+	 * old, which the GPU may still be reading and which would be copied */
+	qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(skinvert_t) * hi), skin_out(q), GL_STREAM_DRAW);
+#else
+	qglBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(sizeof(skinvert_t) * lo),
+	                 (GLsizeiptr)(sizeof(skinvert_t) * (hi - lo)), skin_out(q) + lo);
+#endif
+}
+
+static void skin_iqm(iqm_t *q, rentity_t *e)
+{
+	pose_iqm(q, e);
+	skin_posed(q, e);
 }
 
 /* the pose an animation frame shows at a time into it */
@@ -1449,12 +1922,32 @@ static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
 	static int bufsize;
 	int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
 	float lerp = e->lerpfrac;
-	const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
-	const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
 	if (a->numoutverts > bufsize) {
 		bufsize = a->numoutverts;
 		buf = Mem_Realloc(buf, sizeof(rvert_t) * bufsize);
 	}
+#ifdef BW_LOWMEM
+	{
+		const uint8_t *qa = a->qpos + (size_t)p1 * a->numverts * 3, *qb = a->qpos + (size_t)p2 * a->numverts * 3;
+		const int8_t *na = a->qnorm + (size_t)p1 * a->numverts * 3, *nb = a->qnorm + (size_t)p2 * a->numverts * 3;
+		const float *xa = a->qxform + (size_t)p1 * 6, *xb = a->qxform + (size_t)p2 * 6;
+		for (int i = 0; i < a->numoutverts; i++) {
+			int v = a->remap[i];
+			rvert_t *o = &buf[i];
+			for (int k = 0; k < 3; k++) {
+				float pa = qa[v * 3 + k] * xa[k] + xa[3 + k], pb = qb[v * 3 + k] * xb[k] + xb[3 + k];
+				float fa = na[v * 3 + k] * (1.0f / 127), fb = nb[v * 3 + k] * (1.0f / 127);
+				o->xyz[k] = pa + (pb - pa) * lerp;
+				o->normal[k] = fa + (fb - fa) * lerp;
+			}
+			o->st[0] = a->st[i * 2];
+			o->st[1] = a->st[i * 2 + 1];
+			memset(o->color, 255, 4);
+		}
+	}
+#else
+	const float *pa = a->poses + (size_t)p1 * a->numverts * 3, *pb = a->poses + (size_t)p2 * a->numverts * 3;
+	const float *na = a->normals + (size_t)p1 * a->numverts * 3, *nb = a->normals + (size_t)p2 * a->numverts * 3;
 	/* lerpfrac is how far towards frame2 the entity is */
 	for (int i = 0; i < a->numoutverts; i++) {
 		int v = a->remap[i];
@@ -1467,7 +1960,40 @@ static rvert_t *alias_verts(const rentity_t *e, alias_t *a)
 		o->st[1] = a->st[i * 2 + 1];
 		memset(o->color, 255, 4);
 	}
+#endif
 	return buf;
+}
+
+/* an alias model in the entity's pose, from its own buffers */
+static void draw_alias(const rentity_t *e, alias_t *a)
+{
+	int p1 = alias_pose(a, e->frame, e->frame1time), p2 = alias_pose(a, e->frame2, e->frame2time);
+	if (!a->vao) {
+		qglGenVertexArrays(1, &a->vao);
+		qglGenBuffers(1, &a->vbo);
+		qglGenBuffers(1, &a->ebo);
+		qglBindVertexArray(a->vao);
+		qglBindBuffer(GL_ARRAY_BUFFER, a->vbo);
+		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, a->ebo);
+		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(sizeof(uint16_t) * a->numtris * 3), a->indices,
+		              GL_STATIC_DRAW);
+		R_SetupVertexAttribs();
+		a->lastframe = r_framenum - 1;
+	}
+	qglBindVertexArray(a->vao);
+	bool same = a->lastp1 == p1 && a->lastp2 == p2 && a->lastlerp == e->lerpfrac;
+	if (!same || (a->lastframe != r_framenum && !a->held)) {
+		/* a pose unchanged since an earlier frame is kept */
+		a->held = same;
+		qglBindBuffer(GL_ARRAY_BUFFER, a->vbo);
+		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * a->numoutverts), alias_verts(e, a),
+		              same ? GL_STATIC_DRAW : GL_STREAM_DRAW);
+		a->lastframe = r_framenum;
+		a->lastp1 = p1, a->lastp2 = p2;
+		a->lastlerp = e->lerpfrac;
+	}
+	qglDrawElements(GL_TRIANGLES, a->numtris * 3, GL_UNSIGNED_SHORT, NULL);
+	qglBindVertexArray(0);
 }
 
 static void set_model_lighting(const glprog_t *p, rentity_t *e)
@@ -1528,6 +2054,31 @@ static void bind_material(const glprog_t *p, material_t *mat, float alpha, bool 
 	(void)alpha;
 }
 
+/* true when a model is out of view: its box (the pose's for a skeletal
+ * one, every frame's for the rest), with a little to spare, is wholly
+ * outside one side of the view volume or behind the eye. It is tested in
+ * the model's own space against the planes of its clip matrix. Skinning
+ * and drawing it would be wasted. */
+static bool model_offscreen(const float *mins, const float *maxs, const float *mvp)
+{
+	float lo[3], hi[3];
+	if (mins[0] > maxs[0])
+		return false; /* no bounds */
+	for (int k = 0; k < 3; k++)
+		lo[k] = mins[k] - 8, hi[k] = maxs[k] + 8;
+	for (int i = 0; i < 5; i++) {
+		/* left, right, bottom, top: w + x, w - x, w + y, w - y; then w */
+		float pl[4], sign = (i & 1) ? -1.0f : 1.0f;
+		for (int k = 0; k < 4; k++)
+			pl[k] = i < 4 ? mvp[k * 4 + 3] + sign * mvp[k * 4 + i / 2] : mvp[k * 4 + 3];
+		if (pl[0] * (pl[0] > 0 ? hi[0] : lo[0]) + pl[1] * (pl[1] > 0 ? hi[1] : lo[1]) +
+		        pl[2] * (pl[2] > 0 ? hi[2] : lo[2]) + pl[3] <=
+		    0)
+			return true;
+	}
+	return false;
+}
+
 void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 {
 	rmodel_t *m = e->model;
@@ -1563,6 +2114,17 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 	}
 	if ((e->alpha < 1 || (e->renderflags & 8)) != translucentpass)
 		return;
+	bool skinned = m->type == MOD_IQM && m->iqm->vao && m->iqm->skel;
+	if (skinned) {
+		pose_iqm(m->iqm, e);
+		if (!viewmodel) {
+			float mins[3], maxs[3];
+			posed_bounds(m->iqm, mins, maxs);
+			if (model_offscreen(mins, maxs, mvp))
+				return;
+		}
+	} else if (!viewmodel && model_offscreen(m->mins, m->maxs, mvp))
+		return;
 	if (depthhack)
 		qglDepthRange(0, 0.3);
 	if (e->mirrored)
@@ -1577,22 +2139,27 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 
 	if (m->type == MOD_ALIAS) {
 		alias_t *a = m->alias;
-		rvert_t *buf = alias_verts(e, a);
 		material_t *skin;
 		skin = e->forceshader ? e->forceshader
 		       : a->numskins ? a->skins[e->skin >= 0 && e->skin < a->numskins ? e->skin : 0]
 		                     : R_FindMaterial("$default", MATF_MODEL);
 		bind_material(p, skin, e->alpha, translucentpass);
-		R_StreamDraw(GL_TRIANGLES, buf, a->numoutverts, a->indices, a->numtris * 3);
+		draw_alias(e, a);
 	} else if (m->type == MOD_IQM && m->iqm->vao) {
 		iqm_t *q = m->iqm;
-		if (q->skel)
-			skin_iqm(q, e);
-		qglBindVertexArray(q->vao);
+		GLuint vao = q->vao;
+#ifdef BW_XBOX
+		bool gpu = skinned && q->gpuvao && XBGL_SkinBones((const float(*)[12])skin, q->skel->numjoints);
+		if (gpu)
+			vao = q->gpuvao;
+		else
+#endif
+		if (skinned)
+			skin_posed(q, e);
+		qglBindVertexArray(vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
-			if (q->meshes[i].geomgroup >= 0 &&
-			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
+			if (!mesh_shown(q, e, i))
 				continue; /* another sub-model of this body part */
 			if (!e->forceshader && q->famskins && e->skin > 0 && e->skin < q->numfamilies &&
 			    q->meshes[i].skinref >= 0 && q->meshes[i].skinref < q->numskinref)
@@ -1609,6 +2176,10 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 			                (void *)(sizeof(uint32_t) * (size_t)q->meshes[i].firstindex));
 		}
 		qglBindVertexArray(0);
+#ifdef BW_XBOX
+		if (gpu)
+			XBGL_SkinBones(NULL, 0);
+#endif
 	}
 	if (depthhack)
 		qglDepthRange(0, 1);
@@ -1656,10 +2227,7 @@ static void outline_geometry(rentity_t *e)
 		iqm_t *q = m->iqm;
 		qglBindVertexArray(q->vao);
 		for (int i = 0; i < q->nummeshes; i++) {
-			if (q->meshes[i].geomgroup >= 0 &&
-			    R_SkinGeomset(e->customskin, q->meshes[i].geomgroup) != q->meshes[i].geomvalue)
-				continue;
-			if (!q->meshes[i].numindexes || q->meshes[i].material->nodraw)
+			if (!mesh_shown(q, e, i) || q->meshes[i].material->nodraw)
 				continue;
 			qglDrawElements(GL_TRIANGLES, q->meshes[i].numindexes, GL_UNSIGNED_INT,
 			                (void *)(sizeof(uint32_t) * (size_t)q->meshes[i].firstindex));
@@ -1842,10 +2410,34 @@ size_t R_ModelMemory(const rmodel_t *m, int *verts, int *tris)
 	*verts = *tris = 0;
 	if (m->alias) {
 		const alias_t *a = m->alias;
-		bytes += (size_t)a->numposes * (size_t)a->numverts * 6 * sizeof(float) + (size_t)a->numoutverts * (2 * sizeof(float) + sizeof(int)) +
+#ifdef BW_LOWMEM
+		bytes += (size_t)a->numposes * ((size_t)a->numverts * 6 + 6 * sizeof(float));
+#else
+		bytes += (size_t)a->numposes * (size_t)a->numverts * 6 * sizeof(float);
+#endif
+		bytes += (size_t)a->numoutverts * (2 * sizeof(float) + sizeof(int)) +
 		         (size_t)a->numtris * 3 * sizeof(uint16_t) + (size_t)a->numframes * sizeof(aliasframe_t);
 		*verts = a->numverts;
 		*tris = a->numtris;
+	}
+	if (m->iqm) {
+		/* skeletal ones also keep their rest pose and blend weights */
+		const iqm_t *q = m->iqm;
+		bytes += sizeof(*q) + (size_t)q->nummeshes * sizeof(iqmmesh_t);
+		if (q->verts)
+			bytes += (size_t)q->numverts * sizeof(rvert_t);
+		if (q->indices)
+			bytes += (size_t)q->numindexes * sizeof(uint32_t);
+		if (q->posed)
+			bytes += (size_t)q->numverts * sizeof(*q->posed);
+		if (q->rest)
+			bytes += (size_t)q->numverts * sizeof(*q->rest);
+		if (q->blendidx)
+			bytes += (size_t)q->numverts * sizeof(*q->blendidx);
+		if (q->blendw)
+			bytes += (size_t)q->numverts * sizeof(*q->blendw);
+		*verts = q->numverts;
+		*tris = q->numindexes / 3;
 	}
 	if (m->type == MOD_BRUSH || (!m->alias && !m->iqm && m->numsurfaces)) {
 		for (int i = 0; i < m->numsurfaces; i++)

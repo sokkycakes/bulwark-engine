@@ -7,7 +7,7 @@
 #ifndef BW_SYS_DL_H
 #define BW_SYS_DL_H
 
-#if defined(__3DS__) || defined(__NDS__)
+#if defined(__3DS__) || defined(__NDS__) || defined(BW_XBOX)
 #define BW_NO_DLOPEN 1
 #endif
 

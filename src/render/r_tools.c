@@ -47,8 +47,8 @@ static void list_image(image_t *img, void *ctx)
 	size_t bytes = (size_t)img->width * img->height * 4 * (img->target == GL_TEXTURE_CUBE_MAP ? 6 : 1);
 	if (!want(l, img->name))
 		return;
-	Con_Printf("%s%-48s %4dx%-4d %s%s\n", img->missing ? "^1" : "", img->name, img->width, img->height,
-	           img->target == GL_TEXTURE_CUBE_MAP ? "cube " : "", img->alpha ? "alpha" : "");
+	Con_Printf("%s%-48s %4dx%-4d %s%s (texture %u)\n", img->missing ? "^1" : "", img->name, img->width, img->height,
+	           img->target == GL_TEXTURE_CUBE_MAP ? "cube " : "", img->alpha ? "alpha" : "", (unsigned)img->tex);
 	l->count++;
 	l->bytes += img->missing ? 0 : bytes;
 }
@@ -150,7 +150,8 @@ static void Memlist_f(int argc, const char **argv)
 		int v, t;
 		size_t b = R_ModelMemory(&r_world.submodels[i], &v, &t);
 		if (i == 0)
-			b += (size_t)r_world.numlightmaps * r_world.lightmapsize * r_world.lightmapsize * 4;
+			b += (size_t)(r_world.lightmaprows ? r_world.lightmaprows : r_world.numlightmaps * r_world.lightmapsize) *
+			     r_world.lightmapsize * 4;
 		Con_Printf("%s%s: %zu bytes (%d triangles)\n", i ? va("*%d:", i) : "", r_world.name, b, t);
 		total += b;
 	}
@@ -647,8 +648,11 @@ static void RouteVisualise_f(int argc, const char **argv)
 
 static void draw_lines(const float *xyz, int n, GLenum mode, const float *rgba)
 {
-	static rvert_t v[4096];
-	n = BW_MIN(n, (int)BW_ARRAY_COUNT(v));
+	enum { MAX_LINE_VERTS = 4096 };
+	static rvert_t *v; /* made the first time a debug view draws lines */
+	if (!v)
+		v = Mem_Alloc(sizeof(rvert_t) * MAX_LINE_VERTS);
+	n = BW_MIN(n, MAX_LINE_VERTS);
 	for (int i = 0; i < n; i++) {
 		memset(&v[i], 0, sizeof(v[i]));
 		memcpy(v[i].xyz, xyz + i * 3, sizeof(float) * 3);

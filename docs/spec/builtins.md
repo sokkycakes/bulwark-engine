@@ -41,7 +41,12 @@ inferred from how Nuclide's QC uses the builtin, and is marked below.
   does for a command line) dropped every key after the first line: hitscan
   damage dicts lost their `damage` key and every bullet did 0 damage. Found
   by a probe (`Add` three keys, read one back) and by running Rad-Therapy's
-  weapons against monsters. Up to 1024 tokens are kept.
+  weapons against monsters. Up to 1024 tokens are kept. The last 16 splits
+  (32 on desktop) are kept, found again by string or by text. A split
+  found again gives the same strings from `argv` as before only when no
+  progs in that VM has a character store (`s[i] = c`); otherwise `argv`
+  makes new ones, so a store into one never changes a copy kept from an
+  earlier split. Any character store drops all the kept splits.
 - `sprintf("%S", s)` quotes `s`; when it holds a quote, backslash, tab or
   line break it uses the escaped form `\"..."` (with `\n`, `\t`, `\r`,
   `\"`, `\\` inside) that `tokenize` and `tokenize_console` read back. This

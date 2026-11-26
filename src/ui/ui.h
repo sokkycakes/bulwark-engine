@@ -63,6 +63,12 @@ void UI_MouseMove(float x, float y);                /* window pixels */
 void UI_Frame(double dt);
 void UI_Draw(void); /* between R_BeginFrame and R_EndFrame */
 
+/* a console command before anything else sees it (main.c GamePreHook,
+ * ahead of the menu, client and server games); true when the UI took it.
+ * The native UI answers the rules' showClassSelectionMenu with its own
+ * hero picker; the other backends take nothing. */
+bool UI_PreCommand(int argc, const char **argv);
+
 extern const qc_builtin_t ui_builtins[];
 
 #ifdef __cplusplus

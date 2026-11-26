@@ -15,6 +15,16 @@
 
 #include <stdio.h>
 
+/* QuakeC to x86 machine code (qc_jit.h). Native code rounds every float
+ * operation to single precision in SSE, so an i386 build needs SSE math too
+ * or the interpreter's x87 results would differ. QC_NO_JIT builds the
+ * interpreter alone. */
+#if !defined(QC_NO_JIT) && (defined(__GNUC__) || defined(__clang__)) &&                                                   \
+	((defined(__i386__) && defined(__SSE_MATH__) && (defined(BW_XBOX) || defined(__linux__))) ||                          \
+	 (defined(__x86_64__) && defined(__linux__)))
+#define QC_JIT 1
+#endif
+
 typedef int32_t string_t;
 typedef int32_t func_t;
 
@@ -38,10 +48,39 @@ typedef struct {
 	const char *file;
 	qc_builtin_fn builtin; /* non-NULL for builtins */
 	int builtin_num;
+	int callparms; /* how many parameters a call copies in (see enter_function) */
+	/* getter, 1 or 3: the body is only "return self.field" of that many
+	 * words, which a call can do without a frame; 0 otherwise. jit_try:
+	 * pr_jit is on, so a call offers the function to native code. A call
+	 * tests both at once (call_slow), which keeps pr_jit 0 as cheap as an
+	 * interpreter without native code. */
+#ifdef QC_JIT
+	union {
+		struct {
+			uint8_t getter;
+			uint8_t jit_try;
+		};
+		uint16_t call_slow;
+	};
+#else
+	int getter;
+#endif
+#ifdef QC_JIT
+	/* native code (qc_jit.c), once compiled; jit_end is the statement
+	 * after the function's code, where the next function starts */
+	void *jit;
+	void *jit_call; /* its entry from other native code, which makes the frame */
+	int jit_end;
+	uint16_t jit_count; /* calls so far, until it is worth compiling */
+	bool jit_failed;
+#endif
 	uint64_t profile; /* statements run in this function while qc_profiling */
 	/* profile_ssqc and friends */
 	uint64_t prof_statements, prof_calls;
 	double prof_time; /* builtins only */
+	uint64_t prof_incl; /* statements run in it and in what it called */
+	double prof_incl_time; /* builtin time in it and in what it called */
+	uint32_t prof_active; /* its profiled frames on the stack, so recursion counts once */
 } qcfunc_t;
 
 typedef struct {
@@ -107,15 +146,24 @@ typedef struct {
 #define QC_FUNC_PROGS(f) ((int)(((uint32_t)(f) >> QC_PROGS_SHIFT) & 0x7f))
 #define QC_FUNC_INDEX(f) ((int)((uint32_t)(f) & QC_INDEX_MASK))
 
+/* statements as the interpreter keeps them. Progs with 32-bit statements
+ * are not run yet (see parse_progs), so low-memory builds keep the file's
+ * 16-bit form and need half the room for the code. */
+#ifdef BW_LOWMEM
+typedef dstatement16_t qcstatement_t;
+#else
+typedef dstatement32_t qcstatement_t;
+#endif
+
 /* the parts of a VM that belong to one progs; the VM's own copies of these
  * fields are those of the progs that is running now */
 typedef struct {
 	char name[64];
-	uint8_t *progsdata;
-	size_t progssize;
+	const uint8_t *image; /* the file image, only while it is being loaded */
 	progs_header_t hdr;
 	bool stmt32;
-	dstatement32_t *statements;
+	bool char_stores; /* has str[i] = c statements */
+	qcstatement_t *statements;
 	int numstatements;
 	qcfunc_t *functions;
 	int numfunctions;
@@ -142,13 +190,11 @@ struct qcvm_s {
 	char name[64];
 	void *host;
 
-	uint8_t *progsdata; /* file image, kept for string table and statements */
-	size_t progssize;
 	progs_header_t hdr;
 	bool stmt32;
 
-	/* statements unpacked into 32-bit form */
-	dstatement32_t *statements;
+	/* statements unpacked into qcstatement_t form */
+	qcstatement_t *statements;
 	int numstatements;
 
 	qcfunc_t *functions;
@@ -174,11 +220,16 @@ struct qcvm_s {
 	int edict_words; /* field storage per entity in words */
 	int edict_words_used; /* the rest is spare room for fields added progs declare */
 	int max_edicts;
+	int edicts_backed; /* slots below this have memory behind them (QC_BackEdict) */
+	size_t backed_end; /* arena offset where those slots end */
 	int num_edicts; /* highest slot in use + 1 */
 	int reserved_edicts; /* slots 1..reserved are never handed out by spawn() (player slots) */
 	float quick_reuse_before; /* slots freed before this time can be reused at once (map load) */
 	qcedict_t *edicts;
 	size_t heap_ofs, heap_size;
+	size_t heap_used, heap_peak; /* bytes in use by memalloc blocks, and the most ever */
+	size_t committed; /* mem is backed up to here; past it only a free heap tail */
+	int edicts_peak; /* most entity slots ever in use (num_edicts high-water mark) */
 
 	qcfieldofs_t fofs;
 	qcglobalofs_t gofs;
@@ -228,8 +279,27 @@ struct qcvm_s {
 	bool debug_hooks;
 	bool profiling;
 	double profile_start;
+	/* the profile's running totals and, for each frame, what they were
+	 * when it began (qc_debug.c) */
+	uint64_t prof_total;
+	double prof_btime;
+	struct qc_profframe_s *prof_stack;
+	int prof_top; /* one past the highest frame that may still be valid */
+	struct qc_profedges_s *prof_edges;
 	char breakpoint[64];
 	struct qc_watch_s *watch;
+
+#ifdef QC_JIT
+	/* native code (qc_jit.c): its memory, the backward jumps it may still
+	 * take before handing a loop back to the interpreter's runaway check,
+	 * and how deep native calls are nested. jit_on is pr_jit as it was when
+	 * the outermost QC_Execute began, so the off path costs one test. */
+	struct qc_jitmem_s *jitmem;
+	int32_t jit_budget;
+	int jit_nest;
+	bool jit_on;
+	int jit_progs; /* progs whose functions have jit_try set to jit_on */
+#endif
 
 	/* called as an entity slot is freed, before its fields are cleared */
 	void (*free_hook)(qcvm_t *vm, int e);
@@ -243,6 +313,10 @@ struct qcvm_s {
 qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kind,
                 const qc_builtin_t *const *tables, int max_edicts, size_t heapsize);
 void QC_Free(qcvm_t *vm);
+/* developer report of what a VM used against what it was given, for sizing
+ * BW_*_MAXEDICTS and BW_*_HEAP_MB */
+void QC_PrintMemStats(qcvm_t *vm);
+void QC_PrintAllMemStats(void); /* every VM and the string table */
 /* every loaded VM (server, client game, menu) */
 int QC_VMCount(void);
 qcvm_t *QC_VMAt(int i);
@@ -279,19 +353,24 @@ extern bool qc_profiling; /* count statements per function (pr_profile) */
 
 /* strings */
 const char *QC_GetString(qcvm_t *vm, string_t s);
+bool QC_StringsEqual(qcvm_t *vm, string_t a, string_t b);
 string_t QC_NewString(qcvm_t *vm, const char *s);
 string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len);
 /* writable view into an engine string or the progs table, or NULL */
 char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len);
 void QC_CollectGarbage(qcvm_t *vm, bool force);
+/* collections and their time since the last call (host_speeds) */
+void QC_TakeGCStats(int *runs, double *seconds);
 int QC_LiveStrings(void);
 
 /* entities */
+/* QC_EdictFields of a slot at or past edicts_backed: backs it first */
+qcval_t *QC_BackEdict(qcvm_t *vm, int e);
 /* inline: the interpreter calls this for every field access */
 static inline qcval_t *QC_EdictFields(qcvm_t *vm, int e)
 {
-	if (e < 0 || e >= vm->max_edicts)
-		QC_RunError(vm, "entity %d out of range", e);
+	if ((unsigned)e >= (unsigned)vm->edicts_backed)
+		return QC_BackEdict(vm, e);
 	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * vm->edict_words * 4);
 }
 int QC_SpawnEdict(qcvm_t *vm);
@@ -323,7 +402,12 @@ float QC_Random(qcvm_t *vm);
 void QC_Format(qcvm_t *vm, int fmtparm, strbuf_t *out);
 
 /* parameter and return helpers for builtins */
-qcval_t *QC_Parm(qcvm_t *vm, int n);
+qcval_t *QC_ParmExt(qcvm_t *vm, int n); /* $parm8 and up */
+/* inline: builtins read their arguments through this */
+static inline qcval_t *QC_Parm(qcvm_t *vm, int n)
+{
+	return n < MAX_PARMS ? &vm->globals[OFS_PARM(n)] : QC_ParmExt(vm, n);
+}
 #define QC_PFLOAT(vm, n) (QC_Parm(vm, n)->f)
 #define QC_PINT(vm, n) (QC_Parm(vm, n)->i)
 #define QC_PVEC(vm, n) (&QC_Parm(vm, n)->f)
@@ -387,6 +471,8 @@ float QC_MeshPitch(void);
 void QC_InitDebugCommands(void);
 void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f);
 void QC_DebugStatement(qcvm_t *vm, int s);
+void QC_DebugFunctionLeft(qcvm_t *vm, qcfunc_t *f);
+void QC_DebugBuiltinTime(qcvm_t *vm, qcfunc_t *f, double seconds);
 void QC_DebugUpdateHooks(qcvm_t *vm);
 void QC_CoreDump(qcvm_t *vm, const char *why);
 extern const char *const qc_supported_extensions[];

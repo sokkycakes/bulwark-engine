@@ -994,14 +994,18 @@ static void set_input_globals(const usercmd_t *u)
 /* --- lag compensation (after Source's CLagCompensationManager) ---------- */
 
 #define LAG_HISTORY 256
+/* one player in one recorded frame: only the origin is rewound */
+typedef struct {
+	bool valid;
+	float origin[3];
+} lagent_t;
 typedef struct {
 	double time;
-	struct {
-		bool valid;
-		float origin[3], mins[3], maxs[3];
-	} ent[256];
+	lagent_t *ent; /* svs.maxclients entries in lag_ents */
 } lagframe_t;
-static lagframe_t *lag_frames;
+static lagframe_t lag_frames[LAG_HISTORY];
+static lagent_t *lag_ents; /* LAG_HISTORY x lag_width, sized by the slots in use */
+static int lag_width;
 static int lag_head; /* next slot to write */
 
 void SV_LagCompensationRecord(void)
@@ -1010,8 +1014,16 @@ void SV_LagCompensationRecord(void)
 	int n = BW_MIN(svs.maxclients, 256);
 	if (!sv_unlag->ivalue || svs.maxclients < 2)
 		return;
-	if (!lag_frames)
-		lag_frames = Mem_Alloc(sizeof(lagframe_t) * LAG_HISTORY);
+	if (!lag_ents || lag_width != n) {
+		/* the slot count changes only while nobody is connected, so the
+		 * history recorded for the old count has nothing worth keeping */
+		Mem_Free(lag_ents);
+		lag_ents = Mem_Alloc(sizeof(lagent_t) * (size_t)n * LAG_HISTORY);
+		lag_width = n;
+		lag_head = 0;
+		for (int k = 0; k < LAG_HISTORY; k++)
+			lag_frames[k].time = 0, lag_frames[k].ent = &lag_ents[(size_t)k * (size_t)n];
+	}
 	f = &lag_frames[lag_head++ % LAG_HISTORY];
 	f->time = sv.time;
 	for (int i = 0; i < n; i++) {
@@ -1020,8 +1032,6 @@ void SV_LagCompensationRecord(void)
 		if (!f->ent[i].valid)
 			continue;
 		memcpy(f->ent[i].origin, &QC_EdictFields(sv.vm, c->edict)[F.origin], sizeof(float) * 3);
-		memcpy(f->ent[i].mins, &QC_EdictFields(sv.vm, c->edict)[F.mins], sizeof(float) * 3);
-		memcpy(f->ent[i].maxs, &QC_EdictFields(sv.vm, c->edict)[F.maxs], sizeof(float) * 3);
 	}
 }
 
@@ -1037,7 +1047,7 @@ static void lag_rewind(client_t *c, const usercmd_t *u, lagrestore_t *restore)
 	double target;
 	int n = BW_MIN(svs.maxclients, 256);
 	memset(restore, 0, sizeof(lagrestore_t) * (size_t)n);
-	if (!sv_unlag->ivalue || svs.maxclients < 2 || !lag_frames || !u->servertime_ms)
+	if (!sv_unlag->ivalue || svs.maxclients < 2 || !lag_ents || lag_width != n || !u->servertime_ms)
 		return;
 	target = u->servertime_ms / 1000.0 - BW_MAX(c->interp, 0.0f);
 	if (sv.time - target > sv_maxunlag->value)
@@ -1092,7 +1102,7 @@ static void lag_restore(lagrestore_t *restore)
 
 void SV_RunStandardPlayerPhysics(int e);
 
-static void run_usercmd(client_t *c, const usercmd_t *u)
+static void run_usercmd_now(client_t *c, const usercmd_t *u)
 {
 	qcvm_t *vm = sv.vm;
 	lagrestore_t restore[256];
@@ -1132,6 +1142,19 @@ static void run_usercmd(client_t *c, const usercmd_t *u)
 	c->lastucmd = cmd;
 	c->lastcmd = cmd.sequence;
 	SV_MVDUsercmd(c, &cmd);
+}
+
+/* timed for host_speeds' slowest frame: a player's command runs the game's
+ * movement, weapons and, for a bot, its AI */
+static void run_usercmd(client_t *c, const usercmd_t *u)
+{
+	double t0 = Sys_Seconds();
+	run_usercmd_now(c, u);
+	double t = Sys_Seconds() - t0;
+	if (t > sv_slowest_cmd) {
+		sv_slowest_cmd = t;
+		Str_Copy(sv_slowest_cmd_who, c->name, sizeof(sv_slowest_cmd_who));
+	}
 }
 
 void SV_RunUsercmd(client_t *c, const usercmd_t *u) { run_usercmd(c, u); }
@@ -1460,6 +1483,21 @@ void SV_ReadPackets(void)
 
 /* --- per frame ---------------------------------------------------------- */
 
+/* one command for a bot, repeating its last one */
+static void bot_command(client_t *c, float msec)
+{
+	usercmd_t cmd;
+	if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
+		return;
+	cmd = c->lastucmd;
+	cmd.sequence = c->lastcmd + 1;
+	cmd.msec = msec;
+	cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
+	cmd.impulse = 0;
+	c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
+	run_usercmd(c, &cmd);
+}
+
 void SV_ClientsPreThink(void)
 {
 	qcvm_t *vm = sv.vm;
@@ -1475,18 +1513,21 @@ void SV_ClientsPreThink(void)
 	/* bots send no input, so each frame runs one command for them, repeating
 	 * the last one; the game fills input_* from its AI inside
 	 * SV_RunClientCommand, as Nuclide's bots do */
+	for (int i = 0; i < svs.maxclients; i++)
+		bot_command(&svs.clients[i], sv.frametime);
+}
+
+/* Time the world skipped (sv_maxticks) still refills movement budgets, and
+ * bots get it as commands of their own, so they keep pace with players. */
+void SV_ClientsDroppedTime(double t)
+{
 	for (int i = 0; i < svs.maxclients; i++) {
 		client_t *c = &svs.clients[i];
-		usercmd_t cmd;
-		if (c->state != CS_SPAWNED || !c->bot || c->linkcmds)
+		if (c->state != CS_SPAWNED)
 			continue;
-		cmd = c->lastucmd;
-		cmd.sequence = c->lastcmd + 1;
-		cmd.msec = sv.frametime;
-		cmd.servertime_ms = (uint32_t)(sv.time * 1000); /* no lag to rewind */
-		cmd.impulse = 0;
-		c->cmd_budget = BW_MAX(c->cmd_budget, cmd.msec);
-		run_usercmd(c, &cmd);
+		c->cmd_budget = BW_MIN(c->cmd_budget + (float)t, 0.25f);
+		for (double left = t; left > 0.0005; left -= 0.1)
+			bot_command(c, (float)BW_MIN(left, 0.1));
 	}
 }
 
@@ -1562,6 +1603,10 @@ void SV_SendClientMessages(void)
 		}
 		rate = c->updaterate > 0 ? c->updaterate : 1.0f / sv.frametime;
 		rate = BW_MAX(sv_minupdaterate->value, BW_MIN(rate, sv_maxupdaterate->value));
+#ifdef BW_XBOX
+		/* snapshots between ticks resend little but cost a SendEntity pass */
+		rate = BW_MIN(rate, 1.0f / sv.frametime);
+#endif
 		if (now < c->next_snapshot || !Netchan_CanSend(&c->chan))
 			continue;
 		c->next_snapshot = BW_MAX(c->next_snapshot + 1.0 / rate, now - 0.5 / rate);

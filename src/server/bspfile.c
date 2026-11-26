@@ -9,6 +9,8 @@
 #include <math.h>
 
 #define DIST_EPSILON 0.03125f
+/* planetypes: not along one axis */
+#define PLANE_ANY 3
 
 static int32_t rd32(const uint8_t *p) { return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
 static float rdf(const uint8_t *p)
@@ -337,6 +339,16 @@ static bool load_q1(bspmap_t *m, const uint8_t *d, size_t size)
 		for (int k = 0; k < 3; k++)
 			m->planes[i].normal[k] = rdf(p + k * 4);
 		m->planes[i].dist = rdf(p + 12);
+	}
+	/* twice over: the second half says PLANE_ANY for every plane */
+	m->planetypes = Mem_Alloc(2 * (size_t)m->numplanes + 1);
+	memset(m->planetypes + m->numplanes, PLANE_ANY, (size_t)m->numplanes);
+	for (int i = 0; i < m->numplanes; i++) {
+		const float *n = m->planes[i].normal;
+		m->planetypes[i] = PLANE_ANY;
+		for (int k = 0; k < 3; k++)
+			if (n[k] == 1 && n[(k + 1) % 3] == 0 && n[(k + 2) % 3] == 0)
+				m->planetypes[i] = (uint8_t)k;
 	}
 
 	m->nummodels = l[Q1_MODELS].len / 64;
@@ -727,6 +739,7 @@ void BSP_Free(bspmap_t *m)
 		return;
 	Mem_Free(m->entities);
 	Mem_Free(m->planes);
+	Mem_Free(m->planetypes);
 	Mem_Free(m->brushsides);
 	Mem_Free(m->brushes);
 	Mem_Free(m->shaders);
@@ -740,6 +753,7 @@ void BSP_Free(bspmap_t *m)
 	Mem_Free(m->hull0);
 	Mem_Free(m->faces);
 	Mem_Free(m->facevertices);
+	Mem_Free(m->cache);
 	Mem_Free(m);
 }
 
@@ -954,12 +968,37 @@ static const float hull_mins[3][3] = {{0, 0, 0}, {-16, -16, -24}, {-32, -32, -24
 /* GoldSrc: standing player, large, crouching player */
 static const float hl_hull_mins[4][3] = {{0, 0, 0}, {-16, -16, -36}, {-32, -32, -32}, {-16, -16, -18}};
 
-static int hull_contents(const cclipnode_t *nodes, const cplane_t *planes, int num, const float *p)
+/* A plane whose normal is exactly +x, +y or +z (most of a Q1 map's) is
+ * tested on that one coordinate. For finite points that is bit for bit the
+ * dot product: the other terms are exact zeros, and the sign a zero result
+ * may differ in never changes a comparison or a division below. Points
+ * beyond PLANE_FAST_LIMIT (or NaN) take the dot product, as inf * 0 would. */
+#define PLANE_FAST_LIMIT 1e30f
+
+static bool fast_point(const float *p)
+{
+	return fabsf(p[0]) <= PLANE_FAST_LIMIT && fabsf(p[1]) <= PLANE_FAST_LIMIT && fabsf(p[2]) <= PLANE_FAST_LIMIT;
+}
+
+static const uint8_t *plane_types(const bspmap_t *map, bool fast)
+{
+	return fast ? map->planetypes : map->planetypes + map->numplanes;
+}
+
+static inline float plane_diff(const cplane_t *pl, int type, const float *p)
+{
+	return type < PLANE_ANY ? p[type] - pl->dist : DotProduct(p, pl->normal) - pl->dist;
+}
+
+/* types: the map's planetypes, or plane_types' second half to take the dot
+ * product everywhere */
+static int hull_contents(const cclipnode_t *nodes, const cplane_t *planes, const uint8_t *types, int num,
+                         const float *p)
 {
 	int guard = 0;
 	while (num >= 0 && guard++ < 65536) {
-		const cplane_t *pl = &planes[nodes[num].plane];
-		num = nodes[num].children[DotProduct(p, pl->normal) - pl->dist < 0];
+		int pn = nodes[num].plane;
+		num = nodes[num].children[plane_diff(&planes[pn], types[pn], p) < 0];
 	}
 	return num;
 }
@@ -967,6 +1006,7 @@ static int hull_contents(const cclipnode_t *nodes, const cplane_t *planes, int n
 typedef struct {
 	const cclipnode_t *nodes;
 	const cplane_t *planes;
+	const uint8_t *types; /* see hull_contents */
 	int head;
 	bsptrace_t *tr;
 	bool allsolid, startsolid;
@@ -974,39 +1014,54 @@ typedef struct {
 } hullwork_t;
 
 /* sweeps p1-p2 (fractions f1-f2 of the whole move) down the hull; false
- * once something was hit, which ends the walk */
+ * once something was hit, which ends the walk. Going down one side, and on
+ * to the far side of a crossing, loop rather than recurse. */
 static bool hull_trace(hullwork_t *w, int num, float f1, float f2, const float *p1, const float *p2)
 {
 	const cplane_t *pl;
-	float t1, t2, frac, midf, mid[3];
-	int side;
-	if (num < 0) {
-		if (num != Q1C_SOLID)
-			w->allsolid = false;
-		else
-			w->startsolid = true;
-		return true;
+	float t1, t2, frac, midf, mid[3], from[3];
+	int side, type, pn;
+	for (;;) {
+		if (num < 0) {
+			if (num != Q1C_SOLID)
+				w->allsolid = false;
+			else
+				w->startsolid = true;
+			return true;
+		}
+		if (++w->depth > 4096)
+			return true;
+		pn = w->nodes[num].plane;
+		pl = &w->planes[pn];
+		type = w->types[pn];
+		t1 = plane_diff(pl, type, p1);
+		t2 = plane_diff(pl, type, p2);
+		if (t1 >= 0 && t2 >= 0) {
+			num = w->nodes[num].children[0];
+			continue;
+		}
+		if (t1 < 0 && t2 < 0) {
+			num = w->nodes[num].children[1];
+			continue;
+		}
+		/* the crossing, kept a hair on the near side */
+		frac = t1 < 0 ? (t1 + DIST_EPSILON) / (t1 - t2) : (t1 - DIST_EPSILON) / (t1 - t2);
+		frac = BW_MAX(0, BW_MIN(frac, 1));
+		side = t1 < 0;
+		midf = f1 + (f2 - f1) * frac;
+		for (int k = 0; k < 3; k++)
+			mid[k] = p1[k] + (p2[k] - p1[k]) * frac;
+		if (!hull_trace(w, w->nodes[num].children[side], f1, midf, p1, mid))
+			return false;
+		if (hull_contents(w->nodes, w->planes, w->types, w->nodes[num].children[side ^ 1], mid) != Q1C_SOLID) {
+			num = w->nodes[num].children[side ^ 1];
+			f1 = midf;
+			VectorCopy(mid, from);
+			p1 = from;
+			continue;
+		}
+		break;
 	}
-	if (++w->depth > 4096)
-		return true;
-	pl = &w->planes[w->nodes[num].plane];
-	t1 = DotProduct(p1, pl->normal) - pl->dist;
-	t2 = DotProduct(p2, pl->normal) - pl->dist;
-	if (t1 >= 0 && t2 >= 0)
-		return hull_trace(w, w->nodes[num].children[0], f1, f2, p1, p2);
-	if (t1 < 0 && t2 < 0)
-		return hull_trace(w, w->nodes[num].children[1], f1, f2, p1, p2);
-	/* the crossing, kept a hair on the near side */
-	frac = t1 < 0 ? (t1 + DIST_EPSILON) / (t1 - t2) : (t1 - DIST_EPSILON) / (t1 - t2);
-	frac = BW_MAX(0, BW_MIN(frac, 1));
-	side = t1 < 0;
-	midf = f1 + (f2 - f1) * frac;
-	for (int k = 0; k < 3; k++)
-		mid[k] = p1[k] + (p2[k] - p1[k]) * frac;
-	if (!hull_trace(w, w->nodes[num].children[side], f1, midf, p1, mid))
-		return false;
-	if (hull_contents(w->nodes, w->planes, w->nodes[num].children[side ^ 1], mid) != Q1C_SOLID)
-		return hull_trace(w, w->nodes[num].children[side ^ 1], midf, f2, mid, p2);
 	if (w->allsolid)
 		return false; /* never got out of the solid */
 	/* hit the plane going into the far side */
@@ -1019,7 +1074,7 @@ static bool hull_trace(hullwork_t *w, int num, float f1, float f2, const float *
 		w->tr->dist = -pl->dist;
 	}
 	/* rounding can leave mid inside: step back towards p1 until it isn't */
-	while (hull_contents(w->nodes, w->planes, w->head, mid) == Q1C_SOLID) {
+	while (hull_contents(w->nodes, w->planes, w->types, w->head, mid) == Q1C_SOLID) {
 		frac -= 0.1f;
 		if (frac < 0) {
 			w->tr->fraction = f1;
@@ -1063,6 +1118,7 @@ static void q1_trace(const bspmap_t *map, int model, const float *origin, const 
 	}
 	tr->fraction = 1;
 	VectorCopy(p2, tr->endpos);
+	w.types = plane_types(map, fast_point(p1) && fast_point(p2));
 	hull_trace(&w, w.head, 0, 1, p1, p2);
 	tr->startsolid = w.startsolid;
 	tr->allsolid = w.allsolid;
@@ -1129,7 +1185,8 @@ int BSP_PointContents(const bspmap_t *map, int model, const float *origin, const
 	if (map && map->type == BSP_Q1 && model >= 0 && model < map->nummodels) {
 		for (int i = 0; i < 3; i++)
 			lp[i] = p[i] - origin[i];
-		return q1_contents(hull_contents(map->hull0, map->planes, map->models[model].headnode[0], lp));
+		return q1_contents(hull_contents(map->hull0, map->planes, plane_types(map, fast_point(lp)),
+		                                 map->models[model].headnode[0], lp));
 	}
 	if (!map || map->type != BSP_Q3 || model < 0 || model >= map->nummodels)
 		return 0;
@@ -1151,6 +1208,118 @@ int BSP_PointContents(const bspmap_t *map, int model, const float *origin, const
 			contents |= b->contents;
 	}
 	return contents;
+}
+
+/* --- remembered world queries ----------------------------------------- */
+
+/* Direct mapped, keyed on the raw bits of every input, so -0 and +0 or two
+ * NaNs are different keys and a hit is always the answer the query would
+ * give. Most repeats come a tick or more apart, so the tables hold a few
+ * ticks' worth. */
+#ifdef BW_LOWMEM
+#define TRACE_CACHE_BITS 11 /* 2048 * 112 bytes */
+#define POINT_CACHE_BITS 11
+#else
+#define TRACE_CACHE_BITS 13
+#define POINT_CACHE_BITS 13
+#endif
+
+typedef struct {
+	uint32_t key[13]; /* start, end, mins, maxs, mask */
+	uint32_t valid;
+	bsptrace_t tr;
+} tracecache_t;
+
+typedef struct {
+	uint32_t key[3];
+	int32_t contents;
+	uint32_t valid;
+} pointcache_t;
+
+struct bspcache_s {
+	tracecache_t traces[1 << TRACE_CACHE_BITS];
+	pointcache_t points[1 << POINT_CACHE_BITS];
+};
+
+static struct bspcache_s *world_cache(bspmap_t *map)
+{
+	if (!map->cache)
+		map->cache = Mem_Alloc(sizeof(*map->cache)); /* zeroed: nothing valid */
+	return map->cache;
+}
+
+/* a float's bits; a union, as nxdk builds without builtin memcpy */
+static inline uint32_t fbits(float f)
+{
+	union {
+		float f;
+		uint32_t u;
+	} v;
+	v.f = f;
+	return v.u;
+}
+
+static uint32_t key_hash(const uint32_t *k, int n)
+{
+	uint32_t h = 0;
+	for (int i = 0; i < n; i++)
+		h = (h ^ k[i]) * 0x9e3779b1u;
+	return h ^ (h >> 16);
+}
+
+void BSP_TraceWorld(bspmap_t *map, const float *start, const float *mins, const float *maxs, const float *end,
+                    int mask, bsptrace_t *tr)
+{
+	static const float zero[3] = {0, 0, 0};
+	uint32_t key[13];
+	tracecache_t *c;
+	if (!map) {
+		BSP_TraceModel(map, 0, zero, start, mins, maxs, end, mask, tr);
+		return;
+	}
+	for (int k = 0; k < 3; k++) {
+		key[k] = fbits(start[k]);
+		key[3 + k] = fbits(end[k]);
+		key[6 + k] = fbits(mins[k]);
+		key[9 + k] = fbits(maxs[k]);
+	}
+	key[12] = (uint32_t)mask;
+	c = &world_cache(map)->traces[key_hash(key, 13) & ((1u << TRACE_CACHE_BITS) - 1)];
+	if (c->valid) {
+		int i = 0;
+		while (i < 13 && c->key[i] == key[i])
+			i++;
+		if (i == 13) {
+			*tr = c->tr;
+			return;
+		}
+	}
+	BSP_TraceModel(map, 0, zero, start, mins, maxs, end, mask, tr);
+	for (int k = 0; k < 13; k++)
+		c->key[k] = key[k];
+	c->valid = 1;
+	c->tr = *tr;
+}
+
+int BSP_WorldContents(bspmap_t *map, const float *p)
+{
+	static const float zero[3] = {0, 0, 0};
+	uint32_t key[3];
+	pointcache_t *c;
+	if (!map)
+		return 0;
+	key[0] = fbits(p[0]);
+	key[1] = fbits(p[1]);
+	key[2] = fbits(p[2]);
+	c = &world_cache(map)->points[key_hash(key, 3) & ((1u << POINT_CACHE_BITS) - 1)];
+	if (c->valid && c->key[0] == key[0] && c->key[1] == key[1] && c->key[2] == key[2])
+		return c->contents;
+	c->contents = BSP_PointContents(map, 0, zero, p);
+	c->key[0] = key[0];
+	c->key[1] = key[1];
+	c->key[2] = key[2];
+	c->valid = 1;
+	return c->contents;
 }
 
 /* --- visibility ------------------------------------------------------- */
@@ -1180,10 +1349,18 @@ const uint8_t *BSP_ClusterPVS(const bspmap_t *map, int cluster)
 
 bool BSP_CheckPVS(const bspmap_t *map, const float *a, const float *b)
 {
-	int la = BSP_PointLeaf(map, a), lb = BSP_PointLeaf(map, b);
+	return BSP_CheckPVSLeaf(map, BSP_PointLeaf(map, a), b);
+}
+
+bool BSP_CheckPVSLeaf(const bspmap_t *map, int la, const float *b)
+{
+	int lb;
 	const uint8_t *row;
 	int cb;
-	if (la < 0 || lb < 0)
+	if (la < 0)
+		return true;
+	lb = BSP_PointLeaf(map, b);
+	if (lb < 0)
 		return true;
 	cb = map->leafs[lb].cluster;
 	row = BSP_ClusterPVS(map, map->leafs[la].cluster);

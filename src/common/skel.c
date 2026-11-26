@@ -8,6 +8,10 @@
 
 #include <math.h>
 #include <stdio.h>
+#if defined(__SSE__) && !defined(BW_NO_SSE)
+#include <xmmintrin.h>
+#define SKEL_SSE 1
+#endif
 
 static uint32_t rdu(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 static float rdf(const uint8_t *p)
@@ -26,16 +30,73 @@ void Bone_Identity(bonemat_t m)
 	m[0] = m[5] = m[10] = 1;
 }
 
+#ifdef SKEL_SSE
+/* The SSE versions work four lanes at once (each SSE instruction is one
+ * call into the emulator's helpers in xemu, packed or not) and do in each
+ * lane the operations the plain C does, in its order, so they give the
+ * same bits: subtracting is adding the negated value, and doubling is
+ * exact either way. */
+#define LANES(a, b, c, d) _MM_SHUFFLE(d, c, b, a)
+
+static inline __m128 sse_mask(int a, int b, int c, int d)
+{
+	union {
+		uint32_t u[4];
+		__m128 v;
+	} m = {{a ? ~0u : 0, b ? ~0u : 0, c ? ~0u : 0, d ? ~0u : 0}};
+	return m.v;
+}
+
+/* the rotation and scale of Bone_FromTRS, a row at a time, for the unit
+ * quaternion q (x y z w) */
+static inline void trs_rows(bonemat_t m, __m128 q, const float *trs)
+{
+	const __m128 sign = sse_mask(0, 1, 0, 0), one = _mm_set1_ps(1);
+	const __m128 scale = _mm_setr_ps(trs[7], trs[8], trs[9], 0);
+	/* row 0: 1 - 2(yy + zz), 2(xy - zw), 2(xz + yw) */
+	__m128 p = _mm_mul_ps(_mm_shuffle_ps(q, q, LANES(1, 0, 0, 0)), _mm_shuffle_ps(q, q, LANES(1, 1, 2, 0)));
+	__m128 n = _mm_mul_ps(_mm_shuffle_ps(q, q, LANES(2, 2, 1, 0)), _mm_shuffle_ps(q, q, LANES(2, 3, 3, 0)));
+	__m128 d = _mm_add_ps(p, _mm_xor_ps(n, _mm_and_ps(sign, _mm_set1_ps(-0.0f))));
+	__m128 mask = sse_mask(1, 0, 0, 0);
+	d = _mm_add_ps(d, d);
+	d = _mm_or_ps(_mm_and_ps(mask, _mm_sub_ps(one, d)), _mm_andnot_ps(mask, d));
+	_mm_storeu_ps(m, _mm_mul_ps(d, scale));
+	/* row 1: 2(xy + zw), 1 - 2(xx + zz), 2(yz - xw) */
+	p = _mm_mul_ps(_mm_shuffle_ps(q, q, LANES(0, 0, 1, 0)), _mm_shuffle_ps(q, q, LANES(1, 0, 2, 0)));
+	n = _mm_mul_ps(_mm_shuffle_ps(q, q, LANES(2, 2, 0, 0)), _mm_shuffle_ps(q, q, LANES(3, 2, 3, 0)));
+	d = _mm_add_ps(p, _mm_xor_ps(n, _mm_and_ps(sse_mask(0, 0, 1, 0), _mm_set1_ps(-0.0f))));
+	mask = sse_mask(0, 1, 0, 0);
+	d = _mm_add_ps(d, d);
+	d = _mm_or_ps(_mm_and_ps(mask, _mm_sub_ps(one, d)), _mm_andnot_ps(mask, d));
+	_mm_storeu_ps(m + 4, _mm_mul_ps(d, scale));
+	/* row 2: 2(xz - yw), 2(yz + xw), 1 - 2(xx + yy) */
+	p = _mm_mul_ps(_mm_shuffle_ps(q, q, LANES(0, 1, 0, 0)), _mm_shuffle_ps(q, q, LANES(2, 2, 0, 0)));
+	n = _mm_mul_ps(_mm_shuffle_ps(q, q, LANES(1, 0, 1, 0)), _mm_shuffle_ps(q, q, LANES(3, 3, 1, 0)));
+	d = _mm_add_ps(p, _mm_xor_ps(n, _mm_and_ps(sse_mask(1, 0, 0, 0), _mm_set1_ps(-0.0f))));
+	mask = sse_mask(0, 0, 1, 0);
+	d = _mm_add_ps(d, d);
+	d = _mm_or_ps(_mm_and_ps(mask, _mm_sub_ps(one, d)), _mm_andnot_ps(mask, d));
+	/* the last row's fourth lane would write past the matrix */
+	float r2[4];
+	_mm_storeu_ps(r2, _mm_mul_ps(d, scale));
+	m[8] = r2[0], m[9] = r2[1], m[10] = r2[2];
+	m[3] = trs[0], m[7] = trs[1], m[11] = trs[2];
+}
+#endif
+
 /* the IQM convention: output = rotate(input * scale) + translate */
 void Bone_FromTRS(bonemat_t m, const float *trs)
 {
 	float x = trs[3], y = trs[4], z = trs[5], w = trs[6];
 	float l = x * x + y * y + z * z + w * w;
-	float r[3][3];
 	if (l > 0 && fabsf(l - 1) > 1e-6f) {
 		l = 1 / sqrtf(l);
 		x *= l, y *= l, z *= l, w *= l;
 	}
+#ifdef SKEL_SSE
+	trs_rows(m, _mm_setr_ps(x, y, z, w), trs);
+#else
+	float r[3][3];
 	r[0][0] = 1 - 2 * (y * y + z * z), r[0][1] = 2 * (x * y - z * w), r[0][2] = 2 * (x * z + y * w);
 	r[1][0] = 2 * (x * y + z * w), r[1][1] = 1 - 2 * (x * x + z * z), r[1][2] = 2 * (y * z - x * w);
 	r[2][0] = 2 * (x * z - y * w), r[2][1] = 2 * (y * z + x * w), r[2][2] = 1 - 2 * (x * x + y * y);
@@ -44,10 +105,30 @@ void Bone_FromTRS(bonemat_t m, const float *trs)
 			m[i * 4 + j] = r[i][j] * trs[7 + j];
 		m[i * 4 + 3] = trs[i];
 	}
+#endif
 }
 
 void Bone_Multiply(bonemat_t out, const bonemat_t a, const bonemat_t b)
 {
+#ifdef SKEL_SSE
+	/* all of a and b are read before out is written: they may be out */
+	const __m128 b0 = _mm_loadu_ps(b), b1 = _mm_loadu_ps(b + 4), b2 = _mm_setr_ps(b[8], b[9], b[10], b[11]);
+	const __m128 last = sse_mask(0, 0, 0, 1);
+	__m128 r[3];
+	for (int i = 0; i < 3; i++) {
+		const float *ar = a + i * 4;
+		__m128 v = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_mm_set1_ps(ar[0]), b0), _mm_mul_ps(_mm_set1_ps(ar[1]), b1)),
+		                      _mm_mul_ps(_mm_set1_ps(ar[2]), b2));
+		/* the translation adds a's own, in the fourth lane only */
+		__m128 t = _mm_add_ps(v, _mm_set1_ps(ar[3]));
+		r[i] = _mm_or_ps(_mm_and_ps(last, t), _mm_andnot_ps(last, v));
+	}
+	_mm_storeu_ps(out, r[0]);
+	_mm_storeu_ps(out + 4, r[1]);
+	float r2[4];
+	_mm_storeu_ps(r2, r[2]);
+	out[8] = r2[0], out[9] = r2[1], out[10] = r2[2], out[11] = r2[3];
+#else
 	bonemat_t o;
 	for (int i = 0; i < 3; i++) {
 		for (int j = 0; j < 4; j++)
@@ -55,6 +136,7 @@ void Bone_Multiply(bonemat_t out, const bonemat_t a, const bonemat_t b)
 		o[i * 4 + 3] += a[i * 4 + 3];
 	}
 	memcpy(out, o, sizeof(o));
+#endif
 }
 
 void Bone_Invert(bonemat_t out, const bonemat_t m)
@@ -170,6 +252,18 @@ enum {
 	H_NUM_EXTENSIONS, H_OFS_EXTENSIONS, H_COUNT
 };
 
+/* the bind pose's relative matrices, kept for every pose that asks for
+ * it, and its inverse in model space */
+static void bind_pose(skelmodel_t *m)
+{
+	m->baserel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
+	for (int j = 0; j < m->numjoints; j++)
+		Bone_FromTRS(m->baserel[j], m->base + j * 10);
+	Skel_ToAbsolute(m, m->baserel, m->invbind);
+	for (int j = 0; j < m->numjoints; j++)
+		Bone_Invert(m->invbind[j], m->invbind[j]);
+}
+
 static bool parse_iqm(skelmodel_t *m, const uint8_t *d, size_t size)
 {
 	uint32_t h[H_COUNT];
@@ -199,15 +293,7 @@ static bool parse_iqm(skelmodel_t *m, const uint8_t *d, size_t size)
 		for (int k = 0; k < 10; k++)
 			m->base[j * 10 + k] = rdf(jp + 8 + k * 4);
 	}
-	{
-		bonemat_t *rel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_FromTRS(rel[j], m->base + j * 10);
-		Skel_ToAbsolute(m, rel, m->invbind);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_Invert(m->invbind[j], m->invbind[j]);
-		Mem_Free(rel);
-	}
+	bind_pose(m);
 	/* poses: each of the ten channels is offset + frame value * scale when
 	 * its mask bit is set, otherwise just the offset */
 	if (h[H_NUM_POSES] == h[H_NUM_JOINTS] && h[H_NUM_FRAMES] &&
@@ -251,8 +337,10 @@ static void free_skelmodel(skelmodel_t *m)
 {
 	Mem_Free(m->joints);
 	Mem_Free(m->base);
+	Mem_Free(m->baserel);
 	Mem_Free(m->invbind);
 	Mem_Free(m->frames);
+	Mem_Free(m->seqfirst);
 	Mem_Free(m->anims);
 	Mem_Free(m);
 }
@@ -274,19 +362,19 @@ static bool from_studio(skelmodel_t *m, const studio_model_t *st)
 		m->joints[j].parent = st->bones[j].parent;
 	}
 	Studio_RestPose(st, m->base);
-	{
-		bonemat_t *rel = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_FromTRS(rel[j], m->base + j * 10);
-		Skel_ToAbsolute(m, rel, m->invbind);
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_Invert(m->invbind[j], m->invbind[j]);
-		Mem_Free(rel);
-	}
+	bind_pose(m);
 	for (int i = 0; i < st->numseqs; i++)
 		total += BW_MAX(1, st->seqs[i].numframes);
 	m->numframes = total;
+#ifdef BW_LOWMEM
+	/* the cached model keeps its file, so the coded animation stays where
+	   it is and the frames are decoded when a pose asks for them */
+	m->studio = st;
+	m->numseqs = st->numseqs;
+	m->seqfirst = Mem_Alloc(sizeof(int) * (st->numseqs + 1));
+#else
 	m->frames = Mem_Alloc(sizeof(float) * 10 * m->numjoints * (size_t)BW_MAX(1, total));
+#endif
 	m->numanims = st->numseqs;
 	m->anims = Mem_Alloc(sizeof(framegroup_t) * (m->numanims + 1));
 	total = 0;
@@ -299,6 +387,11 @@ static bool from_studio(skelmodel_t *m, const studio_model_t *st)
 		g->count = n;
 		g->fps = sq->fps > 0 ? sq->fps : 10;
 		g->loop = (sq->flags & STUDIO_LOOPING) != 0;
+		if (m->seqfirst) {
+			m->seqfirst[i] = total;
+			total += n;
+			continue;
+		}
 		for (int f = 0; f < n; f++) {
 			float *out = m->frames + ((size_t)(total + f) * m->numjoints) * 10;
 			/* a sequence kept in another file stands in its rest pose */
@@ -307,7 +400,160 @@ static bool from_studio(skelmodel_t *m, const studio_model_t *st)
 		}
 		total += n;
 	}
+	if (m->seqfirst)
+		m->seqfirst[st->numseqs] = total;
 	return true;
+}
+
+#ifdef BW_LOWMEM
+/* decoded studio frames, found by a hash of model and frame and replaced
+ * least recently used first. A frame decodes with six sines and cosines a
+ * bone, and the players' animations loop, so the cache is made to hold
+ * the frames the match plays: idle, run and the rest loop over a second
+ * or two, and every player plays them. A 128 MB Xbox keeps 2560 (4 MB at
+ * 40 bones), a 64 MB one 512; other small systems the 96 a pose and its
+ * neighbours need. */
+#define FRAMEHASH 1024
+typedef struct {
+	const skelmodel_t *model;
+	int frame, size, next; /* next in its hash chain, + 1 */
+	int older, newer;      /* the use list, + 1 */
+	float *trs;
+} cachedframe_t;
+static cachedframe_t *framecache;
+static int numframecache, maxframecache;
+static int framehash[FRAMEHASH]; /* first entry + 1 of each chain, 0 for none */
+static int newest, oldest;       /* ends of the use list, + 1 */
+
+static int frame_capacity(void)
+{
+#if defined(BW_XBOX)
+	return BW_SMALL_MEMORY() ? 512 : 2560;
+#elif defined(BW_FORCE_LOWMEM)
+	return 512; /* a desktop playing an Xbox: as on a 64 MB one */
+#else
+	return 96;
+#endif
+}
+
+static unsigned frame_bucket(const skelmodel_t *m, int f)
+{
+	return ((uint32_t)(uintptr_t)m * 2654435761u ^ (uint32_t)f * 40503u) >> 8 & (FRAMEHASH - 1);
+}
+
+static void unhash_frame(int i)
+{
+	int *link = &framehash[frame_bucket(framecache[i].model, framecache[i].frame)];
+	while (*link && *link != i + 1)
+		link = &framecache[*link - 1].next;
+	if (*link)
+		*link = framecache[i].next;
+	framecache[i].model = NULL;
+}
+
+static void unlink_use(int i)
+{
+	cachedframe_t *c = &framecache[i];
+	if (c->older)
+		framecache[c->older - 1].newer = c->newer;
+	else
+		oldest = c->newer;
+	if (c->newer)
+		framecache[c->newer - 1].older = c->older;
+	else
+		newest = c->older;
+	c->older = c->newer = 0;
+}
+
+static void link_newest(int i)
+{
+	cachedframe_t *c = &framecache[i];
+	c->older = newest;
+	c->newer = 0;
+	if (newest)
+		framecache[newest - 1].newer = i + 1;
+	else
+		oldest = i + 1;
+	newest = i + 1;
+}
+
+static const float *decode_frame(const skelmodel_t *m, int f)
+{
+	int i, s, lo = 0, hi = m->numseqs - 1, n = m->numjoints * 10;
+	unsigned h = frame_bucket(m, f);
+	for (i = framehash[h]; i; i = framecache[i - 1].next)
+		if (framecache[i - 1].model == m && framecache[i - 1].frame == f) {
+			if (newest != i) {
+				unlink_use(i - 1);
+				link_newest(i - 1);
+			}
+			return framecache[i - 1].trs;
+		}
+	if (!maxframecache) {
+		maxframecache = frame_capacity();
+		framecache = Mem_Alloc(sizeof(cachedframe_t) * (size_t)maxframecache);
+	}
+	/* a new entry while there is room, else the one used longest ago */
+	if (numframecache < maxframecache) {
+		i = numframecache++;
+	} else {
+		i = oldest - 1;
+		unlink_use(i);
+		if (framecache[i].model)
+			unhash_frame(i);
+	}
+	cachedframe_t *c = &framecache[i];
+	if (c->size < n) {
+		c->trs = Mem_Realloc(c->trs, sizeof(float) * n);
+		c->size = n;
+	}
+	/* the sequence holding frame f: the last one starting at or before it */
+	while (lo < hi) {
+		int mid = (lo + hi + 1) / 2;
+		if (m->seqfirst[mid] <= f)
+			lo = mid;
+		else
+			hi = mid - 1;
+	}
+	s = lo;
+	/* a sequence kept in another file stands in its rest pose */
+	if (!Studio_DecodeFrame(m->studio, s, 0, f - m->seqfirst[s], c->trs))
+		Studio_RestPose(m->studio, c->trs);
+	c->model = m;
+	c->frame = f;
+	c->next = framehash[h];
+	framehash[h] = i + 1;
+	link_newest(i);
+	return c->trs;
+}
+
+/* a freed model's frames go to the old end, to be reused first */
+static void forget_frames(const skelmodel_t *m)
+{
+	for (int i = 0; i < numframecache; i++)
+		if (framecache[i].model == m) {
+			unhash_frame(i);
+			unlink_use(i);
+			cachedframe_t *c = &framecache[i];
+			c->newer = oldest;
+			c->older = 0;
+			if (oldest)
+				framecache[oldest - 1].older = i + 1;
+			else
+				newest = i + 1;
+			oldest = i + 1;
+		}
+}
+#endif
+
+/* the ten channels of every joint at raw frame f, which is in range */
+static const float *frame_trs(const skelmodel_t *m, int f)
+{
+#ifdef BW_LOWMEM
+	if (!m->frames)
+		return decode_frame(m, f);
+#endif
+	return m->frames + (size_t)f * m->numjoints * 10;
 }
 
 skelmodel_t *Skel_LoadModel(const char *name)
@@ -325,10 +571,20 @@ skelmodel_t *Skel_LoadModel(const char *name)
 	Str_Copy(m->name, name, sizeof(m->name));
 	m->next = skelmodels;
 	skelmodels = m;
+	{
+		/* a GoldSrc model is parsed and kept by the studio cache already,
+		   so its file need not be read a second time */
+		const studio_model_t *st = Studio_Peek(name);
+		if (st && st->version == 10 && from_studio(m, st))
+			goto loaded;
+	}
 	d = (uint8_t *)FS_LoadFile(name, &size);
-	ok = d && parse_iqm(m, d, size);
-	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10)
-		ok = from_studio(m, Studio_Cached(name));
+	if (d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] == 10) {
+		/* only a GoldSrc model goes to the studio cache, which keeps d */
+		ok = from_studio(m, Studio_CacheBuffer(name, d, size));
+		d = NULL;
+	} else
+		ok = d && parse_iqm(m, d, size);
 	if (!ok && d && size >= 8 && !memcmp(d, "IDST", 4) && d[4] != 10) {
 		/* a format a plugin turns into an IQM (Source .mdl) */
 		size_t qlen;
@@ -342,10 +598,12 @@ skelmodel_t *Skel_LoadModel(const char *name)
 		/* remembered as having no skeleton */
 		Mem_Free(m->joints), m->joints = NULL;
 		Mem_Free(m->base), m->base = NULL;
+		Mem_Free(m->baserel), m->baserel = NULL;
 		Mem_Free(m->invbind), m->invbind = NULL;
 		m->numjoints = 0;
 		return NULL;
 	}
+loaded:
 	{
 		int n;
 		framegroup_t *g = Skel_LoadFramegroups(name, &n);
@@ -362,6 +620,9 @@ void Skel_FreeModels(void)
 {
 	while (skelmodels) {
 		skelmodel_t *n = skelmodels->next;
+#ifdef BW_LOWMEM
+		forget_frames(skelmodels);
+#endif
 		free_skelmodel(skelmodels);
 		skelmodels = n;
 	}
@@ -378,6 +639,7 @@ int Skel_FindJoint(const skelmodel_t *m, const char *name)
 
 /* --- poses ------------------------------------------------------------------- */
 
+#ifndef SKEL_SSE
 static void lerp_trs(const float *a, const float *b, float t, float *out)
 {
 	float dot = a[3] * b[3] + a[4] * b[4] + a[5] * b[5] + a[6] * b[6];
@@ -387,22 +649,47 @@ static void lerp_trs(const float *a, const float *b, float t, float *out)
 		out[k] = a[k] + (bk - a[k]) * t;
 	}
 }
+#else
+/* lerp_trs then Bone_FromTRS, four lanes at a time; b times -1 is b with
+ * its sign flipped, which the plain C's multiply gives too */
+static void lerp_bone(const float *a, const float *b, float t, bonemat_t m)
+{
+	float dot = a[3] * b[3] + a[4] * b[4] + a[5] * b[5] + a[6] * b[6];
+	const __m128 neg = _mm_set1_ps(-0.0f), tv = _mm_set1_ps(t);
+	__m128 flip0 = _mm_setzero_ps(), flip1 = _mm_setzero_ps();
+	float trs[12];
+	if (dot < 0) /* the shorter way round */
+		flip0 = _mm_and_ps(sse_mask(0, 0, 0, 1), neg), flip1 = _mm_and_ps(sse_mask(1, 1, 1, 0), neg);
+	__m128 a0 = _mm_loadu_ps(a), a1 = _mm_loadu_ps(a + 4);
+	__m128 b0 = _mm_xor_ps(_mm_loadu_ps(b), flip0), b1 = _mm_xor_ps(_mm_loadu_ps(b + 4), flip1);
+	_mm_storeu_ps(trs, _mm_add_ps(a0, _mm_mul_ps(_mm_sub_ps(b0, a0), tv)));
+	_mm_storeu_ps(trs + 4, _mm_add_ps(a1, _mm_mul_ps(_mm_sub_ps(b1, a1), tv)));
+	trs[8] = a[8] + (b[8] - a[8]) * t;
+	trs[9] = a[9] + (b[9] - a[9]) * t;
+	Bone_FromTRS(m, trs);
+}
+#endif
 
-void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t *out)
+/* bones first..last of Skel_SampleRelative's pose; each bone is worked
+ * out on its own, so part of the skeleton comes out as in the whole */
+static void sample_range(const skelmodel_t *m, int group, float time, int first, int last, bonemat_t *out)
 {
 	const framegroup_t *g;
 	int f0, f1;
 	float t;
+	if (last < first)
+		return;
 	if (!m->numframes || group < 0 || group >= m->numanims) {
-		for (int j = 0; j < m->numjoints; j++)
-			Bone_FromTRS(out[j], m->base + j * 10);
+		if (m->numjoints) /* baserel is NULL without a skeleton */
+			memcpy(out + first, m->baserel + first, sizeof(bonemat_t) * (size_t)(last - first + 1));
 		return;
 	}
 	g = &m->anims[group];
 	t = time * g->fps;
 	if (!(t >= 0)) /* also catches NaN */
 		t = 0;
-	f0 = (int)floorf(t);
+	/* for t >= 0 truncating is the floor, without the libm call */
+	f0 = t < 2147483520.0f ? (int)t : (int)floorf(t);
 	t -= (float)f0;
 	if (g->loop) {
 		f0 %= g->count;
@@ -414,27 +701,58 @@ void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t 
 	}
 	f0 = BW_MAX(0, BW_MIN(g->first + f0, m->numframes - 1));
 	f1 = BW_MAX(0, BW_MIN(g->first + f1, m->numframes - 1));
-	for (int j = 0; j < m->numjoints; j++) {
+	/* a is the most recently used cache entry, so decoding b keeps it */
+	const float *a = frame_trs(m, f0), *b = frame_trs(m, f1);
+	for (int j = first; j <= last; j++) {
+#ifdef SKEL_SSE
+		lerp_bone(a + j * 10, b + j * 10, t, out[j]);
+#else
 		float trs[10];
-		lerp_trs(m->frames + ((size_t)f0 * m->numjoints + j) * 10, m->frames + ((size_t)f1 * m->numjoints + j) * 10,
-		         t, trs);
+		lerp_trs(a + j * 10, b + j * 10, t, trs);
 		Bone_FromTRS(out[j], trs);
+#endif
+	}
+}
+
+void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t *out)
+{
+	sample_range(m, group, time, 0, m->numjoints - 1, out);
+}
+
+void Skel_EntityPoseRange(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
+                          float lerpfrac, int first, int last, bonemat_t *out)
+{
+	static bonemat_t *b;
+	static int maxb;
+	first = BW_MAX(first, 0);
+	last = BW_MIN(last, m->numjoints - 1);
+	sample_range(m, frame, frame1time, first, last, out);
+	if (lerpfrac > 0 && frame2 != frame) {
+		float l = BW_MIN(lerpfrac, 1);
+		if (m->numjoints > maxb) {
+			maxb = m->numjoints;
+			b = Mem_Realloc(b, sizeof(bonemat_t) * maxb);
+		}
+		sample_range(m, frame2, frame2time, first, last, b);
+		for (int j = first; j <= last; j++) {
+#ifdef SKEL_SSE
+			const __m128 lv = _mm_set1_ps(l);
+			for (int k = 0; k < 12; k += 4) {
+				__m128 o = _mm_loadu_ps(out[j] + k);
+				_mm_storeu_ps(out[j] + k, _mm_add_ps(o, _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(b[j] + k), o), lv)));
+			}
+#else
+			for (int k = 0; k < 12; k++)
+				out[j][k] += (b[j][k] - out[j][k]) * l;
+#endif
+		}
 	}
 }
 
 void Skel_EntityPose(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
                      float lerpfrac, bonemat_t *out)
 {
-	Skel_SampleRelative(m, frame, frame1time, out);
-	if (lerpfrac > 0 && frame2 != frame) {
-		bonemat_t *b = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
-		float l = BW_MIN(lerpfrac, 1);
-		Skel_SampleRelative(m, frame2, frame2time, b);
-		for (int j = 0; j < m->numjoints; j++)
-			for (int k = 0; k < 12; k++)
-				out[j][k] += (b[j][k] - out[j][k]) * l;
-		Mem_Free(b);
-	}
+	Skel_EntityPoseRange(m, frame, frame1time, frame2, frame2time, lerpfrac, 0, m->numjoints - 1, out);
 }
 
 void Skel_ToAbsolute(const skelmodel_t *m, const bonemat_t *rel, bonemat_t *abs)

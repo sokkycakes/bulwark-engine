@@ -25,9 +25,19 @@ void FS_SetGameDirs(const char *const *dirs, int count);
 
 /* returns a NUL-terminated Mem_Alloc'd buffer, or NULL */
 char *FS_LoadFile(const char *path, size_t *len);
+/* the calling thread's FS_LoadFile calls and the seconds they took since
+ * the last call, for host_speeds' slowest frame */
+void FS_TakeLoadStats(int *loads, double *seconds);
+/* bytes [ofs, ofs + n) of the file FS_LoadFile would read, as it returns
+ * them; NULL if the file is shorter. Reads only those bytes from a loose
+ * file, which is what a low-memory platform pages its models from. */
+char *FS_LoadRange(const char *path, size_t ofs, size_t n);
 bool FS_FileExists(const char *path);
 /* name of the search path that provides path, or NULL */
 const char *FS_WhichPath(const char *path);
+/* a file may have been created, written or removed: forgets the lookups
+ * the Xbox keeps (called by its fopen for writing, remove and rename) */
+void FS_NoteWrite(void);
 /* index of the game directory that provides path (0 is the base game), or
  * -1 if none does */
 int FS_WhichGameDir(const char *path);

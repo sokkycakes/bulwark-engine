@@ -65,7 +65,7 @@ typedef struct {
 	query_t queries[MAX_QUERIES];
 } conn_t;
 
-static conn_t conns[MAX_CONNECTIONS];
+static conn_t *conns; /* MAX_CONNECTIONS, made by the first sqlconnect */
 
 static bool load_sqlite(void)
 {
@@ -130,7 +130,7 @@ static void close_conn(conn_t *c)
 static conn_t *get_conn(float idx)
 {
 	int i = (int)idx;
-	if (i < 0 || i >= MAX_CONNECTIONS || !conns[i].used || conns[i].dead)
+	if (!conns || i < 0 || i >= MAX_CONNECTIONS || !conns[i].used || conns[i].dead)
 		return NULL;
 	return &conns[i];
 }
@@ -252,6 +252,8 @@ static void bi_sqlconnect(qcvm_t *vm)
 		Con_Printf("sqlconnect: sqlite isn't installed\n");
 		return;
 	}
+	if (!conns)
+		conns = Mem_Alloc(sizeof(conn_t) * MAX_CONNECTIONS);
 	if (!db[0])
 		db = "default";
 	if (!strcmp(db, ":memory:"))
@@ -420,6 +422,8 @@ const qc_builtin_t sv_sql_builtins[] = {
 /* the server's code is going away: its callbacks with it */
 void SV_SQLShutdown(void)
 {
+	if (!conns)
+		return;
 	for (int i = 0; i < MAX_CONNECTIONS; i++)
 		if (conns[i].used && !conns[i].dead)
 			close_conn(&conns[i]);
@@ -430,10 +434,10 @@ static void SqlStatus_f(int argc, const char **argv)
 	int n = 0;
 	Con_Printf("mysql: not supported\n");
 	Con_Printf("sqlite: %s\n", load_sqlite() ? "loaded" : "not installed");
-	for (int i = 0; i < MAX_CONNECTIONS; i++)
+	for (int i = 0; conns && i < MAX_CONNECTIONS; i++)
 		n += conns[i].used && !conns[i].dead;
 	Con_Printf("%d connections\n", n);
-	for (int i = 0; i < MAX_CONNECTIONS; i++) {
+	for (int i = 0; conns && i < MAX_CONNECTIONS; i++) {
 		conn_t *c = &conns[i];
 		int open = 0;
 		if (!c->used || c->dead)

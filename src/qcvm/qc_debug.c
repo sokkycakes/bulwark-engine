@@ -11,6 +11,7 @@
  * ISC licence, see LICENSE. */
 #include "qcvm.h"
 #include "qc_internal.h"
+#include "qc_jit.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
@@ -113,10 +114,121 @@ static qcval_t *watch_ptr(qcvm_t *vm, qc_watch_t *w)
 
 /* --- interpreter hooks ------------------------------------------------- */
 
+/* --- inclusive profile ------------------------------------------------- */
+
+/* the totals when a frame began, and who called it */
+typedef struct qc_profframe_s {
+	uint64_t s0;
+	double b0;
+	qcfunc_t *caller, *fn;
+	bool valid;
+} qc_profframe_t;
+
+typedef struct {
+	qcfunc_t *from, *to;
+	uint64_t calls, statements;
+	double time;
+} qc_profedge_t;
+
+#define PROF_EDGES 65536
+typedef struct qc_profedges_s {
+	qc_profedge_t e[PROF_EDGES];
+	int used;
+} qc_profedges_t;
+
+static qc_profedge_t *prof_edge(qcvm_t *vm, qcfunc_t *from, qcfunc_t *to)
+{
+	qc_profedges_t *t = vm->prof_edges;
+	uintptr_t h;
+	if (!t || !from)
+		return NULL;
+	h = ((uintptr_t)from * 31 + (uintptr_t)to) >> 4;
+	for (unsigned i = (unsigned)h & (PROF_EDGES - 1);; i = (i + 1) & (PROF_EDGES - 1)) {
+		qc_profedge_t *e = &t->e[i];
+		if (e->from == from && e->to == to)
+			return e;
+		if (!e->from) {
+			/* keep the table half empty so probes stay short; known
+			 * edges still count */
+			if (t->used >= PROF_EDGES / 2)
+				return NULL;
+			e->from = from;
+			e->to = to;
+			t->used++;
+			return e;
+		}
+	}
+}
+
+static qcfunc_t *running_function(qcvm_t *vm)
+{
+	return vm->xfunction > 0 ? &vm->functions[vm->xfunction] : NULL;
+}
+
+void QC_DebugFunctionLeft(qcvm_t *vm, qcfunc_t *f)
+{
+	qc_profframe_t *pf;
+	qc_profedge_t *e;
+	uint64_t ds;
+	double db;
+	if (!vm->profiling || !vm->prof_stack)
+		return;
+	pf = &vm->prof_stack[vm->depth];
+	if (!pf->valid)
+		return;
+	pf->valid = false;
+	if (vm->prof_top > vm->depth)
+		vm->prof_top = vm->depth;
+	ds = vm->prof_total - pf->s0;
+	db = vm->prof_btime - pf->b0;
+	/* only the outermost frame of a recursive function adds its span */
+	if (pf->fn && pf->fn->prof_active && !--pf->fn->prof_active) {
+		f->prof_incl += ds;
+		f->prof_incl_time += db;
+	}
+	if ((e = prof_edge(vm, pf->caller, f))) {
+		e->calls++;
+		e->statements += ds;
+		e->time += db;
+	}
+}
+
+void QC_DebugBuiltinTime(qcvm_t *vm, qcfunc_t *f, double seconds)
+{
+	qc_profedge_t *e;
+	f->prof_time += seconds;
+	f->prof_calls++;
+	vm->prof_btime += seconds;
+	if ((e = prof_edge(vm, running_function(vm), f))) {
+		e->calls++;
+		e->time += seconds;
+	}
+}
+
 void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f)
 {
-	if (vm->profiling)
+	if (vm->profiling) {
 		f->prof_calls++;
+		if (vm->prof_stack && vm->depth > 0) {
+			qc_profframe_t *pf = &vm->prof_stack[vm->depth - 1];
+			const qcframe_t *fr = &vm->stack[vm->depth - 1];
+			/* frames an error unwound never left: drop their counts */
+			while (vm->prof_top >= vm->depth) {
+				qc_profframe_t *old = &vm->prof_stack[--vm->prof_top];
+				if (old->valid && old->fn && old->fn->prof_active)
+					old->fn->prof_active--;
+				old->valid = false;
+			}
+			vm->prof_top = vm->depth;
+			pf->fn = f;
+			f->prof_active++;
+			pf->s0 = vm->prof_total;
+			pf->b0 = vm->prof_btime;
+			pf->caller = fr->f > 0 && fr->progs >= 0 && fr->progs < vm->numprogs ? &vm->progs[fr->progs].functions[fr->f]
+			                                                                    : NULL;
+			pf->valid = true;
+		}
+	}
 	if (vm->breakpoint[0] && f->name && !strcmp(f->name, vm->breakpoint)) {
 		Con_Printf("^3%s: breakpoint at %s (%s), self %d\n", vm->name, f->name, f->file ? f->file : "?",
 		           QC_GInt(vm, vm->gofs.self));
@@ -126,8 +238,10 @@ void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f)
 
 void QC_DebugStatement(qcvm_t *vm, int s)
 {
-	if (vm->profiling && vm->xfunction > 0)
+	if (vm->profiling && vm->xfunction > 0) {
 		vm->functions[vm->xfunction].prof_statements++;
+		vm->prof_total++;
+	}
 	if (vm->watch) {
 		qc_watch_t *w = vm->watch;
 		qcval_t *v = watch_ptr(vm, w);
@@ -165,9 +279,56 @@ static void profile_reset(qcvm_t *vm)
 	for (int p = 0; p < vm->numprogs; p++)
 		for (int i = 0; i < vm->progs[p].numfunctions; i++) {
 			qcfunc_t *f = &vm->progs[p].functions[i];
-			f->prof_statements = f->prof_calls = 0;
-			f->prof_time = 0;
+			f->prof_statements = f->prof_calls = f->prof_incl = 0;
+			f->prof_time = f->prof_incl_time = 0;
+			f->prof_active = 0;
 		}
+	vm->prof_top = 0;
+	vm->prof_total = 0;
+	vm->prof_btime = 0;
+	if (!vm->prof_stack)
+		vm->prof_stack = Mem_Alloc(sizeof(*vm->prof_stack) * (QC_MAX_DEPTH + 1));
+	memset(vm->prof_stack, 0, sizeof(*vm->prof_stack) * (QC_MAX_DEPTH + 1));
+	if (!vm->prof_edges)
+		vm->prof_edges = Mem_Alloc(sizeof(*vm->prof_edges));
+	memset(vm->prof_edges, 0, sizeof(*vm->prof_edges));
+}
+
+/* builtin time counts as statements at a rough ten nanoseconds each */
+static double incl_cost(const qcfunc_t *f)
+{
+	return f->builtin ? f->prof_time * 1e8 : (double)f->prof_incl + f->prof_incl_time * 1e8;
+}
+
+static int incl_cmp(const void *a, const void *b)
+{
+	double x = incl_cost(((const profrow_t *)a)->f), y = incl_cost(((const profrow_t *)b)->f);
+	return x < y ? 1 : x > y ? -1 : 0;
+}
+
+static double edge_cost(const qc_profedge_t *e) { return (double)e->statements + e->time * 1e8; }
+
+static void print_callers(qcvm_t *vm, qcfunc_t *f)
+{
+	const qc_profedge_t *best[4] = {0};
+	qc_profedges_t *t = vm->prof_edges;
+	if (!t)
+		return;
+	for (int i = 0; i < PROF_EDGES; i++) {
+		const qc_profedge_t *e = &t->e[i];
+		if (e->to != f || !e->from)
+			continue;
+		for (int k = 0; k < 4; k++)
+			if (!best[k] || edge_cost(e) > edge_cost(best[k])) {
+				memmove(best + k + 1, best + k, sizeof(best[0]) * (size_t)(3 - k));
+				best[k] = e;
+				break;
+			}
+	}
+	for (int k = 0; k < 4 && best[k]; k++)
+		Con_Printf("        from %s: %llu calls, %llu statements, %.3f ms in builtins\n",
+		           best[k]->from->name ? best[k]->from->name : "?", (unsigned long long)best[k]->calls,
+		           (unsigned long long)best[k]->statements, best[k]->time * 1000);
 }
 
 static void profile_print(qcvm_t *vm, int top)
@@ -201,6 +362,20 @@ static void profile_print(qcvm_t *vm, int top)
 			Con_Printf("  %12llu %5.1f%% %10llu  %s (%s)\n", (unsigned long long)f->prof_statements,
 			           total ? 100.0 * (double)f->prof_statements / (double)total : 0.0,
 			           (unsigned long long)f->prof_calls, f->name, f->file ? f->file : "?");
+	}
+	/* inclusive: what each function and everything it called cost, and its
+	 * biggest callers */
+	qsort(rows, (size_t)n, sizeof(*rows), incl_cmp);
+	Con_Printf("inclusive (statements, then builtin milliseconds), with the biggest callers:\n");
+	for (int i = 0; i < n && i < top; i++) {
+		qcfunc_t *f = rows[i].f;
+		if (f->builtin)
+			Con_Printf("  %12s %9.3f ms %10llu  %s (builtin)\n", "", f->prof_time * 1000,
+			           (unsigned long long)f->prof_calls, f->name);
+		else
+			Con_Printf("  %12llu %9.3f ms %10llu  %s\n", (unsigned long long)f->prof_incl, f->prof_incl_time * 1000,
+			           (unsigned long long)f->prof_calls, f->name);
+		print_callers(vm, f);
 	}
 	Mem_Free(rows);
 }
@@ -429,8 +604,12 @@ void QC_InitSkelCommands(void);
 void QC_InitDebugCommands(void)
 {
 	QC_InitSkelCommands();
+#ifdef QC_JIT
+	QC_JitInit();
+#endif
 	QC_MeshPitch(); /* registers r_meshpitch */
 	static const char *const descs[3] = {"the server game", "the client game", "the menu"};
+	Cvar_Get("pr_seed", "0", 0, "Seed QC's random() with this when a game loads, instead of the clock (0)");
 	coreonerror[0] = Cvar_Get("pr_ssqc_coreonerror", "0", CVAR_ARCHIVE, "Write ssqccore.txt when the server game has an error");
 	coreonerror[1] = Cvar_Get("pr_csqc_coreonerror", "0", CVAR_ARCHIVE, "Write csqccore.txt when the client game has an error");
 	coreonerror[2] = Cvar_Get("pr_menuqc_coreonerror", "0", CVAR_ARCHIVE, "Write menuqccore.txt when the menu has an error");

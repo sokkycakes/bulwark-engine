@@ -136,7 +136,7 @@ bool MQC_Load(void)
 	tables[11] = r_skin_builtins;
 	tables[12] = ui_builtins; /* Panorama views, see docs/spec/ui.md */
 	tables[13] = NULL;
-	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, BW_MENU_MAXEDICTS, (size_t)BW_MENU_HEAP_MB * 1024 * 1024);
+	M.vm = QC_Load("menu.dat", data, len, QCVM_MENU, tables, BW_MENU_MAXEDICTS, (size_t)BW_MENU_HEAP_KB * 1024);
 	Mem_Free(data);
 	if (!M.vm)
 		return false;
@@ -212,6 +212,11 @@ static void loading_hook(const char *stage, const char *map, float frac)
 	R_BeginFrame();
 	R_GetSize(&w, &h);
 	MQC_Frame(w, h);
+#ifdef BW_UI_NATIVE
+	/* the native UI draws the loading screen itself (uin_misc.c); this is
+	 * its only chance while the load holds up the main loop */
+	UI_Draw();
+#endif
 	R_EndFrame();
 	loading_drawing = false;
 }

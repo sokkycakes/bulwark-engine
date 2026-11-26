@@ -693,6 +693,9 @@ fail:
 	r_world.loaded = false;
 }
 
+/* the surfaces the visibility bitmaps were built for; R_FreeWorld clears it */
+static const rsurface_t *visbits_for;
+
 void R_FreeWorld(void)
 {
 	R_FreeStaticProps();
@@ -707,6 +710,8 @@ void R_FreeWorld(void)
 			GL_DeleteTextures(r_world.numlightmaps, r_world.lightmaps);
 	}
 	Mem_Free(r_world.surfaces);
+	/* the next map's surfaces may land at the same address */
+	visbits_for = NULL;
 	Mem_Free(r_world.lightmaps);
 	Mem_Free(r_world.submodels);
 	Mem_Free(r_world.lightgrid);
@@ -771,27 +776,53 @@ void R_LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 
 /* --- drawing ----------------------------------------------------------------- */
 
-static bool cull_box(const float *planes, const float *mins, const float *maxs)
+/* the view's side planes, and for each the box corner furthest along it
+ * (bit k: the max on axis k), picked once rather than per box: float
+ * compares are slow on the Xbox */
+typedef struct {
+	float p[4][4];
+	int far[4];
+} frustum_t;
+
+static bool cull_box(const frustum_t *fr, const float *mins, const float *maxs)
 {
 	for (int p = 0; p < 4; p++) {
-		const float *pl = planes + p * 4;
-		float x = pl[0] > 0 ? maxs[0] : mins[0];
-		float y = pl[1] > 0 ? maxs[1] : mins[1];
-		float z = pl[2] > 0 ? maxs[2] : mins[2];
+		const float *pl = fr->p[p];
+		int f = fr->far[p];
+		float x = (f & 1) ? maxs[0] : mins[0];
+		float y = (f & 2) ? maxs[1] : mins[1];
+		float z = (f & 4) ? maxs[2] : mins[2];
 		if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < 0)
 			return true;
 	}
 	return false;
 }
 
+/* whether the box is inside all four planes: its nearest corner to each is
+ * on the inner side */
+static bool box_inside(const frustum_t *fr, const float *mins, const float *maxs)
+{
+	for (int p = 0; p < 4; p++) {
+		const float *pl = fr->p[p];
+		int f = fr->far[p];
+		float x = (f & 1) ? mins[0] : maxs[0];
+		float y = (f & 2) ? mins[1] : maxs[1];
+		float z = (f & 4) ? mins[2] : maxs[2];
+		if (!(pl[0] * x + pl[1] * y + pl[2] * z + pl[3] > 0))
+			return false;
+	}
+	return true;
+}
+
 /* left, right, bottom, top planes of a clip matrix (rows combined) */
-static void frustum_planes(const float *m, float *planes)
+static void frustum_planes(const float *m, frustum_t *fr)
 {
 	for (int i = 0; i < 4; i++) {
 		int row = i / 2;
 		float sign = (i & 1) ? -1.0f : 1.0f;
 		for (int k = 0; k < 4; k++)
-			planes[i * 4 + k] = m[k * 4 + 3] + sign * m[k * 4 + row];
+			fr->p[i][k] = m[k * 4 + 3] + sign * m[k * 4 + row];
+		fr->far[i] = (fr->p[i][0] > 0) | (fr->p[i][1] > 0) << 1 | (fr->p[i][2] > 0) << 2;
 	}
 }
 
@@ -818,9 +849,34 @@ static void set_lights(const glprog_t *p, const float *model)
 	}
 }
 
+/* the marked surfaces as a bit each, with the ones in no leaf always set,
+ * so that a pass visits only those rather than every surface of the map */
+static uint32_t *visbits, *novisbits, *insidebits;
+static int visbitwords;
+
+static void reset_visbits(void)
+{
+	int words = (r_world.numsurfaces + 31) / 32;
+	if (visbits_for != r_world.surfaces || visbitwords != words) {
+		Mem_Free(visbits);
+		Mem_Free(novisbits);
+		Mem_Free(insidebits);
+		visbits = Mem_Alloc(sizeof(uint32_t) * (size_t)BW_MAX(words, 1));
+		novisbits = Mem_Alloc(sizeof(uint32_t) * (size_t)BW_MAX(words, 1));
+		insidebits = Mem_Alloc(sizeof(uint32_t) * (size_t)BW_MAX(words, 1));
+		for (int i = 0; i < r_world.numsurfaces; i++)
+			if (r_world.surfaces[i].novis)
+				novisbits[i >> 5] |= 1u << (i & 31);
+		visbits_for = r_world.surfaces;
+		visbitwords = words;
+	}
+	memcpy(visbits, novisbits, sizeof(uint32_t) * (size_t)words);
+	memset(insidebits, 0, sizeof(uint32_t) * (size_t)words);
+}
+
 /* marks the surfaces in leafs the view's cluster can see and the frustum
  * holds; false when there is nothing to cull with, so everything draws */
-static bool mark_visible(const float *planes)
+static bool mark_leafs(const frustum_t *planes)
 {
 	bspmap_t *bsp = r_world.bsp;
 	const uint8_t *row;
@@ -833,6 +889,7 @@ static bool mark_visible(const float *planes)
 	if (r_world.viewcluster < 0 || !(row = BSP_ClusterPVS(bsp, r_world.viewcluster)))
 		return false;
 	r_world.visframe++;
+	reset_visbits();
 	for (int i = 0; i < bsp->numleafs; i++) {
 		const cleaf_t *lf = &bsp->leafs[i];
 		int c = lf->cluster;
@@ -842,27 +899,130 @@ static bool mark_visible(const float *planes)
 			r_stats.culled += lf->numfaces;
 			continue;
 		}
+		bool inside = box_inside(planes, lf->mins, lf->maxs);
 		for (int k = 0; k < lf->numfaces; k++) {
-			int f = bsp->leaffaces[lf->firstface + k];
-			if (f >= 0 && f < r_world.numsurfaces && r_world.surfmap[f] >= 0)
-				r_world.surfaces[r_world.surfmap[f]].visframe = r_world.visframe;
+			int f = bsp->leaffaces[lf->firstface + k], m;
+			if (f >= 0 && f < r_world.numsurfaces && (m = r_world.surfmap[f]) >= 0) {
+				r_world.surfaces[m].visframe = r_world.visframe;
+				visbits[m >> 5] |= 1u << (m & 31);
+				if (inside)
+					insidebits[m >> 5] |= 1u << (m & 31);
+			}
 		}
 	}
 	return true;
+}
+
+/* mark_leafs, done once for the opaque and the translucent pass of a view:
+ * the marks stand while nothing it read has changed */
+static bool mark_visible(const frustum_t *planes)
+{
+	static struct {
+		unsigned frame;
+		frustum_t planes;
+		float origin[3];
+		const bspmap_t *bsp, *world;
+		int novis, culled;
+		bool result;
+	} last;
+	int culled = r_stats.culled;
+	if (last.frame == r_framenum && last.bsp == r_world.bsp && last.world == cl.world &&
+	    last.novis == r_novis->ivalue && !memcmp(&last.planes, planes, sizeof(*planes)) &&
+	    !memcmp(last.origin, r_scene.origin, sizeof(last.origin))) {
+		r_stats.culled += last.culled;
+		return last.result;
+	}
+	last.result = mark_leafs(planes);
+	last.frame = r_framenum;
+	last.planes = *planes;
+	memcpy(last.origin, r_scene.origin, sizeof(last.origin));
+	last.bsp = r_world.bsp;
+	last.world = cl.world;
+	last.novis = r_novis->ivalue;
+	last.culled = r_stats.culled - culled;
+	return last.result;
+}
+
+/* surfaces drawn with the same state go to GL in one call */
+#define WORLD_BATCH 256
+static GLsizei batchcount[WORLD_BATCH];
+static const void *batchofs[WORLD_BATCH];
+static int batchn;
+
+static void flush_surfaces(void)
+{
+	if (batchn == 1 || (batchn && !qglMultiDrawElements_opt))
+		for (int i = 0; i < batchn; i++)
+			qglDrawElements(GL_TRIANGLES, batchcount[i], GL_UNSIGNED_INT, batchofs[i]);
+	else if (batchn)
+		qglMultiDrawElements_opt(GL_TRIANGLES, batchcount, GL_UNSIGNED_INT, batchofs, batchn);
+	batchn = 0;
+}
+
+static void batch_surface(const rsurface_t *s)
+{
+	if (batchn == WORLD_BATCH)
+		flush_surfaces();
+	batchcount[batchn] = s->numindexes;
+	batchofs[batchn++] = (const void *)(sizeof(uint32_t) * (size_t)s->firstindex);
+}
+
+/* how many surfaces of m a pass leaves out as unmarked, counted as culled
+ * as they were when every surface was visited */
+static int unmarked_in_pass(const rmodel_t *m, float alpha, bool translucentpass)
+{
+	static struct {
+		unsigned frame;
+		int visframe;
+		const rmodel_t *m;
+		float alpha;
+		int n[2];
+	} last;
+	if (last.frame != r_framenum || last.visframe != r_world.visframe || last.m != m || last.alpha != alpha) {
+		last.frame = r_framenum, last.visframe = r_world.visframe, last.m = m, last.alpha = alpha;
+		last.n[0] = last.n[1] = 0;
+		for (int i = 0; i < m->numsurfaces; i++) {
+			int k = m->firstsurface + i;
+			const rsurface_t *s = &r_world.surfaces[k];
+			const material_t *mat = s->material;
+			if ((visbits[k >> 5] >> (k & 31)) & 1)
+				continue;
+			if (!s->numindexes || mat->nodraw || mat->sky)
+				continue;
+			last.n[mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER]++;
+		}
+	}
+	return last.n[translucentpass];
+}
+
+/* the first marked surface from k on, or last + 1 */
+static inline int next_marked(int k, int last)
+{
+	int w = k >> 5, lastw = last >> 5;
+	uint32_t bits;
+	if (k > last)
+		return last + 1;
+	bits = visbits[w] & (~0u << (k & 31));
+	while (!bits) {
+		if (++w > lastw)
+			return last + 1;
+		bits = visbits[w];
+	}
+	return BW_MIN(w * 32 + __builtin_ctz(bits), last + 1);
 }
 
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass)
 {
 	const glprog_t *p = &r_progs[PROG_WORLD];
 	material_t *cur = NULL;
-	int curlm = -2;
-	float planes[16];
+	int curlm = -2, first, last;
+	frustum_t planes;
 	bool isworld = m == &r_world.submodels[0], usevis = false;
 	if (!r_world.loaded || !r_world.vao || !m)
 		return;
-	frustum_planes(mvp, planes);
+	frustum_planes(mvp, &planes);
 	if (isworld)
-		usevis = mark_visible(planes);
+		usevis = mark_visible(&planes);
 	R_UseProgram(PROG_WORLD);
 	qglUniformMatrix4fv(p->u_mvp, 1, GL_FALSE, mvp);
 	qglUniformMatrix4fv(p->u_model, 1, GL_FALSE, model);
@@ -872,21 +1032,24 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 	set_lights(p, model);
 	qglBindVertexArray(r_world.vao);
 	GL_SetCull(true);
-	for (int i = 0; i < m->numsurfaces; i++) {
-		rsurface_t *s = &r_world.surfaces[m->firstsurface + i];
+	first = m->firstsurface, last = first + m->numsurfaces - 1;
+	if (usevis && r_speeds->ivalue && m->numsurfaces > 0)
+		r_stats.culled += unmarked_in_pass(m, alpha, translucentpass);
+	/* with the marks, only the marked surfaces, in the same order */
+	for (int i = usevis ? next_marked(first, last) : first; i <= last; i = usevis ? next_marked(i + 1, last) : i + 1) {
+		rsurface_t *s = &r_world.surfaces[i];
 		material_t *mat = s->material;
 		bool trans = mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER;
 		if (!s->numindexes || mat->nodraw || mat->sky || trans != translucentpass)
 			continue;
-		if (usevis && !s->novis && s->visframe != r_world.visframe) {
-			r_stats.culled++;
-			continue;
-		}
-		if (isworld && cull_box(planes, s->mins, s->maxs)) {
+		/* a surface in a leaf the frustum holds whole has a point in it */
+		if (isworld && !(usevis && ((insidebits[i >> 5] >> (i & 31)) & 1)) && cull_box(&planes, s->mins, s->maxs)) {
 			r_stats.culled++;
 			continue;
 		}
 		r_stats.worldsurfs++;
+		if (mat != cur || s->lightmap != curlm)
+			flush_surfaces();
 		if (mat != cur) {
 			float a = alpha * (mat->program == MP_WATER && mat->blend == BLEND_OPAQUE ? 0.6f : 1.0f);
 			cur = mat;
@@ -920,8 +1083,9 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 				qglUniform1f(p->u_lmscale, -1);
 			}
 		}
-		qglDrawElements(GL_TRIANGLES, s->numindexes, GL_UNSIGNED_INT, (void *)(sizeof(uint32_t) * (size_t)s->firstindex));
+		batch_surface(s);
 	}
+	flush_surfaces();
 	qglBindVertexArray(0);
 	GL_SetCull(true);
 }

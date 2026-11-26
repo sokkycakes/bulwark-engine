@@ -36,6 +36,10 @@ static bool drop_menu_map;
 /* commands the game modules registered come before the engine's own */
 static bool GamePreHook(const char *line, int argc, const char **argv)
 {
+	/* the UI first: the native one turns the rules' hero menu request into
+	 * its own picker before the client game opens its mouse-only one */
+	if (UI_PreCommand(argc, argv))
+		return true;
 	if (drop_menu_map && argc > 0 && !strcmp(argv[0], "map_background")) {
 		drop_menu_map = false;
 		Con_DPrintf("the command line starts a game: menu background map skipped\n");
@@ -52,6 +56,74 @@ static void usage(void)
 {
 	Con_Printf("usage: bulwark [-basedir dir] [-game dir]... [-enginedata dir] [-headless] [-frames n] [-width w] [-height h]\n"
 	           "               [-window] [+command args]...\n");
+}
+
+static cvar_t *host_speeds;
+
+static void host_speeds_add(const double *t)
+{
+	static const char *names[7] = {"misc", "server", "client", "csqc+3d", "ui", "2d+swap", "sound"};
+	static double sum[7], since, worst[8], worst_files, worst_sv[SVP_COUNT], worst_cmd;
+	static char worst_cmd_who[64];
+	static int frames, worst_ticks, worst_loads, noticks, moreticks, worst_ups, worst_gcs;
+	static size_t worst_upbytes;
+	static double worst_upsecs, worst_gcsecs;
+	int loads, ups, gcs;
+	size_t upbytes;
+	double files, upsecs, gcsecs;
+	FS_TakeLoadStats(&loads, &files);
+	R_TakeUploadStats(&ups, &upbytes, &upsecs);
+	QC_TakeGCStats(&gcs, &gcsecs);
+	for (int i = 0; i < 7; i++)
+		sum[i] += t[i + 1] - t[i];
+	/* the slowest frame's parts, to tell what makes the spikes */
+	if (t[7] - t[0] > worst[7]) {
+		for (int i = 0; i < 7; i++)
+			worst[i] = t[i + 1] - t[i];
+		worst[7] = t[7] - t[0];
+		worst_ticks = sv_frameticks;
+		worst_files = files, worst_loads = loads;
+		worst_ups = ups, worst_upbytes = upbytes, worst_upsecs = upsecs;
+		worst_gcs = gcs, worst_gcsecs = gcsecs;
+		memcpy(worst_sv, sv_phase_seconds, sizeof(worst_sv));
+		worst_cmd = sv_slowest_cmd;
+		Str_Copy(worst_cmd_who, sv_slowest_cmd_who, sizeof(worst_cmd_who));
+	}
+	if (sv.active) {
+		noticks += sv_frameticks == 0;
+		moreticks += sv_frameticks > 1;
+	}
+	frames++;
+	if (!since)
+		since = t[0];
+	if (t[7] - since >= 5 && frames) {
+		char line[512];
+		int o = snprintf(line, sizeof(line), "host_speeds: %.1f fps;", frames / (t[7] - since));
+		for (int i = 0; i < 7 && o < (int)sizeof(line); i++)
+			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", names[i], sum[i] * 1000 / frames);
+		Con_Printf("%s ms\n", line);
+		/* not "host_speeds:", which scripts count reports by */
+		o = snprintf(line, sizeof(line),
+		             "host_speeds slowest %.1f ms (%d server frames, %d files %.1f ms, %d uploads %u KB %.1f ms, "
+		             "%d gc %.1f ms; %d frames ran no server frame, %d more than one):",
+		             worst[7] * 1000, worst_ticks, worst_loads, worst_files * 1000, worst_ups,
+		             (unsigned)(worst_upbytes / 1024), worst_upsecs * 1000, worst_gcs, worst_gcsecs * 1000, noticks,
+		             moreticks);
+		for (int i = 0; i < 7 && o < (int)sizeof(line); i++)
+			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", names[i], worst[i] * 1000);
+		Con_Printf("%s\n", line);
+		o = snprintf(line, sizeof(line), "host_speeds slowest server:");
+		for (int i = 0; i < SVP_COUNT && o < (int)sizeof(line); i++)
+			o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %.1f", sv_phase_names[i], worst_sv[i] * 1000);
+		if (worst_cmd > 0 && o < (int)sizeof(line))
+			snprintf(line + o, sizeof(line) - (size_t)o, "; longest command %.1f (%s)", worst_cmd * 1000, worst_cmd_who);
+		Con_Printf("%s\n", line);
+		memset(sum, 0, sizeof(sum));
+		memset(worst, 0, sizeof(worst));
+		noticks = moreticks = 0;
+		frames = 0;
+		since = t[7];
+	}
 }
 
 int main(int argc, char **argv)
@@ -135,6 +207,7 @@ int main(int argc, char **argv)
 	cvar_t *fps_max = Cvar_Get("fps_max", "0", CVAR_ARCHIVE, "Frame rate cap, 0 for none");
 	cvar_t *cl_maxfps = Cvar_Get("cl_maxfps", "0", CVAR_ARCHIVE, "Frame rate cap (FTE's name), used when fps_max is 0");
 	cvar_t *host_timescale = Cvar_Get("host_timescale", "1", CVAR_CHEAT, "Game speed multiplier for a local server");
+	host_speeds = Cvar_Get("host_speeds", "0", 0, "Print where the frame time goes (milliseconds per frame) every 5 seconds");
 	cvar_t *host_framerate = Cvar_Get("host_framerate", "0", 0, "Fixed seconds per frame when above 0, for recording");
 	Cmd_Add("path", Path_f);
 	Cmd_DescribeAll();
@@ -144,6 +217,12 @@ int main(int argc, char **argv)
 	Cmd_SetFallback(CL_ForwardToServer);
 
 	Mf_ExecConfigs();
+#ifdef BW_XBOX
+	/* the console's own settings over the game's (data/xbox_ui.cfg in the
+	 * engine data the disc carries): after autoexec.cfg, before the title */
+	if (FS_FileExists("xbox_ui.cfg"))
+		Cbuf_AddText("exec xbox_ui.cfg\n");
+#endif
 	/* the front end starts on its menu unless the command line starts a game */
 	bool starts_game = false;
 	for (const char *l = cmds.data; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : "") {
@@ -175,7 +254,15 @@ int main(int argc, char **argv)
 				break;
 			dt = 1.0 / 72;
 		} else {
+#ifdef BW_XBOX
+			/* the flip paces frames to vblanks (vid_xbox_swapinterval); a
+			 * cap here as well (a config's fps_max 30) beats against it,
+			 * sleeping past the vblank a frame was due for */
+			float cap = 0;
+			(void)fps_max, (void)cl_maxfps;
+#else
 			float cap = fps_max->value > 0 ? fps_max->value : cl_maxfps->value;
+#endif
 			double mindt = cap > 0 ? 1.0 / BW_MAX(cap, 10) : 0.001;
 			now = Sys_Seconds();
 			dt = now - last;
@@ -214,15 +301,33 @@ int main(int argc, char **argv)
 		host_time += dt;
 		/* a local game can run slow or fast; a remote server sets its own pace */
 		double gdt = sv.active && host_timescale->value > 0 ? dt * BW_CLAMP(host_timescale->value, 0.01f, 10) : dt;
+		/* host_speeds 1: where the frame goes, every 5 seconds */
+		double hs[8];
+#define HS(i) (hs[i] = host_speeds->ivalue ? Sys_Seconds() : 0)
+		if (host_speeds->ivalue) {
+			int loads;
+			double files;
+			FS_TakeLoadStats(&loads, &files); /* count from the frame's start */
+			size_t bytes;
+			R_TakeUploadStats(&loads, &bytes, &files);
+			QC_TakeGCStats(&loads, &files);
+		}
+		memset(sv_phase_seconds, 0, sizeof(sv_phase_seconds));
+		sv_slowest_cmd = 0;
+		sv_frameticks = 0;
+		HS(0);
 		NET_RunDelayed();
 		PKG_Frame();
 		Worker_Frame();
 		Plug_Frame();
 		QC_URIFrame();
+		HS(1);
 		SV_Frame(gdt);
+		HS(2);
 		CL_Frame(gdt);
 		Lobby_Frame();
 		WC_Frame();
+		HS(3);
 		R_BeginFrame();
 		{
 			int w, h;
@@ -230,10 +335,17 @@ int main(int argc, char **argv)
 			CSQC_Frame(w, h);
 			MQC_Frame(w, h);
 		}
+		HS(4);
 		UI_Frame(dt);
 		UI_Draw();
+		HS(5);
 		R_EndFrame();
+		HS(6);
 		S_Update(NULL, NULL, NULL, NULL);
+		HS(7);
+#undef HS
+		if (host_speeds->ivalue)
+			host_speeds_add(hs);
 	}
 	if (maxframes >= 0)
 		Cmd_ExecuteString("netstats");

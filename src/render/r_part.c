@@ -1233,7 +1233,68 @@ static int part_cmp(const void *a, const void *b)
 	return x->t == y->t ? 0 : x->t < y->t ? -1 : 1;
 }
 
+/* groups the particles by type, in part_cmp's order, keeping their order
+ * within a type as a stable sort does (glibc's qsort, a merge sort). One
+ * pass and a permutation, instead of a qsort that swaps whole particles a
+ * byte at a time in nxdk's C library; usually they are in order already,
+ * as new ones come at the end of a type that is last or alone. */
+static void sort_particles(void)
+{
+	enum { MAXTYPES = 64 };
+	static int dest[MAX_PARTICLES];
+	const ptype_t *ty[MAXTYPES];
+	int count[MAXTYPES], start[MAXTYPES], nt = 0, last = 0;
+	bool sorted = true;
+	for (int i = 1; i < numparts && sorted; i++)
+		sorted = parts[i - 1].t <= parts[i].t;
+	if (sorted)
+		return;
+	for (int i = 0; i < numparts; i++) {
+		const ptype_t *t = parts[i].t;
+		if (!nt || ty[last] != t) {
+			for (last = 0; last < nt && ty[last] != t; last++)
+				;
+			if (last == nt) {
+				if (nt == MAXTYPES) {
+					qsort(parts, numparts, sizeof(particle_t), part_cmp);
+					return;
+				}
+				ty[nt] = t, count[nt++] = 0;
+			}
+		}
+		count[last]++;
+	}
+	/* the types in address order, then where each one's run starts */
+	for (int i = 1; i < nt; i++)
+		for (int j = i; j > 0 && ty[j - 1] > ty[j]; j--) {
+			const ptype_t *t = ty[j];
+			int c = count[j];
+			ty[j] = ty[j - 1], count[j] = count[j - 1];
+			ty[j - 1] = t, count[j - 1] = c;
+		}
+	for (int i = 0, at = 0; i < nt; i++)
+		start[i] = at, at += count[i];
+	for (int i = 0; i < numparts; i++) {
+		int k = 0;
+		while (ty[k] != parts[i].t)
+			k++;
+		dest[i] = start[k]++;
+	}
+	/* each swap puts one particle where it belongs */
+	for (int i = 0; i < numparts; i++)
+		while (dest[i] != i) {
+			int j = dest[i];
+			particle_t p = parts[i];
+			parts[i] = parts[j], parts[j] = p;
+			dest[i] = dest[j], dest[j] = j;
+		}
+}
+
+#ifdef BW_LOWMEM
+#define BATCH_QUADS 1024 /* a full batch is drawn and the next begins: only the call count changes */
+#else
 #define BATCH_QUADS 4096
+#endif
 static rvert_t batchv[BATCH_QUADS * 4];
 static uint16_t batchi[BATCH_QUADS * 6];
 static int batchn;
@@ -1245,8 +1306,10 @@ static void flush(const ptype_t *t)
 	int b;
 	GLenum s, d;
 	material_t *m = batchmat ? batchmat : (t ? t->mat : NULL);
-	if (!batchn || !t || !m || !m->diffuse)
+	if (!batchn || !t || !m || !m->diffuse) {
+		batchn = 0; /* nothing to draw them with: dropped, so put_quad has room */
 		return;
+	}
 	if (batchmat) {
 		s = GL_SRC_ALPHA;
 		d = t->modeladditive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA;
@@ -1284,6 +1347,31 @@ static void put_quad(const ptype_t *t, const float corners[4][3], const float *t
 	batchn++;
 }
 
+/* the view's side planes, normalised, so a particle wholly outside one is
+ * skipped instead of built and sent for the GPU to clip away */
+static float sideplanes[4][4];
+
+static void side_planes(void)
+{
+	const float *m = r_scene.viewproj;
+	for (int i = 0; i < 4; i++) {
+		float sign = (i & 1) ? -1.0f : 1.0f, l;
+		for (int k = 0; k < 4; k++)
+			sideplanes[i][k] = m[k * 4 + 3] + sign * m[k * 4 + i / 2];
+		l = sqrtf(DotProduct(sideplanes[i], sideplanes[i]));
+		for (int k = 0; k < 4; k++)
+			sideplanes[i][k] = l > 0 ? sideplanes[i][k] / l : (k == 3 ? 1.0f : 0.0f);
+	}
+}
+
+static bool outside_view(const float *org, float radius)
+{
+	for (int i = 0; i < 4; i++)
+		if (DotProduct(sideplanes[i], org) + sideplanes[i][3] < -radius)
+			return true;
+	return false;
+}
+
 static void draw_particle(const particle_t *p)
 {
 	const ptype_t *t = p->t;
@@ -1303,6 +1391,9 @@ static void draw_particle(const particle_t *p)
 			frame = BW_MIN(frame, t->modelframe + t->modelframes - 1);
 		m = R_SpriteFrame(t->model, frame, rect);
 		if (!m || !m->diffuse)
+			return;
+		if (outside_view(p->org, fabsf(p->scale) * 1.5f *
+		                             BW_MAX(BW_MAX(fabsf(rect[0]), fabsf(rect[1])), BW_MAX(fabsf(rect[2]), fabsf(rect[3])))))
 			return;
 		if (m != batchmat) {
 			flush(t);
@@ -1330,6 +1421,8 @@ static void draw_particle(const particle_t *p)
 	if (sf < 1)
 		size *= powf(BW_MAX(dist, 1.0f) / 256, 1 - sf);
 	if (t->kind == PT_NORMAL) {
+		if (outside_view(p->org, fabsf(size) * 1.5f))
+			return;
 		float a = p->rot * (float)M_PI / 180, cs = cosf(a) * size, sn = sinf(a) * size, r[3], u[3];
 		for (int k = 0; k < 3; k++) {
 			r[k] = r_scene.right[k] * cs + r_scene.up[k] * sn;
@@ -1354,6 +1447,10 @@ static void draw_particle(const particle_t *p)
 			VectorCopy(p->end, b);
 			for (int k = 0; k < 3; k++)
 				dir[k] = b[k] - a[k];
+			/* no length, no side to draw it along (most of the game's
+			   beams in a match): the test below would drop it anyway */
+			if (dir[0] == 0 && dir[1] == 0 && dir[2] == 0)
+				return;
 			len = VectorLength(dir);
 			if (t->beamtexstep > 0) {
 				float scroll = t->beamtexspeed * (float)r_time;
@@ -1398,7 +1495,8 @@ void R_DrawParticles(void)
 	R_PCF_Draw();
 	if (!numparts)
 		return;
-	qsort(parts, numparts, sizeof(particle_t), part_cmp);
+	sort_particles();
+	side_planes();
 	R_UseProgram(PROG_UNLIT);
 	qglUniformMatrix4fv(pr->u_mvp, 1, GL_FALSE, r_scene.viewproj);
 	qglUniform4f(pr->u_color, 1, 1, 1, 1);

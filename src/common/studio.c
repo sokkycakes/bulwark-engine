@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 typedef struct {
 	const uint8_t *buf;
@@ -454,6 +455,12 @@ static bool anim_value(const uint8_t *p, const uint8_t *limit, int frame, int16_
 	}
 }
 
+#ifdef BW_LOWMEM
+static bool page_in(const studio_model_t *m, int seq);
+#else
+static bool page_in(const studio_model_t *m, int seq) { return (void)m, (void)seq, false; }
+#endif
+
 static const uint8_t *channel(const studio_model_t *m, const studio_seq_t *s, int blend, int bone, int k)
 {
 	const uint8_t *blk = s->anim + 12 * ((size_t)blend * m->numbones + bone);
@@ -467,7 +474,7 @@ bool Studio_ValidateSeq(const studio_model_t *m, int seq, char *err, size_t errl
 	if (seq < 0 || seq >= m->numseqs)
 		return fail(&r, "no sequence %d", seq);
 	const studio_seq_t *s = &m->seqs[seq];
-	if (!s->anim)
+	if (!s->anim && !page_in(m, seq))
 		return fail(&r, "sequence %d (%s) is in external group %d", seq, s->label, s->seqgroup);
 	if (s->anim + 12 * (size_t)s->numblends * m->numbones > s->animlimit)
 		return fail(&r, "sequence %d: channel table runs past its region", seq);
@@ -510,7 +517,7 @@ bool Studio_DecodeFrame(const studio_model_t *m, int seq, int blend, int frame, 
 	if (seq < 0 || seq >= m->numseqs)
 		return false;
 	const studio_seq_t *s = &m->seqs[seq];
-	if (!s->anim || blend < 0 || blend >= s->numblends)
+	if (blend < 0 || blend >= s->numblends || (!s->anim && !page_in(m, seq)))
 		return false;
 	if (frame < 0)
 		frame = 0;
@@ -602,31 +609,62 @@ typedef struct studiocache_s {
 	uint8_t *buf, *texbuf;
 	studio_model_t model;
 	bool ok;
+#ifdef BW_LOWMEM
+	/* textures whose pixels left memory once the renderer had them: each
+	   one's offset in its file, which is name or texname */
+	bool dropped;
+	size_t buflen, alloclen; /* the bytes of buf in use, and its size */
+	int64_t *pixofs;
+	char texname[130];
+	uint8_t *pixbuf; /* that file again while they are back */
+	/* sequences whose animation left memory too: where each one's bytes
+	   are in the file, read back the first time a frame of it is asked for
+	   (0 bytes: not paged, or it could not be read) */
+	uint32_t *animofs, *animlen;
+	int numpaged; /* entries in them: sequences appended later are not paged */
+#endif
 	struct studiocache_s *next;
 } studiocache_t;
 
 static studiocache_t *studiocache;
+#ifdef BW_LOWMEM
+/* a 128 MB Xbox keeps every sequence (6.8 MB for the four heroes), so that
+ * no disc read lands in a match */
+#ifdef BW_XBOX
+#define PAGE_ANIMS() BW_SMALL_MEMORY()
+#else
+#define PAGE_ANIMS() true
+#endif
+static void drop_pixels(studiocache_t *c);
+static bool page_out_anims(studiocache_t *c);
+static void trim_file(studiocache_t *c);
+#endif
 
-const studio_model_t *Studio_Cached(const char *name)
+static studiocache_t *lookup(const char *name)
 {
-	studiocache_t *c;
-	size_t size = 0;
-	char err[256];
-	if (!name || !*name || name[0] == '*')
-		return NULL;
-	for (c = studiocache; c; c = c->next)
+	for (studiocache_t *c = studiocache; c; c = c->next)
 		if (!Str_ICmp(c->name, name))
-			return c->ok ? &c->model : NULL;
-	c = Mem_Alloc(sizeof(*c));
+			return c;
+	return NULL;
+}
+
+/* a new cache entry for name, which keeps buf (the file, or NULL) */
+static const studio_model_t *cache_new(const char *name, uint8_t *buf, size_t size)
+{
+	char err[256];
+	studiocache_t *c = Mem_Alloc(sizeof(*c));
 	Str_Copy(c->name, name, sizeof(c->name));
 	c->next = studiocache;
 	studiocache = c;
-	c->buf = (uint8_t *)FS_LoadFile(name, &size);
+	c->buf = buf;
 	if (!c->buf || size < 8 || memcmp(c->buf, "IDST", 4)) {
 		Mem_Free(c->buf), c->buf = NULL;
 		return NULL;
 	}
 	c->ok = Studio_Parse(&c->model, c->buf, size, err, sizeof(err));
+#ifdef BW_LOWMEM
+	c->buflen = c->alloclen = size;
+#endif
 	if (!c->ok) {
 		Con_DPrintf("%s: %s\n", name, err);
 		Studio_Free(&c->model);
@@ -647,9 +685,465 @@ const studio_model_t *Studio_Cached(const char *name)
 			Con_DPrintf("%s: %s\n", tname, err);
 			Mem_Free(c->texbuf), c->texbuf = NULL;
 		}
+#ifdef BW_LOWMEM
+		if (c->texbuf)
+			Str_Copy(c->texname, tname, sizeof(c->texname));
+#endif
 	}
+#ifdef BW_LOWMEM
+	/* the renderer reads them back when it uploads them */
+	drop_pixels(c);
+	if (!PAGE_ANIMS() || !page_out_anims(c))
+		trim_file(c);
+#endif
 	return &c->model;
 }
+
+static bool bad_name(const char *name)
+{
+	return !name || !*name || name[0] == '*';
+}
+
+const studio_model_t *Studio_Cached(const char *name)
+{
+	studiocache_t *c;
+	size_t size = 0;
+	if (bad_name(name))
+		return NULL;
+	if ((c = lookup(name)))
+		return c->ok ? &c->model : NULL;
+	uint8_t *buf = (uint8_t *)FS_LoadFile(name, &size);
+	return cache_new(name, buf, size);
+}
+
+const studio_model_t *Studio_Peek(const char *name)
+{
+	studiocache_t *c = bad_name(name) ? NULL : lookup(name);
+	return c && c->ok ? &c->model : NULL;
+}
+
+const studio_model_t *Studio_CacheBuffer(const char *name, uint8_t *buf, size_t size)
+{
+	studiocache_t *c;
+	if (bad_name(name)) {
+		Mem_Free(buf);
+		return NULL;
+	}
+	if ((c = lookup(name))) {
+		Mem_Free(buf);
+		return c->ok ? &c->model : NULL;
+	}
+	return cache_new(name, buf, size);
+}
+
+#ifdef BW_LOWMEM
+static studiocache_t *find_cached(const char *name)
+{
+	for (studiocache_t *c = studiocache; c && name; c = c->next)
+		if (c->ok && !Str_ICmp(c->name, name))
+			return c;
+	return NULL;
+}
+
+/* moves every pointer the model keeps into [old, old + len) to the same
+ * place in nu, and keeps the bounds-checking limits within nulen. Only the
+ * addresses are compared; old is not read. */
+static const uint8_t *rebase(const uint8_t *p, uintptr_t old, size_t len, uint8_t *nu, size_t nulen)
+{
+	uintptr_t a = (uintptr_t)p;
+	if (!p || a < old || a > old + len)
+		return p;
+	return nu + BW_MIN((size_t)(a - old), nulen);
+}
+
+static void rebase_model(studio_model_t *m, uintptr_t old, size_t len, uint8_t *nu, size_t nulen)
+{
+	for (int i = 0; i < m->numseqs; i++) {
+		m->seqs[i].anim = rebase(m->seqs[i].anim, old, len, nu, nulen);
+		m->seqs[i].animlimit = rebase(m->seqs[i].animlimit, old, len, nu, nulen);
+	}
+	for (int i = 0; i < m->numbodyparts; i++)
+		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
+			studio_submodel_t *sm = &m->bodyparts[i].models[j];
+			sm->vertbone = rebase(sm->vertbone, old, len, nu, nulen);
+			sm->verts = rebase(sm->verts, old, len, nu, nulen);
+			sm->normbone = rebase(sm->normbone, old, len, nu, nulen);
+			sm->norms = rebase(sm->norms, old, len, nu, nulen);
+			for (int k = 0; k < sm->nummeshes; k++) {
+				sm->meshes[k].cmds = rebase(sm->meshes[k].cmds, old, len, nu, nulen);
+				sm->meshes[k].cmdslimit = rebase(sm->meshes[k].cmdslimit, old, len, nu, nulen);
+			}
+		}
+}
+
+/* where the model's own texture pixels start, if nothing else the model
+ * reads lies from there on (as in the files seen so far, where the
+ * textures end the file); 0 if the file cannot be cut there */
+static size_t pixels_start(const studiocache_t *c, size_t len)
+{
+	const studio_model_t *m = &c->model;
+	const uint8_t *b = c->buf;
+	size_t cut = len;
+	for (int i = 0; i < m->numtextures; i++) {
+		const uint8_t *p = m->textures[i].pixels;
+		if (p < b || p >= b + len)
+			return 0;
+		cut = BW_MIN(cut, (size_t)(p - b));
+	}
+	for (int i = 0; i < m->numseqs; i++) {
+		const studio_seq_t *s = &m->seqs[i];
+		if (!s->anim)
+			continue;
+		if (s->anim < b || s->anim + 12 * (size_t)s->numblends * m->numbones > b + cut)
+			return 0;
+		/* every run of every channel must end before the cut too */
+		for (int bl = 0; bl < s->numblends; bl++)
+			for (int j = 0; j < m->numbones; j++)
+				for (int k = 0; k < 6; k++) {
+					const uint8_t *p = channel(m, s, bl, j, k);
+					for (int covered = 0; p && covered < s->numframes;) {
+						if (p + 2 > b + cut || p[1] == 0 || p[0] > p[1])
+							return 0;
+						covered += p[1];
+						p += 2 * (p[0] + 1);
+						if (p > b + cut)
+							return 0;
+					}
+				}
+	}
+	for (int i = 0; i < m->numbodyparts; i++)
+		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
+			const studio_submodel_t *sm = &m->bodyparts[i].models[j];
+			if (sm->vertbone + sm->numverts > b + cut || sm->verts + (size_t)sm->numverts * 12 > b + cut ||
+			    sm->normbone + sm->numnorms > b + cut || sm->norms + (size_t)sm->numnorms * 12 > b + cut)
+				return 0;
+			for (int k = 0; k < sm->nummeshes; k++) {
+				/* the whole command list, not just its start, must lie
+				   before the cut: count it again with the cut as its limit */
+				studio_mesh_t cutmesh = sm->meshes[k];
+				if (cutmesh.cmds < b || cutmesh.cmds >= b + cut)
+					return 0;
+				cutmesh.cmdslimit = b + cut;
+				int full = Studio_CountTris(m, &sm->meshes[k], sm->numverts, sm->numnorms);
+				if (full < 0 || Studio_CountTris(m, &cutmesh, sm->numverts, sm->numnorms) != full)
+					return 0;
+			}
+		}
+	return cut;
+}
+
+static void drop_pixels(studiocache_t *c)
+{
+	studio_model_t *m;
+	if (!c || !c->model.numtextures)
+		return;
+	m = &c->model;
+	if (c->dropped) {
+		/* they were only borrowed back */
+		Mem_Free(c->pixbuf), c->pixbuf = NULL;
+	} else {
+		const uint8_t *from = c->texbuf ? c->texbuf : c->buf;
+		size_t cut = 0, len = c->buflen;
+		if (!c->texbuf && !(cut = pixels_start(c, len)))
+			return;
+		c->pixofs = Mem_Alloc(sizeof(int64_t) * m->numtextures);
+		for (int i = 0; i < m->numtextures; i++)
+			c->pixofs[i] = m->textures[i].pixels - from;
+		if (c->texbuf) {
+			Mem_Free(c->texbuf), c->texbuf = NULL;
+		} else {
+			/* the file is cut down once the sequences are paged out too
+			   (or not: trim_file), so a player model is copied once */
+			c->buflen = cut;
+		}
+		c->dropped = true;
+	}
+	for (int i = 0; i < m->numtextures; i++)
+		m->textures[i].pixels = m->textures[i].palette = NULL;
+}
+
+/* the end of the bytes a sequence's frames are decoded from (its channel
+ * table and every run of every channel), or NULL if a run is bad or goes
+ * past limit */
+static const uint8_t *seq_end(const studio_model_t *m, const studio_seq_t *s, const uint8_t *limit)
+{
+	const uint8_t *end = s->anim + 12 * (size_t)s->numblends * m->numbones;
+	if (end > limit)
+		return NULL;
+	for (int bl = 0; bl < s->numblends; bl++)
+		for (int j = 0; j < m->numbones; j++)
+			for (int k = 0; k < 6; k++) {
+				const uint8_t *p = channel(m, s, bl, j, k);
+				for (int covered = 0; p && covered < s->numframes;) {
+					if (p + 2 > limit || p[1] == 0 || p[0] > p[1])
+						return NULL;
+					covered += p[1];
+					p += 2 * (p[0] + 1);
+					if (p > limit)
+						return NULL;
+				}
+				if (p > end)
+					end = p;
+			}
+	return end;
+}
+
+/* the end of a mesh's triangle commands, past the 0 that ends them */
+static const uint8_t *cmds_end(const studio_mesh_t *me)
+{
+	const uint8_t *p = me->cmds;
+	for (;;) {
+		if (p + 2 > me->cmdslimit)
+			return NULL;
+		int n = abs(rds(p));
+		p += 2;
+		if (!n)
+			return p;
+		p += 8 * (size_t)n;
+	}
+}
+
+static bool outside(const uint8_t *p, const uint8_t *end, const uint8_t *a, const uint8_t *b)
+{
+	return !p || end <= a || p >= b;
+}
+
+/* where p goes once [a, b) is cut out of the file at old, which keeps len
+ * of its cap bytes (limits past len end up at the new end) */
+static const uint8_t *shift(const uint8_t *p, uintptr_t old, size_t cap, size_t len, size_t a, size_t b, uint8_t *nu)
+{
+	uintptr_t x = (uintptr_t)p;
+	if (!p || x < old || x > old + cap)
+		return p;
+	size_t o = BW_MIN((size_t)(x - old), len);
+	return nu + (o <= a ? o : o >= b ? o - (b - a) : a);
+}
+
+/* A player model's animation is most of its file (1.7 MB of 2.2 for a
+ * hero, 174 sequences), and a match uses a few of its sequences. Low-memory
+ * builds cut the model's own sequences out of the cached file and read each
+ * one back from the file the first time it is played; it then stays. Only
+ * when the sequences lie together, with nothing else the model reads among
+ * them, and every one of them decodes. */
+static bool page_out_anims(studiocache_t *c)
+{
+	studio_model_t *m = &c->model;
+	const uint8_t *b = c->buf, *lo = NULL, *hi = NULL;
+	size_t len = c->buflen;
+	if (!b || m->numseqs < 1)
+		return false;
+	for (int i = 0; i < m->numseqs; i++) {
+		const studio_seq_t *s = &m->seqs[i];
+		const uint8_t *end;
+		if (!s->anim || s->source)
+			continue;
+		if (s->anim < b || s->anim >= b + len || !(end = seq_end(m, s, BW_MIN(s->animlimit, b + len))))
+			return false;
+		if (!lo || s->anim < lo)
+			lo = s->anim;
+		if (!hi || end > hi)
+			hi = end;
+	}
+	if (!lo)
+		return false;
+	for (int i = 0; i < m->numbodyparts; i++)
+		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
+			const studio_submodel_t *sm = &m->bodyparts[i].models[j];
+			if (!outside(sm->vertbone, sm->vertbone + sm->numverts, lo, hi) ||
+			    !outside(sm->verts, sm->verts + (size_t)sm->numverts * 12, lo, hi) ||
+			    !outside(sm->normbone, sm->normbone + sm->numnorms, lo, hi) ||
+			    !outside(sm->norms, sm->norms + (size_t)sm->numnorms * 12, lo, hi))
+				return false;
+			for (int k = 0; k < sm->nummeshes; k++) {
+				const uint8_t *e = cmds_end(&sm->meshes[k]);
+				if (!e || !outside(sm->meshes[k].cmds, e, lo, hi))
+					return false;
+			}
+		}
+	for (int i = 0; i < m->numtextures; i++) {
+		const studio_texture_t *t = &m->textures[i];
+		if (!outside(t->pixels, t->pixels + (size_t)t->width * t->height, lo, hi) ||
+		    !outside(t->palette, t->palette + 768, lo, hi))
+			return false;
+	}
+	size_t a = (size_t)(lo - b), z = (size_t)(hi - b), nulen = len - (z - a);
+	uintptr_t old = (uintptr_t)b;
+	uint8_t *nu = Mem_Alloc(nulen);
+	memcpy(nu, b, a);
+	memcpy(nu + a, b + z, len - z);
+	c->animofs = Mem_Alloc(sizeof(uint32_t) * m->numseqs);
+	c->animlen = Mem_Alloc(sizeof(uint32_t) * m->numseqs);
+	c->numpaged = m->numseqs;
+	for (int i = 0; i < m->numseqs; i++) {
+		studio_seq_t *s = &m->seqs[i];
+		if (s->anim && !s->source && (uintptr_t)s->anim >= old && (uintptr_t)s->anim < old + len) {
+			const uint8_t *end = seq_end(m, s, hi);
+			c->animofs[i] = (uint32_t)(s->anim - b);
+			c->animlen[i] = (uint32_t)(end - s->anim);
+			/* Xbox only (and a desktop playing one); the 3DS pages them too */
+#if defined(BW_XBOX) || defined(BW_FORCE_LOWMEM)
+			if (s->activity > 0) {
+				/* idle, walk, run, jump, the deaths: every player plays
+				   them, so they stay rather than be read mid-match */
+				uint8_t *d = Mem_Alloc(c->animlen[i]);
+				memcpy(d, s->anim, c->animlen[i]);
+				s->anim = d;
+				s->animlimit = d + c->animlen[i];
+				c->animlen[i] = 0;
+			} else
+#endif
+			{
+				s->anim = s->animlimit = NULL;
+			}
+		}
+	}
+	for (int i = 0; i < m->numbodyparts; i++)
+		for (int j = 0; j < m->bodyparts[i].nummodels; j++) {
+			studio_submodel_t *sm = &m->bodyparts[i].models[j];
+			sm->vertbone = shift(sm->vertbone, old, c->alloclen, len, a, z, nu);
+			sm->verts = shift(sm->verts, old, c->alloclen, len, a, z, nu);
+			sm->normbone = shift(sm->normbone, old, c->alloclen, len, a, z, nu);
+			sm->norms = shift(sm->norms, old, c->alloclen, len, a, z, nu);
+			for (int k = 0; k < sm->nummeshes; k++) {
+				sm->meshes[k].cmds = shift(sm->meshes[k].cmds, old, c->alloclen, len, a, z, nu);
+				sm->meshes[k].cmdslimit = shift(sm->meshes[k].cmdslimit, old, c->alloclen, len, a, z, nu);
+			}
+		}
+	for (int i = 0; i < m->numtextures; i++) {
+		m->textures[i].pixels = shift(m->textures[i].pixels, old, c->alloclen, len, a, z, nu);
+		m->textures[i].palette = shift(m->textures[i].palette, old, c->alloclen, len, a, z, nu);
+	}
+	Mem_Free(c->buf);
+	c->buf = nu;
+	c->buflen = c->alloclen = nulen;
+	return true;
+}
+
+/* the file's tail past what the model reads, given back */
+static void trim_file(studiocache_t *c)
+{
+	if (!c->buf || c->buflen >= c->alloclen)
+		return;
+	uintptr_t old = (uintptr_t)c->buf;
+	uint8_t *nu = Mem_Realloc(c->buf, c->buflen);
+	rebase_model(&c->model, old, c->alloclen, nu, c->buflen);
+	c->buf = nu;
+	c->alloclen = c->buflen;
+}
+
+/* the last word of a sequence's name ("onehanded" of "ref_aim_onehanded"),
+ * or NULL */
+static const char *seq_set(const studio_seq_t *s)
+{
+	const char *u = strrchr(s->label, '_');
+	return u && u[1] ? u + 1 : NULL;
+}
+
+/* whether paged-out sequence i comes in with sequence want, of set */
+static bool comes_with(const studiocache_t *c, int i, int want, const char *set)
+{
+	const char *w;
+	if (!c->animlen[i] || c->model.seqs[i].anim)
+		return false;
+	return i == want || (set && (w = seq_set(&c->model.seqs[i])) && !Str_ICmp(w, set));
+}
+
+/* sequence want of c and the paged-out ones named for the same set, read
+ * back in one read of the part of the file they span */
+static void read_seqs(studiocache_t *c, const char *set, int want)
+{
+	studio_model_t *m = &c->model;
+	uint32_t lo = UINT32_MAX, hi = 0, sum = 0;
+	for (int i = 0; i < c->numpaged; i++)
+		if (comes_with(c, i, want, set)) {
+			lo = BW_MIN(lo, c->animofs[i]);
+			hi = BW_MAX(hi, c->animofs[i] + c->animlen[i]);
+			sum += c->animlen[i];
+		}
+	if (hi - lo > 2 * sum + 4096) {
+		/* far apart: only the one asked for */
+		lo = c->animofs[want];
+		hi = lo + c->animlen[want];
+		set = NULL;
+	}
+	uint8_t *d = (uint8_t *)FS_LoadRange(c->name, lo, hi - lo);
+	if (!d) {
+		c->animlen[want] = 0;
+		return;
+	}
+	/* each gets its own copy, so the gaps between them are not kept */
+	for (int i = 0; i < c->numpaged; i++) {
+		studio_seq_t *s = &m->seqs[i];
+		if (!comes_with(c, i, want, set) || c->animofs[i] < lo || c->animofs[i] + c->animlen[i] > hi)
+			continue;
+		uint8_t *a = Mem_Alloc(c->animlen[i]);
+		memcpy(a, d + (c->animofs[i] - lo), c->animlen[i]);
+		s->anim = a;
+		s->animlimit = a + c->animlen[i];
+	}
+	Mem_Free(d);
+}
+
+/* a paged-out sequence back from its file; false (and it stands in its
+ * rest pose) if the file no longer has it. The sequences named for the
+ * same set (a weapon's aim, shoot and reload, standing and crouched) come
+ * with it, as they play together: one read when a player first holds the
+ * weapon rather than one each time another of them starts */
+static bool page_in(const studio_model_t *m, int seq)
+{
+	for (studiocache_t *c = studiocache; c; c = c->next) {
+		if (&c->model != m)
+			continue;
+		if (seq >= c->numpaged || !c->animlen[seq])
+			return false;
+		read_seqs(c, seq_set(&c->model.seqs[seq]), seq);
+		return c->model.seqs[seq].anim != NULL;
+	}
+	return false;
+}
+
+void Studio_DropPixels(const char *name)
+{
+	drop_pixels(find_cached(name));
+}
+
+bool Studio_LoadPixels(const char *name)
+{
+	studiocache_t *c = find_cached(name);
+	size_t len = 0;
+	if (!c)
+		return false;
+	if (!c->dropped || c->pixbuf)
+		return true;
+	/* only the bytes from the first texture's pixels to the last's palette:
+	   a player model is 2 MB, mostly animation */
+	int64_t lo = INT64_MAX, hi = 0;
+	for (int i = 0; i < c->model.numtextures; i++) {
+		const studio_texture_t *t = &c->model.textures[i];
+		lo = BW_MIN(lo, c->pixofs[i]);
+		hi = BW_MAX(hi, c->pixofs[i] + (int64_t)t->width * t->height + 768);
+	}
+	if (lo < 0 || hi <= lo || hi - lo > 0x7fffffff)
+		return false;
+	len = (size_t)(hi - lo);
+	c->pixbuf = (uint8_t *)FS_LoadRange(c->texname[0] ? c->texname : c->name, (size_t)lo, len);
+	if (!c->pixbuf)
+		return false;
+	for (int i = 0; i < c->model.numtextures; i++) {
+		studio_texture_t *t = &c->model.textures[i];
+		if (c->pixofs[i] - lo + (int64_t)t->width * t->height + 768 > (int64_t)len) {
+			/* the file changed under us */
+			for (int k = 0; k < c->model.numtextures; k++)
+				c->model.textures[k].pixels = c->model.textures[k].palette = NULL;
+			Mem_Free(c->pixbuf), c->pixbuf = NULL;
+			return false;
+		}
+		t->pixels = c->pixbuf + (c->pixofs[i] - lo);
+		t->palette = t->pixels + (size_t)t->width * t->height;
+	}
+	return true;
+}
+#endif
 
 float Studio_SeqDuration(const studio_model_t *m, int seq)
 {

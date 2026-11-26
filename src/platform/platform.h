@@ -3,7 +3,7 @@
 #ifndef BW_PLATFORM_H
 #define BW_PLATFORM_H
 
-#if defined(__3DS__) || defined(__NDS__)
+#if defined(__3DS__) || defined(__NDS__) || defined(BW_XBOX)
 /* brings up the system services, and on consoles (no command line) reads
  * the arguments from a file in the base directory: argv is replaced */
 void Plat_Init(int *argc, char ***argv);

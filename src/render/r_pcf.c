@@ -1115,7 +1115,11 @@ bool R_PCF_Exists(const char *name) { return name && *name && find_def(name) != 
 
 /* --- drawing ------------------------------------------------------------------- */
 
+#ifdef BW_LOWMEM
+#define PCF_BATCH 512 /* flushed when full, as the particle batch */
+#else
 #define PCF_BATCH 2048
+#endif
 static rvert_t bv[PCF_BATCH * 4];
 static uint16_t bi[PCF_BATCH * 6];
 static int bn;

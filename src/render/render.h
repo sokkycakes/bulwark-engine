@@ -52,6 +52,8 @@ void R_TrailParticles(int index, const float *start, const float *end);
 bool R_ShowpicTouch(float x, float y);
 
 void R_BeginFrame(void);
+/* uploads since the last call (host_speeds): textures and non-streamed buffers */
+void R_TakeUploadStats(int *count, size_t *bytes, double *seconds);
 void R_EndFrame(void);          /* draws the console and presents */
 
 /* 2D drawing for other modules (UI toolkits and the like). Coordinates are
@@ -70,6 +72,11 @@ int R_UploadImage(const char *name, const uint8_t *rgba, int w, int h); /* creat
 void R_UpdateImage(int handle, int x, int y, int w, int h, const uint8_t *rgba); /* a region, tightly packed */
 void R_ImageSize(int handle, int *w, int *h);
 uint8_t *R_DecodeImageFile(const uint8_t *data, size_t len, int *w, int *h); /* PNG, JPEG, TGA...: RGBA, Mem_Free it */
+/* an SVG drawn into exactly tw x th pixels (masks included), scaled to fit
+ * and kept to its aspect from the top left; NULL if it isn't SVG. Saves the
+ * large intermediate R_DecodeImageFile draws when only a small copy is
+ * wanted. RGBA, Mem_Free it. */
+uint8_t *R_DecodeSVGSized(const uint8_t *data, size_t len, int tw, int th);
 float R_Get2DScale(void); /* framebuffer pixels per virtual pixel: lay out at R_GetSize * scale for sharp text */
 void R_Draw2DTriangles(int image, const r2dvert_t *verts, int numverts, const uint16_t *idx, int numidx,
                        int blend);      /* image 0 draws untextured */

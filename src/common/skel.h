@@ -31,9 +31,17 @@ typedef struct skelmodel_s {
 	int numjoints;
 	skeljoint_t *joints;
 	float *base;          /* numjoints x 10: translate, rotate (xyzw), scale */
+	bonemat_t *baserel;   /* base as relative matrices, for the bind pose */
 	bonemat_t *invbind;   /* inverse of the bind pose, absolute */
 	int numframes;
-	float *frames;        /* numframes x numjoints x 10, as base */
+	float *frames;        /* numframes x numjoints x 10, as base; NULL when
+	                         they are decoded from `studio` on demand */
+	/* low-memory builds keep a studio model's animation in its run-length
+	   coded form and decode the frames a pose needs: frame f of the whole
+	   model is frame f - seqfirst[s] of sequence s */
+	const struct studio_model_s *studio;
+	int *seqfirst;        /* numseqs + 1 entries */
+	int numseqs;
 	framegroup_t *anims;
 	int numanims;
 	struct skelmodel_s *next;
@@ -55,6 +63,10 @@ void Skel_SampleRelative(const skelmodel_t *m, int group, float time, bonemat_t 
 /* frame/frame2 blended by lerpfrac, as an entity's fields describe */
 void Skel_EntityPose(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
                      float lerpfrac, bonemat_t *out);
+/* the same for bones first..last alone (0-based, inclusive); the others
+ * in out are left as they were */
+void Skel_EntityPoseRange(const skelmodel_t *m, int frame, float frame1time, int frame2, float frame2time,
+                          float lerpfrac, int first, int last, bonemat_t *out);
 /* relative to absolute (model space) */
 void Skel_ToAbsolute(const skelmodel_t *m, const bonemat_t *rel, bonemat_t *abs);
 

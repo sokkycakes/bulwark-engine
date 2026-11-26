@@ -14,6 +14,7 @@
 #define CL_MAX_SOUNDS 4096
 #define CL_MAX_PARTICLES 1024
 #define CL_MAX_PLAYERS 256
+#define CL_PLAYERINFO_SIZE 2048
 #define CL_CMD_BACKUP 256 /* input frames remembered for prediction, power of two */
 
 typedef enum {
@@ -41,10 +42,13 @@ typedef struct {
 	float frame, frame1time;
 } interpsample_t;
 
+/* samples are allocated the first time an entity number is recorded: most
+ * of the BW_CL_MAXENTS numbers never are, and the table would otherwise be
+ * 2.6 MB (a quarter of what a 64 MB Xbox has for the game) */
 typedef struct {
 	int csqc_ent; /* the csprogs entity standing for this server entity, 0 if none */
-	interpsample_t samples[CL_INTERP_SAMPLES];
 	int numsamples;
+	interpsample_t *samples; /* CL_INTERP_SAMPLES of them, or NULL */
 } clentity_t;
 
 typedef struct {
@@ -69,7 +73,7 @@ typedef struct {
 	char csprogsname[64];
 	uint16_t csprogscrc;
 	char serverinfo[8192];
-	char playerinfo[CL_MAX_PLAYERS][2048];
+	char *playerinfo[CL_MAX_PLAYERS]; /* CL_PLAYERINFO_SIZE bytes each, allocated when a slot is first set */
 	infoblob_t playerblobs[CL_MAX_PLAYERS][MAX_INFOBLOBS];
 
 	clmodel_t models[CL_MAX_MODELS];

@@ -962,6 +962,14 @@ static void Version_f(int argc, const char **argv)
 }
 
 /* hunkprint/mem_dump: what the allocator can tell us */
+#ifdef BW_MEMTRACE
+static void memtrace_live_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	Mem_TraceReport();
+}
+#endif
+
 static void Memstats_f(int argc, const char **argv)
 {
 	int cvars = 0;
@@ -1019,6 +1027,9 @@ void Cmd_InitExtra(void)
 	Cmd_AddD("listmaps", Maps_f, "listmaps [text]: list the maps");
 	Cmd_AddD("version", Version_f, "Engine version and build date");
 	Cmd_AddD("hunkprint", Memstats_f, "Memory statistics");
+#ifdef BW_MEMTRACE
+	Cmd_AddD("memtrace_live", memtrace_live_f, "Live allocations of 1 KB or more, by caller (BW_MEMTRACE builds)");
+#endif
 }
 
 /* help text for the commands registered before descriptions existed; run

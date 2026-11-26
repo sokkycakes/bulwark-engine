@@ -126,25 +126,69 @@ static bool decode_wav(const uint8_t *buf, size_t len, pcm_t *out)
 
 static bool decode_ogg(const uint8_t *buf, size_t len, pcm_t *out)
 {
-	short *data = NULL;
-	int channels = 0, rate = 0;
-	int frames = stb_vorbis_decode_memory(buf, (int)len, &channels, &rate, &data);
-	if (frames <= 0 || !data)
+	int err = 0, channels, frames = 0, cap;
+	int16_t *data;
+	stb_vorbis_info info;
+	stb_vorbis *v = stb_vorbis_open_memory(buf, (int)len, &err, NULL);
+	if (!v)
 		return false;
-	if (channels > 2) {
-		/* keep the front pair */
-		for (int i = 0; i < frames; i++) {
-			data[i * 2] = data[i * channels];
-			data[i * 2 + 1] = data[i * channels + 1];
-		}
-		channels = 2;
+	info = stb_vorbis_get_info(v);
+	if (info.channels < 1 || info.sample_rate == 0) {
+		stb_vorbis_close(v);
+		return false;
 	}
-	out->data = Mem_Alloc((size_t)frames * channels * sizeof(int16_t) + 2);
-	memcpy(out->data, data, (size_t)frames * channels * sizeof(int16_t));
-	free(data); /* stb_vorbis allocated it with malloc */
+	/* decoded straight into a buffer of the stream's length, which saves
+	 * the copy (and the doubling growth) of decoding to a temporary one.
+	 * More than two channels keep the front pair, so those decode all of
+	 * them a block at a time. */
+	channels = BW_MIN(info.channels, 2);
+	cap = (int)stb_vorbis_stream_length_in_samples(v);
+	/* the length comes from the last page's granule position, which a
+	 * damaged or odd stream can set to anything: trust it only up to a
+	 * generous 64 frames per compressed byte, and otherwise grow */
+	if (cap <= 0 || cap > 1 << 28 || (uint64_t)cap > (uint64_t)len * 64)
+		cap = 1 << 16;
+	data = Mem_Alloc((size_t)cap * channels * sizeof(int16_t) + 2);
+	for (;;) {
+		static short block[1024 * 8];
+		int got;
+		/* a full buffer (a stream whose length was exact, usually) decodes
+		 * a block aside first, so that the end of the stream costs no
+		 * growth; so do streams with more channels than are kept */
+		bool aside = frames == cap || info.channels > 2;
+		if (aside) {
+			int want = (int)(BW_ARRAY_COUNT(block) / info.channels);
+			if (frames < cap)
+				want = BW_MIN(want, cap - frames);
+			got = stb_vorbis_get_samples_short_interleaved(v, info.channels, block, want * info.channels);
+		} else {
+			got = stb_vorbis_get_samples_short_interleaved(v, channels, data + (size_t)frames * channels,
+			                                               (cap - frames) * channels);
+		}
+		if (got <= 0)
+			break;
+		if (aside) {
+			if (frames + got > cap) {
+				cap = BW_MAX(cap + cap / 2 + 4096, frames + got);
+				data = Mem_Realloc(data, (size_t)cap * channels * sizeof(int16_t) + 2);
+			}
+			for (int i = 0; i < got; i++)
+				for (int c = 0; c < channels; c++)
+					data[(size_t)(frames + i) * channels + c] = block[i * info.channels + c];
+		}
+		frames += got;
+	}
+	stb_vorbis_close(v);
+	if (frames <= 0) {
+		Mem_Free(data);
+		return false;
+	}
+	if (frames < cap)
+		data = Mem_Realloc(data, (size_t)frames * channels * sizeof(int16_t) + 2);
+	out->data = data;
 	out->frames = frames;
 	out->channels = channels;
-	out->rate = rate;
+	out->rate = (int)info.sample_rate;
 	out->loopstart = -1;
 	return true;
 }
@@ -163,6 +207,81 @@ static bool decode_mp3(const uint8_t *buf, size_t len, pcm_t *out)
 	return S_DecodeMP3(buf, len, &out->data, &out->frames, &out->channels, &out->rate);
 }
 
+#ifdef BW_LOWMEM
+/* Low-memory builds keep sound effects as mono at no more than
+ * SND_LOWMEM_RATE: the Xbox mixer runs at 24 kHz, so content above that is
+ * never heard there, and the mixer spatialises a sample from its two
+ * channels alike. A stereo 44.1 kHz effect takes a quarter of the memory. */
+#define SND_LOWMEM_RATE 24000
+#define HALFBAND_TAPS 12 /* odd taps on each side of the centre */
+
+static int16_t clamp16(float v)
+{
+	return (int16_t)(v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int)(v + (v >= 0 ? 0.5f : -0.5f)));
+}
+
+/* halves the rate with a windowed-sinc half-band low-pass: the even taps
+ * are zero, so each output frame is the centre sample over two plus a sum of
+ * the odd neighbours */
+static void halve_rate(pcm_t *p)
+{
+	static float h[HALFBAND_TAPS];
+	static bool init;
+	int n = p->frames / 2;
+	int16_t *out;
+	if (!init) {
+		const double pi = 3.14159265358979323846, half = 2.0 * HALFBAND_TAPS;
+		for (int k = 0; k < HALFBAND_TAPS; k++) {
+			double x = 2 * k + 1; /* distance from the centre in input frames */
+			double sinc = sin(pi * x / 2) / (pi * x / 2);
+			double w = 0.42 + 0.5 * cos(pi * x / half) + 0.08 * cos(2 * pi * x / half); /* Blackman */
+			h[k] = (float)(0.5 * sinc * w);
+		}
+		{
+			/* the window takes a little off the pass band: unity at DC */
+			float dc = 0.5f;
+			for (int k = 0; k < HALFBAND_TAPS; k++)
+				dc += 2 * h[k];
+			for (int k = 0; k < HALFBAND_TAPS; k++)
+				h[k] *= 0.5f / (dc - 0.5f);
+		}
+		init = true;
+	}
+	if (n < 1)
+		return;
+	out = Mem_Alloc((size_t)n * sizeof(int16_t) + 2);
+	for (int i = 0; i < n; i++) {
+		int c = i * 2;
+		float acc = 0.5f * p->data[c];
+		for (int k = 0; k < HALFBAND_TAPS; k++) {
+			int a = c - (2 * k + 1), b = c + (2 * k + 1);
+			/* past either end the sound is taken as silence */
+			acc += h[k] * ((a >= 0 ? p->data[a] : 0) + (b < p->frames ? p->data[b] : 0));
+		}
+		out[i] = clamp16(acc);
+	}
+	Mem_Free(p->data);
+	p->data = out;
+	p->frames = n;
+	p->rate /= 2;
+	if (p->loopstart >= 0)
+		p->loopstart = BW_MIN(p->loopstart / 2, n - 1);
+}
+
+static void lowmem_reduce(pcm_t *p)
+{
+	if (p->channels == 2) {
+		for (int i = 0; i < p->frames; i++)
+			p->data[i] = (int16_t)(((int)p->data[i * 2] + p->data[i * 2 + 1]) / 2);
+		p->channels = 1;
+		if (p->rate <= SND_LOWMEM_RATE)
+			p->data = Mem_Realloc(p->data, (size_t)p->frames * sizeof(int16_t) + 2);
+	}
+	while (p->rate > SND_LOWMEM_RATE && p->frames >= 2)
+		halve_rate(p);
+}
+#endif
+
 static bool decode_file(const char *path, pcm_t *out)
 {
 	size_t len;
@@ -179,6 +298,10 @@ static bool decode_file(const char *path, pcm_t *out)
 	if (!ok)
 		Con_DPrintf("sound %s: not a PCM wav, ogg vorbis or mp3 file\n", path);
 	Mem_Free(buf);
+#ifdef BW_LOWMEM
+	if (ok)
+		lowmem_reduce(out);
+#endif
 	return ok;
 }
 

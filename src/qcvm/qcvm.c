@@ -2,6 +2,7 @@
  * The interpreter loop lives in qc_exec.c. ISC licence, see LICENSE. */
 #include "qcvm.h"
 #include "qc_internal.h"
+#include "qc_jit.h"
 #include "../common/cvar.h"
 
 #include <stdio.h>
@@ -264,7 +265,7 @@ static void bind_builtins(qcvm_t *vm, const qc_builtin_t *const *tables)
 static void unpack_defs(qcprogs_t *p, int32_t ofs, int count, bool wide, qcdef_t **out)
 {
 	qcdef_t *defs = Mem_Alloc(sizeof(qcdef_t) * (count ? count : 1));
-	const uint8_t *d = p->progsdata + ofs;
+	const uint8_t *d = p->image + ofs;
 	for (int i = 0; i < count; i++) {
 		if (wide) {
 			defs[i].type = (uint32_t)rd32(d);
@@ -283,7 +284,6 @@ static void unpack_defs(qcprogs_t *p, int32_t ofs, int count, bool wide, qcdef_t
 
 static void free_progs(qcprogs_t *p)
 {
-	Mem_Free(p->progsdata);
 	Mem_Free(p->statements);
 	Mem_Free(p->functions);
 	Mem_Free(p->globaldefs);
@@ -298,6 +298,187 @@ static void free_progs(qcprogs_t *p)
 
 /* reads a progs file image into p: code, defs, strings, functions and the
  * size of its globals; the globals themselves are placed by the caller */
+static bool loadf1(unsigned op)
+{
+	return op == OP_LOADF_F || op == OP_LOADF_S || op == OP_LOADF_ENT || op == OP_LOADF_FLD || op == OP_LOADF_FNC ||
+	       op == OP_LOADF_I || op == OP_LOADF_P;
+}
+
+static bool store1(unsigned op)
+{
+	return op == OP_STORE_F || op == OP_STORE_S || op == OP_STORE_ENT || op == OP_STORE_FLD || op == OP_STORE_FNC ||
+	       op == OP_STORE_I || op == OP_STORE_P;
+}
+
+static bool call_op(unsigned op)
+{
+	return (op >= OP_CALL0 && op <= OP_CALL8) || (op >= OP_CALL1H && op <= OP_CALL8H);
+}
+
+static bool loada1(unsigned op)
+{
+	return op == OP_LOADA_F || op == OP_LOADA_S || op == OP_LOADA_ENT || op == OP_LOADA_FLD || op == OP_LOADA_FNC ||
+	       op == OP_LOADA_I;
+}
+
+/* the statement a jump in operand x of statement i goes to */
+static int jump_target(const qcprogs_t *p, int i, uint32_t x)
+{
+	return i + (p->stmt32 ? (int32_t)x : (int32_t)(int16_t)x);
+}
+
+/* Marks the first statement of each common sequence with an opcode that
+ * runs the whole sequence (see QCOP_NEF_IFNOT and QCOP_FIELD_COPY in
+ * qc_internal.h). Only that opcode changes: the statements after it stay
+ * as they were, as jumps can land on them. Each pass looks at the plain
+ * opcodes and leaves a statement an earlier pass marked alone. */
+static void fuse_statements(qcprogs_t *p)
+{
+	qcstatement_t *s = p->statements;
+	int n = p->numstatements;
+#define OPAT(k) QC_PlainOp(s[k].op)
+	/* search loops; the jumps that stay inside the loop must be the
+	 * ones the handler takes without checking them */
+	for (int i = 0; i + 7 < n; i++) {
+		int step;
+		if (s[i].op != OP_LT_I || OPAT(i + 1) != OP_IFNOT || OPAT(i + 2) != OP_BOUNDCHECK ||
+		    OPAT(i + 3) != OP_MUL_I || !loada1(OPAT(i + 4)) || OPAT(i + 5) != OP_EQ_S || OPAT(i + 6) != OP_IFNOT)
+			continue;
+		step = jump_target(p, i + 6, s[i + 6].b);
+		if (step <= i + 6 || step + 1 >= n || OPAT(step) != OP_ADD_I || OPAT(step + 1) != OP_GOTO ||
+		    jump_target(p, step + 1, s[step + 1].a) != i)
+			continue;
+		s[i].op = QCOP_FIND_S;
+	}
+	/* LT_IF, IFNOT out, CONV_IF, CALL1H, EQ_S, IFNOT to the step, which
+	 * is an ADD_I and a GOTO back to the start */
+	for (int i = 0; i + 6 < n; i++) {
+		int step;
+		if (s[i].op != OP_LT_IF || OPAT(i + 1) != OP_IFNOT || OPAT(i + 2) != OP_CONV_IF ||
+		    OPAT(i + 3) != OP_CALL1H || OPAT(i + 4) != OP_EQ_S || OPAT(i + 5) != OP_IFNOT)
+			continue;
+		step = jump_target(p, i + 5, s[i + 5].b);
+		if (step <= i + 5 || step + 1 >= n || OPAT(step) != OP_ADD_I || OPAT(step + 1) != OP_GOTO ||
+		    jump_target(p, step + 1, s[step + 1].a) != i)
+			continue;
+		s[i].op = QCOP_CALL_SCAN;
+	}
+	for (int i = 0; i + 3 < n; i++)
+		if (s[i].op == OP_LOADF_F && OPAT(i + 1) == OP_LOADF_F && OPAT(i + 2) == OP_NE_F && OPAT(i + 3) == OP_IFNOT)
+			s[i].op = i + 5 < n && jump_target(p, i + 3, s[i + 3].b) == i + 5 ? QCOP_FIELD_SYNC : QCOP_FIELDS_NEF_IFNOT;
+	for (int i = 0; i + 1 < n; i++) {
+		unsigned x = s[i].op, y = OPAT(i + 1);
+		if (loadf1(x) && (y == OP_STOREF_F || y == OP_STOREF_S || y == OP_STOREF_I))
+			s[i].op = QCOP_FIELD_COPY;
+		else if (x == OP_LOADF_V && y == OP_STOREF_V)
+			s[i].op = QCOP_FIELD_COPYV;
+		else if (store1(x) && store1(y))
+			s[i].op = QCOP_STORE_RUN;
+		else if (store1(x) && call_op(y))
+			s[i].op = QCOP_STORE_CALL;
+		else if (x == OP_ADD_I && y == OP_GOTO)
+			s[i].op = QCOP_ADDI_GOTO;
+		else if (x == OP_BITAND && y == OP_IFNOT_F)
+			s[i].op = QCOP_BITAND_IFNOTF;
+		else if (y == OP_IFNOT && s[i + 1].a == s[i].c) {
+			/* a compare whose result the IFNOT tests */
+			switch (x) {
+			case OP_NE_F: s[i].op = QCOP_NEF_IFNOT; break;
+			case OP_EQ_F: s[i].op = QCOP_EQF_IFNOT; break;
+			case OP_EQ_S: s[i].op = QCOP_EQS_IFNOT; break;
+			case OP_LT_I: s[i].op = QCOP_LTI_IFNOT; break;
+			case OP_LT_IF: s[i].op = QCOP_LTIF_IFNOT; break;
+			case OP_GT_F: s[i].op = QCOP_GTF_IFNOT; break;
+			case OP_LT_F: s[i].op = QCOP_LTF_IFNOT; break;
+			case OP_GE_F: s[i].op = QCOP_GEF_IFNOT; break;
+			case OP_LE_F: s[i].op = QCOP_LEF_IFNOT; break;
+			case OP_AND_F: s[i].op = QCOP_ANDF_IFNOT; break;
+			case OP_OR_F: s[i].op = QCOP_ORF_IFNOT; break;
+			case OP_NE_I: s[i].op = QCOP_NEI_IFNOT; break;
+			case OP_EQ_I: s[i].op = QCOP_EQI_IFNOT; break;
+			case OP_AND_I: s[i].op = QCOP_ANDI_IFNOT; break;
+			case OP_NE_IF: s[i].op = QCOP_NEIF_IFNOT; break;
+			case OP_NE_E: s[i].op = QCOP_NEE_IFNOT; break;
+			default:
+				if (loadf1(x))
+					s[i].op = QCOP_LOADF_IFNOT;
+				break;
+			}
+		}
+	}
+#undef OPAT
+}
+
+/* what a call to f needs, worked out once: the parameters it copies in
+ * (a negative count means varargs; any that would run past the globals
+ * are left out), and whether it is a plain field getter */
+static void call_shape(qcprogs_t *p, qcfunc_t *f)
+{
+	int n = f->d.numparms, o = f->d.parm_start, i;
+	const qcstatement_t *s;
+	if (n < 0)
+		n = -n - 1;
+	if (n > MAX_PARMS)
+		n = MAX_PARMS;
+	for (i = 0; i < n; i++) {
+		if (o + f->d.parm_size[i] > p->globalslots)
+			break;
+		o += f->d.parm_size[i];
+	}
+	f->callparms = i;
+	f->getter = 0;
+	if (f->d.first_statement <= 0 || f->d.first_statement + 1 >= p->numstatements || f->d.numparms != 0 ||
+	    f->d.locals > 8 || f->d.parm_start < RESERVED_OFS)
+		return;
+	s = p->statements + f->d.first_statement;
+	/* the temporary and the three words RETURN copies from it must not
+	 * be the return value itself */
+	if (QC_PlainOp(s[1].op) != OP_RETURN || s[1].a != s[0].c || s[0].c < RESERVED_OFS ||
+	    (int64_t)s[0].c + 3 > p->globalslots)
+		return;
+	if (loadf1(QC_PlainOp(s[0].op)))
+		f->getter = 1;
+	else if (QC_PlainOp(s[0].op) == OP_LOADF_V)
+		f->getter = 3;
+}
+
+#ifdef QC_JIT
+static int cmp_int(const void *a, const void *b)
+{
+	int x = *(const int *)a, y = *(const int *)b;
+	return x < y ? -1 : x > y;
+}
+
+/* where each function's code ends: at the next function's first statement,
+ * as compilers lay functions out one after another */
+static void function_ends(qcprogs_t *p)
+{
+	int *firsts = Mem_Alloc(sizeof(int) * (size_t)p->numfunctions), n = 0;
+	for (int i = 0; i < p->numfunctions; i++)
+		if (p->functions[i].d.first_statement > 0)
+			firsts[n++] = p->functions[i].d.first_statement;
+	qsort(firsts, (size_t)n, sizeof(int), cmp_int);
+	for (int i = 0; i < p->numfunctions; i++) {
+		qcfunc_t *f = &p->functions[i];
+		int lo = 0, hi = n;
+		f->jit_end = p->numstatements;
+		if (f->d.first_statement <= 0)
+			continue;
+		/* the first start after this one */
+		while (lo < hi) {
+			int mid = (lo + hi) / 2;
+			if (firsts[mid] <= f->d.first_statement)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		if (lo < n)
+			f->jit_end = firsts[lo];
+	}
+	Mem_Free(firsts);
+}
+#endif
+
 static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t size)
 {
 	progs_header_t *h = &p->hdr;
@@ -308,18 +489,18 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 		return false;
 	}
 	Str_Copy(p->name, name, sizeof(p->name));
-	p->progsdata = Mem_Alloc(size);
-	memcpy(p->progsdata, data, size);
-	p->progssize = size;
+	/* the caller's file image is only read while loading: everything kept
+	 * afterwards is unpacked from it, so it is never copied */
+	p->image = data;
 	for (int i = 0; i < 14; i++)
-		((int32_t *)h)[i] = rd32(p->progsdata + i * 4);
+		((int32_t *)h)[i] = rd32(p->image + i * 4);
 	if (h->version != PROGS_VERSION_QUAKE && h->version != PROGS_VERSION_EXTENDED) {
 		Con_Printf("%s: unsupported progs version %d\n", name, h->version);
 		return false;
 	}
 	h->entityfields = 0;
 	if (h->version == PROGS_VERSION_EXTENDED && size >= PROGS_HEADER_V6_SIZE + 4)
-		h->entityfields = rd32(p->progsdata + PROGS_HEADER_V6_SIZE);
+		h->entityfields = rd32(p->image + PROGS_HEADER_V6_SIZE);
 
 	stmt_bytes = h->numstatements ? (section_end(h, h->ofs_statements, size) - h->ofs_statements) / h->numstatements : 8;
 	def_bytes = h->numglobaldefs ? (section_end(h, h->ofs_globaldefs, size) - h->ofs_globaldefs) / h->numglobaldefs : 8;
@@ -341,14 +522,21 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	/* string table, NUL terminated defensively */
 	p->stringsize = h->numstrings;
 	p->strings = Mem_Alloc((size_t)h->numstrings + 1);
-	memcpy(p->strings, p->progsdata + h->ofs_strings, (size_t)h->numstrings);
+	memcpy(p->strings, p->image + h->ofs_strings, (size_t)h->numstrings);
 
 	/* statements */
 	p->numstatements = h->numstatements;
-	p->statements = Mem_Alloc(sizeof(dstatement32_t) * (h->numstatements + 1));
+#ifdef BW_LOWMEM
+	if (p->stmt32) {
+		Con_Printf("%s: 32-bit statement progs are not supported yet\n", name);
+		return false;
+	}
+#endif
+	p->statements = Mem_Alloc(sizeof(qcstatement_t) * (h->numstatements + 1));
+	int badops = 0;
 	for (int i = 0; i < h->numstatements; i++) {
-		const uint8_t *d = p->progsdata + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
-		dstatement32_t *st = &p->statements[i];
+		const uint8_t *d = p->image + h->ofs_statements + (size_t)i * (p->stmt32 ? 16 : 8);
+		qcstatement_t *st = &p->statements[i];
 		if (p->stmt32) {
 			st->op = (uint32_t)rd32(d);
 			st->a = (uint32_t)rd32(d + 4);
@@ -360,7 +548,21 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 			st->b = d[4] | (d[5] << 8);
 			st->c = d[6] | (d[7] << 8);
 		}
+		/* the interpreter dispatches through a table with a slot for
+		 * every opcode it knows; anything beyond fails when it runs */
+		if (st->op >= OP_NUMOPS) {
+			if (!badops++)
+				Con_Printf("%s: statement %d has unknown opcode %u\n", name, i, (unsigned)st->op);
+			st->op = QCOP_BAD;
+		}
+		if (st->op == OP_STOREP_C || st->op == OP_STOREP_I8)
+			p->char_stores = true;
 	}
+	if (badops > 1)
+		Con_Printf("%s: %d statements have unknown opcodes\n", name, badops);
+	/* running off the end of the code stops with an error */
+	p->statements[h->numstatements].op = QCOP_END;
+	fuse_statements(p);
 
 	unpack_defs(p, h->ofs_globaldefs, h->numglobaldefs, def_bytes >= 12, &p->globaldefs);
 	p->numglobaldefs = h->numglobaldefs;
@@ -371,7 +573,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 	p->numfunctions = h->numfunctions;
 	p->functions = Mem_Alloc(sizeof(qcfunc_t) * h->numfunctions);
 	for (int i = 0; i < h->numfunctions; i++) {
-		const uint8_t *d = p->progsdata + h->ofs_functions + (size_t)i * sizeof(dfunction_t);
+		const uint8_t *d = p->image + h->ofs_functions + (size_t)i * sizeof(dfunction_t);
 		qcfunc_t *f = &p->functions[i];
 		f->d.first_statement = rd32(d);
 		f->d.parm_start = rd32(d + 4);
@@ -389,6 +591,10 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 		}
 	}
 
+#ifdef QC_JIT
+	function_ends(p);
+#endif
+
 	build_hash(&p->globalhash, p->numglobaldefs, gdef_name, p);
 	build_hash(&p->fieldhash, p->numfielddefs, fdef_name, p);
 	build_hash(&p->funchash, p->numfunctions, func_name, p);
@@ -404,6 +610,7 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 			Con_Printf("%s: function %s locals exceed the globals\n", name, p->functions[i].name);
 			return false;
 		}
+		call_shape(p, &p->functions[i]);
 	}
 	if (p->stmt32) {
 		/* TODO: 32-bit statements can name any global, so operands need a
@@ -418,8 +625,6 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 static void activate(qcvm_t *vm, int n)
 {
 	qcprogs_t *p = &vm->progs[n];
-	vm->progsdata = p->progsdata;
-	vm->progssize = p->progssize;
 	vm->hdr = p->hdr;
 	vm->stmt32 = p->stmt32;
 	vm->statements = p->statements;
@@ -604,7 +809,7 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	if (vm->edict_words < 1)
 		vm->edict_words = 1;
 	vm->edict_words_used = vm->edict_words;
-	vm->edict_words += 256;	/* multiprogs rules (Nuclide) add their own fields */
+	vm->edict_words += BW_QC_SPARE_FIELDS;	/* multiprogs rules (Nuclide) add their own fields */
 
 	vm->max_edicts = max_edicts > 0 ? max_edicts : 1;
 	vm->quick_reuse_before = 2;
@@ -619,11 +824,27 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 		QC_Free(vm);
 		return NULL;
 	}
-	vm->mem = Mem_Alloc(vm->memsize);
+	/* the entity slots and the heap are backed as they are used: the client
+	   game's 4 MB heap is mostly free outside of loading its map overview */
+	vm->committed = BW_MIN((vm->heap_ofs + 64 + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1), vm->memsize);
+#ifdef MEM_PAGE_LAZY
+	vm->mem = Mem_PageAlloc(vm->memsize, vm->edicts_ofs);
+	{
+		size_t h = vm->heap_ofs & ~(size_t)(MEM_PAGE - 1);
+		if (!Mem_PageCommit(vm->mem + h, vm->committed - h))
+			Sys_Error("out of memory for %s", name);
+	}
+	vm->backed_end = vm->edicts_ofs;
+#else
+	vm->mem = Mem_PageAlloc(vm->memsize, vm->memsize);
+	vm->edicts_backed = vm->max_edicts;
+	vm->backed_end = vm->heap_ofs;
+#endif
 	p->globals = (qcval_t *)vm->mem;
 	p->globals_addr = 0;
 	for (int i = 0; i < p->numglobals; i++)
-		p->globals[i].i = rd32(p->progsdata + p->hdr.ofs_globals + (size_t)i * 4);
+		p->globals[i].i = rd32(p->image + p->hdr.ofs_globals + (size_t)i * 4);
+	p->image = NULL; /* the caller frees it */
 	vm->edicts = Mem_Alloc(sizeof(qcedict_t) * vm->max_edicts);
 	for (int i = 0; i < vm->max_edicts; i++)
 		vm->edicts[i].free = true;
@@ -631,10 +852,19 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	vm->num_edicts = 1;
 	QC_HeapInit(vm);
 
+#ifdef BW_LOWMEM
+	vm->localstack_size = 1 << 12; /* it grows when a call needs more (enter_function) */
+#else
 	vm->localstack_size = 1 << 16;
+#endif
 	vm->localstack = Mem_Alloc(sizeof(qcval_t) * vm->localstack_size);
-	/* random() differs from run to run, as in Quake engines seeded from the clock */
-	vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ ((uint64_t)Sys_Milliseconds() * 0x2545f4914f6cdd1dull);
+	/* random() differs from run to run, as in Quake engines seeded from the
+	 * clock, unless pr_seed fixes it (for repeatable benchmarks and tests) */
+	{
+		cvar_t *seed = Cvar_Find("pr_seed");
+		uint64_t s = seed && seed->ivalue ? (uint64_t)(uint32_t)seed->ivalue : (uint64_t)Sys_Milliseconds();
+		vm->rng = 0x9e3779b97f4a7c15ull ^ (uint64_t)size ^ (s * 0x2545f4914f6cdd1dull);
+	}
 
 	activate(vm, 0);
 	resolve_fields(vm);
@@ -678,7 +908,8 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	p->globals = (qcval_t *)(vm->mem + addr);
 	memset(p->globals, 0, (size_t)p->globalslots * 4);
 	for (int i = 0; i < p->numglobals; i++)
-		p->globals[i].i = rd32(p->progsdata + p->hdr.ofs_globals + (size_t)i * 4);
+		p->globals[i].i = rd32(p->image + p->hdr.ofs_globals + (size_t)i * 4);
+	p->image = NULL; /* the caller frees it */
 	vm->numprogs++;
 	if (!link_progs(vm, n)) {
 		QC_HeapFree(vm, addr);
@@ -706,24 +937,53 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	return n;
 }
 
+static void print_mem_stats(qcvm_t *vm, bool always)
+{
+	int peak = BW_MAX(vm->edicts_peak, vm->num_edicts);
+	if (!always && !developer)
+		return;
+	Con_Printf("%s: peak %d of %d entities, heap peak %u of %u KB (%u KB of the VM held), %d of %d entity words, "
+	           "%d strings live\n",
+	           vm->name, peak, vm->max_edicts, (unsigned)(vm->heap_peak / 1024), (unsigned)(vm->heap_size / 1024),
+	           (unsigned)((vm->heap_ofs + (vm->committed - vm->heap_ofs) -
+	                       (size_t)(vm->max_edicts - vm->edicts_backed) * vm->edict_words * 4) / 1024),
+	           vm->edict_words_used, vm->edict_words, QC_LiveStrings());
+}
+
+void QC_PrintMemStats(qcvm_t *vm) { print_mem_stats(vm, false); }
+
+/* pr_memstats: every loaded VM, and the string pool */
+void QC_PrintAllMemStats(void)
+{
+	for (int i = 0; i < vm_count; i++)
+		print_mem_stats(vm_list[i], true);
+	QC_PrintStringStats();
+}
+
 void QC_Free(qcvm_t *vm)
 {
 	if (!vm)
 		return;
+	QC_PrintMemStats(vm);
 	Mem_Free(vm->watch);
+	Mem_Free(vm->prof_stack);
+	Mem_Free(vm->prof_edges);
 	for (int i = 0; i < vm_count; i++)
 		if (vm_list[i] == vm) {
 			vm_list[i] = vm_list[--vm_count];
 			break;
 		}
 	QC_SkelFreeVM(vm);
+#ifdef QC_JIT
+	QC_JitFree(vm);
+#endif
 	if (vm->extra)
 		QC_ExtraFree(vm);
 	Mem_Free(vm->extra);
 	Mem_Free(vm->autocvars);
 	for (int i = 0; i < vm->numprogs; i++)
 		free_progs(&vm->progs[i]);
-	Mem_Free(vm->mem);
+	Mem_PageFree(vm->mem);
 	Mem_Free(vm->edicts);
 	Mem_Free(vm->localstack);
 	Mem_Free(vm);
@@ -731,7 +991,7 @@ void QC_Free(qcvm_t *vm)
 
 /* --- parameters ------------------------------------------------------ */
 
-qcval_t *QC_Parm(qcvm_t *vm, int n)
+qcval_t *QC_ParmExt(qcvm_t *vm, int n)
 {
 	static qcval_t zero[3];
 	if (n < MAX_PARMS)
@@ -746,6 +1006,29 @@ qcval_t *QC_Parm(qcvm_t *vm, int n)
 /* --- entities -------------------------------------------------------- */
 
 bool QC_ValidEdict(qcvm_t *vm, int e) { return e >= 0 && e < vm->max_edicts; }
+
+/* Slots past the most a game has used are only address space where pages
+ * fault in on demand: a 64 MB Xbox can't hold the server's 768 slots of 5 KB
+ * when a match uses 450. A slot gets its (zeroed) memory the first time
+ * anything reaches it, as do all below it, so backed slots stay a prefix and
+ * nothing reads differently. */
+qcval_t *QC_BackEdict(qcvm_t *vm, int e)
+{
+	size_t ent = (size_t)vm->edict_words * 4, from, to;
+	int want;
+	if ((unsigned)e >= (unsigned)vm->max_edicts)
+		QC_RunError(vm, "entity %d out of range", e);
+	if (e < vm->edicts_backed)
+		return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * ent);
+	want = BW_MIN(vm->max_edicts, e + 33);
+	from = (vm->edicts_ofs + (size_t)vm->edicts_backed * ent) & ~(size_t)(MEM_PAGE - 1);
+	to = BW_MIN((vm->edicts_ofs + (size_t)want * ent + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1), vm->memsize);
+	if (!Mem_PageCommit(vm->mem + from, to - from))
+		Sys_Error("out of memory for %d entities of %s", want, vm->name);
+	vm->edicts_backed = (int)BW_MIN((size_t)vm->max_edicts, (to - vm->edicts_ofs) / ent);
+	vm->backed_end = vm->edicts_backed == vm->max_edicts ? vm->heap_ofs : vm->edicts_ofs + (size_t)vm->edicts_backed * ent;
+	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * ent);
+}
 
 void QC_ClearEdict(qcvm_t *vm, int e)
 {
@@ -771,6 +1054,8 @@ int QC_SpawnEdict(qcvm_t *vm)
 	if (e >= vm->max_edicts)
 		QC_RunError(vm, "no free entities (max_edicts %d)", vm->max_edicts);
 	vm->num_edicts = e + 1;
+	if (vm->num_edicts > vm->edicts_peak)
+		vm->edicts_peak = vm->num_edicts;
 	QC_ClearEdict(vm, e);
 	return e;
 }
@@ -928,10 +1213,29 @@ const char *QC_ParseEdict(qcvm_t *vm, int e, const char *data, bool *ok)
 
 /* --- arena pointers and heap ----------------------------------------- */
 
+static bool heap_commit(qcvm_t *vm, size_t ofs);
+
 void *QC_Pointer(qcvm_t *vm, uint32_t addr, size_t bytes)
 {
-	if ((uint64_t)addr + bytes > vm->memsize || addr == 0)
+	uint64_t end = (uint64_t)addr + bytes;
+	if (end > vm->memsize || addr == 0)
 		QC_RunError(vm, "bad pointer 0x%x (+%zu)", addr, bytes);
+#ifdef MEM_PAGE_LAZY
+	/* parts of the arena are only reserved, and touching them faults */
+	if (end > vm->backed_end) {
+		if (addr < vm->heap_ofs) {
+			/* entity slots: back them, as a field access would */
+			if (end > vm->edicts_ofs) {
+				size_t top = (size_t)BW_MIN(end, (uint64_t)vm->heap_ofs) - 1 - vm->edicts_ofs;
+				QC_BackEdict(vm, (int)BW_MIN(top / ((size_t)vm->edict_words * 4), (size_t)vm->max_edicts - 1));
+			}
+		}
+		/* past the backed heap is only a free tail: back it (zeroed) rather
+		   than fault on a stale pointer */
+		if (end > vm->committed && !heap_commit(vm, (size_t)end - vm->heap_ofs))
+			QC_RunError(vm, "out of memory for pointer 0x%x (+%zu)", addr, bytes);
+	}
+#endif
 	return vm->mem + addr;
 }
 
@@ -947,6 +1251,35 @@ typedef struct {
 #define HEAP_MAGIC 0x4b4c5742u
 
 static heaphdr_t *heap_block(qcvm_t *vm, size_t ofs) { return (heaphdr_t *)(vm->mem + vm->heap_ofs + ofs); }
+
+/* The heap's free tail can go back to the system: a client game reads its
+ * map overview (3 MB) into its heap once while loading, and a 64 MB Xbox
+ * can't keep that. Only big tails are trimmed, so small blocks coming and
+ * going at the top don't commit and release pages each time. */
+#define HEAP_TRIM_MIN (256u << 10)
+
+/* back the heap up to ofs (from the heap's start) */
+static bool heap_commit(qcvm_t *vm, size_t ofs)
+{
+	size_t end = vm->heap_ofs + ofs;
+	if (end <= vm->committed)
+		return true;
+	end = BW_MIN((end + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1), vm->memsize);
+	if (!Mem_PageCommit(vm->mem + vm->committed, end - vm->committed))
+		return false;
+	vm->committed = end;
+	return true;
+}
+
+/* a free last block at ofs: release whole pages past its header */
+static void heap_trim(qcvm_t *vm, size_t ofs)
+{
+	size_t keep = (vm->heap_ofs + ofs + sizeof(heaphdr_t) + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1);
+	if (keep >= vm->committed || vm->committed - keep < HEAP_TRIM_MIN || ((uintptr_t)vm->mem & (MEM_PAGE - 1)))
+		return;
+	Mem_PageDecommit(vm->mem + keep, vm->committed - keep);
+	vm->committed = keep;
+}
 
 void QC_HeapInit(qcvm_t *vm)
 {
@@ -971,7 +1304,11 @@ uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes)
 		if (h->magic != HEAP_MAGIC || !h->size)
 			QC_RunError(vm, "memalloc heap corrupted");
 		if (!h->used && h->size >= need) {
-			if (h->size - need >= sizeof(heaphdr_t) + 16) {
+			bool split = h->size - need >= sizeof(heaphdr_t) + 16;
+			/* unsplit, the whole block is cleared below */
+			if (!heap_commit(vm, ofs + (split ? need + sizeof(heaphdr_t) : h->size)))
+				return 0;
+			if (split) {
 				heaphdr_t *rest = heap_block(vm, ofs + need);
 				rest->size = h->size - (uint32_t)need;
 				rest->used = 0;
@@ -982,6 +1319,9 @@ uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes)
 				h->size = (uint32_t)need;
 			}
 			h->used = 1;
+			vm->heap_used += h->size;
+			if (vm->heap_used > vm->heap_peak)
+				vm->heap_peak = vm->heap_used;
 			memset(h + 1, 0, h->size - sizeof(heaphdr_t));
 			return (uint32_t)(vm->heap_ofs + ofs + sizeof(heaphdr_t));
 		}
@@ -995,6 +1335,8 @@ static heaphdr_t *heap_header_for(qcvm_t *vm, uint32_t addr)
 	heaphdr_t *h;
 	if (addr < vm->heap_ofs + sizeof(heaphdr_t) || addr >= vm->heap_ofs + vm->heap_size)
 		return NULL;
+	if (addr > vm->committed)
+		return NULL; /* the header would be in a released page: never a live block */
 	h = (heaphdr_t *)(vm->mem + addr) - 1;
 	if (h->magic != HEAP_MAGIC || !h->used)
 		return NULL;
@@ -1011,6 +1353,7 @@ void QC_HeapFree(qcvm_t *vm, uint32_t addr)
 	if (!h)
 		QC_RunError(vm, "memfree of invalid pointer 0x%x", addr);
 	h->used = 0;
+	vm->heap_used -= h->size;
 	ofs = (uint8_t *)h - (vm->mem + vm->heap_ofs);
 	/* merge with the next block */
 	if (ofs + h->size < vm->heap_size) {
@@ -1032,6 +1375,8 @@ void QC_HeapFree(qcvm_t *vm, uint32_t addr)
 	}
 	if (ofs + h->size < vm->heap_size)
 		heap_block(vm, ofs + h->size)->prev = h->size;
+	else
+		heap_trim(vm, ofs);
 }
 
 uint32_t QC_HeapRealloc(qcvm_t *vm, uint32_t addr, size_t bytes)

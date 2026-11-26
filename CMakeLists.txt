@@ -5,7 +5,10 @@ project(bulwark C CXX)
 # (-DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake or NDS.cmake); see
 # docs/platforms/3ds.md and nds.md. They leave out what those systems can't host:
 # dynamic plugins, PanoramaEngine and QuickJS, the host tools and tests.
-if(NINTENDO_3DS OR NINTENDO_DS)
+# The original Xbox builds with nxdk's toolchain file
+# (-DCMAKE_TOOLCHAIN_FILE=$NXDK_DIR/share/toolchain-nxdk.cmake); see
+# docs/platforms/xbox.md.
+if(NINTENDO_3DS OR NINTENDO_DS OR NXDK)
 	set(BULWARK_CONSOLE ON)
 	set(CMAKE_DL_LIBS "") # no dynamic linker (src/common/sys_dl.h)
 else()
@@ -20,6 +23,9 @@ endif()
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 	add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-sign-compare)
 	add_compile_definitions(_GNU_SOURCE)
+endif()
+if(NXDK)
+	include(src/platform/xbox/xbox.cmake)
 endif()
 
 # The DS (4 MB of RAM, no FPU) can't host the engine: it gets a small Quake
@@ -62,7 +68,11 @@ if(NINTENDO_DS)
 	return()
 endif()
 
-find_package(Threads REQUIRED)
+if(NXDK)
+	add_library(Threads::Threads INTERFACE IMPORTED) # src/platform/xbox/posix_xbox.c
+else()
+	find_package(Threads REQUIRED)
+endif()
 
 add_library(bwcommon STATIC
 	src/common/common.c
@@ -111,7 +121,9 @@ target_link_libraries(bwnet PUBLIC bwcommon Threads::Threads ${CMAKE_DL_LIBS})
 add_library(bwqcvm STATIC
 	src/qcvm/qcvm.c
 	src/qcvm/qc_exec.c
+	src/qcvm/qc_jit.c
 	src/qcvm/qc_strings.c
+	src/qcvm/qc_scan.c
 	src/qcvm/qc_builtins_core.c
 	src/qcvm/qc_extra.c
 	src/qcvm/qc_debug.c
@@ -134,6 +146,20 @@ else()
 	set(bw_desktop_default ON)
 endif()
 option(BULWARK_UI_PANORAMA "Panorama UI views (PanoramaEngine, C++20)" ${bw_desktop_default})
+# the native C UI (src/ui/ui_native.c): Stiletto's HUD and menus drawn
+# straight through the 2D API, for the Xbox where PanoramaEngine costs
+# about 3.5 MB of XBE. The 3DS can opt in; the DS keeps hud_nds.c.
+if(NXDK)
+	set(bw_native_default ON)
+else()
+	set(bw_native_default OFF)
+endif()
+option(BULWARK_UI_NATIVE "Native C UI (Stiletto HUD and menus) instead of PanoramaEngine" ${bw_native_default})
+if(BULWARK_UI_NATIVE AND BULWARK_UI_PANORAMA)
+	# one ui.h backend per build, and QuickJS comes with PanoramaEngine
+	set(BULWARK_UI_PANORAMA OFF)
+	set(BULWARK_SCRIPT_JS OFF)
+endif()
 option(BULWARK_SCRIPT_JS "JavaScript scripting (needs BULWARK_UI_PANORAMA for QuickJS)" ${bw_desktop_default})
 if(BULWARK_SCRIPT_JS AND NOT BULWARK_UI_PANORAMA)
 	message(WARNING "BULWARK_SCRIPT_JS needs PanoramaEngine's QuickJS: turned off")
@@ -143,6 +169,10 @@ if(BULWARK_SCRIPT_LUA)
 	file(GLOB LUA_SOURCES third_party/lua-5.4.7/*.c)
 	add_library(bwlua STATIC ${LUA_SOURCES})
 	target_include_directories(bwlua PUBLIC third_party/lua-5.4.7)
+	if(NXDK)
+		# nxdk defines _WIN32, but Lua's Windows paths (popen, LoadLibrary) aren't there
+		target_compile_options(bwlua PRIVATE -U_WIN32)
+	endif()
 	if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 		target_compile_options(bwlua PRIVATE -w)
 	endif()
@@ -229,6 +259,11 @@ if(NOT BULWARK_CONSOLE)
 	add_executable(bsptest tests/bsp/bsptest.c)
 	target_link_libraries(bsptest bwserver)
 	add_test(NAME bsp COMMAND bsptest WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+	# seeded random traces; compare two builds' output to prove a collision change exact
+	add_executable(tracefuzz tests/bsp/tracefuzz.c)
+	target_link_libraries(tracefuzz bwserver)
+	add_test(NAME tracefuzz COMMAND sh -c "$<TARGET_FILE:tracefuzz> tests data 20000 maps/q1test.bsp maps/hltest.bsp > /dev/null"
+	         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 	add_test(NAME bots COMMAND ${CMAKE_SOURCE_DIR}/tests/bots/run.sh $<TARGET_FILE:bulwark-ded>)
 	add_test(NAME uri COMMAND ${CMAKE_SOURCE_DIR}/tests/uri/run.sh $<TARGET_FILE:bulwark-ded>)
 	add_test(NAME scene COMMAND scenetest ${CMAKE_SOURCE_DIR}/tests/scene)
@@ -261,11 +296,54 @@ if(BULWARK_UI_PANORAMA)
 	set(PANORAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 	set(PANORAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 	set(PANORAMA_BUILD_PERFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+	if(NXDK)
+		# quickjs-libc is the qjs shell's OS layer (files, timers, workers):
+		# neither PanoramaEngine nor src/script uses it, and nxdk can't host it
+		set(QJS_BUILD_LIBC OFF CACHE BOOL "" FORCE)
+	endif()
 	add_subdirectory(third_party/PanoramaEngine EXCLUDE_FROM_ALL)
+	if(NXDK)
+		# as Lua: nxdk defines _WIN32, but QuickJS's Win32 code wants the
+		# desktop API (threads, module paths, code pages). Its POSIX code
+		# runs on the shims in src/platform/xbox/compat.
+		target_compile_options(qjs PRIVATE -U_WIN32 -w "SHELL:-include sys/time.h")
+		target_compile_definitions(qjs PRIVATE NO_TM_GMTOFF)
+		# nxdk builds C++ without exceptions and has no C++ exception runtime.
+		# Package reading and source cooking report errors by throwing: they
+		# keep exceptions, and a throw stops the console (cxxrt_xbox.c).
+		set_source_files_properties(
+			third_party/PanoramaEngine/src/panorama_package.cpp
+			third_party/PanoramaEngine/src/panorama_source_cooker.cpp
+			third_party/PanoramaEngine/src/panorama_resource_provider.cpp
+			TARGET_DIRECTORY PanoramaEngine
+			PROPERTIES COMPILE_OPTIONS "-fexceptions;-fcxx-exceptions")
+		# nxdk has no dynamic TLS initialisation (___dyn_tls_init). The
+		# engine runs its views on the main thread only and PanoramaEngine
+		# starts no threads, so its per-thread statistics become globals.
+		target_compile_definitions(PanoramaEngine PRIVATE thread_local=)
+		# std::filesystem's library half and the C++ exception entry points
+		target_link_libraries(PanoramaEngine PRIVATE bwxboxcxx)
+	endif()
 	add_library(bwui STATIC
 		src/ui/ui_panorama.cpp
 		src/ui/ui_qc.c)
 	target_link_libraries(bwui PUBLIC bwserver PRIVATE PanoramaEngine)
+elseif(BULWARK_UI_NATIVE)
+	add_library(bwui STATIC
+		src/ui/ui_native.c
+		src/ui/uin_draw.c
+		src/ui/uin_atlas.c
+		src/ui/uin_hud.c
+		src/ui/uin_title.c
+		src/ui/uin_lobby.c
+		src/ui/uin_pause.c
+		src/ui/uin_hero.c
+		src/ui/uin_misc.c
+		src/ui/ui_qc.c)
+	target_link_libraries(bwui PUBLIC bwserver)
+	# PUBLIC: the client (cl_input.c, cl_lobby.c, later cl_menu.c and
+	# cl_emenu.c) links bwui and sees it too
+	target_compile_definitions(bwui PUBLIC BW_UI_NATIVE=1)
 else()
 	add_library(bwui STATIC
 		src/ui/ui_null.c
@@ -344,6 +422,8 @@ if(NINTENDO_3DS)
 		DESCRIPTION "Bulwark engine"
 		AUTHOR "sokky")
 	ctr_create_3dsx(bulwark SMDH bulwark.smdh)
+elseif(NXDK)
+	bulwark_xbox_executable()
 elseif(SDL2_FOUND)
 	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c)
 	target_include_directories(bulwark PRIVATE ${SDL2_INCLUDE_DIRS})

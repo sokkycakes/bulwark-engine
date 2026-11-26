@@ -3,10 +3,15 @@
  * decodes them as written and rejects broken ones for the right reason.
  * Needs no game content. ISC licence, see LICENSE. */
 #include "../src/common/studio.h"
+#include "../src/common/fs.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef BW_LOWMEM
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 static int failures;
 #define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -241,6 +246,35 @@ int main(void)
 		t = w, t.n = cut;
 		CHECK(!loads(&t, err), "prefix of %zu bytes loaded", cut);
 	}
+
+#ifdef BW_LOWMEM
+	{
+		/* the cache pages the sequence out and reads it back from the file */
+		char dir[] = "/tmp/studiotestXXXXXX", path[256];
+		build_model(&w, &L);
+		CHECK(mkdtemp(dir) != NULL, "temp dir");
+		snprintf(path, sizeof(path), "%s/base", dir);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/base/t.mdl", dir);
+		FILE *f = fopen(path, "wb");
+		CHECK(f && fwrite(w.b, 1, w.n, f) == w.n, "write model");
+		if (f)
+			fclose(f);
+		FS_Init(dir);
+		FS_AddGameDir("base");
+		const studio_model_t *c = Studio_Cached("t.mdl");
+		CHECK(c && !c->seqs[0].anim, "sequence paged out");
+		for (int f2 = 0; c && f2 < 4; f2++) {
+			CHECK(Studio_DecodeFrame(c, 0, 0, f2, pose), "paged frame %d", f2);
+			CHECK(fabsf(pose[10] - want[f2]) < 1e-6f, "paged frame %d bone 1 x = %g", f2, pose[10]);
+		}
+		CHECK(c && Studio_CountTris(c, &c->bodyparts[0].models[0].meshes[0], 3, 3) == 1, "mesh kept");
+		remove(path);
+		snprintf(path, sizeof(path), "%s/base", dir);
+		rmdir(path);
+		rmdir(dir);
+	}
+#endif
 
 	printf("studiotest: %s (%d failures)\n", failures ? "FAIL" : "pass", failures);
 	return failures ? 1 : 0;

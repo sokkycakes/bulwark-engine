@@ -167,6 +167,7 @@ void SV_ClientsMapChanged(void); /* after a new map is spawned */
 void SV_ReadPackets(void);
 void SV_ClientsPreThink(void);
 void SV_ClientsPostThink(void);
+void SV_ClientsDroppedTime(double t);
 void SV_SendClientMessages(void);
 void SV_ClientsAfterPhysics(void);
 void SV_RunUsercmd(client_t *c, const usercmd_t *u); /* one command, as a client's move runs it */
@@ -266,6 +267,14 @@ bool SV_SpawnServer(const char *mapname);
 void SV_Shutdown(void);
 void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);
+extern int sv_frameticks; /* server frames the last SV_Frame ran (host_speeds) */
+/* where the server's part of a host frame went, for host_speeds' slowest
+ * frame: the host clears it each frame */
+enum { SVP_READ, SVP_START, SVP_ROUTES, SVP_PRETHINK, SVP_ENTITIES, SVP_POSTTHINK, SVP_END, SVP_CLIENTS, SVP_GC, SVP_SEND, SVP_COUNT };
+extern double sv_phase_seconds[SVP_COUNT];
+extern const char *const sv_phase_names[SVP_COUNT];
+extern double sv_slowest_cmd;        /* the longest player command in it */
+extern char sv_slowest_cmd_who[64]; /* whose it was */
 int SV_ModelIndex(const char *name, bool precache);
 int SV_SoundIndex(const char *name, bool precache);
 void SV_InfoSet(char *info, size_t size, const char *key, const char *value);
@@ -296,6 +305,7 @@ typedef struct worldctx_s {
 	bspmap_t *world;
 	bool (*brushmodel)(int modelindex, bspmap_t **bsp, int *submodel);
 	struct vxworld_s *voxel; /* the voxel grid, part of the world (ent 0) */
+	struct area_s *area; /* sv_world.c's index of linked entities, made on first use */
 } worldctx_t;
 /* Points the world functions (SV_Move and friends) at another module's
  * entities, e.g. the client's; NULL restores the server. Returns the previous
@@ -305,7 +315,11 @@ bspmap_t *SV_CurrentWorld(void); /* the map of the current context */
 
 void SV_LinkEdict(int e, bool touch_triggers);
 void SV_UnlinkEdict(int e);
+/* SV_Move leaves tr->inwater false: it costs a point-contents query and
+ * only trace_inwater reads it, so SV_MoveWater is for traces QC sees */
 void SV_Move(const float *start, const float *mins, const float *maxs, const float *end, int type, int passent, svtrace_t *tr);
+void SV_MoveWater(const float *start, const float *mins, const float *maxs, const float *end, int type, int passent,
+                  svtrace_t *tr);
 int SV_PointContentsBits(const float *p);
 bool SV_InsideBrushEntity(int pusher, int e);
 int SV_ContentsToQuake(int bits);

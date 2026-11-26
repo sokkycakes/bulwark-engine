@@ -48,7 +48,7 @@ typedef struct {
 	/* reliable stream out */
 	uint8_t *relout;
 	size_t reloutlen, reloutcap;
-	netfrag_t frags[NETCHAN_WINDOW];
+	netfrag_t *frags[NETCHAN_WINDOW]; /* in flight, made when cut and freed when acknowledged */
 	uint32_t relnext;   /* next fragment sequence to create */
 	uint32_t relacked;  /* every fragment below this is acknowledged */
 
