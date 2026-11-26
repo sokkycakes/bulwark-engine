@@ -339,6 +339,21 @@ static void fuse_statements(qcprogs_t *p)
 			continue;
 		s[i].op = QCOP_FIND_S;
 	}
+	/* word searches: 0 LT_IF c < n, 1 IFNOT out, 2 CONV_IF c, 3 CALL1H on
+	 * it, 4 EQ_S of the result, 5 IFNOT to the step, an ADD_I to c and a
+	 * GOTO back to 0. That the call is argv is checked as it runs */
+	for (int i = 0; i + 6 < n; i++) {
+		int step;
+		if (s[i].op != OP_LT_IF || OPAT(i + 1) != OP_IFNOT || s[i + 1].a != s[i].c || OPAT(i + 2) != OP_CONV_IF ||
+		    s[i + 2].a != s[i].a || OPAT(i + 3) != OP_CALL1H || s[i + 3].b != s[i + 2].c || OPAT(i + 4) != OP_EQ_S ||
+		    OPAT(i + 5) != OP_IFNOT || s[i + 5].a != s[i + 4].c)
+			continue;
+		step = jump_target(p, i + 5, s[i + 5].b);
+		if (step <= i + 5 || step + 1 >= n || OPAT(step) != OP_ADD_I || s[step].c != s[i].a ||
+		    OPAT(step + 1) != OP_GOTO || jump_target(p, step + 1, s[step + 1].a) != i)
+			continue;
+		s[i].op = QCOP_ARGV_FIND;
+	}
 	for (int i = 0; i + 3 < n; i++)
 		if (s[i].op == OP_LOADF_F && OPAT(i + 1) == OP_LOADF_F && OPAT(i + 2) == OP_NE_F && OPAT(i + 3) == OP_IFNOT)
 			s[i].op = QCOP_FIELDS_NEF_IFNOT;
