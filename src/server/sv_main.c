@@ -975,8 +975,9 @@ void SV_Frame(double dt)
 	 * a frame twice as slow, which misses its vblank. sv_tickslack lets a
 	 * tick run up to that fraction of a tick early or late instead, so a
 	 * frame near the boundary still runs one. Ticks keep their length, and
-	 * their count over time (the time owed stays within the slack); only
-	 * which frame a tick runs in changes. Ticks are counted by the same
+	 * their count over time (what is owed stays under one tick plus the
+	 * slack); only which frame a tick runs in changes, and each runs within
+	 * the slack of the frame it would have run in. Ticks are counted by the same
 	 * subtractions that run them, so with no slack they fall exactly where
 	 * they always did. */
 	int ticks = 0;

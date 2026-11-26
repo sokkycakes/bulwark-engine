@@ -162,9 +162,11 @@ static void irqtime_f(int argc, const char **argv)
 		total += stolen[b], n += counts[b];
 	Con_Printf("irqtime: %.2f s at %.0f MHz: %u gaps took %.1f%% (%.1f us each); kernel ticks %lu, vblanks %lu\n", secs,
 	           tsc_hz / 1e6, n, total / (secs * 1e4), n ? total / n : 0, (unsigned long)ticks, (unsigned long)vbls);
-	for (int b = 1; b < 8; b++)
+	/* gap_min truncates to whole cycles, so a gap just under 2 us can land
+	 * in bucket 0; print it too so the rows add up to the summary */
+	for (int b = 0; b < 8; b++)
 		if (counts[b])
-			Con_Printf("  %4u-%-4u us: %6u gaps, %.1f%%\n", edges[b - 1], b < 7 ? edges[b] : 99999, counts[b],
+			Con_Printf("  %4u-%-4u us: %6u gaps, %.1f%%\n", b ? edges[b - 1] : 0, b < 7 ? edges[b] : 99999, counts[b],
 			           stolen[b] / (secs * 1e4));
 }
 

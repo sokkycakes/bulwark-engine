@@ -541,9 +541,10 @@ desktop:
   gives a frame no tick and the next one two: a frame with twice the
   server work, which misses its vblank. `sv_tickslack 0.25` lets a tick
   run up to a quarter of a tick early or late instead, so such a frame
-  still runs one. Ticks keep their length and their count over time (the
-  time owed stays within the slack); only which frame runs a tick
-  changes. Modelled with frames on every second 59.94 Hz vblank and 2 ms
+  still runs one. Ticks keep their length and their count over time
+  (what is owed stays under one tick plus the slack); only which frame
+  runs a tick changes, and each tick runs within the slack of the frame
+  it would have run in. Modelled with frames on every second 59.94 Hz vblank and 2 ms
   of wake-up jitter, ten minutes have 165 frames with no tick and 182 with
   two; with the slack, 1 and 17 (the 17 are the drift itself: 29.97
   frames a second against 30 ticks).
