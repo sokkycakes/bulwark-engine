@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -27,8 +28,20 @@
 #include "ui/ui.h"
 
 static bool quit_requested;
+/* SIGINT/SIGTERM in a headless client: nothing pumps SDL's events there, so
+ * the SDL_QUIT that SDL's own handlers queue would never be read */
+static volatile sig_atomic_t quit_signalled;
 
 static void Path_f(int argc, const char **argv) { FS_PrintPath(); }
+
+/* the first signal quits as "quit" does; a second one doesn't wait */
+static void on_signal(int sig)
+{
+	if (quit_signalled)
+		_Exit(1);
+	quit_signalled = 1;
+	signal(sig, on_signal);
+}
 
 static void Quit_f(int argc, const char **argv) { quit_requested = true; }
 
@@ -105,6 +118,8 @@ static void Host_Shutdown(void);
 static bool Host_Frame(void)
 {
 	double now, dt;
+	if (quit_signalled)
+		quit_requested = true;
 	if (quit_requested)
 		return false;
 	if (host_maxframes >= 0) {
@@ -345,6 +360,14 @@ int main(int argc, char **argv)
 	if (!headless && !VID_Init(width, height, fullscreen)) {
 		Con_Printf("no video, running headless\n");
 		headless = true;
+	}
+	/* A headless client handles Ctrl+C and SIGTERM itself, as the dedicated
+	 * server does. SDL may already have put in handlers that only queue
+	 * SDL_QUIT (the microphone probe starts its audio, and with it the event
+	 * system), and a windowed client pumps those events, so it keeps them. */
+	if (headless) {
+		signal(SIGINT, on_signal);
+		signal(SIGTERM, on_signal);
 	}
 	R_Init(headless);
 	S_Init(headless);

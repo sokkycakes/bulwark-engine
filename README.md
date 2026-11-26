@@ -70,7 +70,7 @@ ctest --test-dir build        # needs FTEQCC=/path/to/fteqcc to rebuild the test
 ```
 
 Client options: `-width`, `-height`, `-fullscreen`, `-headless` (no window
-or sound), plus the server's options below. Every console command is listed in
+or sound; Ctrl+C or SIGTERM quits it, and a second one exits at once), plus the server's options below. Every console command is listed in
 [docs/spec/console.md](docs/spec/console.md). Useful ones: `screenshot`,
 `r_speeds 1` (2 also lists the scene's entities), `pr_trace <name>` (prints
 calls to QC functions whose names contain it), `music <file>`, `play
