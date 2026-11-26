@@ -134,16 +134,94 @@ nothing once it is closed). The player then stands, invulnerable, in the
 courtyard where the bots fight most, looking across it. Times are wall
 time: under heavy host load the spawn can come later.
 
-Two things make a match slower as it goes on, and neither is the engine's
-to change: the game's `FindXRInput` spawns three NSXRInput entities each
-time a player spawns or changes hero, about 20 a minute with 8 bots, and
-never removes them (on desktop, 36 after 19 s of match time and 69 after
-125 s). Its type test never matches, because it reads the high word of an
-int64 `!=` result, which the VM leaves as the temp held it. The game relies
-on that: its owner test is inverted, and with a full 64-bit write the
-players took each other's XR inputs and the bots stopped scoring kills;
-and sampling the guest with the QEMU monitor (`info registers`) slows it,
-so take profiles in a run whose reports aren't the baseline.
+Two things make a match slower as it goes on. The game leaks entities (see
+"Game bug: FindXRInput leaks entities" below), and sampling the guest with
+the QEMU monitor (`info registers`) slows it, so take profiles in a run
+whose reports aren't the baseline.
+
+### Game bug: FindXRInput leaks entities
+
+Each time a player spawns as a hero, `ncClient::Spawned` calls
+`ncXRManager::Init`, which calls `FindXRInput` three times (head, left,
+right). `FindXRInput` never finds the inputs it made before, so each call
+spawns a new NSXRInput, and nothing removes them. Every leaked one is an
+`ncEntity` that `StartFrame` updates each tick (`ParentUpdate`,
+`EvaluateEntity`: about 190 QC statements) and the engine offers to each
+client (`SendEntity`, which returns 0 for an entity with no model). On
+desktop, 300 of them (made with `ent_create`) added 41% to the server
+game's QC statements and 12% to the CPU time of a headless match. At the
+rate measured in round 2, about 20 a minute with 8 bots, 768 entity slots
+fill in 15 to 20 minutes and the match stops with "no free entities". On
+the Xbox the engine therefore gives the server 1536 slots when the console
+has more than 96 MB (see "Memory"). The client game does not leak: it
+makes one set, for the local player (3 NSXRInput in a 10-minute desktop
+match while the server's went from 30 to 42).
+
+The function, `src/shared/input/XRManager.qc` lines 48-72 in Nuclide:
+
+```
+for (NSXRInput inputList = world; (inputList = find(inputList, ::classname, "NSXRInput"));) {
+	if (inputList.owner == playerEntity) {     /* line 55 */
+		continue;
+	}
+	if (inputList.GetType() != inputType) {    /* line 58 */
+		continue;
+	}
+	return (inputList);
+}
+```
+
+It has two faults, and each hides the other:
+
+1. **The owner test (line 55) is inverted.** It skips the player's own
+   inputs and accepts another player's. If the type test worked, every
+   player after the first would take the first player's inputs, and since
+   `ncWeapon` fires from `m_xrInputRight.GetOrigin()` (in that input's
+   owner's XR space), everyone would shoot from the first player's
+   position.
+2. **The type test (line 58) never matches**, because of how FTEQCC
+   compiles `!=` on two `__uint64` values (`xrinput_t` is
+   `enum : __uint64`). It emits `NE_I64 a, b, t` and then, to test the
+   result, `NE_I64 t, 0, t2` / `IFNOT t2`: the second compare reads `t`
+   as 64 bits. But the comparison opcodes produce a 32-bit int, and `t` is
+   a one-word temp: FTEQCC itself compiles the same `!=` on signed
+   `__int64` values to `NE_I64` then `IFNOT`, writes `int r = (a != b)`
+   straight into the int, and widens `__int64 r = (a != b)` with
+   `CONV_II64`. So the second compare also reads the next word of the
+   function's locals, which in the server's and the client game's
+   `FindXRInput` is the temp that saved `self` around the `GetType()`
+   call, written on every pass of the loop: the caller's entity number,
+   never 0. (Zeroing locals at function entry would not change this.) The
+   same pattern is in `NSXRInput::GetAngles`, where it happens to read the
+   right value. `==` and `!(a == b)` on `__uint64` compile the same way;
+   signed `__int64`, `int` casts and a 64-bit subtraction don't.
+
+So the VM's 32-bit result is the opcode's own definition, and the game
+works only because fault 2 hides fault 1. Writing a 64-bit result (tried in
+round 2, commit 9e3eddc, reverted in 856e190) is what makes fault 1 show,
+and nothing else: in a 180 s desktop match (`pr_seed 1`, 8 bots, the
+benchmark's commands) the 64-bit write left 3 NSXRInput entities in all,
+21 of the 24 XR input fields shared, and no kills; the 64-bit write with
+line 55 flipped (patched in the loaded statements, `IFNOT` to `IF`) gave 24
+NSXRInput entities, flat, none shared, and the same 5 kills and 9 deaths
+at the same times as the unchanged run, which by then had 42 (30 at the
+start). In these desktop runs four of the seven bots never leave their
+spawn points, at 856e190 too, so kills are few: compare runs with each
+other, not with the Xbox.
+
+The fix belongs in the game (in a Nuclide fork):
+
+```
+	if (inputList.owner != playerEntity) {
+		continue;
+	}
+	if ((__int64)inputList.GetType() != (__int64)inputType) {
+		continue;
+	}
+```
+
+The cast makes FTEQCC test the comparison's result directly. (Making
+`xrinput_t` a plain `enum` does the same for every comparison of it.)
 
 In this match the QC interpreter is the largest single part of the frame.
 A third of the statements both games run is Nuclide's
@@ -421,9 +499,15 @@ fails with `ENETDOWN`.
 ## Memory
 
 `BW_LOWMEM` shrinks the engine's defaults, as on the 3DS
-(`docs/platforms/3ds.md`, "Memory"): 1024 server, CSQC and menu edicts,
-QuakeC heaps of 4, 4 and 2 MB, 4096 client entity slots, and a 512² font
-atlas. `pr_maxedicts` and `pr_heapsize` still override the server's.
+(`docs/platforms/3ds.md`, "Memory"): 768 server and CSQC edicts and 256
+menu edicts, QuakeC heaps of 2 MB (server), 4 MB (CSQC) and 512 KB (menu),
+4096 client entity slots, and a 512² font atlas (see `src/common/common.h`).
+On a console with more than 96 MB the server gets 1536 edicts, because
+Stiletto leaks entities (see "Game bug: FindXRInput leaks entities"): a
+server slot is about 5 KB (1176 words of Stiletto's fields and 64 spare,
+plus the engine's own tables), and in the in-match benchmark the 768 more
+leave 47.9-48.5 MB free instead of 51.7-52.3 MB, with the same frame
+times. `pr_maxedicts` and `pr_heapsize` still override the server's.
 
 GPU memory comes out of the same 64 MB as everything else. Small objects
 share 1 MB chunks, and `xbox_gpuinfo` shows the total. Use `xbox_meminfo`,
@@ -449,9 +533,11 @@ The native UI keeps no heap of its own between frames. Its atlas is about
 - **Settings:** the pages a console can't use are left out of the menu.
   That covers renderer switches, resolutions, the mouse, voice chat,
   teamplay messages, mods, demos, downloads and the media player.
-- **Entity growth:** see "In-match benchmark": the game leaks three
-  entities a spawn. At the rate measured with 8 bots, a match of 15 to 20
-  minutes would fill the 768 entity slots (not yet run that long).
+- **Entity growth:** the game leaks three entities each time a player
+  spawns as a hero (see "Game bug: FindXRInput leaks entities"). With
+  1536 server slots on a 128 MB console a match lasts 45 minutes or more
+  at the rate measured with 8 bots; with 768 on 64 MB, 15 to 20. The
+  leaked entities also make each server tick slower as the match goes on.
 - **DVD:** a read-only disc saves nothing. Run from the hard disk to keep
   settings.
 - **FATX names:** at most 42 characters (see "Installing on a console").
