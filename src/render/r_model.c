@@ -6,6 +6,9 @@
 #include "../common/cmd.h"
 #include "../common/skel.h"
 #include "../common/studio.h"
+#ifdef BW_XBOX
+#include "../platform/xbox/xbox.h"
+#endif
 
 #include <math.h>
 #ifdef __SSE__
@@ -558,6 +561,9 @@ typedef struct iqm_s {
 	int nummeshes;
 	GLuint vao, vbo, ebo;
 	GLuint skinvbo; /* skinned models: the posed positions and normals (skinvert_t), streamed each draw */
+#ifdef BW_XBOX
+	GLuint gpuvao; /* the rest pose from vbo alone, posed by the GPU (XBGL_SkinBones); 0: not possible */
+#endif
 	framegroup_t *anims;  /* points into skel when there is one */
 	int numanims;
 	/* skinning: up to four joints per vertex */
@@ -756,6 +762,14 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 				js[3] = BW_MAX(js[3], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
 			}
 	}
+#ifdef BW_XBOX
+	/* one bone a vertex and few enough bones: the GPU can pose them, reading
+	 * the bone's palette row from the lightmap st, which models don't use */
+	bool gpuskin = q->skel && !q->blendw && q->skel->numjoints <= 60;
+	if (gpuskin)
+		for (int i = 0; i < num_verts; i++)
+			q->verts[i].lm[0] = (float)(q->blendidx[i][0] * 3), q->verts[i].lm[1] = 0;
+#endif
 	if (R_Active() && num_verts) {
 		qglGenVertexArrays(1, &q->vao);
 		qglGenBuffers(1, &q->vbo);
@@ -783,6 +797,15 @@ static void finish_iqm(rmodel_t *mod, iqm_t *q)
 			qglVertexAttribPointer(ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(skinvert_t),
 			                       (void *)offsetof(skinvert_t, normal));
 		}
+#ifdef BW_XBOX
+		if (gpuskin) {
+			qglGenVertexArrays(1, &q->gpuvao);
+			qglBindVertexArray(q->gpuvao);
+			qglBindBuffer(GL_ARRAY_BUFFER, q->vbo);
+			qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, q->ebo);
+			R_SetupVertexAttribs();
+		}
+#endif
 		qglBindVertexArray(0);
 #ifdef BW_LOWMEM
 		/* GL has its own copies; skinning reads the rest pose and writes
@@ -1441,6 +1464,10 @@ static void free_model(rmodel_t *m)
 			qglDeleteBuffers(1, &q->ebo);
 			if (q->skinvbo)
 				qglDeleteBuffers(1, &q->skinvbo);
+#ifdef BW_XBOX
+			if (q->gpuvao)
+				qglDeleteVertexArrays(1, &q->gpuvao);
+#endif
 		}
 		Mem_Free(q->verts);
 		Mem_Free(q->indices);
@@ -1708,7 +1735,8 @@ static void pose_iqm(iqm_t *q, rentity_t *e)
 	}
 	if (e->skeletonindex && e->vm && QC_SkelBones(e->vm, e->skeletonindex, &sm, &sb, &absolute)) {
 		int k = BW_MIN(n, sm->numjoints);
-		Skel_SampleRelative(m, -1, 0, bones); /* any bones the object lacks */
+		if (k < n)
+			Skel_SampleRelative(m, -1, 0, bones); /* any bones the object lacks */
 		if (absolute) {
 			Skel_ToAbsolute(m, bones, bones);
 			memcpy(bones, sb, sizeof(bonemat_t) * k);
@@ -2111,9 +2139,16 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 		draw_alias(e, a);
 	} else if (m->type == MOD_IQM && m->iqm->vao) {
 		iqm_t *q = m->iqm;
+		GLuint vao = q->vao;
+#ifdef BW_XBOX
+		bool gpu = skinned && q->gpuvao && XBGL_SkinBones((const float(*)[12])skin, q->skel->numjoints);
+		if (gpu)
+			vao = q->gpuvao;
+		else
+#endif
 		if (skinned)
 			skin_posed(q, e);
-		qglBindVertexArray(q->vao);
+		qglBindVertexArray(vao);
 		for (int i = 0; i < q->nummeshes; i++) {
 			material_t *mat = e->forceshader ? e->forceshader : q->meshes[i].material;
 			if (!mesh_shown(q, e, i))
@@ -2133,6 +2168,10 @@ void R_DrawModelEntity(rentity_t *e, bool translucentpass)
 			                (void *)(sizeof(uint32_t) * (size_t)q->meshes[i].firstindex));
 		}
 		qglBindVertexArray(0);
+#ifdef BW_XBOX
+		if (gpu)
+			XBGL_SkinBones(NULL, 0);
+#endif
 	}
 	if (depthhack)
 		qglDepthRange(0, 1);

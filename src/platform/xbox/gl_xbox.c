@@ -83,7 +83,7 @@
 #define GL_INVALID_ENUM 0x0500
 
 static cvar_t *gl_max_size, *gl_xbox_texquality, *gl_xbox_texcompress, *gl_xbox_mipmaps, *vid_xbox_swapinterval,
-	*gl_xbox_aniso, *gl_xbox_stats;
+	*gl_xbox_aniso, *gl_xbox_stats, *gl_xbox_gpuskin;
 
 static bool ready;
 static int fbw = 640, fbh = 480;
@@ -2072,6 +2072,187 @@ static void set_lighting(xprog_t *p, bool on)
 	regsf(NV097_SET_LIGHT_INFINITE_HALF_VECTOR, half, 3);
 }
 
+/* --- skinning on the GPU ----------------------------------------------------------------- */
+
+/* Models whose vertices each follow one bone are posed by a vertex program
+ * instead of on the CPU: the renderer hands over the bones' matrices
+ * (XBGL_SkinBones), and draws its rest-pose vertices with the bone's index
+ * times 3 in the first lightmap coordinate. The program does what the
+ * fixed-function path does for models (set_lighting, set_fog): the eye
+ * space is the world around the viewer, one infinite light plus ambient,
+ * and the radial eye distance for the hardware's fog.
+ *
+ * The palette is three rows a bone from constant 0 up, which in the
+ * privileged range is where the fixed-function pipeline keeps its
+ * matrices, viewport and texgen planes: after skinned draws they are sent
+ * again (skin_restore). The program's own constants are c[84..95], the
+ * top of the range. Source, for nxdk's vp20compiler:
+ *
+ *   !!VP1.1
+ *   ARL A0.x, v[TEX1].x;                    bone x 3, from the lightmap st
+ *   DP4 R0.x, c[A0.x+0], v[OPOS];           the posed position, in the model
+ *   DP4 R0.y, c[A0.x+1], v[OPOS];
+ *   DP4 R0.z, c[A0.x+2], v[OPOS];
+ *   DP3 R1.x, c[A0.x+0], v[NRML];           and normal
+ *   DP3 R1.y, c[A0.x+1], v[NRML];
+ *   DP3 R1.z, c[A0.x+2], v[NRML];
+ *   DPH R2.x, R0, c[84];                    eye space: model moved by -vieworg
+ *   DPH R2.y, R0, c[85];
+ *   DPH R2.z, R0, c[86];
+ *   DP3 R4.x, R1, c[84];
+ *   DP3 R4.y, R1, c[85];
+ *   DP3 R4.z, R1, c[86];
+ *   DPH R6.x, R0, c[87];                    viewport x projection x model
+ *   DPH R6.y, R0, c[88];
+ *   DPH R6.z, R0, c[89];
+ *   DPH R6.w, R0, c[90];
+ *   DP3 R2.w, R2, R2;
+ *   DP3 R4.w, R4, R4;
+ *   RSQ R3.x, R2.w;
+ *   RSQ R4.w, R4.w;
+ *   RCC R7.x, R6.w;
+ *   RCP R3.y, R3.x;                         the eye distance, for fog
+ *   MUL R4.xyz, R4, R4.w;                   the unit normal
+ *   MUL o[HPOS].xyz, R6, R7.x;              screen space, as the hardware wants
+ *   MOV o[HPOS].w, R6.w;
+ *   MOV o[FOGC].x, R3.y;
+ *   DP3 R5.x, R4, c[91];                    N.L
+ *   MAX R5.x, R5.x, c[95].z;
+ *   MUL R5, c[92], R5.x;
+ *   ADD o[COL0], R5, c[93];                 diffuse x N.L + ambient, alpha 1
+ *   MUL R8, v[TEX0], c[94];                 the texture coordinates' tcmod
+ *   ADD o[TEX0], R8, c[95];
+ *   ADD o[TEX2], R8, c[95];                 the fullbright texture's
+ *   END
+ *
+ * The compiler can only address the user range relative to A0 (c[A0+0] is
+ * constant 96), so skin_init moves those reads down to constant 0. */
+static const uint32_t skin_program[] = {
+	0x00000000, 0x01a01400, 0x0836106c, 0x207007f8, 0x00000000, 0x00ec001b, 0x0c36106c, 0x280007fa,
+	0x00000000, 0x00ec201b, 0x0c36106c, 0x240007fa, 0x00000000, 0x00ec401b, 0x0c36106c, 0x220007fa,
+	0x00000000, 0x00ac041b, 0x0c36106c, 0x281007fa, 0x00000000, 0x00ac241b, 0x0c36106c, 0x241007fa,
+	0x00000000, 0x00ac441b, 0x0c36106c, 0x221007fa, 0x00000000, 0x00d6801b, 0x0436186c, 0x282007f8,
+	0x00000000, 0x00d6a01b, 0x0436186c, 0x242007f8, 0x00000000, 0x00d6c01b, 0x0436186c, 0x222007f8,
+	0x00000000, 0x00b6801b, 0x1436186c, 0x284007f8, 0x00000000, 0x00b6a01b, 0x1436186c, 0x244007f8,
+	0x00000000, 0x00b6c01b, 0x1436186c, 0x224007f8, 0x00000000, 0x00d6e01b, 0x0436186c, 0x286007f8,
+	0x00000000, 0x00d7001b, 0x0436186c, 0x246007f8, 0x00000000, 0x00d7201b, 0x0436186c, 0x226007f8,
+	0x00000000, 0x00d7401b, 0x0436186c, 0x216007f8, 0x00000000, 0x00a0001b, 0x2436486c, 0x212007f8,
+	0x00000000, 0x00a0001b, 0x4436886c, 0x214007f8, 0x00000000, 0x0800001b, 0x08361300, 0x903807f8,
+	0x00000000, 0x0800001b, 0x08361301, 0x104107f8, 0x00000000, 0x0600001b, 0x08361301, 0x907807f8,
+	0x00000000, 0x0400001b, 0x08361000, 0xd03407f8, 0x00000000, 0x0040001b, 0x45fe886c, 0x2e4007f8,
+	0x00000000, 0x0040001b, 0x6400e86c, 0x2070e800, 0x00000000, 0x002000ff, 0x6436106c, 0x20701800,
+	0x00000000, 0x00200055, 0x3436106c, 0x20708828, 0x00000000, 0x00b7601b, 0x4436186c, 0x285007f8,
+	0x00000000, 0x0157e000, 0x5554186c, 0x285007f8, 0x00000000, 0x0057801b, 0x0c00a86c, 0x2f5007f8,
+	0x00000000, 0x0077a01b, 0x5436106c, 0x3070f818, 0x00000000, 0x0057d21b, 0x0836186c, 0x2f8007f8,
+	0x00000000, 0x0077e01b, 0x8436106c, 0x3070f848, 0x00000000, 0x0077e01b, 0x8436106c, 0x3070f859,
+};
+#define SKIN_MAXBONES 60 /* palette rows 0..179, below the program's constants */
+#define SKIN_CONSTS 180  /* c[84] in the privileged range */
+#define EXEC_FIXED 4     /* fixed function, privileged range */
+#define EXEC_PROGRAM 6   /* the program, privileged range */
+
+static bool skin_on;      /* XBGL_SkinBones gave a palette for the draws that follow */
+static bool skin_prog;    /* the transform engine runs the program */
+static bool skin_clobber; /* the fixed-function matrices and viewport were overwritten */
+
+/* loads the program, with its palette reads moved to constant 0: an
+ * instruction's constant is bits 13-20 of its second word, and bit 1 of
+ * its fourth says the read is relative to A0 */
+static void skin_init(void)
+{
+	int n = (int)BW_ARRAY_COUNT(skin_program);
+	pb_open((size_t)n + 64);
+	put1(NV097_SET_TRANSFORM_PROGRAM_CXT_WRITE_EN, 0);
+	put1(NV097_SET_TRANSFORM_PROGRAM_LOAD, 0);
+	for (int i = 0; i < n; i += 32) {
+		int k = BW_MIN(32, n - i);
+		cmd(NV097_SET_TRANSFORM_PROGRAM, (uint32_t)k);
+		for (int j = 0; j < k; j++) {
+			uint32_t w = skin_program[i + j];
+			if (((i + j) & 3) == 1 && (skin_program[i + j + 2] & 2))
+				w -= 96u << 13;
+			*P++ = w;
+		}
+	}
+	pb_close();
+}
+
+/* the fixed-function state the palette overwrote, sent again */
+static void skin_restore(void)
+{
+	float zero4[4] = {0, 0, 0, 0}, one4[4] = {1, 1, 1, 1};
+	invalidate_hw();
+	cmd(NV097_SET_VIEWPORT_OFFSET, 4);
+	memcpy(P, zero4, 16), P += 4;
+	cmd(NV097_SET_VIEWPORT_SCALE, 4);
+	memcpy(P, one4, 16), P += 4;
+	skin_clobber = false;
+}
+
+/* the transform engine's mode for a draw: the program for skinned models */
+static void skin_mode(bool prog)
+{
+	if (prog != skin_prog) {
+		put1(NV097_SET_TRANSFORM_EXECUTION_MODE, prog ? EXEC_PROGRAM : EXEC_FIXED);
+		skin_prog = prog;
+	}
+	if (!prog && skin_clobber)
+		skin_restore();
+}
+
+bool XBGL_SkinBones(const float (*bones)[12], int n)
+{
+	if (!bones || n <= 0) {
+		if (skin_on)
+			state_gen++;
+		skin_on = false;
+		return false;
+	}
+	if (!ready || n > SKIN_MAXBONES || (gl_xbox_gpuskin && !gl_xbox_gpuskin->ivalue))
+		return false;
+	pb_open((size_t)n * 12 + (size_t)n / 2 + 16);
+	put1(NV097_SET_TRANSFORM_CONSTANT_LOAD, 0);
+	for (int i = 0; i < n * 12; i += 32) {
+		int k = BW_MIN(32, n * 12 - i);
+		cmd(NV097_SET_TRANSFORM_CONSTANT, (uint32_t)k);
+		memcpy(P, bones[0] + i, sizeof(float) * k);
+		P += k;
+	}
+	pb_close();
+	skin_clobber = skin_on = true;
+	state_gen++;
+	return true;
+}
+
+/* the program's constants for model program p, from the same uniforms the
+ * fixed-function path reads */
+static void skin_constants(const xprog_t *p, const float *comp)
+{
+	float c[12][4], mv[16];
+	memcpy(mv, p->model, sizeof(mv));
+	mv[12] -= p->vieworg[0], mv[13] -= p->vieworg[1], mv[14] -= p->vieworg[2];
+	for (int r = 0; r < 3; r++)
+		for (int k = 0; k < 4; k++)
+			c[r][k] = mv[k * 4 + r];
+	memcpy(c[3], comp, sizeof(float) * 16);
+	float len = sqrtf(p->ldir[0] * p->ldir[0] + p->ldir[1] * p->ldir[1] + p->ldir[2] * p->ldir[2]);
+	c[7][0] = 0, c[7][1] = 0, c[7][2] = 1, c[7][3] = 0;
+	if (len > 1e-6f)
+		c[7][0] = p->ldir[0] / len, c[7][1] = p->ldir[1] / len, c[7][2] = p->ldir[2] / len;
+	for (int k = 0; k < 3; k++) {
+		c[8][k] = p->ldiff[k] * 0.5f;
+		c[9][k] = p->lamb[k] * 0.5f;
+	}
+	c[8][3] = 0, c[9][3] = 1;
+	c[10][0] = p->tcmod[2], c[10][1] = p->tcmod[3], c[10][2] = 1, c[10][3] = 1;
+	c[11][0] = p->tcmod[0], c[11][1] = p->tcmod[1], c[11][2] = 0, c[11][3] = 0;
+	put1(NV097_SET_TRANSFORM_CONSTANT_LOAD, SKIN_CONSTS);
+	cmd(NV097_SET_TRANSFORM_CONSTANT, 32);
+	memcpy(P, c, 32 * 4), P += 32;
+	cmd(NV097_SET_TRANSFORM_CONSTANT, 16);
+	memcpy(P, c[8], 16 * 4), P += 16;
+}
+
 static uint32_t test_func(GLenum f) { return f; } /* the hardware takes GL's values */
 
 static void set_fixed_state(void)
@@ -2127,8 +2308,14 @@ static bool set_program(void)
 	viewport_matrix(vp);
 	mat_mul(tmp, vp, p->mvp);
 	transpose(comp, tmp);
-	push_matrix(NV097_SET_COMPOSITE_MATRIX, &mc_composite, comp);
-	if (fog || lit) {
+	skin_mode(lit && skin_on);
+	if (skin_prog) {
+		skin_constants(p, comp);
+		lit = false; /* the program lights the vertices */
+	} else {
+		push_matrix(NV097_SET_COMPOSITE_MATRIX, &mc_composite, comp);
+	}
+	if ((fog || lit) && !skin_prog) {
 		float mv[16], inv[16];
 		memcpy(mv, p->model, sizeof(mv));
 		mv[12] -= p->vieworg[0], mv[13] -= p->vieworg[1], mv[14] -= p->vieworg[2];
@@ -2434,7 +2621,7 @@ static void draw(GLenum mode, int count, const uint32_t *idx32, const uint16_t *
 	if (!vertex_sources(src, hi, &ring))
 		return;
 
-	pb_open(600 + (seg || !(idx32 || idx16) ? (size_t)count / 256 : index_words(count, wide)));
+	pb_open(700 + (seg || !(idx32 || idx16) ? (size_t)count / 256 : index_words(count, wide)));
 	if (!draw_state()) {
 		pb_close();
 		return;
@@ -2514,7 +2701,7 @@ static void draw_runs(const run_t *runs, int n, uint32_t hi)
 	bool ring;
 	if (!vertex_sources(src, hi, &ring))
 		return;
-	pb_open(600 + (size_t)n);
+	pb_open(700 + (size_t)n);
 	if (!draw_state()) {
 		pb_close();
 		return;
@@ -2726,7 +2913,8 @@ static void after_target(void)
 	put1(NV097_SET_CONTROL0, NV097_SET_CONTROL0_TEXTURE_PERSPECTIVE_ENABLE | NV097_SET_CONTROL0_STENCIL_WRITE_ENABLE);
 	put1(NV097_SET_STENCIL_TEST_ENABLE, 0);
 	put1(NV097_SET_SPECULAR_ENABLE, 0);
-	put1(NV097_SET_TRANSFORM_EXECUTION_MODE, 4); /* fixed function, privileged range */
+	put1(NV097_SET_TRANSFORM_EXECUTION_MODE, EXEC_FIXED);
+	skin_prog = false;
 	put1(NV097_SET_SHADER_OTHER_STAGE_INPUT, 0);
 	put1(NV097_SET_SKIN_MODE, NV097_SET_SKIN_MODE_OFF);
 	put1(NV097_SET_FRONT_FACE, NV097_SET_FRONT_FACE_V_CW); /* GL's counter-clockwise, after the y flip */
@@ -2900,6 +3088,8 @@ void XBGL_RegisterCvars(void)
 	vid_xbox_swapinterval = Cvar_Get("vid_xbox_swapinterval", "2", CVAR_ARCHIVE,
 	                                 "Vertical blanks per frame: 1 for 60 fps, 2 for a steady 30 (Xbox)");
 	gl_xbox_stats = Cvar_Get("gl_xbox_stats", "0", 0, "Print frame rate and timing every 5 seconds (Xbox)");
+	gl_xbox_gpuskin = Cvar_Get("gl_xbox_gpuskin", "1", 0,
+	                           "Pose models whose vertices follow one bone each on the GPU, not the CPU (Xbox)");
 	Cmd_AddD("xbox_gpuinfo", meminfo_gpu_f, "xbox_gpuinfo: GPU memory in use and the last frame's draw count");
 }
 
@@ -2952,6 +3142,7 @@ bool XBGL_Init(void)
 	put1(NV097_SET_DITHER_ENABLE, 1);
 	pb_close();
 	after_target();
+	skin_init();
 	last_swap = pb_get_vbl_counter();
 	ready = true;
 	Con_Printf("NV2A at %dx%d, %u KB push buffer\n", fbw, fbh, PB_SIZE >> 10);
