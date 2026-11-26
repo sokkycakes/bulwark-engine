@@ -769,9 +769,10 @@ for example `hero_collier hero_beaumont hero_juliet`.
   "Waiting for arena state…". [SRC]
 - The snapshot may name the arena mode: `mode` (`duel`, `freezetag`,
   `archstiletto`, ...) and `modeName`, its display name ("FREEZE TAG").
-  The panel's title is "DUEL ARENA" for `duel` or no `mode`, else
-  `modeName` (or `mode` in capitals without one), and the line over the
-  competitors reads "CURRENT DUEL" or "CURRENT MATCH" to match.
+  The panel's title is `modeName` (else `mode`, else "DUEL") in capitals
+  followed by " ARENA" ("FREEZE TAG ARENA"), as the game's own page draws
+  it. The line over the competitors reads "CURRENT DUEL" when `mode` is
+  `duel` or absent, else "CURRENT MATCH".
 
 ### 8.4 `arena_action:<action>`
 

@@ -907,7 +907,7 @@ var QlMenu = (function ()
 		// "modeName": FREEZE TAG ...); a snapshot without one is Duel's
 		var modeId = String( a.mode || "duel" ).toLowerCase();
 		var isDuel = modeId === "duel";
-		var modeTitle = isDuel ? "DUEL ARENA" : String( a.modeName || modeId ).toUpperCase();
+		var modeTitle = String( a.modeName || a.mode || "DUEL" ).toUpperCase() + " ARENA";
 
 		scoreInset( 68, 58, 504, 332 );
 		text( modeTitle, 84, 88, { scale: 0.35, fontSize: 24, color: "#fff" } );
