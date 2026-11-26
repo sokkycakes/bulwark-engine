@@ -80,6 +80,7 @@ typedef struct {
 	double prof_time; /* builtins only */
 	uint64_t prof_incl; /* statements run in it and in what it called */
 	double prof_incl_time; /* builtin time in it and in what it called */
+	uint32_t prof_active; /* its profiled frames on the stack, so recursion counts once */
 } qcfunc_t;
 
 typedef struct {
@@ -283,6 +284,7 @@ struct qcvm_s {
 	uint64_t prof_total;
 	double prof_btime;
 	struct qc_profframe_s *prof_stack;
+	int prof_top; /* one past the highest frame that may still be valid */
 	struct qc_profedges_s *prof_edges;
 	char breakpoint[64];
 	struct qc_watch_s *watch;

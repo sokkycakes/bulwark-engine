@@ -120,7 +120,7 @@ static qcval_t *watch_ptr(qcvm_t *vm, qc_watch_t *w)
 typedef struct qc_profframe_s {
 	uint64_t s0;
 	double b0;
-	qcfunc_t *caller;
+	qcfunc_t *caller, *fn;
 	bool valid;
 } qc_profframe_t;
 
@@ -140,7 +140,7 @@ static qc_profedge_t *prof_edge(qcvm_t *vm, qcfunc_t *from, qcfunc_t *to)
 {
 	qc_profedges_t *t = vm->prof_edges;
 	uintptr_t h;
-	if (!t || !from || t->used >= PROF_EDGES / 2)
+	if (!t || !from)
 		return NULL;
 	h = ((uintptr_t)from * 31 + (uintptr_t)to) >> 4;
 	for (unsigned i = (unsigned)h & (PROF_EDGES - 1);; i = (i + 1) & (PROF_EDGES - 1)) {
@@ -148,6 +148,10 @@ static qc_profedge_t *prof_edge(qcvm_t *vm, qcfunc_t *from, qcfunc_t *to)
 		if (e->from == from && e->to == to)
 			return e;
 		if (!e->from) {
+			/* keep the table half empty so probes stay short; known
+			 * edges still count */
+			if (t->used >= PROF_EDGES / 2)
+				return NULL;
 			e->from = from;
 			e->to = to;
 			t->used++;
@@ -173,10 +177,15 @@ void QC_DebugFunctionLeft(qcvm_t *vm, qcfunc_t *f)
 	if (!pf->valid)
 		return;
 	pf->valid = false;
+	if (vm->prof_top > vm->depth)
+		vm->prof_top = vm->depth;
 	ds = vm->prof_total - pf->s0;
 	db = vm->prof_btime - pf->b0;
-	f->prof_incl += ds;
-	f->prof_incl_time += db;
+	/* only the outermost frame of a recursive function adds its span */
+	if (pf->fn && pf->fn->prof_active && !--pf->fn->prof_active) {
+		f->prof_incl += ds;
+		f->prof_incl_time += db;
+	}
 	if ((e = prof_edge(vm, pf->caller, f))) {
 		e->calls++;
 		e->statements += ds;
@@ -203,6 +212,16 @@ void QC_DebugFunctionEntered(qcvm_t *vm, qcfunc_t *f)
 		if (vm->prof_stack && vm->depth > 0) {
 			qc_profframe_t *pf = &vm->prof_stack[vm->depth - 1];
 			const qcframe_t *fr = &vm->stack[vm->depth - 1];
+			/* frames an error unwound never left: drop their counts */
+			while (vm->prof_top >= vm->depth) {
+				qc_profframe_t *old = &vm->prof_stack[--vm->prof_top];
+				if (old->valid && old->fn && old->fn->prof_active)
+					old->fn->prof_active--;
+				old->valid = false;
+			}
+			vm->prof_top = vm->depth;
+			pf->fn = f;
+			f->prof_active++;
 			pf->s0 = vm->prof_total;
 			pf->b0 = vm->prof_btime;
 			pf->caller = fr->f > 0 && fr->progs >= 0 && fr->progs < vm->numprogs ? &vm->progs[fr->progs].functions[fr->f]
@@ -262,7 +281,9 @@ static void profile_reset(qcvm_t *vm)
 			qcfunc_t *f = &vm->progs[p].functions[i];
 			f->prof_statements = f->prof_calls = f->prof_incl = 0;
 			f->prof_time = f->prof_incl_time = 0;
+			f->prof_active = 0;
 		}
+	vm->prof_top = 0;
 	vm->prof_total = 0;
 	vm->prof_btime = 0;
 	if (!vm->prof_stack)

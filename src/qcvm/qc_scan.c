@@ -196,8 +196,8 @@ int QC_FindSkip(qcvm_t *vm, const qcstatement_t *s0, const qcstatement_t *step, 
 		return 0;
 	i0 = G[s0[0].a].i;
 	n = G[s0[0].b].i;
-	if (i0 >= n - 1)
-		return 0; /* nothing to skip */
+	if (n <= 0 || (int64_t)n <= (int64_t)i0 + 1)
+		return 0; /* nothing to skip; also keeps n - 1 from overflowing */
 	stride = G[s0[3].b].i;
 	base = (int32_t)s0[4].a;
 	lo = (int32_t)s0[2].c;
@@ -205,7 +205,7 @@ int QC_FindSkip(qcvm_t *vm, const qcstatement_t *s0, const qcstatement_t *step, 
 	/* every index in range, every entry inside the globals, and none of
 	 * them a word the loop writes: else the loop runs as it is */
 	if (G[step->b].i != 1 || i0 < 0 || i0 < lo || n > hi || n > FIND_MAX_ENTRIES || stride <= 0 ||
-	    (int64_t)(n - 1) * stride > INT32_MAX - base || base + (int64_t)(n - 1) * stride + 1 > vm->globalslots)
+	    ((int64_t)n - 1) * stride > (int64_t)INT32_MAX - base || base + ((int64_t)n - 1) * stride + 1 > vm->globalslots)
 		return 0;
 	{
 		uint32_t w[5] = {s0[0].c, s0[3].c, s0[4].c, s0[5].c, s0[0].a};
