@@ -184,6 +184,19 @@ static void bi_skel_create(qcvm_t *vm)
 	QC_ReturnFloat(vm, (float)id);
 }
 
+/* room for a pose of n bones, reused by every call: skel_build runs for
+ * each player every frame */
+static bonemat_t *pose_scratch(int n)
+{
+	static bonemat_t *pose;
+	static int max;
+	if (n > max) {
+		max = n;
+		pose = Mem_Realloc(pose, sizeof(bonemat_t) * max);
+	}
+	return pose;
+}
+
 static void entity_pose(qcvm_t *vm, int ent, skelmodel_t *m, bonemat_t *out)
 {
 	struct fieldcache_s *c = fields(vm);
@@ -209,14 +222,13 @@ static void bi_skel_build(qcvm_t *vm)
 	n = BW_MIN(s->model->numjoints, src->numjoints);
 	first = first <= 0 ? 0 : first - 1;
 	last = last <= 0 ? n - 1 : BW_MIN(last - 1, n - 1);
-	pose = Mem_Alloc(sizeof(bonemat_t) * src->numjoints);
+	pose = pose_scratch(src->numjoints);
 	entity_pose(vm, ent, src, pose);
 	if (s->absolute)
 		Skel_ToAbsolute(src, pose, pose);
 	for (int b = first; b <= last; b++)
 		for (int k = 0; k < 12; k++)
 			s->bones[b][k] = (retain != 0 ? s->bones[b][k] * retain : 0) + pose[b][k] * add;
-	Mem_Free(pose);
 	QC_ReturnFloat(vm, QC_PFLOAT(vm, 0));
 }
 
@@ -405,11 +417,10 @@ static bool entity_bone(qcvm_t *vm, int ent, skelobj_t *s, skelmodel_t *m, int b
 		return true;
 	}
 	if (m && b >= 0 && b < m->numjoints) {
-		bonemat_t *pose = Mem_Alloc(sizeof(bonemat_t) * m->numjoints);
+		bonemat_t *pose = pose_scratch(m->numjoints);
 		entity_pose(vm, ent, m, pose);
 		Skel_ToAbsolute(m, pose, pose);
 		memcpy(out, pose[b], sizeof(bonemat_t));
-		Mem_Free(pose);
 		return true;
 	}
 	return false;
