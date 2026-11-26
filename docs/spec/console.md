@@ -186,7 +186,8 @@ edit heights by writing section files.
   `coredump_*` (and `pr_*_coreonerror`), `breakpoint_*` (prints the stack
   each time a function is entered), `watchpoint_*` (reports each change to
   a global or `entnum.field`), `poke_*` (shows or sets one),
-  `extensionlist_*`, `pr_dumpplatform`, `pr_trace`, `sv`, `cl_cmd`,
+  `extensionlist_*`, `pr_dumpplatform`, `pr_trace`, `pr_jitstats` (QC
+  run as native code, with `pr_jit 1` on x86 Linux and the Xbox), `sv`, `cl_cmd`,
   `menu_cmd`, `compile`, `applycompile`, `decompile`.
 - **Tools and editors:** `edit`, `aliasedit` (a full-screen text editor),
   `modelviewer`, `mapedit`, `r_editlights_*`, `mod_terrain_*`,
@@ -692,6 +693,7 @@ held and the matching `-` command when it's let go.
 | `poke_menuqc` | poke_menuqc <global or entnum.field> [value]: show or set a value in the menu |
 | `poke_ssqc` | poke_ssqc <global or entnum.field> [value]: show or set a value in the server game |
 | `pr_dumpplatform` | pr_dumpplatform [ssqc\|csqc\|menuqc]: write the builtins and extensions to a file |
+| `pr_jitstats` | How many QC functions each VM runs as native code, and their size |
 | `pr_missing` | pr_missing [ssqc|csqc|menuqc]: list the builtins the progs declares that the engine lacks |
 | `pr_trace` | pr_trace [text]: print each QC function entered whose name contains the text |
 | `precaches` | List the precached models, sounds and effects |

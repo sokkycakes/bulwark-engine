@@ -42,6 +42,13 @@ typedef struct {
 	/* 1 or 3: the body is only "return self.field" of that many words,
 	 * which a call can do without a frame; 0 otherwise */
 	int getter;
+	/* native code (qc_jit.c), once compiled; jit_end is the statement
+	 * after the function's code, where the next function starts */
+	void *jit;
+	void *jit_call; /* its entry from other native code, which makes the frame */
+	int jit_end;
+	uint16_t jit_count; /* calls so far, until it is worth compiling */
+	bool jit_failed;
 	uint64_t profile; /* statements run in this function while qc_profiling */
 	/* profile_ssqc and friends */
 	uint64_t prof_statements, prof_calls;
@@ -243,6 +250,13 @@ struct qcvm_s {
 	double profile_start;
 	char breakpoint[64];
 	struct qc_watch_s *watch;
+
+	/* native code (qc_jit.c): its memory, the backward jumps it may still
+	 * take before handing a loop back to the interpreter's runaway check,
+	 * and how deep native calls are nested */
+	struct qc_jitmem_s *jitmem;
+	int32_t jit_budget;
+	int jit_nest;
 
 	/* called as an entity slot is freed, before its fields are cleared */
 	void (*free_hook)(qcvm_t *vm, int e);

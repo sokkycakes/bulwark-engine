@@ -2,6 +2,7 @@
  * Operand roles for every opcode are documented in docs/spec/opcodes.md.
  * ISC licence, see LICENSE. */
 #include "qc_internal.h"
+#include "qc_jit.h"
 #include "../common/cvar.h"
 
 #include <math.h>
@@ -270,6 +271,175 @@ static void debug_statement(qcvm_t *vm, int s)
 		vm->functions[vm->xfunction].profile++;
 }
 
+#ifdef QC_JIT
+
+/* What the interpreter's call statement does before the frame, for calls
+ * from native code: the arguments and checks, and the whole call when it
+ * is a field getter or a builtin. Returns the QC function to enter, with
+ * the running progs switched to its own, or NULL when the call is done. */
+static qcfunc_t *call_begin(qcvm_t *vm, const qcstatement_t *st, int s, const edictspace_t *es, int *fnum_out)
+{
+	qcval_t *G = vm->globals;
+	qcval_t *a = G + st->a, *b = G + st->b, *c = G + st->c;
+	int target = a->i, caller = vm->curprogs;
+	int fnum = QC_FUNC_INDEX(target), pn = QC_FUNC_PROGS(target);
+	unsigned op = QC_PlainOp(st->op);
+	qcfunc_t *f;
+	if (op >= OP_CALL1H) {
+		vm->argc = (int)(op - OP_CALL1H) + 1;
+		/* the first two arguments travel in the b and c operands */
+		copy3(G + OFS_PARM(0), b);
+		if (vm->argc >= 2)
+			copy3(G + OFS_PARM(1), c);
+	} else {
+		vm->argc = (int)(op - OP_CALL0);
+	}
+	vm->xstatement = s;
+	/* most calls stay in the running progs, whose function count is at hand */
+	if (pn == caller) {
+		if ((unsigned)fnum - 1u >= (unsigned)vm->numfunctions - 1u)
+			QC_RunError(vm, "call to %s function (%d)", target ? "invalid" : "NULL", target);
+	} else {
+		if (pn >= vm->numprogs || fnum <= 0 || fnum >= vm->progs[pn].numfunctions)
+			QC_RunError(vm, "call to %s function (%d)", target ? "invalid" : "NULL", target);
+		QC_SwitchProgs(vm, pn);
+	}
+	f = &vm->functions[fnum];
+	*fnum_out = fnum;
+	/* "return self.field": the frame would only save and restore the
+	 * locals around one load, so do just that */
+	if (f->getter && pn == caller && !(vm->debug_hooks || qc_profiling || qc_tracefilter[0]) &&
+	    vm->depth < QC_MAX_DEPTH) {
+		const qcstatement_t *gs = vm->statements + f->d.first_statement;
+		int32_t e = G[gs->a].i, fo = G[gs->b].i;
+		uint32_t w = (uint32_t)f->getter;
+		if ((uint32_t)e < es->count && (uint32_t)fo <= es->words - w) {
+			const qcval_t *p = (const qcval_t *)(es->base + ((size_t)(uint32_t)e * es->words + (uint32_t)fo) * 4);
+			qcval_t saved[8], *t = G + gs->c;
+			int locals = f->d.locals, ps = f->d.parm_start;
+			copy_words(saved, G + ps, locals);
+			t[0] = p[0];
+			if (w == 3) {
+				t[1] = p[1];
+				t[2] = p[2];
+			}
+			G[OFS_RETURN] = t[0];
+			G[OFS_RETURN + 1] = t[1];
+			G[OFS_RETURN + 2] = t[2];
+			copy_words(G + ps, saved, locals);
+			return NULL;
+		}
+	}
+	if (f->builtin) {
+		vm->extra->calling_builtin = fnum;
+		if (vm->profiling) {
+			double t0 = Sys_Seconds();
+			f->builtin(vm);
+			f->prof_time += Sys_Seconds() - t0;
+			f->prof_calls++;
+		} else {
+			f->builtin(vm);
+		}
+		if (vm->curprogs != caller)
+			QC_SwitchProgs(vm, caller);
+		/* a builtin may have changed a cvar the progs reads as an autocvar */
+		if (vm->autocvar_gen != cvar_generation)
+			QC_SyncAutocvars(vm);
+		return NULL;
+	}
+	return f;
+}
+
+/* f's native code, compiling it once it has been called often enough;
+ * NULL while the interpreter must run it */
+static inline qc_jitfn_t native_code(qcvm_t *vm, qcfunc_t *f)
+{
+	if (!qc_jit_cvar || !qc_jit_cvar->ivalue || vm->debug_hooks || qc_profiling || vm->jit_nest >= QC_JIT_NEST)
+		return NULL;
+	if (f->jit)
+		return (qc_jitfn_t)f->jit;
+	if (f->jit_failed || ++f->jit_count < QC_JIT_AFTER)
+		return NULL;
+	return QC_JitCompile(vm, f);
+}
+
+static inline int run_native(qcvm_t *vm, qc_jitfn_t fn)
+{
+	int r;
+	vm->jit_nest++;
+	r = fn(vm);
+	vm->jit_nest--;
+	return r;
+}
+
+/* run's step: 0 runs on, STEP_ONE runs one plain statement, STEP_FUSED one
+ * fused statement (with those it covers) */
+enum { STEP_ONE = 1, STEP_FUSED };
+
+static int run(qcvm_t *vm, int s0, int entrydepth, int step);
+
+int QC_JIT_CC QC_JitStep(qcvm_t *vm, int s)
+{
+	return run(vm, s, 0, STEP_ONE);
+}
+
+int QC_JIT_CC QC_JitStepFused(qcvm_t *vm, int s)
+{
+	return run(vm, s, 0, STEP_FUSED);
+}
+
+/* a call statement from native code; nonzero if what follows it must be
+ * interpreted (a debugging hook came on) */
+int QC_JIT_CC QC_JitCall(qcvm_t *vm, int s)
+{
+	const qcstatement_t *st = vm->statements + s;
+	const edictspace_t es = {vm->mem + vm->edicts_ofs, (uint32_t)vm->max_edicts, (uint32_t)vm->edict_words};
+	int caller = vm->curprogs, fnum;
+	qcfunc_t *f = call_begin(vm, st, s, &es, &fnum);
+	if (f) {
+		qc_jitfn_t fn;
+		enter_function(vm, fnum, s + 1, caller);
+		fn = native_code(vm, f);
+		if (!fn) {
+			run(vm, f->d.first_statement, vm->depth - 1, 0);
+		} else {
+			int r = run_native(vm, fn);
+			if (r < 0)
+				leave_function(vm);
+			else
+				run(vm, r, vm->depth - 1, 0);
+		}
+	}
+	return vm->debug_hooks || qc_profiling;
+}
+
+int QC_JIT_CC QC_JitFinish(qcvm_t *vm, int s)
+{
+	run(vm, s, vm->depth - 1, 0);
+	return vm->debug_hooks || qc_profiling;
+}
+
+int QC_JIT_CC QC_JitBuiltinDone(qcvm_t *vm, int caller)
+{
+	if (vm->curprogs != caller)
+		QC_SwitchProgs(vm, caller);
+	if (vm->autocvar_gen != cvar_generation)
+		QC_SyncAutocvars(vm);
+	return 0;
+}
+
+int QC_JIT_CC QC_JitStrEq(qcvm_t *vm, int s)
+{
+	const qcstatement_t *st = vm->statements + s;
+	return str_eq(vm, vm->globals[st->a].i, vm->globals[st->b].i);
+}
+
+int QC_JIT_CC QC_JitStrEmpty(qcvm_t *vm, int s)
+{
+	return str_empty(vm, vm->globals[vm->statements[s].a].i);
+}
+#endif
+
 /* Labels as values let every handler end in its own indirect jump, which
  * predicts far better than one shared switch; other compilers get the
  * switch. Both run the same handler bodies, written once below. */
@@ -277,7 +447,7 @@ static void debug_statement(qcvm_t *vm, int s)
 #define QC_THREADED 1
 #endif
 
-static void run(qcvm_t *vm, int s0, int entrydepth)
+static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 {
 	const qcstatement_t *stmts, *st;
 	qcval_t *G;
@@ -288,6 +458,8 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 #ifdef QC_THREADED
 	/* plaintable runs fused statements one at a time, for the debugger */
 	static const void *optable[QCOP_COUNT], *debugtable[QCOP_COUNT], *plaintable[QCOP_COUNT];
+	/* step: one statement, then back to the caller (QC_JitStep) */
+	static const void *steptable[QCOP_COUNT];
 	const void *const *disp;
 #else
 	bool hooks;
@@ -326,6 +498,7 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 		for (int i = 0; i < QCOP_COUNT; i++) {
 			optable[i] = &&L_unsupported;
 			debugtable[i] = &&L_debug;
+			steptable[i] = &&L_stepped;
 		}
 #define T(x) optable[x] = &&L_##x;
 		T(OP_ADD_F) T(OP_SUB_F) T(OP_MUL_F) T(OP_DIV_F) T(OP_ADD_V) T(OP_SUB_V) T(OP_MUL_V)
@@ -383,11 +556,22 @@ static void run(qcvm_t *vm, int s0, int entrydepth)
 #endif
 
 	RELOAD();
+#ifdef QC_THREADED
+	if (step) {
+		disp = steptable;
+		st = stmts + s0;
+		goto *(step == STEP_FUSED ? optable : plaintable)[st->op];
+	}
+#else
+	(void)step;
+#endif
 	CHECK_HOOKS();
 	st = stmts + s0;
 	DISPATCH();
 
 #ifdef QC_THREADED
+L_stepped:
+	return SINDEX();
 L_debug:
 	debug_statement(vm, SINDEX());
 	goto *plaintable[st->op];
@@ -1020,6 +1204,20 @@ dispatch:
 			NEXT();
 		}
 		enter_function(vm, fnum, s + 1, caller);
+#ifdef QC_JIT
+		{
+			qc_jitfn_t fn = native_code(vm, f);
+			if (fn) {
+				int r = run_native(vm, fn);
+				if (r < 0)
+					r = leave_function(vm);
+				RELOAD();
+				CHECK_HOOKS();
+				st = stmts + r;
+				DISPATCH();
+			}
+		}
+#endif
 		RELOAD();
 		CHECK_HOOKS();
 		st = stmts + f->d.first_statement;
@@ -1037,7 +1235,7 @@ dispatch:
 	done:;
 		int s = leave_function(vm);
 		if (vm->depth <= entrydepth)
-			return;
+			return -1;
 		RELOAD();
 		CHECK_HOOKS();
 		st = stmts + s;
@@ -1051,6 +1249,7 @@ dispatch:
 #endif
 L_unsupported:
 	bad_statement(vm, SINDEX(), st->op);
+	return -1;
 
 #undef RELOAD
 #undef SINDEX
@@ -1071,6 +1270,7 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	int oldfunc = vm->xfunction, oldstmt = vm->xstatement;
 	int oldlocals = vm->localstack_used;
 	int oldprogs = vm->curprogs, pn = QC_FUNC_PROGS(fnum);
+	int oldnest = vm->jit_nest;
 	qcfunc_t *f = QC_Function(vm, fnum);
 
 
@@ -1079,8 +1279,10 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 		return false;
 	}
 	const int idx = QC_FUNC_INDEX(fnum);
-	if (!vm->exec_depth)
+	if (!vm->exec_depth) {
 		QC_SyncAutocvars(vm);
+		vm->jit_budget = (int32_t)QC_MAX_INSTRUCTIONS;
+	}
 	executing_count++;
 	vm->exec_depth++;
 	if (setjmp(jb)) {
@@ -1096,6 +1298,7 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 		if (vm->curprogs != oldprogs)
 			QC_SwitchProgs(vm, oldprogs);
 		vm->localstack_used = oldlocals;
+		vm->jit_nest = oldnest;
 		vm->xfunction = oldfunc;
 		vm->xstatement = oldstmt;
 		vm->abort_jmp = oldjmp;
@@ -1123,7 +1326,17 @@ bool QC_Execute(qcvm_t *vm, func_t fnum)
 	} else {
 		/* the frame returns to oldprogs */
 		enter_function(vm, idx, -1, oldprogs);
-		run(vm, f->d.first_statement, entrydepth);
+#ifdef QC_JIT
+		qc_jitfn_t fn = native_code(vm, f);
+		if (fn) {
+			int r = run_native(vm, fn);
+			if (r < 0)
+				leave_function(vm);
+			else
+				run(vm, r, entrydepth, 0);
+		} else
+#endif
+			run(vm, f->d.first_statement, entrydepth, 0);
 	}
 
 	vm->abort_jmp = oldjmp;

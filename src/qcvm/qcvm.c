@@ -2,6 +2,7 @@
  * The interpreter loop lives in qc_exec.c. ISC licence, see LICENSE. */
 #include "qcvm.h"
 #include "qc_internal.h"
+#include "qc_jit.h"
 #include "../common/cvar.h"
 
 #include <stdio.h>
@@ -398,6 +399,41 @@ static void call_shape(qcprogs_t *p, qcfunc_t *f)
 		f->getter = 3;
 }
 
+static int cmp_int(const void *a, const void *b)
+{
+	int x = *(const int *)a, y = *(const int *)b;
+	return x < y ? -1 : x > y;
+}
+
+/* where each function's code ends: at the next function's first statement,
+ * as compilers lay functions out one after another */
+static void function_ends(qcprogs_t *p)
+{
+	int *firsts = Mem_Alloc(sizeof(int) * (size_t)p->numfunctions), n = 0;
+	for (int i = 0; i < p->numfunctions; i++)
+		if (p->functions[i].d.first_statement > 0)
+			firsts[n++] = p->functions[i].d.first_statement;
+	qsort(firsts, (size_t)n, sizeof(int), cmp_int);
+	for (int i = 0; i < p->numfunctions; i++) {
+		qcfunc_t *f = &p->functions[i];
+		int lo = 0, hi = n;
+		f->jit_end = p->numstatements;
+		if (f->d.first_statement <= 0)
+			continue;
+		/* the first start after this one */
+		while (lo < hi) {
+			int mid = (lo + hi) / 2;
+			if (firsts[mid] <= f->d.first_statement)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		if (lo < n)
+			f->jit_end = firsts[lo];
+	}
+	Mem_Free(firsts);
+}
+
 static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t size)
 {
 	progs_header_t *h = &p->hdr;
@@ -509,6 +545,8 @@ static bool parse_progs(qcprogs_t *p, const char *name, const void *data, size_t
 			return false;
 		}
 	}
+
+	function_ends(p);
 
 	build_hash(&p->globalhash, p->numglobaldefs, gdef_name, p);
 	build_hash(&p->fieldhash, p->numfielddefs, fdef_name, p);
@@ -853,6 +891,9 @@ void QC_Free(qcvm_t *vm)
 			break;
 		}
 	QC_SkelFreeVM(vm);
+#ifdef QC_JIT
+	QC_JitFree(vm);
+#endif
 	if (vm->extra)
 		QC_ExtraFree(vm);
 	Mem_Free(vm->extra);

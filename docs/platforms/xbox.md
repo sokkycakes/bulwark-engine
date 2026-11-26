@@ -163,6 +163,25 @@ QC core dumps after a 12000-frame headless match with 8 bots (`pr_seed`,
 from about 10 to 15 fps, with server time from 80 to 55 ms a frame;
 `_run` is still about a sixth of the samples, a quarter of that in calls.
 
+`pr_jit 1` runs QC functions as x86 code instead (`src/qcvm/qc_jit.c`),
+once they have been called 64 times. It keeps the interpreter's checks and
+errors, hands anything it has no code for back to the interpreter, and
+gives the same core dumps as the interpreter on 64-bit Linux and on a
+32-bit `-march=pentium3 -mfpmath=sse` dedicated server. On a real x86 the
+32-bit server runs in about three quarters of the interpreter's time.
+In xemu it does not pay: a match with it on was about as fast as one
+without, or up to a tenth slower, and it takes about 3 MB more memory.
+xemu translates each piece of guest code it jumps into, and looks up a
+jump whose target it can't link directly (a return, or a jump to
+another page) in a 4096-entry cache. The interpreter's few handlers stay
+in that cache. Native QC code has a return address for every call site,
+and Nuclide's code makes many calls, so the lookups miss and take the slow
+path. So it is off by default, and only a console can show whether it
+helps there. `pr_jitstats` shows how many functions each VM has compiled
+and how much code they take, and `pr_jit_map 1` (2: each statement too) prints
+where each one went, so that EIPs sampled with the QEMU monitor can be
+matched to QC functions.
+
 ## Installing on a console
 
 This needs a console that runs unsigned code: one with a softmod (a
@@ -341,6 +360,7 @@ The targets are a HUD under 0.2 ms and menus under 1 ms per frame.
 | `snd_xbox_rate` | 24000 | rate the mixer runs at, 24000 or 48000 |
 | `sv_tickrate` | 30 | server ticks a second (72 on the desktop); players move by their own commands either way |
 | `sv_maxticks` | 3 | most server ticks in one frame (no limit on the desktop); past it the world drops the time rather than catching up; players and bots still get the dropped time as movement, so only thinks, physics and projectiles slow |
+| `pr_jit` | 0 | 1 runs often-called QC functions as native code (see "In-match benchmark"); results are the same either way |
 | `xbox_meminfo` | | free memory, the kernel's pools, the C heap and GPU memory |
 | `xbox_gpuinfo` | | GPU memory in use and the last frame's draws and triangles |
 

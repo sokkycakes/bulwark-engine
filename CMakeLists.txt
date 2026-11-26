@@ -121,6 +121,7 @@ target_link_libraries(bwnet PUBLIC bwcommon Threads::Threads ${CMAKE_DL_LIBS})
 add_library(bwqcvm STATIC
 	src/qcvm/qcvm.c
 	src/qcvm/qc_exec.c
+	src/qcvm/qc_jit.c
 	src/qcvm/qc_strings.c
 	src/qcvm/qc_builtins_core.c
 	src/qcvm/qc_extra.c

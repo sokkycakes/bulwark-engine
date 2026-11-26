@@ -11,6 +11,7 @@
  * ISC licence, see LICENSE. */
 #include "qcvm.h"
 #include "qc_internal.h"
+#include "qc_jit.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/fs.h"
@@ -429,6 +430,9 @@ void QC_InitSkelCommands(void);
 void QC_InitDebugCommands(void)
 {
 	QC_InitSkelCommands();
+#ifdef QC_JIT
+	QC_JitInit();
+#endif
 	QC_MeshPitch(); /* registers r_meshpitch */
 	static const char *const descs[3] = {"the server game", "the client game", "the menu"};
 	Cvar_Get("pr_seed", "0", 0, "Seed QC's random() with this when a game loads, instead of the clock (0)");
