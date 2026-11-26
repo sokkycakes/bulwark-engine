@@ -52,15 +52,20 @@ char *bwx_ospath(const char *path, char *out, size_t size)
 #undef remove
 #undef rename
 
+void FS_NoteWrite(void); /* fs.c: the engine's file lookups are stale */
+
 FILE *bwx_fopen(const char *path, const char *mode)
 {
 	char os[MAX_PATH];
+	if (strpbrk(mode, "wa+"))
+		FS_NoteWrite();
 	return fopen(bwx_ospath(path, os, sizeof(os)), mode);
 }
 
 int bwx_remove(const char *path)
 {
 	char os[MAX_PATH];
+	FS_NoteWrite();
 	bwx_ospath(path, os, sizeof(os));
 	if (DeleteFileA(os) || RemoveDirectoryA(os))
 		return 0;
@@ -71,6 +76,7 @@ int bwx_remove(const char *path)
 int bwx_rename(const char *from, const char *to)
 {
 	char a[MAX_PATH], b[MAX_PATH];
+	FS_NoteWrite();
 	bwx_ospath(from, a, sizeof(a));
 	bwx_ospath(to, b, sizeof(b));
 	DeleteFileA(b); /* POSIX rename replaces the target */

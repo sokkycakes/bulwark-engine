@@ -28,6 +28,9 @@ char *FS_LoadFile(const char *path, size_t *len);
 bool FS_FileExists(const char *path);
 /* name of the search path that provides path, or NULL */
 const char *FS_WhichPath(const char *path);
+/* a file may have been created, written or removed: forgets the lookups
+ * the Xbox keeps (called by its fopen, remove, rename and mkdir) */
+void FS_NoteWrite(void);
 /* index of the game directory that provides path (0 is the base game), or
  * -1 if none does */
 int FS_WhichGameDir(const char *path);
