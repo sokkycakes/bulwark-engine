@@ -1211,9 +1211,6 @@ static void bi_argv(qcvm_t *vm)
 	vm->globals[OFS_RETURN].i = t->argv[i];
 }
 
-/* for the interpreter's QCOP_ARGV_FIND, which calls it directly */
-const qc_builtin_fn qc_argv_builtin = bi_argv;
-
 static void bi_argv_start_index(qcvm_t *vm)
 {
 	int i;

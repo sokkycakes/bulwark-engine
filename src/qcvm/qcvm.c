@@ -304,6 +304,17 @@ static bool loadf1(unsigned op)
 	       op == OP_LOADF_I || op == OP_LOADF_P;
 }
 
+static bool store1(unsigned op)
+{
+	return op == OP_STORE_F || op == OP_STORE_S || op == OP_STORE_ENT || op == OP_STORE_FLD || op == OP_STORE_FNC ||
+	       op == OP_STORE_I || op == OP_STORE_P;
+}
+
+static bool call_op(unsigned op)
+{
+	return (op >= OP_CALL0 && op <= OP_CALL8) || (op >= OP_CALL1H && op <= OP_CALL8H);
+}
+
 static bool loada1(unsigned op)
 {
 	return op == OP_LOADA_F || op == OP_LOADA_S || op == OP_LOADA_ENT || op == OP_LOADA_FLD || op == OP_LOADA_FNC ||
@@ -339,30 +350,32 @@ static void fuse_statements(qcprogs_t *p)
 			continue;
 		s[i].op = QCOP_FIND_S;
 	}
-	/* word searches: 0 LT_IF c < n, 1 IFNOT out, 2 CONV_IF c, 3 CALL1H on
-	 * it, 4 EQ_S of the result, 5 IFNOT to the step, an ADD_I to c and a
-	 * GOTO back to 0. That the call is argv is checked as it runs */
+	/* LT_IF, IFNOT out, CONV_IF, CALL1H, EQ_S, IFNOT to the step, which
+	 * is an ADD_I and a GOTO back to the start */
 	for (int i = 0; i + 6 < n; i++) {
 		int step;
-		if (s[i].op != OP_LT_IF || OPAT(i + 1) != OP_IFNOT || s[i + 1].a != s[i].c || OPAT(i + 2) != OP_CONV_IF ||
-		    s[i + 2].a != s[i].a || OPAT(i + 3) != OP_CALL1H || s[i + 3].b != s[i + 2].c || OPAT(i + 4) != OP_EQ_S ||
-		    OPAT(i + 5) != OP_IFNOT || s[i + 5].a != s[i + 4].c)
+		if (s[i].op != OP_LT_IF || OPAT(i + 1) != OP_IFNOT || OPAT(i + 2) != OP_CONV_IF ||
+		    OPAT(i + 3) != OP_CALL1H || OPAT(i + 4) != OP_EQ_S || OPAT(i + 5) != OP_IFNOT)
 			continue;
 		step = jump_target(p, i + 5, s[i + 5].b);
-		if (step <= i + 5 || step + 1 >= n || OPAT(step) != OP_ADD_I || s[step].c != s[i].a ||
-		    OPAT(step + 1) != OP_GOTO || jump_target(p, step + 1, s[step + 1].a) != i)
+		if (step <= i + 5 || step + 1 >= n || OPAT(step) != OP_ADD_I || OPAT(step + 1) != OP_GOTO ||
+		    jump_target(p, step + 1, s[step + 1].a) != i)
 			continue;
-		s[i].op = QCOP_ARGV_FIND;
+		s[i].op = QCOP_CALL_SCAN;
 	}
 	for (int i = 0; i + 3 < n; i++)
 		if (s[i].op == OP_LOADF_F && OPAT(i + 1) == OP_LOADF_F && OPAT(i + 2) == OP_NE_F && OPAT(i + 3) == OP_IFNOT)
-			s[i].op = QCOP_FIELDS_NEF_IFNOT;
+			s[i].op = i + 5 < n && jump_target(p, i + 3, s[i + 3].b) == i + 5 ? QCOP_FIELD_SYNC : QCOP_FIELDS_NEF_IFNOT;
 	for (int i = 0; i + 1 < n; i++) {
 		unsigned x = s[i].op, y = OPAT(i + 1);
 		if (loadf1(x) && (y == OP_STOREF_F || y == OP_STOREF_S || y == OP_STOREF_I))
 			s[i].op = QCOP_FIELD_COPY;
 		else if (x == OP_LOADF_V && y == OP_STOREF_V)
 			s[i].op = QCOP_FIELD_COPYV;
+		else if (store1(x) && store1(y))
+			s[i].op = QCOP_STORE_RUN;
+		else if (store1(x) && call_op(y))
+			s[i].op = QCOP_STORE_CALL;
 		else if (x == OP_ADD_I && y == OP_GOTO)
 			s[i].op = QCOP_ADDI_GOTO;
 		else if (x == OP_BITAND && y == OP_IFNOT_F)
@@ -374,7 +387,22 @@ static void fuse_statements(qcprogs_t *p)
 			case OP_EQ_F: s[i].op = QCOP_EQF_IFNOT; break;
 			case OP_EQ_S: s[i].op = QCOP_EQS_IFNOT; break;
 			case OP_LT_I: s[i].op = QCOP_LTI_IFNOT; break;
-			default: break;
+			case OP_LT_IF: s[i].op = QCOP_LTIF_IFNOT; break;
+			case OP_GT_F: s[i].op = QCOP_GTF_IFNOT; break;
+			case OP_LT_F: s[i].op = QCOP_LTF_IFNOT; break;
+			case OP_GE_F: s[i].op = QCOP_GEF_IFNOT; break;
+			case OP_LE_F: s[i].op = QCOP_LEF_IFNOT; break;
+			case OP_AND_F: s[i].op = QCOP_ANDF_IFNOT; break;
+			case OP_OR_F: s[i].op = QCOP_ORF_IFNOT; break;
+			case OP_NE_I: s[i].op = QCOP_NEI_IFNOT; break;
+			case OP_EQ_I: s[i].op = QCOP_EQI_IFNOT; break;
+			case OP_AND_I: s[i].op = QCOP_ANDI_IFNOT; break;
+			case OP_NE_IF: s[i].op = QCOP_NEIF_IFNOT; break;
+			case OP_NE_E: s[i].op = QCOP_NEE_IFNOT; break;
+			default:
+				if (loadf1(x))
+					s[i].op = QCOP_LOADF_IFNOT;
+				break;
 			}
 		}
 	}

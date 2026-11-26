@@ -1701,10 +1701,6 @@ qc_jitfn_t QC_JitCompile(qcvm_t *vm, qcfunc_t *f)
 			 * comes back at the match or out of the loop */
 			int t[2] = {s + 7, s + 1 + JUMPOP(e.stmts[s + 1].b)};
 			step_with(&e, (void *)QC_JitStepFused, s, t, 2);
-		} else if (e.stmts[s].op == QCOP_ARGV_FIND) {
-			/* the same for a word search; it can also stop at its call */
-			int t[3] = {s + 6, s + 1 + JUMPOP(e.stmts[s + 1].b), s + 3};
-			step_with(&e, (void *)QC_JitStepFused, s, t, 3);
 		} else if (!statement(&e, s)) {
 			const qcstatement_t *st = e.stmts + s;
 			int t[4] = {s + 1, s + JUMPOP(st->a), s + JUMPOP(st->b), s + JUMPOP(st->c)};
