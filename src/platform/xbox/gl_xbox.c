@@ -2370,7 +2370,9 @@ static bool set_program(void)
 		} else {
 			bind_unit(2, NULL);
 		}
-		if (tcmod) {
+		/* the program reads tcmod from c[94..95]; the texture matrices would
+		   land on XF constants 68-71 and 84-87, inside the bone palette */
+		if (tcmod && !skin_prog) {
 			/* s' = s * z + x, t' = t * w + y, for the units reading a_tc */
 			float m[16] = {p->tcmod[2], 0, 0, p->tcmod[0], 0, p->tcmod[3], 0, p->tcmod[1], 0, 0, 1, 0, 0, 0, 0, 1};
 			push_matrix(NV097_SET_TEXTURE_MATRIX, &mc_texmat[0], m);

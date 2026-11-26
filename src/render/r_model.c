@@ -1738,7 +1738,8 @@ static void pose_iqm(iqm_t *q, rentity_t *e)
 		if (k < n)
 			Skel_SampleRelative(m, -1, 0, bones); /* any bones the object lacks */
 		if (absolute) {
-			Skel_ToAbsolute(m, bones, bones);
+			if (k < n) /* else every bone is overwritten below */
+				Skel_ToAbsolute(m, bones, bones);
 			memcpy(bones, sb, sizeof(bonemat_t) * k);
 		} else {
 			memcpy(bones, sb, sizeof(bonemat_t) * k);
