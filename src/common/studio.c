@@ -628,6 +628,13 @@ typedef struct studiocache_s {
 
 static studiocache_t *studiocache;
 #ifdef BW_LOWMEM
+/* a 128 MB Xbox keeps every sequence (6.8 MB for the four heroes), so that
+ * no disc read lands in a match */
+#ifdef BW_XBOX
+#define PAGE_ANIMS() BW_SMALL_MEMORY()
+#else
+#define PAGE_ANIMS() true
+#endif
 static void drop_pixels(studiocache_t *c);
 static bool page_out_anims(studiocache_t *c);
 static void trim_file(studiocache_t *c);
@@ -686,7 +693,7 @@ static const studio_model_t *cache_new(const char *name, uint8_t *buf, size_t si
 #ifdef BW_LOWMEM
 	/* the renderer reads them back when it uploads them */
 	drop_pixels(c);
-	if (!page_out_anims(c))
+	if (!PAGE_ANIMS() || !page_out_anims(c))
 		trim_file(c);
 #endif
 	return &c->model;
@@ -973,7 +980,17 @@ static bool page_out_anims(studiocache_t *c)
 			const uint8_t *end = seq_end(m, s, hi);
 			c->animofs[i] = (uint32_t)(s->anim - b);
 			c->animlen[i] = (uint32_t)(end - s->anim);
-			s->anim = s->animlimit = NULL;
+			if (s->activity > 0) {
+				/* idle, walk, run, jump, the deaths: every player plays
+				   them, so they stay rather than be read mid-match */
+				uint8_t *d = Mem_Alloc(c->animlen[i]);
+				memcpy(d, s->anim, c->animlen[i]);
+				s->anim = d;
+				s->animlimit = d + c->animlen[i];
+				c->animlen[i] = 0;
+			} else {
+				s->anim = s->animlimit = NULL;
+			}
 		}
 	}
 	for (int i = 0; i < m->numbodyparts; i++)
@@ -1010,8 +1027,64 @@ static void trim_file(studiocache_t *c)
 	c->alloclen = c->buflen;
 }
 
+/* the last word of a sequence's name ("onehanded" of "ref_aim_onehanded"),
+ * or NULL */
+static const char *seq_set(const studio_seq_t *s)
+{
+	const char *u = strrchr(s->label, '_');
+	return u && u[1] ? u + 1 : NULL;
+}
+
+/* whether paged-out sequence i comes in with sequence want, of set */
+static bool comes_with(const studiocache_t *c, int i, int want, const char *set)
+{
+	const char *w;
+	if (!c->animlen[i] || c->model.seqs[i].anim)
+		return false;
+	return i == want || (set && (w = seq_set(&c->model.seqs[i])) && !Str_ICmp(w, set));
+}
+
+/* sequence want of c and the paged-out ones named for the same set, read
+ * back in one read of the part of the file they span */
+static void read_seqs(studiocache_t *c, const char *set, int want)
+{
+	studio_model_t *m = &c->model;
+	uint32_t lo = UINT32_MAX, hi = 0, sum = 0;
+	for (int i = 0; i < c->numpaged; i++)
+		if (comes_with(c, i, want, set)) {
+			lo = BW_MIN(lo, c->animofs[i]);
+			hi = BW_MAX(hi, c->animofs[i] + c->animlen[i]);
+			sum += c->animlen[i];
+		}
+	if (hi - lo > 2 * sum + 4096) {
+		/* far apart: only the one asked for */
+		lo = c->animofs[want];
+		hi = lo + c->animlen[want];
+		set = NULL;
+	}
+	uint8_t *d = (uint8_t *)FS_LoadRange(c->name, lo, hi - lo);
+	if (!d) {
+		c->animlen[want] = 0;
+		return;
+	}
+	/* each gets its own copy, so the gaps between them are not kept */
+	for (int i = 0; i < c->numpaged; i++) {
+		studio_seq_t *s = &m->seqs[i];
+		if (!comes_with(c, i, want, set) || c->animofs[i] < lo || c->animofs[i] + c->animlen[i] > hi)
+			continue;
+		uint8_t *a = Mem_Alloc(c->animlen[i]);
+		memcpy(a, d + (c->animofs[i] - lo), c->animlen[i]);
+		s->anim = a;
+		s->animlimit = a + c->animlen[i];
+	}
+	Mem_Free(d);
+}
+
 /* a paged-out sequence back from its file; false (and it stands in its
- * rest pose) if the file no longer has it */
+ * rest pose) if the file no longer has it. The sequences named for the
+ * same set (a weapon's aim, shoot and reload, standing and crouched) come
+ * with it, as they play together: one read when a player first holds the
+ * weapon rather than one each time another of them starts */
 static bool page_in(const studio_model_t *m, int seq)
 {
 	for (studiocache_t *c = studiocache; c; c = c->next) {
@@ -1019,14 +1092,8 @@ static bool page_in(const studio_model_t *m, int seq)
 			continue;
 		if (seq >= c->numpaged || !c->animlen[seq])
 			return false;
-		uint8_t *d = (uint8_t *)FS_LoadRange(c->name, c->animofs[seq], c->animlen[seq]);
-		if (!d) {
-			c->animlen[seq] = 0;
-			return false;
-		}
-		c->model.seqs[seq].anim = d;
-		c->model.seqs[seq].animlimit = d + c->animlen[seq];
-		return true;
+		read_seqs(c, seq_set(&c->model.seqs[seq]), seq);
+		return c->model.seqs[seq].anim != NULL;
 	}
 	return false;
 }
