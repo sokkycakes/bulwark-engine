@@ -793,6 +793,22 @@ static bool cull_box(const frustum_t *fr, const float *mins, const float *maxs)
 	return false;
 }
 
+/* whether the box is inside all four planes: its nearest corner to each is
+ * on the inner side */
+static bool box_inside(const frustum_t *fr, const float *mins, const float *maxs)
+{
+	for (int p = 0; p < 4; p++) {
+		const float *pl = fr->p[p];
+		int f = fr->far[p];
+		float x = (f & 1) ? mins[0] : maxs[0];
+		float y = (f & 2) ? mins[1] : maxs[1];
+		float z = (f & 4) ? mins[2] : maxs[2];
+		if (!(pl[0] * x + pl[1] * y + pl[2] * z + pl[3] > 0))
+			return false;
+	}
+	return true;
+}
+
 /* left, right, bottom, top planes of a clip matrix (rows combined) */
 static void frustum_planes(const float *m, frustum_t *fr)
 {
@@ -828,6 +844,32 @@ static void set_lights(const glprog_t *p, const float *model)
 	}
 }
 
+/* the marked surfaces as a bit each, with the ones in no leaf always set,
+ * so that a pass visits only those rather than every surface of the map */
+static uint32_t *visbits, *novisbits, *insidebits;
+static int visbitwords;
+static const rsurface_t *visbits_for;
+
+static void reset_visbits(void)
+{
+	int words = (r_world.numsurfaces + 31) / 32;
+	if (visbits_for != r_world.surfaces || visbitwords != words) {
+		Mem_Free(visbits);
+		Mem_Free(novisbits);
+		Mem_Free(insidebits);
+		visbits = Mem_Alloc(sizeof(uint32_t) * (size_t)BW_MAX(words, 1));
+		novisbits = Mem_Alloc(sizeof(uint32_t) * (size_t)BW_MAX(words, 1));
+		insidebits = Mem_Alloc(sizeof(uint32_t) * (size_t)BW_MAX(words, 1));
+		for (int i = 0; i < r_world.numsurfaces; i++)
+			if (r_world.surfaces[i].novis)
+				novisbits[i >> 5] |= 1u << (i & 31);
+		visbits_for = r_world.surfaces;
+		visbitwords = words;
+	}
+	memcpy(visbits, novisbits, sizeof(uint32_t) * (size_t)words);
+	memset(insidebits, 0, sizeof(uint32_t) * (size_t)words);
+}
+
 /* marks the surfaces in leafs the view's cluster can see and the frustum
  * holds; false when there is nothing to cull with, so everything draws */
 static bool mark_leafs(const frustum_t *planes)
@@ -843,6 +885,7 @@ static bool mark_leafs(const frustum_t *planes)
 	if (r_world.viewcluster < 0 || !(row = BSP_ClusterPVS(bsp, r_world.viewcluster)))
 		return false;
 	r_world.visframe++;
+	reset_visbits();
 	for (int i = 0; i < bsp->numleafs; i++) {
 		const cleaf_t *lf = &bsp->leafs[i];
 		int c = lf->cluster;
@@ -852,10 +895,15 @@ static bool mark_leafs(const frustum_t *planes)
 			r_stats.culled += lf->numfaces;
 			continue;
 		}
+		bool inside = box_inside(planes, lf->mins, lf->maxs);
 		for (int k = 0; k < lf->numfaces; k++) {
-			int f = bsp->leaffaces[lf->firstface + k];
-			if (f >= 0 && f < r_world.numsurfaces && r_world.surfmap[f] >= 0)
-				r_world.surfaces[r_world.surfmap[f]].visframe = r_world.visframe;
+			int f = bsp->leaffaces[lf->firstface + k], m;
+			if (f >= 0 && f < r_world.numsurfaces && (m = r_world.surfmap[f]) >= 0) {
+				r_world.surfaces[m].visframe = r_world.visframe;
+				visbits[m >> 5] |= 1u << (m & 31);
+				if (inside)
+					insidebits[m >> 5] |= 1u << (m & 31);
+			}
 		}
 	}
 	return true;
@@ -915,11 +963,55 @@ static void batch_surface(const rsurface_t *s)
 	batchofs[batchn++] = (const void *)(sizeof(uint32_t) * (size_t)s->firstindex);
 }
 
+/* how many surfaces of m a pass leaves out as unmarked, counted as culled
+ * as they were when every surface was visited */
+static int unmarked_in_pass(const rmodel_t *m, float alpha, bool translucentpass)
+{
+	static struct {
+		unsigned frame;
+		int visframe;
+		const rmodel_t *m;
+		float alpha;
+		int n[2];
+	} last;
+	if (last.frame != r_framenum || last.visframe != r_world.visframe || last.m != m || last.alpha != alpha) {
+		last.frame = r_framenum, last.visframe = r_world.visframe, last.m = m, last.alpha = alpha;
+		last.n[0] = last.n[1] = 0;
+		for (int i = 0; i < m->numsurfaces; i++) {
+			int k = m->firstsurface + i;
+			const rsurface_t *s = &r_world.surfaces[k];
+			const material_t *mat = s->material;
+			if ((visbits[k >> 5] >> (k & 31)) & 1)
+				continue;
+			if (!s->numindexes || mat->nodraw || mat->sky)
+				continue;
+			last.n[mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER]++;
+		}
+	}
+	return last.n[translucentpass];
+}
+
+/* the first marked surface from k on, or last + 1 */
+static inline int next_marked(int k, int last)
+{
+	int w = k >> 5, lastw = last >> 5;
+	uint32_t bits;
+	if (k > last)
+		return last + 1;
+	bits = visbits[w] & (~0u << (k & 31));
+	while (!bits) {
+		if (++w > lastw)
+			return last + 1;
+		bits = visbits[w];
+	}
+	return BW_MIN(w * 32 + __builtin_ctz(bits), last + 1);
+}
+
 void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float alpha, bool translucentpass)
 {
 	const glprog_t *p = &r_progs[PROG_WORLD];
 	material_t *cur = NULL;
-	int curlm = -2;
+	int curlm = -2, first, last;
 	frustum_t planes;
 	bool isworld = m == &r_world.submodels[0], usevis = false;
 	if (!r_world.loaded || !r_world.vao || !m)
@@ -936,17 +1028,18 @@ void R_DrawWorldModel(rmodel_t *m, const float *mvp, const float *model, float a
 	set_lights(p, model);
 	qglBindVertexArray(r_world.vao);
 	GL_SetCull(true);
-	for (int i = 0; i < m->numsurfaces; i++) {
-		rsurface_t *s = &r_world.surfaces[m->firstsurface + i];
+	first = m->firstsurface, last = first + m->numsurfaces - 1;
+	if (usevis && r_speeds->ivalue && m->numsurfaces > 0)
+		r_stats.culled += unmarked_in_pass(m, alpha, translucentpass);
+	/* with the marks, only the marked surfaces, in the same order */
+	for (int i = usevis ? next_marked(first, last) : first; i <= last; i = usevis ? next_marked(i + 1, last) : i + 1) {
+		rsurface_t *s = &r_world.surfaces[i];
 		material_t *mat = s->material;
 		bool trans = mat->blend != BLEND_OPAQUE || alpha < 1 || mat->program == MP_WATER;
 		if (!s->numindexes || mat->nodraw || mat->sky || trans != translucentpass)
 			continue;
-		if (usevis && !s->novis && s->visframe != r_world.visframe) {
-			r_stats.culled++;
-			continue;
-		}
-		if (isworld && cull_box(&planes, s->mins, s->maxs)) {
+		/* a surface in a leaf the frustum holds whole has a point in it */
+		if (isworld && !(usevis && ((insidebits[i >> 5] >> (i & 31)) & 1)) && cull_box(&planes, s->mins, s->maxs)) {
 			r_stats.culled++;
 			continue;
 		}
