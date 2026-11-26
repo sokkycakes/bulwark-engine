@@ -929,6 +929,7 @@ static void spawn_client(client_t *c)
 	if (!c->bot)
 		SV_MVDClientSpawning(c);
 	c->lastcmd = 0;
+	c->cmd_resync = true;
 	memset(&c->lastucmd, 0, sizeof(c->lastucmd));
 	c->cmd_budget = 0.25f;
 	if (SV_SaveTakeRestored(c)) {
@@ -1452,6 +1453,18 @@ static void parse_move(client_t *c, msg_t *m)
 	}
 	if (m->badread || c->state != CS_SPAWNED)
 		return;
+	/* The client keeps numbering its commands across a level change, so the
+	 * first clc_move after a spawn still carries backups made on the previous
+	 * level (or before this connection's spawn). Running them would replay old
+	 * movement, buttons, impulses and cursor entities on the new map: only the
+	 * newest command, built after the client sent "begin", is run. */
+	if (c->cmd_resync) {
+		c->cmd_resync = false;
+		if (cmds[count - 1].sequence > 0)
+			c->lastcmd = cmds[count - 1].sequence - 1;
+		if (count > 1)
+			Con_DPrintf("%s: %d older commands from before the spawn not run\n", c->name, count - 1);
+	}
 	/* oldest first; anything already executed is a resend of a lost packet */
 	for (int i = 0; i < count; i++)
 		if (cmds[i].sequence > c->lastcmd)

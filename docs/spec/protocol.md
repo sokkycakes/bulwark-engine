@@ -140,13 +140,19 @@ which the client game reads in `CSQC_Ent_Update`.
 
 byte count (1 to 9), int32 the server time the client was looking at in
 milliseconds (for lag compensation), double client time, then `count`
-commands, newest first, each a delta from the one before it (the first
+commands, oldest first (the newest last), each a delta from the one before it (the first
 from zeros): int32 sequence, byte milliseconds, byte field bits, then by
 bit: 1 angles (angle ×3), 2 movement (short ×3), 4 buttons (varuint),
 8 impulse (byte, otherwise 0), 16 weapon (varuint), 32 cursor (float ×2
 screen position, float ×3 start, float ×3 end, entity). The extra commands
 repeat earlier ones so a lost packet loses no input; the server skips any
-it has already run.
+it has already run. The client keeps numbering its commands across a level
+change, so the first `clc_move` a client (or a split screen seat) sends
+after it spawns on a level still carries commands from the previous level
+or from before the spawn: the server runs only that packet's newest
+command and takes its sequence as the last one run, as FTE discards old
+moves across a level change. Replaying them would rerun the old map's
+movement, buttons, impulses and cursor entity on the new one.
 
 ## Downloads
 

@@ -120,6 +120,7 @@ typedef struct client_s {
 	bool have_parms;
 
 	uint32_t lastcmd; /* servercommandframe: last usercmd sequence executed */
+	bool cmd_resync; /* spawned: the next clc_move's backup commands belong to the previous level */
 	usercmd_t lastucmd;
 	float cmd_budget; /* seconds of movement the client may still submit (speedhack guard) */
 
