@@ -481,19 +481,22 @@ static void bi_chr2str(qcvm_t *vm)
 	vm->globals[OFS_RETURN].i = QC_NewStringLen(vm, buf, (size_t)n);
 }
 
-static void case_convert(qcvm_t *vm, int (*conv)(int))
+/* the C locale's tolower or toupper (the engine never sets another),
+ * inline: Nuclide lowers hundreds of class names a frame */
+static void case_convert(qcvm_t *vm, bool upper)
 {
 	const char *in = QC_PSTR(vm, 0);
 	size_t len = strlen(in);
 	char buf[256], *s = len < sizeof(buf) ? buf : Mem_Alloc(len + 1);
+	char from = upper ? 'a' : 'A';
 	for (size_t i = 0; i <= len; i++)
-		s[i] = (char)conv((unsigned char)in[i]);
+		s[i] = (unsigned char)(in[i] - from) < 26 ? (char)(in[i] ^ 0x20) : in[i];
 	QC_ReturnInt(vm, QC_NewStringLen(vm, s, len));
 	if (s != buf)
 		Mem_Free(s);
 }
-static void bi_strtolower(qcvm_t *vm) { case_convert(vm, tolower); }
-static void bi_strtoupper(qcvm_t *vm) { case_convert(vm, toupper); }
+static void bi_strtolower(qcvm_t *vm) { case_convert(vm, false); }
+static void bi_strtoupper(qcvm_t *vm) { case_convert(vm, true); }
 
 static void str_replace(qcvm_t *vm, bool nocase)
 {

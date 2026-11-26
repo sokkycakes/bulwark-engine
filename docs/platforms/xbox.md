@@ -751,12 +751,21 @@ game computes:
   game's 4 MB heap only fills while it loads the map overview. `pr_jit 1`
   backs every slot at once, since native code checks entity numbers
   against the slot count only.
-- **Player models keep only the animation they play.** A hero's .mdl is
-  2.2 MB, 1.7 MB of it the coded frames of 174 sequences. The model cache
-  cuts them out of the file it keeps and reads a sequence back from the
-  file (`FS_LoadRange`) the first time a frame of it is asked for; it then
-  stays. Skin pixels are read back the same way, only their bytes, when
-  the renderer uploads them.
+- **On a 64 MB console player models keep only the animation they play.**
+  A hero's .mdl is 2.2 MB, 1.7 MB of it the coded frames of 174 sequences.
+  The model cache cuts them out of the file it keeps and reads a sequence
+  back from the file (`FS_LoadRange`) the first time a frame of it is asked
+  for; it then stays. The sequences with an activity (idle, walk, run, jump,
+  death, which every hero plays) stay in from the start, and a paged
+  sequence is read together with the others of its weapon set (the
+  sequences whose names end in the same word, such as `_onehanded`) in one
+  read. Skin pixels are read back the same way, only their bytes, when the
+  renderer uploads them. A 128 MB console keeps every sequence (about
+  6.8 MB for the four heroes of the match), so nothing is read from the
+  disc during play.
+- **Decoded animation frames are kept in a cache** of the most recently
+  used ones: 2560 frames (about 4 MB) on a 128 MB console, 512 (0.8 MB) on
+  a 64 MB one, 96 on the PC. A match re-decodes almost none.
 - **Big pictures wait for their first draw.** A picture of 512 x 512 or
   more that may become DXT keeps only its RGBA until it is mipmapped or
   drawn, so it is never held at 32 bits and compressed as well. Other
