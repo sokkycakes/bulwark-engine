@@ -145,6 +145,22 @@ players took each other's XR inputs and the bots stopped scoring kills;
 and sampling the guest with the QEMU monitor (`info registers`) slows it,
 so take profiles in a run whose reports aren't the baseline.
 
+In this match the QC interpreter is the largest single part of the frame.
+A third of the statements both games run is Nuclide's
+`EntityDef_GetKeyValue`, which finds a class by comparing its name with
+every entity def in a QC loop, then splits that def's spawn data with
+`tokenize_console` and reads it pair by pair with `argv`; the per-field
+change checks of `EvaluateEntity` are most of the rest. So the VM keeps the
+last 16 splits (with the strings `argv` made from them), settles most
+string `==` by length without a call, runs the whole search loop and the
+other common short sequences as one statement each (see
+`fuse_statements` in `src/qcvm/qcvm.c`), and calls a getter that only
+returns one of `self`'s fields without a frame. Results are unchanged: the
+QC core dumps after a 12000-frame headless match with 8 bots (`pr_seed`,
+`-frames`) are byte for byte the same as before. In xemu the scenario went
+from about 10 to 15 fps, with server time from 80 to 55 ms a frame;
+`_run` is still about a sixth of the samples, a quarter of that in calls.
+
 ## Installing on a console
 
 This needs a console that runs unsigned code: one with a softmod (a
