@@ -359,6 +359,8 @@ string_t QC_NewStringLen(qcvm_t *vm, const char *s, size_t len);
 /* writable view into an engine string or the progs table, or NULL */
 char *QC_StringBuffer(qcvm_t *vm, string_t s, size_t *len);
 void QC_CollectGarbage(qcvm_t *vm, bool force);
+/* collections and their time since the last call (host_speeds) */
+void QC_TakeGCStats(int *runs, double *seconds);
 int QC_LiveStrings(void);
 
 /* entities */

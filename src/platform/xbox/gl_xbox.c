@@ -2433,10 +2433,21 @@ static bool set_program(void)
 	bool fog = (kind == PK_WORLD || kind == PK_MODEL) && p->fog[3] > 0;
 	bool lit = kind == PK_MODEL;
 
-	/* transforms: composite = viewport x mvp; modelview = model moved to the eye */
+	/* transforms: composite = viewport x mvp; modelview = model moved to the
+	 * eye. Most state changes keep the matrices (the world's texture
+	 * changes), so the last composite is kept for the same inputs */
+	static float last_vp[16], last_mvp[16], last_comp[16];
+	static bool have_comp;
 	viewport_matrix(vp);
-	mat_mul(tmp, vp, p->mvp);
-	transpose(comp, tmp);
+	if (have_comp && !memcmp(vp, last_vp, sizeof(vp)) && !memcmp(p->mvp, last_mvp, sizeof(last_mvp))) {
+		memcpy(comp, last_comp, sizeof(comp));
+	} else {
+		mat_mul(tmp, vp, p->mvp);
+		transpose(comp, tmp);
+		memcpy(last_vp, vp, sizeof(vp)), memcpy(last_mvp, p->mvp, sizeof(last_mvp));
+		memcpy(last_comp, comp, sizeof(comp));
+		have_comp = true;
+	}
 	skin_mode(lit && skin_on);
 	if (skin_prog) {
 		skin_constants(p, comp);

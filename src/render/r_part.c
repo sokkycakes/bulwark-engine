@@ -1447,6 +1447,10 @@ static void draw_particle(const particle_t *p)
 			VectorCopy(p->end, b);
 			for (int k = 0; k < 3; k++)
 				dir[k] = b[k] - a[k];
+			/* no length, no side to draw it along (most of the game's
+			   beams in a match): the test below would drop it anyway */
+			if (dir[0] == 0 && dir[1] == 0 && dir[2] == 0)
+				return;
 			len = VectorLength(dir);
 			if (t->beamtexstep > 0) {
 				float scroll = t->beamtexspeed * (float)r_time;

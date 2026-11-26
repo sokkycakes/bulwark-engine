@@ -62,6 +62,10 @@ typedef struct alias_s {
 	int lastp1, lastp2;
 	float lastlerp;
 	unsigned lastframe;
+	/* the pose stayed from one frame to the next, so it went to a static
+	   buffer, which later frames draw from until it changes (an item on
+	   the floor, never animated, is lerped and sent once) */
+	bool held;
 } alias_t;
 
 static uint8_t palette[768];
@@ -1977,10 +1981,13 @@ static void draw_alias(const rentity_t *e, alias_t *a)
 		a->lastframe = r_framenum - 1;
 	}
 	qglBindVertexArray(a->vao);
-	if (a->lastframe != r_framenum || a->lastp1 != p1 || a->lastp2 != p2 || a->lastlerp != e->lerpfrac) {
+	bool same = a->lastp1 == p1 && a->lastp2 == p2 && a->lastlerp == e->lerpfrac;
+	if (!same || (a->lastframe != r_framenum && !a->held)) {
+		/* a pose unchanged since an earlier frame is kept */
+		a->held = same;
 		qglBindBuffer(GL_ARRAY_BUFFER, a->vbo);
 		qglBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(rvert_t) * a->numoutverts), alias_verts(e, a),
-		              GL_STREAM_DRAW);
+		              same ? GL_STATIC_DRAW : GL_STREAM_DRAW);
 		a->lastframe = r_framenum;
 		a->lastp1 = p1, a->lastp2 = p2;
 		a->lastlerp = e->lerpfrac;

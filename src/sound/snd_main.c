@@ -146,10 +146,21 @@ float S_SoundLevel(float attenuation)
 
 float S_DistanceGain(float attenuation, float dist)
 {
-	float level = S_SoundLevel(attenuation);
+	/* every channel asks each frame, mostly with one of a few levels, and
+	 * powf is an expf and a logf on the consoles: the last few answers */
+	static float key[4], val[4];
+	static int next;
+	float level = S_SoundLevel(attenuation), x, p;
 	if (level <= 0)
 		return 1;
-	return BW_MIN(1.0f, powf(10, (level - s_refdb->value) / 20) * s_refdist->value / BW_MAX(1.0f, dist));
+	x = (level - s_refdb->value) / 20;
+	for (int i = 0; i < 4; i++)
+		if (val[i] != 0 && key[i] == x) /* powf(10, x) is the same for -0 and 0 */
+			return BW_MIN(1.0f, val[i] * s_refdist->value / BW_MAX(1.0f, dist));
+	p = powf(10, x);
+	key[next] = x, val[next] = p;
+	next = (next + 1) & 3;
+	return BW_MIN(1.0f, p * s_refdist->value / BW_MAX(1.0f, dist));
 }
 
 static channel_t *pick_channel(int ent, int entchannel, int flags)

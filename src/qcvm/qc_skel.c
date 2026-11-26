@@ -10,6 +10,10 @@
 #include "../common/cvar.h"
 
 #include <math.h>
+#if defined(__SSE__) && !defined(BW_NO_SSE)
+#include <xmmintrin.h>
+#define QC_SKEL_SSE 1
+#endif
 
 /* A skel_build not done yet. Nuclide builds every player's skeleton in
  * each of its commands, on the server too, and reads it only for the odd
@@ -267,9 +271,20 @@ static void apply_build(skelobj_t *s, const skelbuild_t *b)
 				d[i] = 0;
 		}
 	} else {
-		for (int j = first; j <= last; j++)
-			for (int k = 0; k < 12; k++)
-				s->bones[j][k] = (retain != 0 ? s->bones[j][k] * retain : 0) + pose[j][k] * add;
+#ifdef QC_SKEL_SSE
+		if (retain != 0) {
+			/* four at a time, the same multiplies and add in each lane */
+			const __m128 r = _mm_set1_ps(retain), a = _mm_set1_ps(add);
+			for (int j = first; j <= last; j++)
+				for (int k = 0; k < 12; k += 4) {
+					__m128 v = _mm_mul_ps(_mm_loadu_ps(s->bones[j] + k), r);
+					_mm_storeu_ps(s->bones[j] + k, _mm_add_ps(v, _mm_mul_ps(_mm_loadu_ps(pose[j] + k), a)));
+				}
+		} else
+#endif
+			for (int j = first; j <= last; j++)
+				for (int k = 0; k < 12; k++)
+					s->bones[j][k] = (retain != 0 ? s->bones[j][k] * retain : 0) + pose[j][k] * add;
 	}
 }
 

@@ -57,8 +57,20 @@ static struct {
 	int headnode;
 } q1;
 
+/* the lightmap colours under the points asked for lately, by their exact
+ * bits: models that stand still are lit from the same point every frame,
+ * and a model drawn in two passes twice in one */
+#define LIGHTCACHE 64
+static struct {
+	uint32_t key[3];
+	bool used;
+	bool hit;
+	float rgb[3];
+} lightcache[LIGHTCACHE];
+
 void R_FreeQ1World(void)
 {
+	memset(lightcache, 0, sizeof(lightcache));
 	Mem_Free(q1.luxels);
 	Mem_Free(q1.pageused);
 	Mem_Free(q1.faces);
@@ -732,11 +744,30 @@ static int light_recurse(int num, const float *start, const float *end, float *r
 	return light_recurse(n->children[!side], mid, end, rgb);
 }
 
+static bool light_below(const float *p, float *rgb)
+{
+	uint32_t k[3];
+	memcpy(k, p, sizeof(k));
+	unsigned h = (k[0] * 2654435761u ^ k[1] * 40503u ^ k[2] * 2246822519u) >> 16 & (LIGHTCACHE - 1);
+	if (lightcache[h].used && !memcmp(lightcache[h].key, k, sizeof(k))) {
+		memcpy(rgb, lightcache[h].rgb, sizeof(float) * 3);
+		return lightcache[h].hit;
+	}
+	float end[3] = {p[0], p[1], p[2] - 2048};
+	rgb[0] = rgb[1] = rgb[2] = 0;
+	bool hit = light_recurse(q1.headnode, p, end, rgb) != 0;
+	memcpy(lightcache[h].key, k, sizeof(k));
+	lightcache[h].used = true;
+	lightcache[h].hit = hit;
+	memcpy(lightcache[h].rgb, rgb, sizeof(float) * 3);
+	return hit;
+}
+
 bool R_Q1LightPoint(const float *p, float *ambient, float *diffuse, float *dir)
 {
-	float end[3] = {p[0], p[1], p[2] - 2048}, rgb[3] = {0, 0, 0};
+	float rgb[3];
 	float scale = r_lightmapscale ? r_lightmapscale->value : 2;
-	if (!q1.nodes || !light_recurse(q1.headnode, p, end, rgb))
+	if (!q1.nodes || !light_below(p, rgb))
 		return false;
 	/* no direction is stored: mostly ambient, a little from above */
 	for (int k = 0; k < 3; k++) {
