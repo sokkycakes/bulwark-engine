@@ -32,7 +32,10 @@
 #define QCOP_ADDI_GOTO (OP_NUMOPS + 10)
 /* a whole search loop, for (i = ..; i < n; i++) if (s == table[i].f) */
 #define QCOP_FIND_S (OP_NUMOPS + 11)
-#define QCOP_COUNT (OP_NUMOPS + 12)
+/* a loop over a split's words, for (c = ..; c < n; c += k) if (argv(c) == s),
+ * as Nuclide's EntityDef_GetKeyValue reads a def's spawn keys */
+#define QCOP_ARGV_FIND (OP_NUMOPS + 12)
+#define QCOP_COUNT (OP_NUMOPS + 13)
 
 /* the opcode a statement had before the loader fused it */
 static inline unsigned QC_PlainOp(unsigned op)
@@ -48,9 +51,13 @@ static inline unsigned QC_PlainOp(unsigned op)
 	case QCOP_FIELDS_NEF_IFNOT: return OP_LOADF_F;
 	case QCOP_ADDI_GOTO: return OP_ADD_I;
 	case QCOP_FIND_S: return OP_LT_I;
+	case QCOP_ARGV_FIND: return OP_LT_IF;
 	default: return op;
 	}
 }
+
+/* argv(), which QCOP_ARGV_FIND calls without a dispatch */
+extern const qc_builtin_fn qc_argv_builtin;
 
 #define QC_MAX_TOKENS 1024
 /* One split of a string. The text of each token is kept in buf, and argv()

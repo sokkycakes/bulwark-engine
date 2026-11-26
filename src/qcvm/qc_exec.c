@@ -591,6 +591,7 @@ static int run(qcvm_t *vm, int s0, int entrydepth, int step)
 			plaintable[i] = optable[QC_PlainOp((unsigned)i)];
 		T(QCOP_NEF_IFNOT) T(QCOP_EQF_IFNOT) T(QCOP_EQS_IFNOT) T(QCOP_LTI_IFNOT) T(QCOP_BITAND_IFNOTF)
 		T(QCOP_FIELD_COPY) T(QCOP_FIELD_COPYV) T(QCOP_FIELDS_NEF_IFNOT) T(QCOP_ADDI_GOTO) T(QCOP_FIND_S)
+		T(QCOP_ARGV_FIND)
 #undef T
 	}
 #endif
@@ -1102,6 +1103,56 @@ dispatch:
 			G[s0[5].c].f = str_eq(vm, G[s0[5].a].i, G[s0[5].b].i);
 			if (G[s0[6].a].i) {
 				st = s0 + 7;
+				DISPATCH();
+			}
+			G[step->c].i = (int32_t)((uint32_t)G[step->a].i + (uint32_t)G[step->b].i);
+			if ((looped += back) >= QC_MAX_INSTRUCTIONS)
+				runaway(vm, (int)(step + 1 - stmts));
+		}
+	}
+	OPCODE(QCOP_ARGV_FIND) {
+		/* 0 LT_IF, 1 IFNOT out of the loop, 2 CONV_IF, 3 CALL1H, 4 EQ_S,
+		 * 5 IFNOT to the step, an ADD_I and a GOTO back to 0. Each word
+		 * is argv's own call, made as the call statement makes it; when
+		 * the call is anything else it runs as a statement of its own */
+		const qcstatement_t *s0 = st, *step = st + 5 + JUMP(st[5].b);
+		uint32_t back = 1u - (uint32_t)JUMP(step[1].a);
+		for (;;) {
+			int32_t target;
+			int fnum;
+			G[s0[0].c].i = (float)G[s0[0].a].i < G[s0[0].b].f;
+			if (!G[s0[1].a].i) {
+				st = s0 + 1;
+				JUMPBY(JUMP(st->b));
+			}
+			G[s0[2].c].f = (float)G[s0[2].a].i;
+			target = G[s0[3].a].i;
+			fnum = QC_FUNC_INDEX(target);
+			if (QC_FUNC_PROGS(target) != vm->curprogs || (unsigned)fnum - 1u >= (unsigned)vm->numfunctions - 1u ||
+			    vm->functions[fnum].builtin != qc_argv_builtin || vm->profiling) {
+				st = s0 + 3;
+				DISPATCH();
+			}
+			vm->argc = 1;
+			copy3(G + OFS_PARM(0), G + s0[3].b);
+			vm->xstatement = (int)(s0 + 3 - stmts);
+			vm->extra->calling_builtin = fnum;
+			qc_argv_builtin(vm);
+			if (vm->autocvar_gen != cvar_generation || vm->debug_hooks || qc_profiling) {
+				/* as the call statement ends */
+				if (vm->autocvar_gen != cvar_generation)
+					QC_SyncAutocvars(vm);
+				RELOAD();
+#if defined(QC_THREADED) && defined(QC_JIT)
+				if (disp != steptable) /* stepped for native code, which checks them itself */
+#endif
+					CHECK_HOOKS();
+				st = s0 + 3;
+				NEXT();
+			}
+			G[s0[4].c].f = str_eq(vm, G[s0[4].a].i, G[s0[4].b].i);
+			if (G[s0[5].a].i) {
+				st = s0 + 6;
 				DISPATCH();
 			}
 			G[step->c].i = (int32_t)((uint32_t)G[step->a].i + (uint32_t)G[step->b].i);

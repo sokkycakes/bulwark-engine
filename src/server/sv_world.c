@@ -130,6 +130,18 @@ typedef struct area_s {
 	uint32_t *bits; /* one per slot, all clear between queries */
 	int *scratch; /* candidate lists; nested queries stack up in it */
 	int scratch_top, scratch_size;
+	/* changes whenever a filed box or a node's list does */
+	uint32_t gen;
+	/* The last walk, made for a box a margin larger than asked for: the
+	 * slots whose filed boxes meet cache_lo..cache_hi, in slot order. A
+	 * query inside that box at the same generation takes its slots from
+	 * this list by the walk's own test (the bots' traces come in fans from
+	 * one spot, with nothing moved between them). cache_ids holds up to
+	 * max_edicts slots: 4 bytes per edict per area tree. */
+	uint32_t cache_gen;
+	bool cache_valid;
+	uint32_t cache_lo[3], cache_hi[3];
+	int *cache_ids, cache_n;
 } area_t;
 
 static int area_build(area_t *a, int depth, const float *mins, const float *maxs)
@@ -168,6 +180,7 @@ static void area_unfile(area_t *a, int e)
 	int n = a->node[e];
 	if (n < 0)
 		return;
+	a->gen++;
 	areaslot_t *s = &a->slot[e];
 	if (s->prev >= 0)
 		a->slot[s->prev].next = s->next;
@@ -196,6 +209,7 @@ static void area_file_keys(area_t *a, int e, const uint32_t *key)
 	}
 	areaslot_t *s = &a->slot[e];
 	if (a->node[e] != n) {
+		a->gen++;
 		area_unfile(a, e);
 		for (p = -1, q = a->nodes[n].head; q >= 0 && q < e; q = a->slot[q].next)
 			p = q;
@@ -209,8 +223,12 @@ static void area_file_keys(area_t *a, int e, const uint32_t *key)
 		else
 			a->nodes[n].head = e;
 	}
-	for (int i = 0; i < 6; i++)
-		s->key[i] = key[i];
+	if (s->key[0] != key[0] || s->key[1] != key[1] || s->key[2] != key[2] || s->key[3] != key[3] ||
+	    s->key[4] != key[4] || s->key[5] != key[5]) {
+		a->gen++;
+		for (int i = 0; i < 6; i++)
+			s->key[i] = key[i];
+	}
 }
 
 static void box_keys(const float *amin, const float *amax, uint32_t *key)
@@ -278,6 +296,7 @@ static area_t *area_get(void)
 				Mem_Free(a->filed);
 				Mem_Free(a->scratch);
 				Mem_Free(a->bits);
+				Mem_Free(a->cache_ids);
 				Mem_Free(a);
 			}
 			a = w->area = Mem_Alloc(sizeof(*a));
@@ -288,7 +307,10 @@ static area_t *area_get(void)
 			a->scratch_size = a->max_edicts * 4;
 			a->scratch = Mem_Alloc(sizeof(int) * (size_t)a->scratch_size);
 			a->bits = Mem_Alloc(sizeof(uint32_t) * (size_t)((a->max_edicts + 31) >> 5));
+			a->cache_ids = Mem_Alloc(sizeof(int) * (size_t)a->max_edicts);
 		}
+		a->gen++;
+		a->cache_valid = false;
 		a->vm = vm;
 		a->world = w->world;
 		VectorCopy(wmins, a->wmins);
@@ -313,6 +335,70 @@ typedef struct {
 	int n;
 } arealist_t;
 
+/* every filed slot whose box meets klo..khi, in the order the walk finds them */
+static int area_walk(area_t *a, const uint32_t *klo, const uint32_t *khi, int *ids)
+{
+	int stack[TREE_NODES], sp = 0, n = 0;
+	stack[sp++] = 0;
+	while (sp) {
+		const boxnode_t *an = &a->nodes[stack[--sp]];
+		for (int e = an->head; e >= 0;) {
+			const areaslot_t *s = &a->slot[e];
+			const uint32_t *k = s->key;
+			if (!(k[0] > khi[0] || k[1] > khi[1] || k[2] > khi[2] || k[3] < klo[0] || k[4] < klo[1] || k[5] < klo[2]))
+				ids[n++] = e;
+			e = s->next;
+		}
+		if (an->axis < 0)
+			continue;
+		if (khi[an->axis] > an->kdist)
+			stack[sp++] = an->children[0];
+		if (klo[an->axis] < an->kdist)
+			stack[sp++] = an->children[1];
+	}
+	return n;
+}
+
+/* into slot order; each node's list already runs in it, so short lists
+ * come in a few ascending runs */
+static void area_sort(area_t *a, int *ids, int n)
+{
+	if (n <= 1)
+		return;
+	if (n <= 32) {
+		for (int i = 1; i < n; i++) {
+			int v = ids[i], j = i;
+			while (j > 0 && ids[j - 1] > v) {
+				ids[j] = ids[j - 1];
+				j--;
+			}
+			ids[j] = v;
+		}
+		return;
+	}
+	/* long lists (a trace across the map) sort through a bitmap */
+	int words = 0;
+	for (int i = 0; i < n; i++) {
+		a->bits[ids[i] >> 5] |= 1u << (ids[i] & 31);
+		words = BW_MAX(words, (ids[i] >> 5) + 1);
+	}
+	n = 0;
+	for (int w = 0; w < words; w++) {
+		uint32_t b = a->bits[w];
+		a->bits[w] = 0;
+		while (b) {
+			ids[n++] = (w << 5) + __builtin_ctz(b);
+			b &= b - 1;
+		}
+	}
+}
+
+/* How far past a query's box the cached walk reaches, and the largest box
+ * it is made for: a fan of short probes from one spot fits in one walk,
+ * and a long trace would only make the list long. */
+#define AREA_CACHE_MARGIN 48.0f
+#define AREA_CACHE_MAXSIZE 512.0f
+
 /* The slots whose filed boxes may meet lo..hi, in slot order unless
  * !sorted (for callers where order cannot matter). With no tree (or no
  * room) it lists every slot, as the scan used to. Release with area_done,
@@ -320,8 +406,9 @@ typedef struct {
 static void area_query(arealist_t *l, const float *lo, const float *hi, bool sorted)
 {
 	area_t *a = area_get();
-	int stack[TREE_NODES], sp = 0, n = 0, room, *ids;
+	int n = 0, room, *ids;
 	uint32_t klo[3], khi[3];
+	bool cached;
 	l->a = NULL;
 	l->n = 0;
 	l->ids = NULL;
@@ -340,50 +427,33 @@ static void area_query(arealist_t *l, const float *lo, const float *hi, bool sor
 		klo[i] = fkey(lo[i]);
 		khi[i] = fkey(hi[i]);
 	}
-	stack[sp++] = 0;
-	while (sp) {
-		const boxnode_t *an = &a->nodes[stack[--sp]];
-		for (int e = an->head; e >= 0;) {
-			const areaslot_t *s = &a->slot[e];
-			const uint32_t *k = s->key;
+	cached = a->cache_valid && a->cache_gen == a->gen;
+	for (int i = 0; i < 3 && cached; i++)
+		cached = klo[i] >= a->cache_lo[i] && khi[i] <= a->cache_hi[i];
+	if (!cached && hi[0] - lo[0] <= AREA_CACHE_MAXSIZE && hi[1] - lo[1] <= AREA_CACHE_MAXSIZE &&
+	    hi[2] - lo[2] <= AREA_CACHE_MAXSIZE) {
+		/* a walk of the larger box, for this query and the ones near it */
+		for (int i = 0; i < 3; i++) {
+			a->cache_lo[i] = fkey(lo[i] - AREA_CACHE_MARGIN);
+			a->cache_hi[i] = fkey(hi[i] + AREA_CACHE_MARGIN);
+		}
+		a->cache_n = area_walk(a, a->cache_lo, a->cache_hi, a->cache_ids);
+		area_sort(a, a->cache_ids, a->cache_n);
+		a->cache_gen = a->gen;
+		a->cache_valid = cached = true;
+	}
+	if (cached) {
+		/* the walk's own test on each listed slot, which keeps slot order */
+		for (int i = 0; i < a->cache_n; i++) {
+			int e = a->cache_ids[i];
+			const uint32_t *k = a->slot[e].key;
 			if (!(k[0] > khi[0] || k[1] > khi[1] || k[2] > khi[2] || k[3] < klo[0] || k[4] < klo[1] || k[5] < klo[2]))
 				ids[n++] = e;
-			e = s->next;
 		}
-		if (an->axis < 0)
-			continue;
-		if (khi[an->axis] > an->kdist)
-			stack[sp++] = an->children[0];
-		if (klo[an->axis] < an->kdist)
-			stack[sp++] = an->children[1];
-	}
-	if (n > 1 && sorted) {
-		if (n <= 32) {
-			for (int i = 1; i < n; i++) {
-				int v = ids[i], j = i;
-				while (j > 0 && ids[j - 1] > v) {
-					ids[j] = ids[j - 1];
-					j--;
-				}
-				ids[j] = v;
-			}
-		} else {
-			/* long lists (a trace across the map) sort through a bitmap */
-			int words = 0;
-			for (int i = 0; i < n; i++) {
-				a->bits[ids[i] >> 5] |= 1u << (ids[i] & 31);
-				words = BW_MAX(words, (ids[i] >> 5) + 1);
-			}
-			n = 0;
-			for (int w = 0; w < words; w++) {
-				uint32_t b = a->bits[w];
-				a->bits[w] = 0;
-				while (b) {
-					ids[n++] = (w << 5) + __builtin_ctz(b);
-					b &= b - 1;
-				}
-			}
-		}
+	} else {
+		n = area_walk(a, klo, khi, ids);
+		if (sorted)
+			area_sort(a, ids, n);
 	}
 	a->scratch_top += n;
 	l->a = a;

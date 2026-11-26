@@ -647,6 +647,11 @@ Every SSE float compare is a helper call in xemu, and nxdk builds with no
 builtin `memcpy`, so the world code avoids both where it runs per trace:
 
 - The area tree compares boxes as integer keys made from the float bits.
+- Each area query walks the tree for a box 48 units larger than asked
+  (for boxes under 512 units) and keeps the slot list; a later query
+  inside that box, with nothing filed or moved since, filters the list
+  instead of walking again (84% of queries in the 8-bot match). The list
+  is 4 bytes per edict per area tree, 6 KB at 1536 edicts.
 - Q1 hull walks test axial planes with a subtract, not a dot product.
 - World traces and world point contents are remembered, keyed on their
   exact input bits. That takes about 260 KB per map under `BW_LOWMEM`.
