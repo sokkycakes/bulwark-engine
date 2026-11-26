@@ -53,8 +53,13 @@ a cfg the command line runs (`+exec lobby_dedicated.cfg`, which is how the
 lobby starts its dedicated server). The note reads
 "server.cfg: "map duel_alley" skipped, the command line starts a map",
 and only one map loads. FTE runs `server.cfg` before the command
-line and loads both maps. With no map anywhere the server says how to
-start one and waits.
+line and loads both maps. With no map from any of these, the server runs
+the game's start-up alias, as FTE's dedicated server does: the first of
+`dedicated_start`, `startmap_dm` and `startmap_sp` that is defined.
+Stiletto's `server.cfg` defines `alias startmap_dm "map duel_alley"`, so a
+bare `bulwark-ded` starts duel_alley and `+map` replaces it on both
+engines. With no alias either, the server says how to start a map and
+waits.
 
 ## The typed console
 
@@ -157,4 +162,5 @@ same lines:
 | `password abc` | sets the server password | the same |
 | `maxspectators` | 8 | 8 |
 | `server.cfg` with a map, plus `+map` | both maps load | one map loads |
+| `server.cfg` with `alias startmap_dm "map X"`, no `+map` | X loads | X loads |
 | `map nosuchmap` while a game runs | Can't find "maps/nosuchmap.bsp"; the game goes on | the same |

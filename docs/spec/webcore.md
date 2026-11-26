@@ -745,7 +745,7 @@ Active:
     "needsHero": boolean, // joining && hero == ""
     "joining":   boolean  // local userinfo *duel_joining non-empty
   },
-  "heroes": [ {"id": string, "name": string}, ... ] // from serverinfo arena_heroes
+  "heroes": [ {"id": string, "name": string}, ... ] // from serverinfo arena_heroes_0, arena_heroes_1, ... joined (or an older server's single arena_heroes)
                           // (space-separated IDs); name == id
 }
 ```

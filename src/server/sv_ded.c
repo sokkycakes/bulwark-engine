@@ -153,7 +153,19 @@ static void StartHeldMap_f(int argc, const char **argv)
 			Cbuf_InsertText(va("%s\n", held_map));
 		held_map[0] = 0;
 	} else if (!cmdline_has_map && !sv.active) {
-		Con_Printf("No map is running. Type \"map <name>\" here (\"maps\" lists them), or put it in server.cfg.\n");
+		/* nothing started a map: the game's own start-up alias, as FTE's
+		 * dedicated server runs it (Stiletto's server.cfg defines
+		 * startmap_dm, so +map on the command line replaces it) */
+		static const char *const starts[] = {"dedicated_start", "startmap_dm", "startmap_sp"};
+		int level;
+		for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); i++)
+			if (Cmd_AliasLevel(starts[i], &level)) {
+				Con_Printf("No map on the command line: running %s\n", starts[i]);
+				Cbuf_InsertText(va("%s\n", starts[i]));
+				return;
+			}
+		Con_Printf("No map is running. Type \"map <name>\" here (\"maps\" lists them), "
+		           "or define a startmap_dm alias in server.cfg.\n");
 	}
 }
 
