@@ -171,6 +171,9 @@ static inline int QC_StringsEqualQuick(string_t a, string_t b)
 
 /* bumped by every character store into a string (str[i] = c in QC) */
 extern uint32_t qc_string_writes;
+/* bumped by every collection that frees a string, whose slot a new string
+ * can then take */
+extern uint32_t qc_string_frees;
 
 #define QC_MAX_FILES 64
 #define QC_MAX_SEARCHES 32
@@ -198,6 +201,7 @@ typedef struct {
 
 struct qc_hashtab_s;
 struct qc_json_s;
+typedef struct qc_findcache_s qc_findcache_t;
 
 struct qc_extra_s {
 	int calling_builtin; /* function index of the builtin being run */
@@ -210,6 +214,8 @@ struct qc_extra_s {
 	qc_strbuf_t *strbufs;
 	int numstrbufs;
 	qc_tokens_t tokens;
+	qc_findcache_t *findcaches; /* qc_scan.c */
+	int numfindcaches;
 };
 
 void QC_ExtraInit(qcvm_t *vm);
@@ -229,5 +235,19 @@ void QC_StringSetChar(qcvm_t *vm, string_t s, int64_t idx, int ch);
 bool QC_AnyExecuting(void);
 BW_NORETURN void QC_AbortUnwind(qcvm_t *vm);
 bool QC_BuiltinImplemented(qcvm_t *vm, int fnum);
+/* qc_scan.c: how many iterations of the QCOP_FIND_S loop at statement
+ * sindex (s0, with its step statement) can be skipped, as none of them
+ * would find a match; the loop runs the next one itself */
+int QC_FindSkip(qcvm_t *vm, const qcstatement_t *s0, const qcstatement_t *step, int sindex);
+void QC_FreeFindCaches(qcvm_t *vm);
+/* the same for a QCOP_CALL_SCAN loop whose call is to fn, when fn is
+ * argv(); at most maxskip */
+int QC_CallScanSkip(qcvm_t *vm, const qcstatement_t *s0, const qcstatement_t *step, int sindex, qc_builtin_fn fn,
+                    int maxskip);
+/* qc_builtins_core.c: of the iterations of "if (argv(c) == key)" from c,
+ * stepping by step while (float)c < limit, how many in a row before the
+ * one that matches or the last find no match (at most maxskip), making
+ * the strings they would have made; 0 unless fn is argv() */
+int QC_ArgvScanSkip(qcvm_t *vm, qc_builtin_fn fn, int32_t c, int32_t step, float limit, string_t key, int maxskip);
 
 #endif

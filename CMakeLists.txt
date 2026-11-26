@@ -123,6 +123,7 @@ add_library(bwqcvm STATIC
 	src/qcvm/qc_exec.c
 	src/qcvm/qc_jit.c
 	src/qcvm/qc_strings.c
+	src/qcvm/qc_scan.c
 	src/qcvm/qc_builtins_core.c
 	src/qcvm/qc_extra.c
 	src/qcvm/qc_debug.c

@@ -31,6 +31,7 @@ static uint32_t nfree, freescan = 1;
 static uint32_t *usedlist;
 static uint32_t nused, capused;
 static uint32_t live, threshold = 8192;
+uint32_t qc_string_frees;
 
 #define SLOT_MASK 0x7fffffffu
 #define MIN_SLOTS 4096u
@@ -311,6 +312,8 @@ void QC_CollectGarbage(qcvm_t *vm, bool force)
 		live--;
 	}
 	nused = kept;
+	if (freed)
+		qc_string_frees++;
 	/* a collection costs about the same however much it frees, so let
 	 * garbage build up: Nuclide makes tens of thousands of temporary
 	 * strings a frame */

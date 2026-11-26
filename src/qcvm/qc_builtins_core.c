@@ -1211,6 +1211,43 @@ static void bi_argv(qcvm_t *vm)
 	vm->globals[OFS_RETURN].i = t->argv[i];
 }
 
+int QC_ArgvScanSkip(qcvm_t *vm, qc_builtin_fn fn, int32_t c, int32_t step, float limit, string_t key, int maxskip)
+{
+	qc_tokset_t *t = vm->extra->tokens.cur;
+	const char *kt;
+	int k = 0, klen;
+	/* a string argv() made has its token's text unless a character store
+	 * came since */
+	bool same = vm->extra->tokens.writes == qc_string_writes;
+	if (fn != bi_argv)
+		return 0;
+	kt = QC_GetString(vm, key);
+	klen = (int)strlen(kt);
+	while (k < maxskip && (float)c < limit) {
+		int32_t next = (int32_t)((uint32_t)c + (uint32_t)step);
+		int i = (int)(float)c;
+		bool match;
+		if (!((float)next < limit))
+			break; /* the last: the loop runs it */
+		if (t && i < 0)
+			i += t->count;
+		if (!t || i < 0 || i >= t->count)
+			match = !klen;
+		else if (t->argv[i] && !same)
+			match = !strcmp(QC_GetString(vm, t->argv[i]), kt);
+		else
+			match = t->len[i] == klen && !memcmp(t->buf + t->text[i], kt, (size_t)klen);
+		if (match)
+			break;
+		/* argv() would have made it here */
+		if (t && i >= 0 && i < t->count && !t->argv[i])
+			t->argv[i] = QC_NewStringLen(vm, t->buf + t->text[i], (size_t)t->len[i]);
+		c = next;
+		k++;
+	}
+	return k;
+}
+
 static void bi_argv_start_index(qcvm_t *vm)
 {
 	int i;

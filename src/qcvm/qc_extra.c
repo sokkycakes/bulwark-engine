@@ -1062,6 +1062,7 @@ static void bi_buf_sort(qcvm_t *vm)
 void QC_ExtraFree(qcvm_t *vm)
 {
 	struct qc_extra_s *x = vm->extra;
+	QC_FreeFindCaches(vm);
 	for (int i = 0; i < x->numhashtabs; i++)
 		hashtab_free(x->hashtabs[i]);
 	Mem_Free(x->hashtabs);

@@ -1193,6 +1193,14 @@ dispatch:
 		 * GOTO back to 0; the loader checked where the jumps go */
 		const qcstatement_t *s0 = st, *step = st + 6 + JUMP(st[6].b);
 		uint32_t back = 1u - (uint32_t)JUMP(step[1].a);
+		{
+			/* go straight to the iteration that matches, or the last */
+			int skip = QC_FindSkip(vm, s0, step, SINDEX());
+			if (skip > 0 && (uint64_t)looped + (uint64_t)back * (uint64_t)skip < QC_MAX_INSTRUCTIONS) {
+				G[s0[0].a].i += skip;
+				looped += back * (uint32_t)skip;
+			}
+		}
 		for (;;) {
 			G[s0[0].c].i = G[s0[0].a].i < G[s0[0].b].i;
 			if (!G[s0[1].a].i) {
@@ -1223,6 +1231,22 @@ dispatch:
 		 * running progs is made here as the call handler makes it; any
 		 * other call goes to that handler. */
 		const int i0 = SINDEX();
+		{
+			/* an argv() scan goes straight to the iteration that matches,
+			 * or the last */
+			const qcstatement_t *s0 = st, *step = st + 5 + JUMP(st[5].b);
+			int target = G[s0[3].a].i, fnum = QC_FUNC_INDEX(target);
+			if (QC_FUNC_PROGS(target) == vm->curprogs && (unsigned)fnum - 1u < (unsigned)vm->numfunctions - 1u &&
+			    vm->functions[fnum].builtin) {
+				uint32_t back = 1u - (uint32_t)JUMP(step[1].a);
+				int room = (int)BW_MIN((uint64_t)(QC_MAX_INSTRUCTIONS - 1u - looped) / BW_MAX(back, 1u), INT32_MAX);
+				int skip = QC_CallScanSkip(vm, s0, step, i0, vm->functions[fnum].builtin, room);
+				if (skip > 0) {
+					G[s0[0].a].i = (int32_t)((uint32_t)G[s0[0].a].i + (uint32_t)skip * (uint32_t)G[step->b].i);
+					looped += back * (uint32_t)skip;
+				}
+			}
+		}
 		for (;;) {
 			const qcstatement_t *s0 = stmts + i0, *cs = s0 + 3, *step;
 			int target, fnum, caller = vm->curprogs;
