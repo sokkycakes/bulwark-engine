@@ -621,8 +621,26 @@ clock, GPU and sound rates every 5 s ("xbox: interrupts a second").
 Each of these is kept, for reasons that hold on a console:
 
 - **Clock:** the kernel counts time by it at a fixed 1 ms a tick (its
-  tick count, timers, `Sleep`, the USB stack's delays). Reprogramming the
-  timer chip for fewer ticks would slow all of that down with it.
+  tick count, timers, `Sleep`, the USB stack's delays). Neither the
+  engine nor nxdk sets this rate: the kernel programs the timer chip for
+  1 ms at boot, exports `KeTimeIncrement` as a constant and has no call
+  to change it, and titles read `KeTickCount` as milliseconds (nxdk's
+  `GetTickCount` and `timeGetTime` return it as it is). Reprogramming the
+  timer chip from the title would leave the kernel adding 1 ms a tick, so
+  its tick count, system time, every timeout and `Sleep` would run slow
+  by the same factor, and the rate would stay that way after the title
+  exits unless the kernel reprograms it. The engine's own clocks would
+  be unaffected (they use the performance counter and the vblank count),
+  but the kernel's and the libraries' would not. So the tick stays.
+  Measured in xemu by reprogramming it from a test build (not kept):
+  in hero select, alternating 30 s at 1 ms and at 4 ms a tick took the
+  clock from about 830 to 247 interrupts a second and frame work from
+  16.6 to 15.1 ms on average (every 4 ms phase was 1 to 2.5 ms below the
+  1 ms phases either side of it), so about 65 us of xemu's time a tick,
+  or 5% of the frame time; in the match the same test was lost in noise
+  from the host. On a console a tick is the interrupt entry, about six
+  8259 accesses and the kernel's time update: a few microseconds, well
+  under 1% of the CPU.
 - **GPU:** the vblank interrupt is what shows a queued frame (pbkit's ISR
   writes the start address at the vblank) and what wakes the main loop
   from its vblank wait; the flip interrupt marks the frame ready. Both
@@ -661,7 +679,16 @@ instruction of `HalEndSystemInterrupt2` or `HalpClockInterrupt`. Nothing the eng
 does allocates from the kernel's pool during a frame: the samples the
 kernel's symbol map gives to `xbv_malloc` are code the kernel runs from
 its data section (the dispatch code inside its interrupt objects, beside
-`XeInterruptShadows`), and their stacks are interrupt dispatch.
+`XeInterruptShadows`), and their stacks are interrupt dispatch. In
+detail: Roswell keeps an NT-sized copy of each interrupt object a title
+connects in `XeInterruptShadows` (in its `.bss`), and the sampled address,
+`XeInterruptShadows+0x40`, is the dispatch code at offset 0x3c of the
+first one, pbkit's GPU interrupt; a map that skips `.bss` symbols names
+the last code symbol before it. No pool or memory manager routine has
+samples in the match, and in the kernel's 30 busiest addresses all but
+the serial debugger and the performance counter are interrupt entry and
+exit (the 8259 mask and end-of-interrupt writes, the clock handler, the
+trap return).
 
 Two more xemu effects: under host load xemu delivers 720 to 790 clock
 ticks a second rather than 1000, so the kernel's tick count runs slow
