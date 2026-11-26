@@ -532,6 +532,21 @@ static void pointer(emit_t *e, int s, int o, int k, int n)
 	jcc_fail(e, CC_E, s);
 	alui(e, 7, RAX, (int32_t)(e->vm->memsize - (size_t)n * 4));
 	jcc_fail(e, CC_A, s);
+#ifdef MEM_PAGE_LAZY
+	{
+		/* only backed entity slots and the backed heap are safe to touch:
+		   anything else goes to the interpreter, which backs or errors */
+		uint8_t *ok;
+		opm(e, 0, 0, 0x8d, RCX, RAX, -1, 0, n * 4); /* lea ecx, [eax + n * 4] */
+		opm(e, 0, 0, 0x3b, RCX, RV, -1, 0, (int32_t)offsetof(qcvm_t, backed_end)); /* cmp ecx, backed_end */
+		ok = jcc8(e, CC_BE);
+		alui(e, 7, RAX, (int32_t)e->vm->heap_ofs);
+		jcc_fail(e, CC_B, s);
+		opm(e, 0, 0, 0x3b, RCX, RV, -1, 0, (int32_t)offsetof(qcvm_t, committed)); /* cmp ecx, committed */
+		jcc_fail(e, CC_A, s);
+		fix8(e, ok);
+	}
+#endif
 	opm(e, 0, 1, 0x8b, RDX, RV, -1, 0, (int32_t)offsetof(qcvm_t, mem)); /* mov rdx, vm->mem */
 }
 
@@ -1667,6 +1682,9 @@ qc_jitfn_t QC_JitCompile(qcvm_t *vm, qcfunc_t *f)
 	const bool callable = f->d.locals <= CALL_MAX_LOCALS;
 	uint32_t *stubat = NULL;
 	uint8_t *code = NULL;
+	/* native code checks entity numbers against max_edicts, not the
+	   backed slots, so they all get their memory now (pr_jit is opt-in) */
+	QC_EdictFields(vm, vm->max_edicts - 1);
 
 	f->jit_failed = true;
 	if (vm->stmt32 || f->builtin || f->d.first_statement <= 0 || n <= 0 || n > MAX_FUNCTION_STATEMENTS)

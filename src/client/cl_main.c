@@ -267,6 +267,8 @@ static void clear_map_state(void)
 	memset(blobsent, 0, sizeof(blobsent));
 	BSP_Free(cl.world);
 	cl.world = NULL;
+	for (int i = 0; i < cl.numents; i++)
+		Mem_Free(cl.ents[i].samples);
 	Mem_Free(cl.ents);
 	cl.ents = NULL;
 	cl.numents = 0;

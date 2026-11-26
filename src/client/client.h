@@ -42,10 +42,13 @@ typedef struct {
 	float frame, frame1time;
 } interpsample_t;
 
+/* samples are allocated the first time an entity number is recorded: most
+ * of the BW_CL_MAXENTS numbers never are, and the table would otherwise be
+ * 2.6 MB (a quarter of what a 64 MB Xbox has for the game) */
 typedef struct {
 	int csqc_ent; /* the csprogs entity standing for this server entity, 0 if none */
-	interpsample_t samples[CL_INTERP_SAMPLES];
 	int numsamples;
+	interpsample_t *samples; /* CL_INTERP_SAMPLES of them, or NULL */
 } clentity_t;
 
 typedef struct {

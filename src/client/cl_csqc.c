@@ -435,6 +435,8 @@ static void record_interp(int e, int ent)
 	qcvm_t *vm = cl.csqc;
 	clentity_t *ce = &cl.ents[e];
 	interpsample_t *s;
+	if (!ce->samples)
+		ce->samples = Mem_Alloc(sizeof(interpsample_t) * CL_INTERP_SAMPLES);
 	if (ce->numsamples == CL_INTERP_SAMPLES) {
 		memmove(ce->samples, ce->samples + 1, sizeof(interpsample_t) * (CL_INTERP_SAMPLES - 1));
 		ce->numsamples--;

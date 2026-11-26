@@ -824,7 +824,22 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 		QC_Free(vm);
 		return NULL;
 	}
-	vm->mem = Mem_Alloc(vm->memsize);
+	/* the entity slots and the heap are backed as they are used: the client
+	   game's 4 MB heap is mostly free outside of loading its map overview */
+	vm->committed = BW_MIN((vm->heap_ofs + 64 + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1), vm->memsize);
+#ifdef MEM_PAGE_LAZY
+	vm->mem = Mem_PageAlloc(vm->memsize, vm->edicts_ofs);
+	{
+		size_t h = vm->heap_ofs & ~(size_t)(MEM_PAGE - 1);
+		if (!Mem_PageCommit(vm->mem + h, vm->committed - h))
+			Sys_Error("out of memory for %s", name);
+	}
+	vm->backed_end = vm->edicts_ofs;
+#else
+	vm->mem = Mem_PageAlloc(vm->memsize, vm->memsize);
+	vm->edicts_backed = vm->max_edicts;
+	vm->backed_end = vm->heap_ofs;
+#endif
 	p->globals = (qcval_t *)vm->mem;
 	p->globals_addr = 0;
 	for (int i = 0; i < p->numglobals; i++)
@@ -837,7 +852,11 @@ qcvm_t *QC_Load(const char *name, const void *data, size_t size, qcvm_kind_t kin
 	vm->num_edicts = 1;
 	QC_HeapInit(vm);
 
+#ifdef BW_LOWMEM
+	vm->localstack_size = 1 << 12; /* it grows when a call needs more (enter_function) */
+#else
 	vm->localstack_size = 1 << 16;
+#endif
 	vm->localstack = Mem_Alloc(sizeof(qcval_t) * vm->localstack_size);
 	/* random() differs from run to run, as in Quake engines seeded from the
 	 * clock, unless pr_seed fixes it (for repeatable benchmarks and tests) */
@@ -918,12 +937,27 @@ int QC_AddProgs(qcvm_t *vm, const char *name, const void *data, size_t size)
 	return n;
 }
 
-void QC_PrintMemStats(qcvm_t *vm)
+static void print_mem_stats(qcvm_t *vm, bool always)
 {
 	int peak = BW_MAX(vm->edicts_peak, vm->num_edicts);
-	Con_DPrintf("%s: peak %d of %d entities, heap peak %u of %u KB, %d of %d entity words, %d strings live\n",
-	            vm->name, peak, vm->max_edicts, (unsigned)(vm->heap_peak / 1024), (unsigned)(vm->heap_size / 1024),
-	            vm->edict_words_used, vm->edict_words, QC_LiveStrings());
+	if (!always && !developer)
+		return;
+	Con_Printf("%s: peak %d of %d entities, heap peak %u of %u KB (%u KB of the VM held), %d of %d entity words, "
+	           "%d strings live\n",
+	           vm->name, peak, vm->max_edicts, (unsigned)(vm->heap_peak / 1024), (unsigned)(vm->heap_size / 1024),
+	           (unsigned)((vm->heap_ofs + (vm->committed - vm->heap_ofs) -
+	                       (size_t)(vm->max_edicts - vm->edicts_backed) * vm->edict_words * 4) / 1024),
+	           vm->edict_words_used, vm->edict_words, QC_LiveStrings());
+}
+
+void QC_PrintMemStats(qcvm_t *vm) { print_mem_stats(vm, false); }
+
+/* pr_memstats: every loaded VM, and the string pool */
+void QC_PrintAllMemStats(void)
+{
+	for (int i = 0; i < vm_count; i++)
+		print_mem_stats(vm_list[i], true);
+	QC_PrintStringStats();
 }
 
 void QC_Free(qcvm_t *vm)
@@ -947,7 +981,7 @@ void QC_Free(qcvm_t *vm)
 	Mem_Free(vm->autocvars);
 	for (int i = 0; i < vm->numprogs; i++)
 		free_progs(&vm->progs[i]);
-	Mem_Free(vm->mem);
+	Mem_PageFree(vm->mem);
 	Mem_Free(vm->edicts);
 	Mem_Free(vm->localstack);
 	Mem_Free(vm);
@@ -970,6 +1004,29 @@ qcval_t *QC_ParmExt(qcvm_t *vm, int n)
 /* --- entities -------------------------------------------------------- */
 
 bool QC_ValidEdict(qcvm_t *vm, int e) { return e >= 0 && e < vm->max_edicts; }
+
+/* Slots past the most a game has used are only address space where pages
+ * fault in on demand: a 64 MB Xbox can't hold the server's 768 slots of 5 KB
+ * when a match uses 450. A slot gets its (zeroed) memory the first time
+ * anything reaches it, as do all below it, so backed slots stay a prefix and
+ * nothing reads differently. */
+qcval_t *QC_BackEdict(qcvm_t *vm, int e)
+{
+	size_t ent = (size_t)vm->edict_words * 4, from, to;
+	int want;
+	if ((unsigned)e >= (unsigned)vm->max_edicts)
+		QC_RunError(vm, "entity %d out of range", e);
+	if (e < vm->edicts_backed)
+		return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * ent);
+	want = BW_MIN(vm->max_edicts, e + 33);
+	from = (vm->edicts_ofs + (size_t)vm->edicts_backed * ent) & ~(size_t)(MEM_PAGE - 1);
+	to = BW_MIN((vm->edicts_ofs + (size_t)want * ent + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1), vm->memsize);
+	if (!Mem_PageCommit(vm->mem + from, to - from))
+		Sys_Error("out of memory for %d entities of %s", want, vm->name);
+	vm->edicts_backed = (int)BW_MIN((size_t)vm->max_edicts, (to - vm->edicts_ofs) / ent);
+	vm->backed_end = vm->edicts_backed == vm->max_edicts ? vm->heap_ofs : vm->edicts_ofs + (size_t)vm->edicts_backed * ent;
+	return (qcval_t *)(vm->mem + vm->edicts_ofs + (size_t)e * ent);
+}
 
 void QC_ClearEdict(qcvm_t *vm, int e)
 {
@@ -1154,10 +1211,29 @@ const char *QC_ParseEdict(qcvm_t *vm, int e, const char *data, bool *ok)
 
 /* --- arena pointers and heap ----------------------------------------- */
 
+static bool heap_commit(qcvm_t *vm, size_t ofs);
+
 void *QC_Pointer(qcvm_t *vm, uint32_t addr, size_t bytes)
 {
-	if ((uint64_t)addr + bytes > vm->memsize || addr == 0)
+	uint64_t end = (uint64_t)addr + bytes;
+	if (end > vm->memsize || addr == 0)
 		QC_RunError(vm, "bad pointer 0x%x (+%zu)", addr, bytes);
+#ifdef MEM_PAGE_LAZY
+	/* parts of the arena are only reserved, and touching them faults */
+	if (end > vm->backed_end) {
+		if (addr < vm->heap_ofs) {
+			/* entity slots: back them, as a field access would */
+			if (end > vm->edicts_ofs) {
+				size_t top = (size_t)BW_MIN(end, (uint64_t)vm->heap_ofs) - 1 - vm->edicts_ofs;
+				QC_BackEdict(vm, (int)BW_MIN(top / ((size_t)vm->edict_words * 4), (size_t)vm->max_edicts - 1));
+			}
+		}
+		/* past the backed heap is only a free tail: back it (zeroed) rather
+		   than fault on a stale pointer */
+		if (end > vm->committed && !heap_commit(vm, (size_t)end - vm->heap_ofs))
+			QC_RunError(vm, "out of memory for pointer 0x%x (+%zu)", addr, bytes);
+	}
+#endif
 	return vm->mem + addr;
 }
 
@@ -1173,6 +1249,35 @@ typedef struct {
 #define HEAP_MAGIC 0x4b4c5742u
 
 static heaphdr_t *heap_block(qcvm_t *vm, size_t ofs) { return (heaphdr_t *)(vm->mem + vm->heap_ofs + ofs); }
+
+/* The heap's free tail can go back to the system: a client game reads its
+ * map overview (3 MB) into its heap once while loading, and a 64 MB Xbox
+ * can't keep that. Only big tails are trimmed, so small blocks coming and
+ * going at the top don't commit and release pages each time. */
+#define HEAP_TRIM_MIN (256u << 10)
+
+/* back the heap up to ofs (from the heap's start) */
+static bool heap_commit(qcvm_t *vm, size_t ofs)
+{
+	size_t end = vm->heap_ofs + ofs;
+	if (end <= vm->committed)
+		return true;
+	end = BW_MIN((end + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1), vm->memsize);
+	if (!Mem_PageCommit(vm->mem + vm->committed, end - vm->committed))
+		return false;
+	vm->committed = end;
+	return true;
+}
+
+/* a free last block at ofs: release whole pages past its header */
+static void heap_trim(qcvm_t *vm, size_t ofs)
+{
+	size_t keep = (vm->heap_ofs + ofs + sizeof(heaphdr_t) + MEM_PAGE - 1) & ~(size_t)(MEM_PAGE - 1);
+	if (keep >= vm->committed || vm->committed - keep < HEAP_TRIM_MIN || ((uintptr_t)vm->mem & (MEM_PAGE - 1)))
+		return;
+	Mem_PageDecommit(vm->mem + keep, vm->committed - keep);
+	vm->committed = keep;
+}
 
 void QC_HeapInit(qcvm_t *vm)
 {
@@ -1197,7 +1302,11 @@ uint32_t QC_HeapAlloc(qcvm_t *vm, size_t bytes)
 		if (h->magic != HEAP_MAGIC || !h->size)
 			QC_RunError(vm, "memalloc heap corrupted");
 		if (!h->used && h->size >= need) {
-			if (h->size - need >= sizeof(heaphdr_t) + 16) {
+			bool split = h->size - need >= sizeof(heaphdr_t) + 16;
+			/* unsplit, the whole block is cleared below */
+			if (!heap_commit(vm, ofs + (split ? need + sizeof(heaphdr_t) : h->size)))
+				return 0;
+			if (split) {
 				heaphdr_t *rest = heap_block(vm, ofs + need);
 				rest->size = h->size - (uint32_t)need;
 				rest->used = 0;
@@ -1224,6 +1333,8 @@ static heaphdr_t *heap_header_for(qcvm_t *vm, uint32_t addr)
 	heaphdr_t *h;
 	if (addr < vm->heap_ofs + sizeof(heaphdr_t) || addr >= vm->heap_ofs + vm->heap_size)
 		return NULL;
+	if (addr > vm->committed)
+		return NULL; /* the header would be in a released page: never a live block */
 	h = (heaphdr_t *)(vm->mem + addr) - 1;
 	if (h->magic != HEAP_MAGIC || !h->used)
 		return NULL;
@@ -1262,6 +1373,8 @@ void QC_HeapFree(qcvm_t *vm, uint32_t addr)
 	}
 	if (ofs + h->size < vm->heap_size)
 		heap_block(vm, ofs + h->size)->prev = h->size;
+	else
+		heap_trim(vm, ofs);
 }
 
 uint32_t QC_HeapRealloc(qcvm_t *vm, uint32_t addr, size_t bytes)

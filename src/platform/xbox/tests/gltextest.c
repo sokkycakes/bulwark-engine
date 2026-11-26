@@ -47,6 +47,9 @@ void pb_target_back_buffer(void) {}
 DWORD pb_get_vbl_counter(void) { return 0; }
 DWORD pb_wait_for_vbl(void) { return 0; }
 size_t XBX_FreeMemory(void) { return 0; }
+void XBX_NoteFreeMemory(const void *from) { (void)from; }
+bool xbx_memlog;
+size_t XBX_TotalMemory(void) { return (size_t)64 << 20; }
 
 void Con_Printf(const char *fmt, ...)
 {
@@ -206,7 +209,7 @@ static void test_pictures(void)
 	GLuint id = new_texture();
 	xb_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 512, 512, 0, GL_RGBA, GL_UNSIGNED_BYTE, src);
 	xtex_t *t = get_texs(id);
-	CHECK(t->fmt == FMT_A8B8G8R8 && t->try_dxt, "a fresh picture waits as 32-bit");
+	CHECK(t->fmt == FMT_A8B8G8R8 && t->try_dxt && !t->data && t->pending, "a fresh picture waits in main memory");
 	tex2d(id);
 	CHECK(t->fmt == FMT_DXT5 && t->bytes == 512 * 512 && !t->pending && !t->try_dxt,
 	      "smooth picture after its first draw: %#x, %zu bytes", t->fmt, t->bytes);
@@ -234,7 +237,8 @@ static void test_pictures(void)
 	src = image(512, 512, 0, 0);
 	GLuint smooth = new_texture();
 	xb_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 512, 512, 0, GL_RGBA, GL_UNSIGNED_BYTE, src);
-	CHECK(get_texs(noisy)->fmt == FMT_A8B8G8R8 && !get_texs(noisy)->pending, "noisy picture kept at 32 bits");
+	CHECK(get_texs(noisy)->fmt == FMT_A8B8G8R8 && !get_texs(noisy)->pending && get_texs(noisy)->data,
+	      "noisy picture kept at 32 bits");
 	/* a big world texture is compressed once, as a world texture */
 	xb_glGenerateMipmap(GL_TEXTURE_2D);
 	CHECK(get_texs(smooth)->fmt == FMT_DXT1 && get_texs(smooth)->mipped && !get_texs(smooth)->try_dxt,
@@ -254,6 +258,42 @@ static void test_pictures(void)
 	tex2d(id);
 	CHECK(get_texs(id)->fmt == FMT_A8B8G8R8, "lightmap stays 32-bit");
 	free(rgb);
+}
+
+static void test_palette(void)
+{
+	/* a sprite sheet: Quake palette colours with a transparent index */
+	uint8_t *src = malloc(256 * 128 * 4);
+	for (int i = 0; i < 256 * 128; i++) {
+		int c = rnd(200);
+		src[i * 4] = (uint8_t)c, src[i * 4 + 1] = (uint8_t)(c * 3), src[i * 4 + 2] = (uint8_t)(255 - c);
+		src[i * 4 + 3] = c < 20 ? 0 : 255;
+	}
+	GLuint id = new_texture();
+	xb_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 128, 0, GL_RGBA, GL_UNSIGNED_BYTE, src);
+	xtex_t *t = get_texs(id);
+	CHECK(t->fmt == FMT_I8 && t->bytes == PAL_BYTES + 256 * 128, "few colours: palette, %#x %zu bytes", t->fmt, t->bytes);
+	uint8_t *back = unswizzle(t);
+	CHECK(back && !memcmp(back, src, 256 * 128 * 4), "the palette picture is exact");
+	free(back);
+	printf("palette: 256x128, %zu bytes (32-bit: %d)\n", t->bytes, 256 * 128 * 4);
+
+	/* an update goes back to 32 bits with the rest intact */
+	uint8_t patch[4 * 4 * 4];
+	memset(patch, 77, sizeof(patch));
+	xb_glTexSubImage2D(GL_TEXTURE_2D, 0, 4, 4, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, patch);
+	CHECK(t->fmt == FMT_A8B8G8R8, "an updated palette picture goes back to 32 bits");
+	back = unswizzle(t);
+	CHECK(back && !memcmp(back + (5 * 256 + 5) * 4, patch, 4) && !memcmp(back + 100 * 4, src + 100 * 4, 4),
+	      "the update landed and the rest is kept");
+	free(back);
+
+	/* mipmapped: the world path decides from the full picture */
+	id = new_texture();
+	xb_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 128, 0, GL_RGBA, GL_UNSIGNED_BYTE, src);
+	xb_glGenerateMipmap(GL_TEXTURE_2D);
+	CHECK(get_texs(id)->mipped && get_texs(id)->fmt != FMT_I8, "a mipmapped texture leaves the palette");
+	free(src);
 }
 
 static void test_cube(void)
@@ -349,6 +389,7 @@ int main(int argc, char **argv)
 	test_world_dxt1();
 	test_world_other();
 	test_pictures();
+	test_palette();
 	test_cube();
 	run_deferred(true);
 	if (argc > 1) {

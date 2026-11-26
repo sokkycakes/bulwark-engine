@@ -26,7 +26,10 @@ unsigned long XBX_SoundBuffersPlayed(void);
 
 /* sys_xbox.c */
 void XBX_PrintMemory(const char *when);
+void XBX_PrintRegions(void);
 size_t XBX_FreeMemory(void);
+void XBX_NoteFreeMemory(const void *from);
+extern bool xbx_memlog; /* -xmemlog */
 size_t XBX_TotalMemory(void);
 
 #endif

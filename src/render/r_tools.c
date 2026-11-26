@@ -47,8 +47,8 @@ static void list_image(image_t *img, void *ctx)
 	size_t bytes = (size_t)img->width * img->height * 4 * (img->target == GL_TEXTURE_CUBE_MAP ? 6 : 1);
 	if (!want(l, img->name))
 		return;
-	Con_Printf("%s%-48s %4dx%-4d %s%s\n", img->missing ? "^1" : "", img->name, img->width, img->height,
-	           img->target == GL_TEXTURE_CUBE_MAP ? "cube " : "", img->alpha ? "alpha" : "");
+	Con_Printf("%s%-48s %4dx%-4d %s%s (texture %u)\n", img->missing ? "^1" : "", img->name, img->width, img->height,
+	           img->target == GL_TEXTURE_CUBE_MAP ? "cube " : "", img->alpha ? "alpha" : "", (unsigned)img->tex);
 	l->count++;
 	l->bytes += img->missing ? 0 : bytes;
 }
