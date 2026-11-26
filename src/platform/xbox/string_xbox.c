@@ -8,6 +8,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* the builtin names bw_xbox.h gives these: here they are defined */
+#undef memcpy
+#undef memset
+#undef memcmp
+#undef strlen
+
 /* rep movsd and rep stosd are the Pentium III's fast block moves, and xemu
  * runs each as one helper call rather than per byte */
 static inline void copy_fwd(unsigned char *d, const unsigned char *s, size_t n)
