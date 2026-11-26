@@ -13,6 +13,59 @@ void(BWGLAPI *qglFramebufferTexture2D_opt)(GLenum t, GLenum a, GLenum tt, GLuint
 void(BWGLAPI *qglMultiDrawElements_opt)(GLenum mode, const GLsizei *count, GLenum type, const void *const *ofs,
                                          GLsizei n);
 
+/* host_speeds counts texture and static buffer uploads, which make frame spikes */
+static int up_count;
+static size_t up_bytes;
+static double up_seconds;
+static PFN_glTexImage2D real_TexImage2D;
+static PFN_glTexSubImage2D real_TexSubImage2D;
+static PFN_glGenerateMipmap real_GenerateMipmap;
+static PFN_glBufferData real_BufferData;
+
+static void BWGLAPI timed_TexImage2D(GLenum t, GLint l, GLint ifmt, GLsizei w, GLsizei h, GLint b, GLenum f,
+                                     GLenum ty, const void *p)
+{
+	double t0 = Sys_Seconds();
+	real_TexImage2D(t, l, ifmt, w, h, b, f, ty, p);
+	up_seconds += Sys_Seconds() - t0;
+	up_count++, up_bytes += (size_t)w * (size_t)h * 4;
+}
+
+static void BWGLAPI timed_TexSubImage2D(GLenum t, GLint l, GLint x, GLint y, GLsizei w, GLsizei h, GLenum f,
+                                        GLenum ty, const void *p)
+{
+	double t0 = Sys_Seconds();
+	real_TexSubImage2D(t, l, x, y, w, h, f, ty, p);
+	up_seconds += Sys_Seconds() - t0;
+	up_count++, up_bytes += (size_t)w * (size_t)h * 4;
+}
+
+static void BWGLAPI timed_GenerateMipmap(GLenum t)
+{
+	double t0 = Sys_Seconds();
+	real_GenerateMipmap(t);
+	up_seconds += Sys_Seconds() - t0;
+}
+
+static void BWGLAPI timed_BufferData(GLenum t, GLsizeiptr size, const void *data, GLenum usage)
+{
+	/* streamed vertices are every frame's normal work, not a spike */
+	if (usage == GL_STREAM_DRAW) {
+		real_BufferData(t, size, data, usage);
+		return;
+	}
+	double t0 = Sys_Seconds();
+	real_BufferData(t, size, data, usage);
+	up_seconds += Sys_Seconds() - t0;
+	up_count++, up_bytes += (size_t)size;
+}
+
+void R_TakeUploadStats(int *count, size_t *bytes, double *seconds)
+{
+	*count = up_count, *bytes = up_bytes, *seconds = up_seconds;
+	up_count = 0, up_bytes = 0, up_seconds = 0;
+}
+
 int GL_LoadFunctions(void *(*getproc)(const char *name))
 {
 	int missing = 0;
@@ -24,6 +77,16 @@ int GL_LoadFunctions(void *(*getproc)(const char *name))
 	}
 	BW_GL_FUNCS(X)
 #undef X
+#define WRAP(name)                                                                                             \
+	if (qgl##name) {                                                                                           \
+		real_##name = qgl##name;                                                                               \
+		qgl##name = timed_##name;                                                                              \
+	}
+	WRAP(TexImage2D)
+	WRAP(TexSubImage2D)
+	WRAP(GenerateMipmap)
+	WRAP(BufferData)
+#undef WRAP
 	qglFramebufferTexture2D_opt = (void(BWGLAPI *)(GLenum, GLenum, GLenum, GLuint, GLint))getproc("glFramebufferTexture2D");
 	qglMultiDrawElements_opt = (void(BWGLAPI *)(GLenum, const GLsizei *, GLenum, const void *const *, GLsizei))getproc(
 		"glMultiDrawElements");

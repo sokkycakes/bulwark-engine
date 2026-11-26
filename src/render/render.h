@@ -52,6 +52,8 @@ void R_TrailParticles(int index, const float *start, const float *end);
 bool R_ShowpicTouch(float x, float y);
 
 void R_BeginFrame(void);
+/* uploads since the last call (host_speeds): textures and non-streamed buffers */
+void R_TakeUploadStats(int *count, size_t *bytes, double *seconds);
 void R_EndFrame(void);          /* draws the console and presents */
 
 /* 2D drawing for other modules (UI toolkits and the like). Coordinates are

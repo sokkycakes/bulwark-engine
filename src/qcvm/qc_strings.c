@@ -282,9 +282,19 @@ static uint32_t pow2_cap(uint32_t n)
 	return c;
 }
 
+static int gc_runs;
+static double gc_seconds;
+
+void QC_TakeGCStats(int *runs, double *seconds)
+{
+	*runs = gc_runs, *seconds = gc_seconds;
+	gc_runs = 0, gc_seconds = 0;
+}
+
+static void collect(void);
+
 void QC_CollectGarbage(qcvm_t *vm, bool force)
 {
-	uint32_t freed = 0, top = 0, kept = 0;
 	(void)vm;
 	if (!force && live < threshold)
 		return;
@@ -292,6 +302,15 @@ void QC_CollectGarbage(qcvm_t *vm, bool force)
 		return;
 	if (!capstrs)
 		return;
+	double t0 = Sys_Seconds();
+	collect();
+	gc_seconds += Sys_Seconds() - t0;
+	gc_runs++;
+}
+
+static void collect(void)
+{
+	uint32_t freed = 0, top = 0, kept = 0;
 	memset(marks, 0, capstrs / 8);
 	for (int i = 0; i < QC_VMCount(); i++)
 		mark_vm(QC_VMAt(i));
