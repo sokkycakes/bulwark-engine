@@ -186,6 +186,8 @@ void CL_SeatsFrame(void);
 void CL_SeatInfo(int seat, int slot, int ent);
 void CL_SeatSpawned(int seat);
 void CL_SeatDevicePressed(int device, int key); /* an unassigned controller's button: press Start to join */
+void CL_SeatClaimPad(int device);  /* a controller button: the first pressed becomes player 1's */
+void CL_SeatPadRemoved(int device); /* a controller unplugged */
 
 /* cl_main.c */
 void CL_Init(void);

@@ -70,7 +70,7 @@ ctest --test-dir build        # needs FTEQCC=/path/to/fteqcc to rebuild the test
 ```
 
 Client options: `-width`, `-height`, `-fullscreen`, `-headless` (no window
-or sound), plus the server's options below. Every console command is listed in
+or sound; Ctrl+C or SIGTERM quits it, and a second one exits at once), plus the server's options below. Every console command is listed in
 [docs/spec/console.md](docs/spec/console.md). Useful ones: `screenshot`,
 `r_speeds 1` (2 also lists the scene's entities), `pr_trace <name>` (prints
 calls to QC functions whose names contain it), `music <file>`, `play
@@ -116,7 +116,11 @@ players join a desktop server.
 
 Options: `-basedir dir`, `-game dir` (repeatable, later ones override),
 `-frames n`, `-developer`, `-userdir dir` (write configs and saves there
-instead of the game folder), and `+command args` for console commands.
+instead of the game folder), `-port n`, and `+command args` for console
+commands. The game client does the same with `bulwark -dedicated ...`.
+The server runs the game's configs and then `server.cfg`, and takes
+commands typed on the terminal (`status`, `serverinfo`, `map`, `kick`,
+`addBot`, `quit`). See [docs/spec/dedicated.md](docs/spec/dedicated.md).
 
 ## Scenes
 

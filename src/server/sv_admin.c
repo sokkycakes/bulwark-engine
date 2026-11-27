@@ -86,6 +86,24 @@ int SV_Penalties(const client_t *c)
 	return flags;
 }
 
+static void add_penalty(const client_t *c, int kind, double minutes, const char *reason)
+{
+	penalty_t *p;
+	penalties = Mem_Realloc(penalties, sizeof(penalty_t) * (size_t)(numpenalties + 1));
+	p = &penalties[numpenalties++];
+	memset(p, 0, sizeof(*p));
+	Str_Copy(p->ip, penalty_key(c), sizeof(p->ip));
+	p->kind = kind;
+	p->expires = minutes > 0 ? Sys_Seconds() + minutes * 60 : 0;
+	Str_Copy(p->reason, reason, sizeof(p->reason));
+}
+
+static void tell_penalty(client_t *c, int kind, const char *reason)
+{
+	if (penalty_told[kind])
+		SV_ClientPrint(c, 2, va("You have been %s%s%s.\n", penalty_told[kind], reason[0] ? ": " : "", reason));
+}
+
 /* mute, stealthmute, cuff, cripple <player> [minutes] [reason]; 0 minutes
  * lifts it, none keeps it until the server stops */
 static void Penalty_f(int argc, const char **argv)
@@ -129,18 +147,17 @@ static void Penalty_f(int argc, const char **argv)
 			SV_ClientPrint(c, 2, va("You are no longer %s.\n", penalty_told[kind]));
 		return;
 	}
-	penalties = Mem_Realloc(penalties, sizeof(penalty_t) * (size_t)(numpenalties + 1));
-	{
-		penalty_t *p = &penalties[numpenalties++];
-		memset(p, 0, sizeof(*p));
-		Str_Copy(p->ip, penalty_key(c), sizeof(p->ip));
-		p->kind = kind;
-		p->expires = minutes > 0 ? Sys_Seconds() + minutes * 60 : 0;
-		Str_Copy(p->reason, argc > 3 ? argv[3] : "", sizeof(p->reason));
-	}
+	add_penalty(c, kind, minutes, argc > 3 ? argv[3] : "");
 	Con_Printf("%s: %s (%s)%s\n", argv[0], c->name, penalty_key(c), minutes > 0 ? va(" for %g minutes", minutes) : "");
-	if (penalty_told[kind])
-		SV_ClientPrint(c, 2, va("You have been %s%s%s.\n", penalty_told[kind], argc > 3 ? ": " : "", argc > 3 ? argv[3] : ""));
+	tell_penalty(c, kind, argc > 3 ? argv[3] : "");
+}
+
+void SV_AdminAddPenalty(client_t *c, int kind, double minutes, const char *reason)
+{
+	add_penalty(c, kind, minutes, reason);
+	Con_Printf("%s: %s (%s)%s: %s\n", penalty_names[kind], c->name, penalty_key(c),
+	           minutes > 0 ? va(" for %g minutes", minutes) : "", reason);
+	tell_penalty(c, kind, reason);
 }
 
 /* cuffed players can't attack, crippled ones can't move */

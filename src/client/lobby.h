@@ -5,6 +5,7 @@
 #define BW_LOBBY_H
 
 #include "../common/common.h"
+#include "../net/net.h"
 #include "../qcvm/qcvm.h"
 
 typedef enum {
@@ -21,8 +22,26 @@ typedef enum {
 void Lobby_Init(void);
 void Lobby_Shutdown(void);
 void Lobby_Frame(void); /* once per client frame */
+/* puts back the cvars a lobby listen game set, once its server has stopped */
+void Lobby_ServerCheck(void);
 lobby_phase_t Lobby_Phase(void);
 bool Lobby_Active(void); /* a session exists (any phase but IDLE) */
+/* a host turned this guest away for its password: the lobby page asks for
+ * it (joinpass:) and stays open meanwhile */
+bool Lobby_AskingPassword(void);
+/* a lobby game is on its way to this client (from Start until it is in
+ * that game, or the start fails): the title page stays shut meanwhile,
+ * though the session itself may already be over */
+bool Lobby_GameStarting(void);
+/* this client is in a real game: the hand-off is done */
+void Lobby_GameArrived(void);
+/* CL_Connect is about to connect to this server: once that is not the
+ * lobby game's, the password and rcon settings the lobby set go back */
+void Lobby_ClientConnecting(const netadr_t *to);
+/* this client is leaving that server (the "disconnect" command, or the
+ * server dropped it or shut down; not a timeout): the lobby's game is over
+ * for it, so the password and rcon settings go back */
+void Lobby_ClientDisconnecting(const netadr_t *from);
 
 /* the WebCore bridge requests: getlobby, getlobbychat, lobby_action:<a>,
  * hostcache_refresh, gethostcache; false for other requests */

@@ -315,7 +315,39 @@ void SV_Shutdown(void)
 	memset(&sv, 0, sizeof(sv));
 }
 
+/* the map names a world we can find: .scene, .bsp, .vxmap or .ftew */
+bool SV_MapExists(const char *mapname)
+{
+	static const char *const exts[] = {"scene", "bsp", "vxmap", "ftew"};
+	char path[160];
+	if (!mapname[0])
+		return false;
+	for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+		snprintf(path, sizeof(path), "maps/%s.%s", mapname, exts[i]);
+		if (FS_FileExists(path))
+			return true;
+	}
+	return false;
+}
+
+static bool spawn_server(const char *mapname);
+
+/* A map that isn't there leaves the running game alone, as FTE's does, so a
+ * typo on the server console doesn't end a match. A map that fails once the
+ * old one is gone drops the players with a reason, not a frozen screen. */
 bool SV_SpawnServer(const char *mapname)
+{
+	if (!SV_MapExists(mapname)) {
+		Con_Printf("Can't find \"maps/%s.bsp\"\n", mapname);
+		return false;
+	}
+	if (spawn_server(mapname))
+		return true;
+	SV_DropClients("server shut down");
+	return false;
+}
+
+static bool spawn_server(const char *mapname)
 {
 	char path[160];
 	size_t len;
@@ -957,19 +989,30 @@ bool SV_ConsoleCommand(const char *line)
 	return sv.vm->globals[OFS_RETURN].f != 0;
 }
 
+/* a line for the progs' ConsoleCmd, registered or not; false when there is
+ * no game or it didn't take the command */
+bool SV_GameCommand(const char *line)
+{
+	int f;
+	if (!sv.active || !sv.vm || !(f = QC_FindFunction(sv.vm, "ConsoleCmd")))
+		return false;
+	sv.vm->globals[OFS_PARM(0)].i = QC_NewString(sv.vm, line);
+	sv.vm->argc = 1;
+	QC_SetGInt(sv.vm, G.self, 0);
+	if (!QC_Execute(sv.vm, f))
+		return true;
+	return sv.vm->globals[OFS_RETURN].f != 0;
+}
+
 /* "sv <command>": hands the rest of the line to the progs' ConsoleCmd,
  * registered or not, as Nuclide's tools do with localcmd("sv ...") */
 static void SV_Cmd_f(int argc, const char **argv)
 {
-	int f;
-	if (argc < 2 || !sv.active || !sv.vm || !(f = QC_FindFunction(sv.vm, "ConsoleCmd"))) {
+	if (argc < 2 || !sv.active || !sv.vm || !QC_FindFunction(sv.vm, "ConsoleCmd")) {
 		Con_Printf("sv <command>: runs a command of the server game\n");
 		return;
 	}
-	sv.vm->globals[OFS_PARM(0)].i = QC_NewString(sv.vm, Cmd_Args());
-	sv.vm->argc = 1;
-	QC_SetGInt(sv.vm, G.self, 0);
-	if (QC_Execute(sv.vm, f) && sv.vm->globals[OFS_RETURN].f == 0)
+	if (!SV_GameCommand(Cmd_Args()))
 		Con_Printf("server game: unknown command \"%s\"\n", argv[1]);
 }
 
@@ -977,6 +1020,10 @@ static void SV_Map_f(int argc, const char **argv)
 {
 	if (argc < 2) {
 		Con_Printf("usage: map <name>\n");
+		return;
+	}
+	if (!SV_MapExists(argv[1])) {
+		Con_Printf("Can't find \"maps/%s.bsp\"\n", argv[1]);
 		return;
 	}
 	/* a fresh map starts everyone's spawn parms over */
@@ -989,6 +1036,10 @@ static void SV_Changelevel_f(int argc, const char **argv)
 {
 	if (argc < 2) {
 		Con_Printf("usage: changelevel <name>\n");
+		return;
+	}
+	if (!SV_MapExists(argv[1])) {
+		Con_Printf("Can't find \"maps/%s.bsp\"\n", argv[1]);
 		return;
 	}
 	SV_SaveSpawnParms();
@@ -1007,6 +1058,33 @@ static void SV_Status_f(int argc, const char **argv)
 		live += !sv.vm->edicts[e].free;
 	Con_Printf("map %s, time %.2f, %d frames, %d/%d entities, %d QC strings\n", sv.mapname, sv.time, sv.frames,
 	           live, sv.vm->max_edicts, QC_LiveStrings());
+	/* who is on, as FTE's status lists them */
+	int players = 0, bots = 0, spectators = 0;
+	for (int i = 0; i < svs.maxclients; i++) {
+		client_t *c = &svs.clients[i];
+		if (c->state == CS_FREE)
+			continue;
+		if (c->spectator)
+			spectators++;
+		else if (c->bot)
+			bots++;
+		else
+			players++;
+	}
+	Con_Printf("host %s, port %d, %d players, %d bots, %d spectators, %d slots%s\n", Cvar_String("hostname"),
+	           NET_ServerPort(), players, bots, spectators, svs.maxclients, SV_JoinPassword()[0] ? ", password set" : "");
+	if (players + bots + spectators) {
+		int fr = QC_FieldOfs(sv.vm, "frags");
+		Con_Printf("slot name             state    frags address\n");
+		for (int i = 0; i < svs.maxclients; i++) {
+			client_t *c = &svs.clients[i];
+			if (c->state == CS_FREE)
+				continue;
+			Con_Printf("%4d %-16s %-8s %5d %s%s\n", i + 1, c->name,
+			           c->state == CS_SPAWNED ? "spawned" : "loading", fr >= 0 ? (int)QC_EdictFields(sv.vm, c->edict)[fr].f : 0,
+			           c->bot ? "bot" : NET_AdrToString(&c->chan.remote), c->spectator ? " (spectator)" : "");
+		}
+	}
 }
 
 static void SV_Edicts_f(int argc, const char **argv)
@@ -1108,6 +1186,8 @@ static void PrProfile_f(int argc, const char **argv)
 	Mem_Free(list);
 }
 
+bool sv_dedicated;
+
 void SV_Init(void)
 {
 	Cmd_Add("pr_trace", PrTrace_f);
@@ -1121,6 +1201,23 @@ void SV_Init(void)
 	pr_heapsize = Cvar_Get("pr_heapsize", BW_SV_HEAP_MB, 0, "memalloc heap size in megabytes");
 	sv_tickrate = Cvar_Get("sv_tickrate", "72", 0, "Server frames per second");
 	Cvar_Get("mapname", "", CVAR_READONLY, NULL);
+	/* the Quake game-rule cvars a server game reads; registered so that
+	 * "timelimit 10" or "deathmatch 1" typed at the console sets them
+	 * instead of being an unknown command passed on to the server */
+	/* a dedicated server plays deathmatch unless told otherwise, as FTE's
+	 * does: with 0, a game that picks its rules from these cvars (Nuclide
+	 * with no g_gametype) would start a dedicated "map X" in singleplayer */
+	Cvar_Get("deathmatch", sv_dedicated ? "1" : "0", 0, "Deathmatch rules for games that read it");
+	/* g_gametype names the rules progs for games that have them (Nuclide);
+	 * known from startup, so "g_gametype duel" in an autoexec, a +exec cfg
+	 * or on the command line sets it before the first map */
+	Cvar_Get("g_gametype", "", 0, "Game rules the next map runs (game specific; empty for the game's default)");
+	Cvar_Get("coop", "0", 0, "Co-operative rules for games that read it");
+	Cvar_Get("teamplay", "0", 0, "Team play for games that read it");
+	Cvar_Get("skill", "1", 0, "Difficulty for games that read it");
+	Cvar_Get("timelimit", "0", CVAR_SERVERINFO, "Minutes until the match ends, 0 for none");
+	Cvar_Get("fraglimit", "0", CVAR_SERVERINFO, "Score that ends the match, 0 for none");
+	Cvar_Get("samelevel", "0", 0, "Stay on the same map when the match ends");
 	Cmd_Add("map", SV_Map_f);
 	Cmd_Add("changelevel", SV_Changelevel_f);
 	SV_InitClients();

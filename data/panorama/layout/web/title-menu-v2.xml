@@ -66,10 +66,10 @@
 				<Panel class="join-body">
 					<Panel id="CreateOptions" class="join-section create-options">
 						<Label class="join-text" text="Choose how friends will join your lobby." />
-						<Button class="btn" onactivate="TitleMenu.CreateLobby(true)">
+						<Button id="CreateOnline" class="btn" onactivate="TitleMenu.CreateLobby(true)">
 							<Label text="Online — share a room code" />
 						</Button>
-						<Button class="btn" onactivate="TitleMenu.CreateLobby(false)">
+						<Button id="CreateLan" class="btn" onactivate="TitleMenu.CreateLobby(false)">
 							<Label text="LAN — same local network" />
 						</Button>
 					</Panel>
@@ -91,7 +91,7 @@
 						<Label class="join-label" text="Address / IP" />
 						<Panel class="join-row">
 							<TextEntry id="JoinAddr" class="join-input" text="127.0.0.1:27501" maxchars="64" />
-							<Button class="btn" onactivate="TitleMenu.JoinAddress()">
+							<Button id="JoinAddrGo" class="btn" onactivate="TitleMenu.JoinAddress()">
 								<Label text="Join" />
 							</Button>
 						</Panel>
@@ -100,12 +100,12 @@
 						<Label class="join-label" text="Room Code (online)" />
 						<Panel class="join-row">
 							<TextEntry id="JoinCode" class="join-input" placeholder="ABCD12" maxchars="32" oninputsubmit="TitleMenu.JoinCodeSubmit()" />
-							<Button class="btn" onactivate="TitleMenu.JoinCode()">
+							<Button id="JoinCodeGo" class="btn" onactivate="TitleMenu.JoinCode()">
 								<Label text="Join" />
 							</Button>
 						</Panel>
 					</Panel>
-					<Button class="btn btn-ghost" onactivate="TitleMenu.CloseJoin()">
+					<Button id="JoinBack" class="btn btn-ghost" onactivate="TitleMenu.CloseJoin()">
 						<Label text="Back" />
 					</Button>
 				</Panel>

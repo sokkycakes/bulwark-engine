@@ -100,6 +100,7 @@ typedef struct {
 typedef struct client_s {
 	clientstate_t state;
 	bool bot;
+	bool spectator; /* joined with userinfo "spectator" set: QC's Spectator* entry points, "*spectator 1" */
 	int link; /* link player (sv_link.c): its slot + 1, 0 for none; bot is set too */
 	/* split screen: a local player sharing another client's connection.
 	 * parent is that connection's slot + 1 (0 for a connection itself), seat
@@ -119,6 +120,7 @@ typedef struct client_s {
 	bool have_parms;
 
 	uint32_t lastcmd; /* servercommandframe: last usercmd sequence executed */
+	bool cmd_resync; /* spawned: the next clc_move's backup commands belong to the previous level */
 	usercmd_t lastucmd;
 	float cmd_budget; /* seconds of movement the client may still submit (speedhack guard) */
 
@@ -145,6 +147,8 @@ typedef struct client_s {
 	double chat_times[16];  /* recent chat, for flood protection */
 	int chat_head;
 	double silenced_until;
+	double rename_since;    /* start of the current burst of renames, for name spam */
+	int rename_count;
 	uint8_t stattype[MAX_CL_STATS]; /* what the client was last sent (sv_stats.c), 0 none */
 	uint32_t statval[MAX_CL_STATS];
 	char *statstr[MAX_CL_STATS];
@@ -244,6 +248,9 @@ void SV_InitLiveSets(void);
 void SV_LiveNoteDrop(const client_t *c, const char *reason);
 void SV_InitRoutes(void);
 int SV_Penalties(const client_t *c);
+/* a penalty for minutes (0: until the server stops); the player is told,
+ * unless it is a stealthmute */
+void SV_AdminAddPenalty(client_t *c, int kind, double minutes, const char *reason);
 void SV_AdminFilterMove(client_t *c, usercmd_t *cmd);
 int SV_AdminFilterChat(client_t *c);
 bool SV_AdminCheckConnect(const char *userinfo, char *why, size_t whysize);
@@ -268,8 +275,11 @@ void SV_SaveClientSpawned(client_t *c); /* a player entered the game */
 bool SV_SaveTakeRestored(client_t *c);
 
 /* sv_main.c */
+/* set by the dedicated server before SV_Init: rule cvar defaults differ */
+extern bool sv_dedicated;
 void SV_Init(void);
 bool SV_SpawnServer(const char *mapname);
+bool SV_MapExists(const char *mapname); /* maps/<name>.scene/.bsp/.vxmap/.ftew */
 void SV_Shutdown(void);
 void SV_DropClients(const char *reason); /* sv_cmds.c */
 void SV_Frame(double dt);
@@ -280,6 +290,16 @@ const char *SV_InfoGet(const char *info, const char *key, char *out, size_t outs
 const char *SV_InfoPublic(const char *info, char *out, size_t outsize);
 int SV_Spawn(void);
 bool SV_ConsoleCommand(const char *line);
+/* any line to the progs' ConsoleCmd, as a dedicated server's console does
+ * with commands the engine doesn't know */
+bool SV_GameCommand(const char *line);
+/* the dedicated server host (sv_ded.c): bulwark-ded's main, and
+ * "bulwark -dedicated" */
+int Ded_Main(int argc, char **argv);
+/* the password players need, from sv_password or FTE's "password"; "" for none */
+const char *SV_JoinPassword(void);
+/* an info string's keys and values, one per line */
+void SV_PrintInfo(const char *info);
 /* "say" from the server console; false when no server is running */
 bool SV_ConsoleSay(const char *msg);
 

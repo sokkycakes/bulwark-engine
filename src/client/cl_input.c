@@ -5,6 +5,7 @@
 #include "keys.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
+#include "../common/fs.h"
 #include "../ui/ui.h"
 #include "../render/render.h"
 
@@ -540,9 +541,11 @@ static void seat_key_event(int dev, int seat, int key, bool down)
  * menus outside a game */
 void IN_DeviceKeyEvent(int device, int key, bool down, int unicode)
 {
-	int seat = CL_SeatForDevice(device);
 	if (key < 0 || key >= K_MAX || device < 0 || device >= IN_DEVICES)
 		return;
+	if (down)
+		CL_SeatClaimPad(device);
+	int seat = CL_SeatForDevice(device);
 	if (seat < 0 && down)
 		CL_SeatDevicePressed(device, key);
 	seat = CL_SeatForDevice(device);
@@ -648,7 +651,7 @@ static void stick_nav(int axis, float value)
 		stick_held[axis] = 0;
 		IN_KeyEvent(keys[axis][held > 0], false, 0);
 	}
-	if (dir && UI_WantsInput()) {
+	if (dir && (UI_WantsInput() || EM_Active())) {
 		stick_held[axis] = dir;
 		IN_KeyEvent(keys[axis][dir > 0], true, 0);
 	}
@@ -690,18 +693,67 @@ static const struct {
 	{K_GP_DPAD_DOWN, "slot3"}, {K_GP_DPAD_LEFT, "slot4"},
 };
 
-void IN_ControllerAdded(int dev)
+/* the game's own layout (a pad_defaults.cfg of bind lines) wins over the
+ * one above, so a game whose actions aren't Quake's gets its own */
+static void apply_pad_defaults(void)
 {
-	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
-		if (bindings[pad_defaults[i].key])
-			return;
+	char *text = FS_LoadFile("pad_defaults.cfg", NULL);
+	if (text) {
+		/* applied here and now rather than through the command buffer, so
+		 * it can't land after (and over) a config that is still queued */
+		for (char *line = text; line && *line;) {
+			char *end = strchr(line, '\n'), tok[3][256];
+			int n = 0, key;
+			if (end)
+				*end = 0;
+			for (const char *d = line; n < 3 && (d = COM_Parse(d, tok[n], sizeof(tok[n]))); n++)
+				;
+			if (n == 3 && !Str_ICmp(tok[0], "bind") && (key = Key_NumForName(tok[1])) >= 0)
+				Key_SetBinding(key, tok[2]);
+			line = end ? end + 1 : NULL;
+		}
+		Mem_Free(text);
+		return;
+	}
 	for (int i = 0; i < (int)BW_ARRAY_COUNT(pad_defaults); i++)
 		Key_SetBinding(pad_defaults[i].key, pad_defaults[i].cmd);
+}
+
+/* in_paddefaults: put the controller layout back, whatever is bound now */
+static void InPadDefaults_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	apply_pad_defaults();
+}
+
+static bool pad_any_bound(void)
+{
+	for (int k = K_GP_DPAD_UP; k <= K_GP_LAST; k++)
+		if (bindings[k] && bindings[k][0])
+			return true;
+	return false;
+}
+
+/* pad_defaults_ifunbound: the layout, only when no controller button is
+ * bound. Games run it after config.cfg (an old config's unbindall leaves a
+ * controller with nothing); FTE's menu provides the same command. */
+static void PadDefaultsIfUnbound_f(int argc, const char **argv)
+{
+	(void)argc, (void)argv;
+	if (!pad_any_bound())
+		apply_pad_defaults();
+}
+
+void IN_ControllerAdded(int dev)
+{
+	if (!pad_any_bound())
+		apply_pad_defaults();
 }
 
 void IN_ControllerRemoved(int dev)
 {
 	int seat = CL_SeatForDevice(dev + 1);
+	CL_SeatPadRemoved(dev + 1);
 	if (seat > 0) {
 		/* the guest keeps the seat: the same controller slot picks it up again */
 		IN_ReleaseSeat(seat);
@@ -780,7 +832,7 @@ static void fill_command(usercmd_t *u, double now)
 	clamp_pitch();
 
 	/* controller sticks: right one turns, left one moves */
-	if (joy_enable->ivalue && !Con_IsActive() && !UI_WantsInput()) {
+	if (joy_enable->ivalue && !Con_IsActive() && !UI_WantsInput() && !EM_Active()) {
 		float lx = stick(joyaxis[0]), ly = stick(joyaxis[1]), rx = stick(joyaxis[2]), ry = stick(joyaxis[3]);
 		if ((lx || ly || rx || ry) && cl.seat == 0)
 			last_device(1);
@@ -911,6 +963,8 @@ void IN_Init(void)
 	Cmd_Add("bind", Bind_f);
 	Cmd_Add("unbind", Unbind_f);
 	Cmd_Add("unbindall", Unbindall_f);
+	Cmd_AddD("pad_defaults_ifunbound", PadDefaultsIfUnbound_f, "Bind the controller's buttons to the game's layout, only if none of them is bound");
+	Cmd_AddD("in_paddefaults", InPadDefaults_f, "Bind the controller's buttons to the game's layout (pad_defaults.cfg) or the engine's");
 	Cmd_Add("bindlist", Bindlist_f);
 	Cmd_AddD("rotate", Rotate_f, "rotate <degrees> [seconds]: turn the view");
 	Cmd_AddD("bindlevel", Bindlevel_f, "bindlevel <key> <level> [command]: a binding that runs at a lower execution level");
@@ -969,7 +1023,11 @@ void IN_MouseAbs(float x, float y)
 {
 	in_mouse_x = x;
 	in_mouse_y = y;
-	UI_MouseMove(x, y);
+	/* the engine's menus draw over a menu page (Settings from the title or
+	 * the pause menu): the page under them doesn't follow the pointer, so
+	 * it neither highlights nor plays its rollover sounds behind them */
+	if (!EM_Active())
+		UI_MouseMove(x, y);
 	if (!Con_IsActive() && !MQC_InputEvent(3, x, y, 0))
 		CSQC_InputEvent(3, x, y, 0);
 }

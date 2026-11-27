@@ -68,6 +68,7 @@ void VID_Shutdown(void)
 }
 
 bool VID_Active(void) { return active; }
+bool VID_Focused(void) { return true; }
 void VID_ApplyMode(void) {}
 
 void VID_GetSize(int *w, int *h)

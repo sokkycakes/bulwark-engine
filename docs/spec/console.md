@@ -1,6 +1,6 @@
 # Console commands
 
-Bulwark has 707 console commands and about 380 cvars (`cmdlist` and
+Bulwark has 708 console commands and about 380 cvars (`cmdlist` and
 `cvarlist` show them; `help <name>` and `find <text>` explain one). Every
 one of FTEQW's 593 console commands exists in Bulwark (checked against
 FTE's own `cmdlist`), along with Source's entity commands. The game
@@ -17,7 +17,8 @@ source.
    command. `cl_cmd`, `menu_cmd` and `sv` pass a line to one module even
    when it never registered the command.
 2. Then aliases, engine commands and cvars, in that order.
-3. Anything else goes to the server as a client command. Nuclide handles
+3. Anything else goes to the server as a client command (on a dedicated
+   server, to the server game's `ConsoleCmd`: see dedicated.md). Nuclide handles
    most of its player commands this way, and the engine handles what the
    game passes back with `clientcommand`: the cheats (`god`, `buddha`,
    `noclip`, `notarget`, `fly`, `give`, `setpos`), `pause`, `fullupdate`.
@@ -28,6 +29,20 @@ source.
 `$`. Inside an alias, `$1`..`$9` are its arguments and `$*` all of them.
 `wait [n]` delays the rest of the buffer by n frames; `defer <seconds>
 <commands>` runs them later.
+
+`;` outside quotes ends a command, except after `//` outside quotes: the
+comment runs to the end of the line, so `// a; b` runs nothing. FTE
+behaves the same (checked: `// x; echo LEAKED` prints nothing on
+fteqw64).
+
+Command names are case-insensitive. A line for a command the client game
+registered goes to `CSQC_ConsoleCommand` as typed, as FTE passes it. A
+progs that compares `argv(0)` exactly (Nuclide's `case "addBot":`) does not
+handle `addbot` that way, and FTE then drops it with no message (checked on
+fteqw64: `addbot` does nothing, `addBot` reaches the server game). When
+the client game answers false and the typed name differs from the
+registered one only in case, Bulwark passes the line again with the name as
+registered, so `addbot` works too.
 
 Quoted text written by sprintf's `%S` uses an escaped form when it holds a
 quote, backslash, tab or line break: `\"line one\nline two"`, with `\n`,
@@ -59,7 +74,7 @@ with nothing to list, the line shows what it is.
 
 | What | Where | Notes |
 |---|---|---|
-| Config | `config.cfg`, or `configs/<name>.cfg` for `cfg_save <name>` | Same layout as FTE, which writes `fte.cfg` and `configs/<name>.cfg`. `cfg_load <name>` falls back to `<name>.cfg` at the top level. Saved on quit when a setting or bind changed (`cfg_save_auto`). |
+| Config | `bulwark.cfg`, or `configs/<name>.cfg` for `cfg_save <name>` | See "The saved config and FTE" below. `cfg_load <name>` falls back to `<name>.cfg` at the top level. Saved on quit when a setting or bind changed (`cfg_save_auto`). |
 | Startup | `quake.rc` if the game has one, else `default.cfg` or `default_controls.cfg`; then the config and `autoexec.cfg` unless `quake.rc` already runs them | Nuclide games put their defaults in files only `quake.rc` runs (Rad-Therapy's movement cvars are in `default_cvar.cfg`), as FTE runs it. |
 | Bans | `banned_ip.cfg` | `addip`/`banid` lines, run at startup. |
 | Saved games | `saves/<name>.sav` | See below. |
@@ -72,6 +87,43 @@ with nothing to list, the line shows what it is.
 | Terrain | `maps/<name>.hmp`, `maps/<name>/sect_<x>_<y>.bwh`, generated `maps/<name>.bsp`, `maps/<name>.map` | See Terrain below. |
 | Edited files | wherever `edit` opened them, in the writable game directory | |
 | SQL databases | `sqlite/<name>.db` | From the `sqlconnect` builtin. |
+
+### The saved config and FTE
+
+A game folder is often shared with FTEQW. FTE saves `fte.cfg`, and a
+Nuclide `quake.rc` runs `fte.cfg`, then `config.cfg`, then `autoexec.cfg`.
+Bulwark never writes either of FTE's files, because FTE would then run
+cvars it doesn't know, and Bulwark's stale settings would override FTE's
+own on every FTE start. So:
+
+- Bulwark saves `bulwark.cfg`. `cfg_save_name` names another file, but
+  `config` and `fte` (FTE's names) still mean `bulwark`, also when an old
+  config sets `cfg_save_name "config"`. A manifest's `mainconfig` is
+  treated the same way.
+- `exec config.cfg` (the main config's place in a `quake.rc`) runs
+  `bulwark.cfg` instead once that file exists. Before it exists, an older
+  `config.cfg` runs, and the next save moves to `bulwark.cfg`.
+- Bulwark reads `fte.cfg` where the `quake.rc` runs it, so settings made in
+  FTE carry over, and Bulwark's own config, which runs after it, wins.
+- After the first save of `bulwark.cfg`, a `config.cfg` that Bulwark wrote
+  (it starts with `// written by Bulwark`) is renamed to
+  `config.cfg.bulwark-old`, so FTE stops running it. A `config.cfg` that
+  anything else wrote is left alone.
+
+### Start-up order
+
+The startup configs run first: the `quake.rc` chain, the config and
+`autoexec.cfg`. Then the command line's `+commands` run. The menu module
+(`menu.dat`) loads only after the configs, as FTE loads it after
+`quake.rc`. So a config's `set forceqmenu 1` keeps the menu from loading
+at all, and the menu's own start-up commands come after `autoexec.cfg`.
+Nuclide's profile code (`cfg_load "Default.cfg"`) therefore can't override
+what `autoexec.cfg` set. When a `menu_restart` in a config already loaded
+the menu, it isn't loaded a second time.
+
+`fs_game` is the active game directory (`base`), read-only, as on FTE.
+Nuclide finds `<game>_english.txt`, `titles_<game>.txt` and its map list
+filter through it.
 
 ### Saved games
 
@@ -117,6 +169,8 @@ and a 32-bit length followed by that many bytes. The types are 1 (a
 reliable server message), 2 (an unreliable one), 3 (view angles) and 4 (a
 usercmd). Starting `record` during a game asks the server for a
 `fullupdate`, so the demo starts with everything the client needs.
+`record` writes to the user directory when there is one (`-userdir`), and
+`playdemo` looks there first, then in the game folders.
 
 ## Terrain
 
@@ -153,7 +207,9 @@ edit heights by writing section files.
   `maplist`, `path`, `version`, `logfile`, `condump`.
 - **Console and chat:** `clear`, `conclear`, `toggleconsole`, `conclose`,
   `showconsole`, `messagemode`, `messagemode2`, `say`, `say_team`, `echo`,
-  `conecho`, `centerprint`, `cprint`.
+  `conecho`, `centerprint`, `cprint`. The `messagemode` prompt
+  (`say: ...`) is drawn at the top left under the notify lines, in the
+  console's font, where FTE draws it; the game draws its own chat feed.
 - **Screen:** `bf`, `v_cshift`, `fadein`, `fadeout`, `sizeup`,
   `sizedown`, `fog`, `screenshot`, `jpeg`, `screenshot_tga`, plus the
   cvars `cl_showfps`, `cl_showpos`, `net_graph`, `con_drawnotify`.
@@ -204,6 +260,44 @@ edit heights by writing section files.
   `autotrack`.
 - **Downloads and media:** `download`, `dlsize`, `skipdl`, `finishdl`,
   `curl`, `capture*`, `playfilm`, `playvideo`, `cinematic`, `media_*`.
+
+## Player setup and the game's display settings
+
+The Options page (`menu_options`, which the title page's Settings opens)
+starts with two pages for the game:
+
+- **Player setup** (`menu_setup`): name and team; the model
+  (`cg_heroModel`, sent as the `model` user info key; not `_cl_playermodel`,
+  which older Stiletto configs hold as `alice2`: "Each hero's own"
+  or a folder under `models/player/` that has `<name>/<name>.mdl`); the
+  upper and lower colours; the tint strength; and the spray. Each colour
+  has a typed value with a swatch (`0xRRGGBB`, `#RRGGBB`, `RRGGBB` or
+  `R G B`), presets, and hue (0-350), saturation and brightness (0-100)
+  sliders, and is written back as `0xRRGGBB`, FTE's 24-bit form. A Quake
+  palette row (0-13) is shown as its colour and left alone until it is
+  changed. The hue a slider set is remembered while the colour is grey or
+  black, which have no hue of their own. A preview row shows both colours
+  and, captioned "In game", the tints the game draws from them. The spray is chosen from the
+  images under `logos/` that the renderer can decode (png, jpg, tga, bmp;
+  no webp) and that fit a server's user info limit (at most 7680 bytes,
+  under FTE's default `sv_userinfo_bytelimit` of 8192) with a preview; choosing one sets
+  `_cl_playerspray` and sends it as the `spray` user info blob
+  (`setinfoblob`), with `spraytype` 1 for `.bmp` and `spraycolor`.
+- **Crosshair, weapon view and HUD** (`menu_view`): the crosshair cvars
+  (shape, size, opacity, colour), `r_viewmodel_fov`, `cg_viewmodelScale`,
+  `cg_viewmodelMotionScale`, `cg_viewmodelLag`, `cg_hudAspect`,
+  `cg_damageShake` and `cg_playerColorTint`. Nuclide also registers
+  `cg_viewmodelFov`, `cg_viewmodelFlip`, `cg_viewmodelOffset` and
+  `cg_viewmodelPass`, but its client never reads them, so the page leaves
+  them out.
+
+The engine's pages keep every row's text inside the panel: a label too
+wide for its room (up to the value column, or the panel's edge on a row
+without a value) is drawn up to 15% smaller, and past that cut short with
+"...". Headers and the footer line work the same way.
+
+A setting a game made with `set` in its default configs is marked to be
+saved once a menu page changes it, as if it had been made with `seta`.
 
 ## Who may run what
 
@@ -264,6 +358,12 @@ of it, and say so when used:
   supported.
 - **`dtls_*`**: Bulwark has no DTLS, so there are no certificates to
   manage.
+- **`host_speeds 1`** prints once a second (not every frame) the average
+  milliseconds a frame spends in the server, client, drawing and sound,
+  each label before its value:
+  `host_speeds: 50 fps, 20.27 ms/frame: server 0.00 client 0.01 gfx 20.24 snd 0.01`.
+  **`gl_clear`** is accepted and does nothing: Bulwark clears the frame
+  anyway.
 - **Plugins** are Bulwark's own (`bwplug_<name>.so` with `bwplug_init`,
   see `src/common/bwplug.h`), not FTE's plugin API. Plugins can add image,
   material and model formats, and every plugin next to the engine loads at
@@ -484,6 +584,7 @@ held and the matching `-` command when it's let go.
 | `in` | in <seconds> <command>: run a command later |
 | `in_bind` | in_bind <device> <key> [command]: bind for one input device |
 | `in_deviceids` | List the input devices |
+| `in_paddefaults` | Bind the controller buttons to the default layout (the game's pad_defaults.cfg or the engine's) |
 | `in_restart` | Reopen the game controllers |
 | `inc` | inc <cvar> [amount]: add to a cvar, 1 by default |
 | `incrementvar` | incrementvar <cvar> <min> <max> <delta>: step a cvar, wrapping |
@@ -562,7 +663,8 @@ held and the matching `-` command when it's let go.
 | `menu_demo` | Open the engine's Demos menu |
 | `menu_download` | Open the engine's Packages and updates menu |
 | `menu_fps` | Open the engine's Performance presets menu |
-| `menu_keys` | Open the engine's Keys menu |
+| `menu_keys` | Open the engine's Keys menu (the game's kb_act.lst / bindlist.lst actions) |
+| `menu_controller` | Open the engine's Controller menu (stick tuning, vibration, the button layout) |
 | `menu_lighting` | Open the engine's Lighting menu |
 | `menu_load` | Open the engine's Load a game menu |
 | `menu_loadgame` | Open the engine's Load a game menu |
@@ -598,6 +700,7 @@ held and the matching `-` command when it's let go.
 | `menu_teamplay_weapons` | Open the engine's Weapons menu |
 | `menu_textures` | Open the engine's Textures menu |
 | `menu_video` | Open the engine's Video menu |
+| `menu_view` | Open the engine's Crosshair, weapon view and HUD menu |
 | `menu_webcore` | menu_webcore [title|lobby|pause|arena <team|class|hero>|<url>]: open an HTML menu page (see webcore.md) |
 | `menu_webcore_lobby` | Open the lobby page |
 | `menu_webcore_title` | Open the title page |
@@ -641,11 +744,11 @@ held and the matching `-` command when it's let go.
 | `+moveup` / `-moveup` | Swim or fly up |
 | `msg_trigger` | msg_trigger [name [text [-l level]]]: run alias <name> when a message contains the text |
 | `multvar` | multvar <cvar> <min> <max> <factor>: scale a cvar within a range |
-| `music` | music <file or track> [-]: play music |
+| `music` | music <file or track> [-\|0\|1]: play music, once with - or 0 |
 | `music_fforward` | music_fforward [seconds]: skip ahead in the music (10 seconds) |
 | `music_next` | Play the next track of the playlist |
 | `music_rewind` | music_rewind [seconds]: go back in the music (10 seconds) |
-| `mute` | mute <player> [minutes] [reason]: no chat (0 minutes lifts it) |
+| `mute` | mute <player> [minutes] [reason]: no chat and no renames (0 minutes lifts it) |
 | `mvdcancel` | Stop the server demo and delete it |
 | `mvdlist` | mvdlist [filter]: list the server demos |
 | `mvdrecord` | mvdrecord <name>: record every player's view to demos/<name>.mvd |
@@ -669,6 +772,7 @@ held and the matching `-` command when it's let go.
 | `+p4` / `-p4` | +pN <button>: press a button for split screen player N |
 | `p4` | p4 <command>: run a command for seat 4 |
 | `packet` | packet <destination> <contents>: send a connectionless packet (\n for a line break) |
+| `pad_defaults_ifunbound` | Bind the controller buttons to the default layout, only when none of them is bound (a game's quake.rc runs it after config.cfg) |
 | `pause` | Pause or unpause the game |
 | `pin_add` | pin_add <author> <message>: a message shown to players as they join |
 | `pin_delete` | pin_delete <number\|all>: remove pinned messages |
@@ -842,7 +946,7 @@ held and the matching `-` command when it's let go.
 | `sqlstatus` | The database drivers and the server's open connections |
 | `startdemos` | startdemos <demo1> [demo2...]: play demos in a loop |
 | `status` | The map, time and entity counts |
-| `stealthmute` | stealthmute <player> [minutes]: their chat only reaches themselves, and they aren't told |
+| `stealthmute` | stealthmute <player> [minutes]: their chat only reaches themselves, their renames are refused, and they aren't told |
 | `stop` | Stop recording (or playing) a demo |
 | `stopdemo` | Stop the demo playing |
 | `stopmusic` | Stop the music |

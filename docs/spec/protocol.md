@@ -83,6 +83,30 @@ update (the same idea as Source's).
 | 23 | `svc_voxel` | byte subcommand, see voxel.md |
 | 24 | `svc_flash` | coord ×3 origin, float radius, float lifetime, float ×3 colour: a light that shrinks to nothing over its lifetime (`te_customflash`) |
 
+### Prints and player names
+
+A print sent to every player (QC `bprint`, chat, `say` from the server
+console, "game paused") goes out as `svc_print`. A dedicated server also
+prints its own copy on its console. A listen server keeps its own copy out
+of the console while the host's loopback client is in the game, since that
+client prints the `svc_print` into the same console: the host sees each line
+once, as on FTE. As on FTE, the server copy still goes to stdout and the
+console log, so a listen host's terminal and log may show a line twice (the
+server's copy and the client's).
+
+A player's name lives in the `name` user info key. Every change to it, the
+player's own (`setinfo name`, the `name` command) or the game's
+(`forceinfokey`, as Nuclide names its bots after their profiles), also
+rewrites the player entity's `.netname`, which is what the game reads for
+the HUD, obituaries and its serverinfo keys. A rename the player asked for
+is announced once they are in the game ("X changed their name to Y"), as
+FTE does; a rename by the game is not. As on FTE, a player who has a name
+may not change it while muted or stealthmuted ("Muted players may not change
+their names", not shown to a stealthmuted player), and a seventh rename
+within five seconds of the first is refused and mutes them for five minutes
+("Muted for name spam"; not counted while paused). Renames by the game are
+never refused.
+
 ### serverdata
 
 varuint protocol, int32 spawn count, float tick rate, byte max clients,
@@ -116,13 +140,19 @@ which the client game reads in `CSQC_Ent_Update`.
 
 byte count (1 to 9), int32 the server time the client was looking at in
 milliseconds (for lag compensation), double client time, then `count`
-commands, newest first, each a delta from the one before it (the first
+commands, oldest first (the newest last), each a delta from the one before it (the first
 from zeros): int32 sequence, byte milliseconds, byte field bits, then by
 bit: 1 angles (angle ×3), 2 movement (short ×3), 4 buttons (varuint),
 8 impulse (byte, otherwise 0), 16 weapon (varuint), 32 cursor (float ×2
 screen position, float ×3 start, float ×3 end, entity). The extra commands
 repeat earlier ones so a lost packet loses no input; the server skips any
-it has already run.
+it has already run. The client keeps numbering its commands across a level
+change, so the first `clc_move` a client (or a split screen seat) sends
+after it spawns on a level still carries commands from the previous level
+or from before the spawn: the server runs only that packet's newest
+command and takes its sequence as the last one run, as FTE discards old
+moves across a level change. Replaying them would rerun the old map's
+movement, buttons, impulses and cursor entity on the new one.
 
 ## Downloads
 

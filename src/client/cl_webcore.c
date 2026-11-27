@@ -42,9 +42,11 @@ static struct {
 	bool title_pending;
 	char page_pending[512]; /* WC_OpenPage: shown instead of the title once idle */
 	int prevstate;
+	int prevspawn; /* cl.spawncount: changes with every level */
 	bool backdrop;    /* we started the title's background map */
 	int music_track;  /* -1 menu_boot, then 1, 2, ... */
 	bool music_on;
+	bool music_warned; /* said once that the stem has no tracks */
 	int frames;
 } wc = {.prevstate = ca_disconnected, .music_track = -1};
 
@@ -160,26 +162,49 @@ static int open_page(const char *url, int flags)
 
 /* --- menu music ---------------------------------------------------------------------- */
 
+/* webcore_menu_music is the playlist's stem, as in FTE's webcore plugin:
+ * "music/menu" plays music/menu_boot, then music/menu1, menu2, ... and round
+ * again. "0" or "" turns it off; "1" (Bulwark's old switch) means the default. */
+static const char *music_stem(void)
+{
+	const char *v = webcore_menu_music->string;
+	if (!*v || !strcmp(v, "0"))
+		return NULL;
+	if (!strcmp(v, "1"))
+		return "music/menu";
+	return v;
+}
+
 static void music_next(void)
 {
-	char name[64];
+	char name[160];
+	const char *stem = music_stem();
+	if (!stem)
+		return;
 	if (wc.music_track < 0) {
 		wc.music_track = 0;
-		if (S_PlayMusic("music/menu_boot", false))
+		snprintf(name, sizeof(name), "%s_boot", stem);
+		if (S_PlayMusic(name, false))
 			return;
 	}
-	snprintf(name, sizeof(name), "music/menu%d", ++wc.music_track);
+	snprintf(name, sizeof(name), "%s%d", stem, ++wc.music_track);
 	if (S_PlayMusic(name, false))
 		return;
 	/* past the last track: around again */
 	wc.music_track = -1;
-	if (!S_PlayMusic("music/menu_boot", false))
-		S_PlayMusic("music/menu1", false);
+	snprintf(name, sizeof(name), "%s_boot", stem);
+	if (!S_PlayMusic(name, false)) {
+		snprintf(name, sizeof(name), "%s1", stem);
+		if (!S_PlayMusic(name, false) && !wc.music_warned) {
+			wc.music_warned = true;
+			Con_Printf("webcore: no menu music under \"%s\" (expected %s_boot, %s1, ...)\n", stem, stem, stem);
+		}
+	}
 }
 
 static void music_frame(void)
 {
-	bool want = wc.plugin && webcore_menu_music->ivalue && !in_game() &&
+	bool want = wc.plugin && music_stem() && !in_game() &&
 	            (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE || wc.route == ROUTE_SERVERS ||
 	             EM_Active() || idle());
 	if (want && !S_MusicPlaying()) {
@@ -216,11 +241,28 @@ static void start_backdrop(void)
 		Con_DPrintf("webcore: no title map %s\n", path);
 		return;
 	}
+	/* Queued behind whatever is in the command buffer, and checked again
+	 * when it runs: a start-up cfg still in a "wait" ("wait 1200; map lean")
+	 * would otherwise have its game replaced by the backdrop once the cfg
+	 * ran out. */
+	Cbuf_AddText("_webcore_backdrop\n");
+}
+
+static void WebcoreBackdrop_f(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+	const char *map = webcore_menumap->string;
+	if (!*map || wc.route != ROUTE_TITLE || sv.active || cl.state != ca_disconnected)
+		return; /* a game started, or the title closed, meanwhile */
 	wc.backdrop = true;
-	/* as Nuclide's own menu starts it (map_background) */
-	Cbuf_AddText(va("set g_gametype singleplayer\nset sv_playerslots 2\nset coop 1\nset deathmatch 0\n"
-	                "set sv_background 1\nmap %s\n",
-	                map));
+	/* as Nuclide's own menu starts it (map_background), less its two player
+	 * slots: those would carry over to a game started from the console
+	 * after the title (room for one bot); the slot count stays the
+	 * player's maxplayers */
+	Cbuf_InsertText(va("set g_gametype singleplayer\nset coop 1\nset deathmatch 0\n"
+	                   "set sv_background 1\nmap %s\n",
+	                   map));
 }
 
 static bool open_menu(const char *url, route_t route)
@@ -339,7 +381,7 @@ bool WC_KeyEvent(int key, bool down, int unicode)
 {
 	if (!wc.menu)
 		return false;
-	if (key == K_ESCAPE && down && in_game()) {
+	if ((key == K_ESCAPE || key == K_GP_B) && down && in_game()) {
 		UI_KeyEvent(key, down, unicode);
 		close_menu();
 		return true;
@@ -372,8 +414,17 @@ void WC_Frame(void)
 		wc.backdrop = false;
 		/* views a client game made die with it */
 	}
+	/* a level change (map, changelevel, restart): the arena page belongs to
+	 * the game that opened it. Left open it sat over the next mode, Duel's
+	 * hero picker over a deathmatch, taking the input; an arena mode on the
+	 * new level opens it again. */
+	if (wc.route == ROUTE_ARENA && (cl.spawncount != wc.prevspawn || cl.state != ca_active))
+		close_menu();
+	wc.prevspawn = cl.spawncount;
 	wc.prevstate = cl.state;
 	/* a real game took over: title and lobby pages give way */
+	if (in_game())
+		Lobby_GameArrived();
 	if (in_game() && (wc.route == ROUTE_TITLE || wc.route == ROUTE_LOBBY || wc.route == ROUTE_ONLINE))
 		close_menu();
 	/* the set view seats players and picks heroes: no arena menu over it */
@@ -388,10 +439,13 @@ void WC_Frame(void)
 			Con_SetActive(false);
 		}
 	}
-	/* the lobby ended without a game: back to the title */
-	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && idle())
+	/* the lobby ended without a game: back to the title. A session that
+	 * handed its game out is over too, while this client still runs the
+	 * backdrop and the game loads: the lobby page stays until it is up. */
+	if (wc.route == ROUTE_LOBBY && !Lobby_Active() && !Lobby_AskingPassword() && !Lobby_GameStarting() && idle())
 		open_title();
-	if (wc.title_pending && !wc.menu && idle() && !Lobby_Active() && menus_enabled() && wc.startup_done) {
+	if (wc.title_pending && !wc.menu && idle() && !Lobby_Active() && !Lobby_GameStarting() && menus_enabled() &&
+	    wc.startup_done) {
 		wc.title_pending = false;
 		/* the console the engine shows when nothing else is up gives way */
 		if (open_title())
@@ -607,9 +661,10 @@ static void q_localsound(const char *sample, strbuf_t *out)
 		snprintf(name, sizeof(name), "%s%s", sample, exts[i]);
 		snprintf(path, sizeof(path), "sound/%s", name);
 		if (strchr(sample, '.') ? i == 0 : (i > 0 && FS_FileExists(path))) {
-			/* a quick run of the same sound doesn't restart it */
-			if (!S_LocalSoundPlaying(name))
-				S_LocalSound(name);
+			/* each one gets its own channel, so a quick run of rollovers
+			 * overlaps instead of cutting off or dropping the last one,
+			 * the way FTE's localsound plays them */
+			S_LocalSound(name);
 			break;
 		}
 	}
@@ -862,7 +917,8 @@ void WC_Init(void)
 	webcore_menu_enabled = Cvar_Get("webcore_menu_enabled", "1", 0, "0 keeps the HTML menus from opening");
 	webcore_pause_url = Cvar_Get("webcore_pause_url", "fte://data/web/pause-menu/index.html", 0,
 	                             "The in-game pause page of the HTML menus");
-	webcore_menu_music = Cvar_Get("webcore_menu_music", "1", CVAR_ARCHIVE, "Play the menu music under the title");
+	webcore_menu_music = Cvar_Get("webcore_menu_music", "music/menu", CVAR_ARCHIVE,
+	                              "The title music playlist: <stem>_boot, then <stem>1, <stem>2, ... (0 or empty: off)");
 	forceqmenu = Cvar_Get("forceqmenu", "0", 0, "1 skips the menu module (menu.dat)");
 	/* FTE's player model settings, which Stiletto's autoexec sets */
 	Cvar_Get("headmodel", "", CVAR_ARCHIVE | CVAR_USERINFO, "Head model (userinfo)");
@@ -877,6 +933,7 @@ void WC_Init(void)
 	Cmd_AddD("menu_webcore_title", MenuWebcoreTitle_f, "Open the title page");
 	Cmd_AddD("menu_webcore_lobby", MenuWebcoreLobby_f, "Open the lobby page");
 	Cmd_AddD("menu_lobby_create", MenuLobbyCreate_f, "Create a LAN lobby and show it");
+	Cmd_AddD("_webcore_backdrop", WebcoreBackdrop_f, "Start the title backdrop map, if nothing else started meanwhile");
 	Cmd_AddD("webcore_closemenu", CloseMenu_f, "Close the HTML menu page");
 	Cmd_AddD("webcore_query", WebcoreQuery_f, "webcore_query \"<request>\": print the bridge's reply to a page request");
 	SF_Init();

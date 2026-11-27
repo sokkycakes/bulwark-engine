@@ -771,6 +771,7 @@ static void r_setproperty(qcvm_t *vm)
 	case VF_ANGLES: memcpy(r_scene.angles, v, sizeof(float) * 3); break;
 	case VF_ANGLES_X: case VF_ANGLES_Y: case VF_ANGLES_Z: r_scene.angles[prop - VF_ANGLES_X] = f; break;
 	case VF_DRAWWORLD: r_scene.drawworld = f != 0; break;
+	case VF_DRAWCROSSHAIR: r_scene.drawcrosshair = f != 0; break;
 	case VF_MINDIST: r_scene.nearclip = f; break;
 	case VF_MAXDIST: r_scene.farclip = f; break;
 	case VF_CL_VIEWANGLES: memcpy(cl.viewangles, v, sizeof(float) * 3); break;
@@ -817,6 +818,7 @@ static void r_getproperty(qcvm_t *vm)
 	case VF_ANGLES: memcpy(v, r_scene.angles, sizeof(v)); break;
 	case VF_ANGLES_X: case VF_ANGLES_Y: case VF_ANGLES_Z: v[0] = r_scene.angles[prop - VF_ANGLES_X]; break;
 	case VF_DRAWWORLD: v[0] = r_scene.drawworld; break;
+	case VF_DRAWCROSSHAIR: v[0] = r_scene.drawcrosshair; break;
 	case VF_MINDIST: v[0] = r_scene.nearclip; break;
 	case VF_MAXDIST: v[0] = r_scene.farclip; break;
 	case VF_CL_VIEWANGLES: memcpy(v, cl.viewangles, sizeof(v)); break;

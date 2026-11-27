@@ -37,6 +37,10 @@ var Online = ( function ()
 	}
 
 	function live() { return ( f && f.live ) || {}; }
+	// no Bulwark Live server named (none is deployed for this build): the
+	// hub says so, and Casual Duel doesn't wait for ever
+	function configured() { return live().configured === true || !!q( "cvar:live_server" ); }
+	var OFFLINE_TEXT = "Online services are not connected in this build";
 	function myCard()
 	{
 		var l = live();
@@ -63,7 +67,8 @@ var Online = ( function ()
 		{
 			case 0:
 				if ( searching() ) { cancel(); return; }
-				sound( SND_OK );
+				// without a Live server flow:queue refuses and posts a notice
+				sound( configured() ? SND_OK : SND_BACK );
 				flow( "queue:duel" );
 				break;
 			case 1:
@@ -198,6 +203,8 @@ var Online = ( function ()
 		var conn = $( "#Conn" );
 		if ( l.connected )
 			conn.text = "Bulwark Live  -  connected  -  " + ( l.rtt || 0 ) + " ms";
+		else if ( !configured() )
+			conn.text = OFFLINE_TEXT + "  -  Private Room works on your network, Training works offline";
 		else
 			conn.text = l.error ? "Bulwark Live  -  " + l.error : "Bulwark Live  -  connecting...";
 		conn.SetHasClass( "bad", !l.connected );
@@ -258,7 +265,7 @@ var Online = ( function ()
 
 	if ( !q( "cvar:live_game" ) )
 		flow( "game:stiletto" );
-	if ( !live().connected )
+	if ( !live().connected && configured() )
 		flow( "connect" );
 	f = null;
 	select( 0, false );

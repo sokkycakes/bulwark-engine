@@ -138,6 +138,7 @@ endif()
 
 add_library(bwserver STATIC
 	src/server/sv_main.c
+	src/server/sv_ded.c
 	src/server/sv_compile.c
 	src/server/sv_world.c
 	src/server/sv_uri.c
@@ -289,6 +290,7 @@ add_library(bwclient STATIC
 	src/client/cl_cmds.c
 	src/client/cl_altcon.c
 	src/client/cl_lobby.c
+	src/client/cl_dedlaunch.c
 	src/client/cl_webcore.c
 	src/client/cl_setflow.c
 	src/client/cl_chat.c
@@ -347,7 +349,8 @@ if(NINTENDO_3DS)
 		AUTHOR "sokky")
 	ctr_create_3dsx(bulwark SMDH bulwark.smdh)
 elseif(BULWARK_WEB)
-	add_executable(bulwark src/main.c src/client/vid_sdl.c src/sound/snd_sdl.c src/platform/web/sys_web.c)
+	add_executable(bulwark src/main.c src/client/vid_sdl.c src/client/in_steam.c src/client/steaminput.c
+		src/sound/snd_sdl.c src/platform/web/sys_web.c)
 	target_link_libraries(bulwark bwclient ${SDL2_LIBRARIES})
 	# the page around it is tools/web/shell; tools/web/export.py puts the two
 	# and a game's files together into a folder any web server can host

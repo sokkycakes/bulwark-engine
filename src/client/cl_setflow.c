@@ -56,13 +56,38 @@ static struct {
 
 static bool in_game(void) { return cl.state == ca_active; }
 
-static void key(const char *k, char *out, size_t n)
+static void key1(const char *k, char *out, size_t n)
 {
 	const char *v = CL_ServerKey(k, out, n);
 	if (!v)
 		out[0] = 0;
 	else if (v != out)
 		Str_Copy(out, v, n);
+}
+
+/* The game sends its hero roster as numbered short keys (arena_heroes_0,
+ * arena_heroes_1, ... up to the first empty one, each a run of whole
+ * space-separated ids), since stock FTE keeps values of 64 bytes or more
+ * from clients without info blobs. They are read back joined with single
+ * spaces; an older server's single arena_heroes key still works. */
+static void key(const char *k, char *out, size_t n)
+{
+	if (strcmp(k, "arena_heroes")) {
+		key1(k, out, n);
+		return;
+	}
+	out[0] = 0;
+	for (int i = 0; i < 64; i++) {
+		char part[256];
+		key1(va("arena_heroes_%d", i), part, sizeof(part));
+		if (!part[0])
+			break;
+		if (out[0])
+			Str_Cat(out, " ", n);
+		Str_Cat(out, part, n);
+	}
+	if (!out[0])
+		key1(k, out, n);
 }
 
 static int key_int(const char *k, int dflt)
@@ -399,10 +424,18 @@ static void q_flow(const char *a, strbuf_t *out)
 	bool ok = true;
 
 	if (!strcmp(verb, "connect")) {
-		Cbuf_AddText("live_connect\n");
+		/* no Bulwark Live server configured (none is deployed for testers):
+		 * say so instead of "connecting..." for ever */
+		if (!Live_Configured())
+			ok = false;
+		else
+			Cbuf_AddText("live_connect\n");
 	} else if (!strcmp(verb, "queue")) {
 		const char *pl = *arg ? arg : "duel";
-		if (!playlist_ok(pl))
+		if (!Live_Configured()) {
+			notice("Online services are not connected in this build. Try Training or a Private Room.");
+			ok = false;
+		} else if (!playlist_ok(pl))
 			ok = false;
 		else if (!Live_Connected())
 			Cbuf_AddText(va("set live_onconnect \"live_queue %s\"\nlive_connect\n", pl));

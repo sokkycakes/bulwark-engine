@@ -11,6 +11,7 @@
 rscene_t r_scene;
 rstats_t r_stats;
 static cvar_t *fov, *r_nearclip, *r_viewmodel_fov, *r_viewmodel_quakepitch, *r_viewmodel_mirror, *r_seqblend;
+static cvar_t *crosshair, *crosshairsize, *crosshaircolor, *crosshairalpha, *crosshairimage, *cl_crossx, *cl_crossy;
 
 /* whether an entity with these render flags is drawn mirrored left to right
  * (r_viewmodel_mirror for view models, RF_MIRROR for any entity) */
@@ -242,6 +243,7 @@ void R_ClearScene(void)
 	r_scene.farclip = 0;
 	r_scene.drawworld = true;
 	r_scene.perspective = true;
+	r_scene.drawcrosshair = false;
 	r_scene.skyroom = false;
 	r_scene.viewentity = cl.playerent;
 	memset(r_scene.origin, 0, sizeof(r_scene.origin));
@@ -597,6 +599,93 @@ static int dist_cmp(const void *a, const void *b)
 	return dx < dy ? 1 : dx > dy ? -1 : 0;
 }
 
+/* --- the crosshair ------------------------------------------------------------------------
+ * Drawn over the view at the end of renderscene when the client game sets
+ * VF_DRAWCROSSHAIR, from the same cvars FTE reads: crosshair picks the shape
+ * (0 is none), crosshairsize its size in virtual pixels, crosshaircolor its
+ * colour ("R G B" in 0-255, or 0xRRGGBB), crosshairalpha its opacity, and
+ * cl_crossx/cl_crossy move it off centre. crosshairimage names a picture to
+ * draw instead of the built-in shapes. The shapes are Bulwark's own. */
+
+/* "R G B" (0-255), "0xRRGGBB" or "#RRGGBB" to 0-1 */
+static void crosshair_rgb(const char *s, float *rgb)
+{
+	unsigned int r, g, b, hex;
+	rgb[0] = rgb[1] = rgb[2] = 1;
+	if (sscanf(s, " 0x%x", &hex) == 1 || sscanf(s, " 0X%x", &hex) == 1 || sscanf(s, " #%x", &hex) == 1) {
+		rgb[0] = ((hex >> 16) & 255) / 255.0f;
+		rgb[1] = ((hex >> 8) & 255) / 255.0f;
+		rgb[2] = (hex & 255) / 255.0f;
+	} else if (sscanf(s, "%u %u %u", &r, &g, &b) == 3) {
+		rgb[0] = BW_MIN(r, 255u) / 255.0f;
+		rgb[1] = BW_MIN(g, 255u) / 255.0f;
+		rgb[2] = BW_MIN(b, 255u) / 255.0f;
+	}
+}
+
+static void draw_crosshair(void)
+{
+	float rgb[3], a, size, cx, cy, t, arm, gap;
+	int style;
+	if (!crosshair || (style = crosshair->ivalue) <= 0)
+		return;
+	a = crosshairalpha ? BW_MAX(0.0f, BW_MIN(crosshairalpha->value, 1.0f)) : 1;
+	if (a <= 0)
+		return;
+	crosshair_rgb(crosshaircolor ? crosshaircolor->string : "", rgb);
+	size = crosshairsize && crosshairsize->value > 0 ? crosshairsize->value : 8;
+	cx = r_scene.vx + r_scene.vw * 0.5f + (cl_crossx ? cl_crossx->value : 0);
+	cy = r_scene.vy + r_scene.vh * 0.5f + (cl_crossy ? cl_crossy->value : 0);
+	if (crosshairimage && crosshairimage->string[0] && R_Picture(cx - size, cy - size, size * 2, size * 2, crosshairimage->string, a))
+		return;
+	t = BW_MAX(1.0f, roundf(size / 8)); /* line thickness */
+	arm = size;
+	gap = roundf(size * 0.4f);
+	cx = roundf(cx), cy = roundf(cy);
+	switch ((style - 1) % 6) {
+	case 0: /* a plus */
+		R_Rect(cx - arm, cy - t / 2, arm * 2, t, rgb, a);
+		R_Rect(cx - t / 2, cy - arm, t, arm - t / 2, rgb, a);
+		R_Rect(cx - t / 2, cy + t / 2, t, arm - t / 2, rgb, a);
+		break;
+	case 1: /* a plus with an open centre */
+		R_Rect(cx - arm, cy - t / 2, arm - gap, t, rgb, a);
+		R_Rect(cx + gap, cy - t / 2, arm - gap, t, rgb, a);
+		R_Rect(cx - t / 2, cy - arm, t, arm - gap, rgb, a);
+		R_Rect(cx - t / 2, cy + gap, t, arm - gap, rgb, a);
+		break;
+	case 2: /* a dot */
+		R_Rect(cx - t * 1.5f, cy - t * 1.5f, t * 3, t * 3, rgb, a);
+		break;
+	case 3: /* an open plus with a dot */
+		R_Rect(cx - arm, cy - t / 2, arm - gap, t, rgb, a);
+		R_Rect(cx + gap, cy - t / 2, arm - gap, t, rgb, a);
+		R_Rect(cx - t / 2, cy - arm, t, arm - gap, rgb, a);
+		R_Rect(cx - t / 2, cy + gap, t, arm - gap, rgb, a);
+		R_Rect(cx - t / 2, cy - t / 2, t, t, rgb, a);
+		break;
+	case 4: { /* a ring */
+		int n = BW_MAX(12, (int)(size * 3));
+		for (int i = 0; i < n; i++) {
+			float ang = i * 2 * (float)M_PI / n;
+			R_Rect(cx + cosf(ang) * arm - t / 2, cy + sinf(ang) * arm - t / 2, t, t, rgb, a);
+		}
+		R_Rect(cx - t / 2, cy - t / 2, t, t, rgb, a);
+		break;
+	}
+	default: /* four corners */
+		R_Rect(cx - arm, cy - arm, arm - gap, t, rgb, a);
+		R_Rect(cx - arm, cy - arm, t, arm - gap, rgb, a);
+		R_Rect(cx + gap, cy - arm, arm - gap, t, rgb, a);
+		R_Rect(cx + arm - t, cy - arm, t, arm - gap, rgb, a);
+		R_Rect(cx - arm, cy + arm - t, arm - gap, t, rgb, a);
+		R_Rect(cx - arm, cy + gap, t, arm - gap, rgb, a);
+		R_Rect(cx + gap, cy + arm - t, arm - gap, t, rgb, a);
+		R_Rect(cx + arm - t, cy + gap, t, arm - gap, rgb, a);
+		break;
+	}
+}
+
 void R_RenderScene(void)
 {
 	float sx, sy, model[16];
@@ -719,6 +808,8 @@ void R_RenderScene(void)
 	GL_SetBlend(BLEND_OPAQUE, 0, 0);
 	/* back to 2D for whatever the client game draws next */
 	R_Begin2D(r_vwidth, r_vheight);
+	if (r_scene.drawcrosshair)
+		draw_crosshair();
 }
 
 void R_InitScene(void)
@@ -731,6 +822,13 @@ void R_InitScene(void)
 	r_viewmodel_fov = Cvar_Get("r_viewmodel_fov", "0", CVAR_ARCHIVE,
 	                           "Field of view for view models (like Source's viewmodel_fov); 0 uses the view's");
 	r_nearclip = Cvar_Get("r_nearclip", "4", 0, "Distance to the near clip plane");
+	crosshair = Cvar_Get("crosshair", "1", CVAR_ARCHIVE, "Crosshair shape for games that ask the engine to draw it: 0 none, 1 plus, 2 open plus, 3 dot, 4 open plus and dot, 5 ring, 6 corners");
+	crosshairsize = Cvar_Get("crosshairsize", "8", CVAR_ARCHIVE, "Crosshair size, in virtual pixels from the centre");
+	crosshaircolor = Cvar_Get("crosshaircolor", "255 255 255", CVAR_ARCHIVE, "Crosshair colour: \"R G B\" in 0-255, or 0xRRGGBB");
+	crosshairalpha = Cvar_Get("crosshairalpha", "1", CVAR_ARCHIVE, "Crosshair opacity, 0-1");
+	crosshairimage = Cvar_Get("crosshairimage", "", CVAR_ARCHIVE, "A picture to draw as the crosshair instead of the built-in shapes");
+	cl_crossx = Cvar_Get("cl_crossx", "0", CVAR_ARCHIVE, "Moves the crosshair right, in virtual pixels");
+	cl_crossy = Cvar_Get("cl_crossy", "0", CVAR_ARCHIVE, "Moves the crosshair down, in virtual pixels");
 	r_seqblend = Cvar_Get("r_seqblend", "0.1", CVAR_ARCHIVE,
 	                      "Seconds a skeletal model takes to blend into a new sequence, 0 to switch at once");
 	R_InitDecals();

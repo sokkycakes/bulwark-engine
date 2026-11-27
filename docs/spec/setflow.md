@@ -74,7 +74,9 @@ the same progs run on FTEQW (sets work there; nothing is recorded).
 - the page bridge: `getflow` (JSON: the arena keys, your slot from
   `arena_ents` and your entity number, your hero, Live's state, the notice,
   `set_after`, seconds since the last match formed) and `flow:<verb>`:
-  `connect`, `game:<id>` (sets `live_game` if empty), `queue[:playlist]`,
+  `connect`, `game:<id>` (sets `live_game` if empty), `queue[:playlist]`
+  (both refused with no `live_server`; `queue` then posts the notice
+  "Online services are not connected in this build..."),
   `cancel`, `training`, `pick:<hero>`, `lock:<hero>`, `rematch`,
   `rematch_hero`, `leave`, `after:search|menu`, `hub`, `card:<id>`,
   `dismiss`;

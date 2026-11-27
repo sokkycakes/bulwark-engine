@@ -2,6 +2,7 @@
  * ISC licence, see LICENSE. */
 #include "client.h"
 #include "console.h"
+#include "lobby.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
 #include "../common/digest.h"
@@ -325,6 +326,7 @@ void CL_Connect(const char *address)
 		return;
 	}
 	Str_Copy(cl.servername, address, sizeof(cl.servername));
+	Lobby_ClientConnecting(&cl.server);
 	CL_MasterNoteConnect(&cl.server);
 	/* rand() is never seeded, so every client process would pick the same
 	 * qport, and a second game from the same address (two on one PC, or
@@ -702,6 +704,9 @@ static void parse_server_message(msg_t *m, bool reliable)
 		case svc_nop:
 			break;
 		case svc_disconnect:
+			/* a demo's own svc_disconnect isn't a server dropping us */
+			if (!cl.demoplayback)
+				Lobby_ClientDisconnecting(&cl.server);
 			CL_Disconnect(MSG_ReadString(m));
 			return;
 		case svc_print: {
@@ -1244,9 +1249,15 @@ static void CL_Connect_f(int argc, const char **argv)
 static void CL_Disconnect_f(int argc, const char **argv)
 {
 	bool host = cl.listen && sv.active;
+	/* stopping a demo isn't leaving a server: cl.server is still the last
+	 * one connected to, perhaps the lobby's */
+	if (cl.state != ca_disconnected && !cl.demoplayback)
+		Lobby_ClientDisconnecting(&cl.server);
 	CL_Disconnect(NULL);
 	if (host && Cmd_Exists("killserver"))
 		Cmd_ExecuteString("killserver");
+	/* before anything after "disconnect" in the buffer starts another map */
+	Lobby_ServerCheck();
 }
 
 static void CL_Reconnect_f(int argc, const char **argv)

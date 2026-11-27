@@ -303,9 +303,10 @@ The sections below specify each request.
   engine tries the usual extensions (`.wav`, `.ogg`, ...). [SRC]
 - Samples used: `misc/menu1` (navigate), `misc/menu2` (confirm), `misc/menu3`
   (back or dismiss). [SRC]
-- Rapid repeated navigation MUST NOT restart or interrupt the same sound while it is
-  still playing. If the same sample is already playing on the UI channel, ignore the
-  new request. Different samples MAY overlap or replace each other. [SRC: user preference]
+- Each request starts a new channel, so rapid rollovers overlap: a new sound never
+  restarts, cuts off or drops one that is still playing (FTE's `localsound`
+  behaviour). [SRC: user preference, 2026-11-25; this replaces the earlier rule that
+  ignored a sample already playing]
 - Sounds play whether or not a map is loaded, and are unaffected by `-nosound` only
   as far as normal sound is.
 - Reply: anything. Pages ignore it. `ok` suggested.
@@ -540,6 +541,22 @@ nothing if a title or lobby page is already up. [INF]
   Lobby discovery MUST NOT advertise it. [INF]
   [PROPOSED] Do not open it to the network at all.
 - The arena and pause routes MUST NOT load the backdrop. [SRC]
+- The backdrop's `set g_gametype singleplayer`/`coop 1` would otherwise carry into the
+  next `map` typed at the console. The game hands them back: Nuclide's server resets
+  `g_gametype ""` and `coop 0` when it consumes `sv_background`. [SRC: `entry.qc`]
+- The arena route closes on a level change (`cl.spawncount` changes, or the client
+  leaves the game); an arena mode on the new level opens it again. Left open, it sat
+  over the next mode and took its input. [SRC]
+- The backdrop runs `set g_gametype singleplayer`, `set coop 1`, `set deathmatch 0`,
+  `set sv_background 1`, then `map <webcore_menumap>`. It leaves the player-slot count
+  alone (Nuclide's own `map_background` also sets `sv_playerslots 2`): two slots would
+  carry over to a game typed at the console after the title, leaving room for one bot.
+  [SRC]
+- The backdrop is queued behind whatever is in the command buffer and checked again
+  when it runs: if a server is active or a connection is under way by then, or the
+  title page closed, it is skipped. A start-up cfg still in a `wait` before its own
+  `map` would otherwise have its game replaced by the backdrop once the cfg ran out.
+  [SRC]
 - The test harness disables it with `set webcore_menumap ""`. [SRC]
 - [UNCERTAIN] Whether the backdrop keeps running while the lobby page is shown.
   The lobby is "mapless" meaning no gameplay server or listen server. A purely local
@@ -728,7 +745,7 @@ Active:
     "needsHero": boolean, // joining && hero == ""
     "joining":   boolean  // local userinfo *duel_joining non-empty
   },
-  "heroes": [ {"id": string, "name": string}, ... ] // from serverinfo arena_heroes
+  "heroes": [ {"id": string, "name": string}, ... ] // from serverinfo arena_heroes_0, arena_heroes_1, ... joined (or an older server's single arena_heroes)
                           // (space-separated IDs); name == id
 }
 ```
@@ -750,6 +767,12 @@ for example `hero_collier hero_beaumont hero_juliet`.
   object. If the cvar is empty or not an object, reply `{"active":false}`. [SRC]
 - The page polls this every 120 ms. With `active:false` it shows
   "Waiting for arena state…". [SRC]
+- The snapshot may name the arena mode: `mode` (`duel`, `freezetag`,
+  `archstiletto`, ...) and `modeName`, its display name ("FREEZE TAG").
+  The panel's title is `modeName` (else `mode`, else "DUEL") in capitals
+  followed by " ARENA" ("FREEZE TAG ARENA"), as the game's own page draws
+  it. The line over the competitors reads "CURRENT DUEL" when `mode` is
+  `duel` or absent, else "CURRENT MATCH".
 
 ### 8.4 `arena_action:<action>`
 
@@ -824,7 +847,7 @@ Server-side meaning, for reference (game code, not engine):
 | `lobby_port` | `27501` | UDP port the host's lobby listens on. Also the default port for `lobby_join <host>` without a port. [SRC] |
 | `lobby_readytime` | [UNCERTAIN; PROPOSED `5`] | All-ready countdown length in seconds. Configs use 3 and 10. [SRC] |
 | `lobby_maxplayers` | `16` | Seats. Snapshot `max`. [SRC] |
-| `lobby_defaultmap` | `envtest` | Map selected at create (`base/maps/envtest.bsp`). [SRC] |
+| `lobby_defaultmap` | `envtest` | Map selected at create (`base/maps/envtest.bsp`). [SRC] Bulwark leaves it empty and picks the ruleset's own map from `scripts/lobby.txt` ([lobby.md](lobby.md)). |
 | `lobby_defaultruleset` | `DUEL` | Ruleset at create, and the fallback mode ID when no MenuQC registered modes. [SRC] |
 | `lobby_snapshot` | `""` | The current atomic snapshot JSON (9.8), refreshed whenever the revision or local connection state changes. Read-only for users. [SRC] |
 | `hostname` / `name` | standard | `name` is the local player name in the roster. [SRC] |
@@ -969,7 +992,11 @@ Shape [SRC: plan field list, UI consumers and the native test fixture]:
   "players": [
     { "seat": number, "name": string, "host": boolean,
       "ready": boolean, "connected": boolean }
-  ]
+  ],
+  // Bulwark additions (lobby.md, "Maps and rulesets"); pages fall back to
+  // their own lists when these are missing:
+  "maps":     [ { "id": string, "name": string } ],
+  "rulesets": [ { "id": string, "name": string, "map": string, "available": boolean } ]
 }
 ```
 

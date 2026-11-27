@@ -61,8 +61,9 @@ jobs:
           cmake -S . -B build-ded -DCMAKE_BUILD_TYPE=Release
           cmake --build build-ded --target bulwark-ded -j4
 
+      # one slot: a single-player game, so the input tests meet no MOTD or team pick
       - name: Export Nuclide's base game
-        run: python3 tools/web/export.py --basedir nuclide --game base --engine build-web --out out/web-base --title "Bulwark web test" -- +map ai
+        run: python3 tools/web/export.py --basedir nuclide --game base --engine build-web --out out/web-base --title "Bulwark web test" -- +sv_playerslots 1 +map ai
 
       - name: Browsers, a display and a sound server
         run: |

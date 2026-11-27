@@ -262,8 +262,8 @@ static void configs_text(strbuf_t *sb)
 		SB_Printf(sb, "exec %s\n", fallback);
 	if (active.postcmds.data)
 		SB_AppendStr(sb, active.postcmds.data);
-	const char *cfg = va("%s.cfg", Cvar_String("cfg_save_name"));
-	if (FS_FileExists(cfg) && !(rc && mentions(rc, cfg)))
+	const char *cfg = Cfg_MainName();
+	if (FS_FileExists(cfg) && !(rc && (mentions(rc, cfg) || mentions(rc, "config.cfg"))))
 		SB_Printf(sb, "exec %s\n", cfg);
 	if (FS_FileExists("autoexec.cfg") && !(rc && mentions(rc, "autoexec.cfg")))
 		SB_AppendStr(sb, "exec autoexec.cfg\n");
@@ -569,7 +569,7 @@ static void FsShowmanifest_f(int argc, const char **argv)
 		Con_Printf("install \"%s\"\n", m->install);
 	if (m->rtcbroker[0])
 		Con_Printf("rtcbroker \"%s\"\n", m->rtcbroker);
-	Con_Printf("mainconfig \"%s.cfg\"\n", Cvar_String("cfg_save_name"));
+	Con_Printf("mainconfig \"%s\"\n", Cfg_MainName());
 	Con_Printf("// basedir \"%s\"\n", FS_BaseDir());
 	for (int i = 0; i < m->numbasegames; i++)
 		Con_Printf("basegame \"%s\"\n", m->basegame[i]);

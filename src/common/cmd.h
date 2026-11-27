@@ -102,6 +102,10 @@ typedef void (*cfg_reset_fn)(void);
 extern cfg_write_fn cfg_write_hook;
 extern cfg_reset_fn cfg_reset_hook;
 bool Cfg_Save(const char *name);
+/* the main config (bulwark.cfg unless cfg_save_name names another; never
+ * FTEQW's fte.cfg or config.cfg), and the file "exec name" reads */
+const char *Cfg_MainName(void);
+const char *Cfg_ExecName(const char *name);
 /* on quit: saves when cfg_save_auto is on and something changed */
 void Cfg_SaveIfModified(void);
 /* archived cvars and binds back to their defaults */

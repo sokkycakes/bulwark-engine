@@ -9,12 +9,36 @@ static cvar_t *cvar_list;
 
 cvar_t *Cvar_First(void) { return cvar_list; }
 
+/* other names for a cvar: each one finds the same cvar, as FTE's cvar
+ * aliases do, so the last value set under either name wins and only the
+ * real name is written to a config */
+typedef struct cvar_alias_s {
+	char *name;
+	cvar_t *target;
+	struct cvar_alias_s *next;
+} cvar_alias_t;
+static cvar_alias_t *cvar_aliases;
+
 cvar_t *Cvar_Find(const char *name)
 {
 	for (cvar_t *v = cvar_list; v; v = v->next)
 		if (!Str_ICmp(v->name, name))
 			return v;
+	for (cvar_alias_t *a = cvar_aliases; a; a = a->next)
+		if (!Str_ICmp(a->name, name))
+			return a->target;
 	return NULL;
+}
+
+void Cvar_AddAlias(const char *name, cvar_t *target)
+{
+	if (!target || Cvar_Find(name))
+		return;
+	cvar_alias_t *a = Mem_Alloc(sizeof(*a));
+	a->name = Mem_Strdup(name);
+	a->target = target;
+	a->next = cvar_aliases;
+	cvar_aliases = a;
 }
 
 int cvar_generation;
@@ -34,6 +58,7 @@ static void Cvar_Assign(cvar_t *v, const char *value)
 	v->value = (float)atof(value);
 	v->ivalue = atoi(value);
 	v->modified++;
+	v->changed_at = cvar_generation;
 	Mem_Free(old);
 	if (v == developer_cvar)
 		developer = v->ivalue;

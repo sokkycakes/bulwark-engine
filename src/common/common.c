@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
@@ -29,6 +30,67 @@ void Host_Loading(const char *stage, const char *map, float frac)
 		loading_hook(stage, map, frac);
 }
 
+static bool con_plain_stdout;
+
+void Con_SetPlainStdout(bool plain) { con_plain_stdout = plain; }
+
+static int hexdigit(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+
+/* the console's markup (docs/spec/dedicated.md): ^0-^9 colours, ^xRGB,
+ * ^&FB, single-letter modes (^b ^s ^h ^m ^d ^r ^a), ^^ for a caret, and
+ * ^[text\key\value...^] links, of which only the text is shown */
+static void fputs_plain(const char *s, FILE *f)
+{
+	char out[1024];
+	size_t n = 0;
+	bool in_link = false, in_keys = false;
+	for (; *s; s++) {
+		if (n + 2 >= sizeof(out)) {
+			out[n] = 0;
+			fputs(out, f);
+			n = 0;
+		}
+		if (s[0] == '^' && s[1]) {
+			char c = s[1];
+			if (c == '[' || c == ']') {
+				in_link = c == '[';
+				in_keys = false;
+				s++;
+				continue;
+			}
+			if ((c >= '0' && c <= '9') || strchr("bshmdra", c)) {
+				s++;
+				continue;
+			}
+			if (c == 'x' && hexdigit(s[2]) && hexdigit(s[3]) && hexdigit(s[4])) {
+				s += 4;
+				continue;
+			}
+			if (c == '&' && s[2] && s[3]) {
+				s += 3;
+				continue;
+			}
+			if (c == '^')
+				s++; /* a literal caret */
+		} else if (*s == '\\' && in_link) {
+			in_keys = true;
+		}
+		if (!in_keys)
+			out[n++] = *s;
+	}
+	out[n] = 0;
+	fputs(out, f);
+}
+
+static void print_stdout(const char *text)
+{
+	if (con_plain_stdout && strchr(text, '^'))
+		fputs_plain(text, stdout);
+	else
+		fputs(text, stdout);
+	fflush(stdout);
+}
+
 void Con_Print(const char *text)
 {
 	if (con_hook)
@@ -37,8 +99,14 @@ void Con_Print(const char *text)
 		con_log_hook(text);
 	if (con_redirect)
 		SB_AppendStr(con_redirect, text);
-	fputs(text, stdout);
-	fflush(stdout);
+	print_stdout(text);
+}
+
+void Con_PrintOutside(const char *text)
+{
+	if (con_log_hook)
+		con_log_hook(text);
+	print_stdout(text);
 }
 
 void Con_Printf(const char *fmt, ...)

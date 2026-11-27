@@ -15,6 +15,7 @@
  * relayed, split into pieces that fit a Live datagram).
  * ISC licence, see LICENSE. */
 #include "lobby.h"
+#include "dedlaunch.h"
 #include "client.h"
 #include "../common/cmd.h"
 #include "../common/cvar.h"
@@ -41,6 +42,7 @@
 #define LOBBY_CHAT 10
 #define LOBBY_TIMEOUT 10.0
 #define LOBBY_MAX_INTENTS 32
+#define BOTS_DEFAULT (-2) /* L.bots: the rules' own bots, nothing set */
 
 typedef struct {
 	bool used;
@@ -83,8 +85,24 @@ static struct {
 	char status[128], error[160];
 	char roomcode[8];
 	char map[64];
+	bool mapchosen;  /* the host picked the map; a ruleset change keeps it */
 	char ruleset[32];
 	char timelimit[16], fraglimit[16];
+	/* the server the lobby starts (docs/spec/lobby.md, "Hosting options") */
+	char hostname[64];
+	char password[64];    /* host: the lobby's and the server's password */
+	bool locked;          /* guests: the host has a password */
+	int bots;             /* bots besides the lobby's players; -1 fills every free slot */
+	bool listed;          /* sv_public 1 */
+	bool dedicated;       /* a dedicated server on this machine instead of a listen server */
+	bool dedpending;      /* host: waiting for the local server to stop before starting it */
+	int dedport;
+	char rconpass[20];
+	char dedcmds[1536];
+	double nextconnect;
+	/* guests: a password to send, and whether the host asked for one */
+	char joinpass[64];
+	bool needpass;
 	double countdown_end;
 	double settle_until;
 	seat_t seats[LOBBY_SEATS];
@@ -124,12 +142,14 @@ static int nummodes;
 
 static cvar_t *lobby_port, *lobby_readytime, *lobby_maxplayers, *lobby_defaultmap, *lobby_defaultruleset;
 static cvar_t *lobby_snapshot;
+static cvar_t *lobby_hostname, *lobby_password, *lobby_bots, *lobby_public, *lobby_servertype;
 
 static const char *const phase_names[] = {"IDLE", "CREATING", "JOINING", "WAITING",
                                           "COUNTDOWN", "STARTING", "INGAME", "CLOSING"};
 
 lobby_phase_t Lobby_Phase(void) { return L.phase; }
 bool Lobby_Active(void) { return L.phase != LOBBY_IDLE; }
+bool Lobby_AskingPassword(void) { return L.needpass && L.jointarget[0]; }
 
 /* --- the socket ---------------------------------------------------------------------- */
 
@@ -292,11 +312,294 @@ static void reset_session(void)
 	L.revision++;
 }
 
+/* --- the host's and guest's own cvars ------------------------------------------------
+ * A lobby game changes cvars on this machine. The lobby keeps what they were
+ * and puts them back once that game is over, so a later console map, listen
+ * server or plain "connect" doesn't inherit the lobby's rules, bots or
+ * passwords. */
+#define MAX_KEPT 48
+typedef struct {
+	bool armed; /* values kept, the lobby's game is starting or running */
+	int num;
+	struct {
+		char name[64];
+		bool had;
+		char value[128];
+	} v[MAX_KEPT];
+} cvarkeep_t;
+
+/* the first value kept wins: it is the one from before any lobby game */
+static void keep_cvar(cvarkeep_t *k, const char *name)
+{
+	cvar_t *v;
+	if (!*name)
+		return;
+	for (int i = 0; i < k->num; i++)
+		if (!Str_ICmp(k->v[i].name, name))
+			return;
+	if (k->num == MAX_KEPT)
+		return;
+	v = Cvar_Find(name);
+	Str_Copy(k->v[k->num].name, name, sizeof(k->v[k->num].name));
+	k->v[k->num].had = v != NULL;
+	Str_Copy(k->v[k->num].value, v ? v->string : "", sizeof(k->v[k->num].value));
+	k->num++;
+	k->armed = true;
+}
+
+static bool put_back(cvarkeep_t *k)
+{
+	if (!k->armed)
+		return false;
+	for (int i = 0; i < k->num; i++) {
+		cvar_t *v = Cvar_Find(k->v[i].name);
+		if (!v)
+			continue;
+		if (k->v[i].had)
+			Cvar_SetDirect(v, k->v[i].value);
+		else
+			Cvar_Reset(v); /* made or registered later: its default */
+	}
+	k->armed = false;
+	k->num = 0;
+	return true;
+}
+
+/* The listen server's settings: what begin_start sets, and every cvar a
+ * mode's start commands set. They go back once that game's server stops. */
+static const char *const override_names[] = {"hostname", "sv_password", "sv_public", "bot_minClients", "arena_bots",
+                                             "maxplayers", "sv_playerslots", "timelimit", "fraglimit",
+                                             "g_gametype", "deathmatch", "coop", "sv_background"};
+static struct {
+	cvarkeep_t k;
+	bool up; /* that game came up */
+} saved;
+
+/* "set name value", "seta name value", or "name value" for a cvar */
+static void keep_startcmds(const char *cmds)
+{
+	cmd_tokens_t *t = malloc(sizeof(*t));
+	char line[512];
+	if (!t)
+		return;
+	while (*cmds) {
+		size_t n = strcspn(cmds, "\n;");
+		Str_Copy(line, cmds, BW_MIN(n + 1, sizeof(line)));
+		cmds += n;
+		if (*cmds)
+			cmds++;
+		Cmd_TokenizeInto(t, line);
+		if (t->argc < 2)
+			continue;
+		if (!Str_ICmp(t->argv[0], "set") || !Str_ICmp(t->argv[0], "seta") || !Str_ICmp(t->argv[0], "sets") ||
+		    !Str_ICmp(t->argv[0], "setu"))
+			keep_cvar(&saved.k, t->argv[1]);
+		else if (Cvar_Find(t->argv[0]))
+			keep_cvar(&saved.k, t->argv[0]);
+	}
+	free(t);
+}
+
+static void save_overrides(const char *startcmds)
+{
+	if (!saved.k.armed)
+		saved.up = false;
+	for (int i = 0; i < (int)BW_ARRAY_COUNT(override_names); i++)
+		keep_cvar(&saved.k, override_names[i]);
+	if (startcmds)
+		keep_startcmds(startcmds);
+}
+
+static void restore_overrides(void)
+{
+	saved.up = false;
+	if (put_back(&saved.k))
+		Con_DPrintf("lobby: the host's server settings are back as they were\n");
+}
+
+static bool sv_background_on(void)
+{
+	cvar_t *v = Cvar_Find("sv_background");
+	return v && v->ivalue;
+}
+
+/* the local server runs the title's backdrop. Nuclide's worldspawn trades
+ * the sv_background cvar in for the "background" serverinfo key (and sets
+ * the cvar back to 0) as the map spawns, so the cvar only tells until then
+ * and the key from then on. Serverinfo carries over between levels, and
+ * the next level's worldspawn sets the key again. */
+static bool sv_on_backdrop(void)
+{
+	char buf[16];
+	const char *v;
+	if (sv_background_on())
+		return true;
+	v = SV_InfoGet(sv.serverinfo, "background", buf, sizeof(buf));
+	return v && atof(v) == 1;
+}
+
+void Lobby_ServerCheck(void)
+{
+	if (saved.up && !sv.active)
+		restore_overrides();
+}
+
+/* The client side: the "password" userinfo a guest (or a host joining its
+ * own dedicated server) connects with, and the host's rcon_password and
+ * rcon_address for that server. They stay while this client may still go
+ * back to that game: a guest whose connection timed out can "reconnect"
+ * with the password, as in FTE, and the host can rcon its server. They go
+ * back once that game is over for this client, whatever comes next: it
+ * disconnects from it (the "disconnect" command, Leave, or the server
+ * dropping it or shutting down), connects to any other server, starts a
+ * local game of its own (rcon_password is the listen server's too), the
+ * host's dedicated server stops, or the start fails. Only the title's
+ * backdrop, which never checks a password, keeps the password for a
+ * reconnect; it still takes the rcon settings back. */
+static struct {
+	cvarkeep_t k;     /* password */
+	cvarkeep_t rcon;  /* rcon_password, rcon_address: the host's dedicated server */
+	bool has_server;  /* the lobby's game server is known */
+	netadr_t server;
+} clkept;
+
+/* a lobby game is on its way: the next connect is to it */
+static void set_client_cvar(const char *name, const char *value)
+{
+	clkept.has_server = false;
+	keep_cvar(!Str_NICmp(name, "rcon_", 5) ? &clkept.rcon : &clkept.k, name);
+	Cvar_Set(name, value);
+}
+
+static void restore_rcon(void)
+{
+	if (put_back(&clkept.rcon))
+		Con_DPrintf("lobby: this client's rcon settings are back as they were\n");
+}
+
+static void restore_client(void)
+{
+	clkept.has_server = false;
+	restore_rcon();
+	if (put_back(&clkept.k))
+		Con_DPrintf("lobby: this client's password is back as it was\n");
+}
+
+static bool client_kept(void) { return clkept.k.armed || clkept.rcon.armed; }
+
+void Lobby_ClientConnecting(const netadr_t *to)
+{
+	/* this client's own local game (the title's backdrop) doesn't count:
+	 * it never checks a password, and the lobby's server may be rejoined */
+	if (!client_kept() || to->type == NA_LOOPBACK)
+		return;
+	/* the first connect once they are set is the lobby's game */
+	if (!clkept.has_server) {
+		clkept.server = *to;
+		clkept.has_server = true;
+	} else if (!NET_CompareAdr(&clkept.server, to))
+		restore_client();
+}
+
+void Lobby_ClientDisconnecting(const netadr_t *from)
+{
+	if (client_kept() && clkept.has_server && NET_CompareAdr(&clkept.server, from))
+		restore_client();
+}
+
+/* once a frame: the other ways the lobby's game ends for this client */
+static void client_check(void)
+{
+	if (!client_kept() || Lobby_GameStarting())
+		return; /* nothing kept, or the lobby's game is still on its way */
+	if (clkept.rcon.armed && !DedLaunch_Running()) {
+		/* the host's dedicated server is gone, and the game with it */
+		restore_client();
+		return;
+	}
+	if (sv.active) {
+		if (sv_on_backdrop())
+			restore_rcon();
+		else
+			restore_client();
+	}
+}
+
+/* --- the hand-off ----------------------------------------------------------------------
+ * From Start until this client is in the lobby's game, the session may
+ * already be over (every guest has the address) while the title's backdrop
+ * still runs: the title page must not come back over it. The lobby page
+ * keeps showing what it last showed meanwhile. */
+static struct {
+	double until; /* 0: no game on its way */
+	strbuf_t page;
+} handoff;
+
+static void handoff_begin(void)
+{
+	handoff.until = Sys_Seconds() + 90;
+}
+
+static void handoff_end(void)
+{
+	handoff.until = 0;
+	SB_Free(&handoff.page);
+}
+
+/* the session is about to reset during a hand-off: keep its last page */
+static json_t *local_snapshot(void);
+static void handoff_keep_page(void)
+{
+	json_t *j;
+	if (!handoff.until)
+		return;
+	SB_Free(&handoff.page);
+	j = local_snapshot();
+	/* still "starting" to the page, nothing left to press but Leave */
+	JSON_SetString(j, "phase", phase_names[LOBBY_STARTING]);
+	JSON_SetString(j, "status", "Starting the game...");
+	JSON_SetBool(j, "canReady", false);
+	JSON_SetBool(j, "canStart", false);
+	JSON_SetBool(j, "canCancel", false);
+	JSON_SetBool(j, "canChangeMap", false);
+	JSON_SetBool(j, "canChat", false);
+	JSON_Write(&handoff.page, j, -1);
+	JSON_Free(j);
+}
+
+bool Lobby_GameStarting(void)
+{
+	if (!handoff.until)
+		return false;
+	if (Sys_Seconds() > handoff.until)
+		handoff_end();
+	/* the session is over and nothing is connected or connecting: the
+	 * game didn't come (a bad address, a map that failed) */
+	else if (L.phase == LOBBY_IDLE && cl.state == ca_disconnected && !sv.active)
+		handoff_end();
+	return handoff.until != 0;
+}
+
+void Lobby_GameArrived(void)
+{
+	if (handoff.until)
+		handoff_end();
+}
+
 /* ends the session with a reason everyone sees for a moment */
 static void close_with(const char *error)
 {
 	if (L.phase == LOBBY_IDLE)
 		return;
+	if (L.host && L.phase == LOBBY_STARTING) {
+		/* the start failed before any guest heard of the server: don't
+		 * leave a dedicated server behind, or the host's cvars changed */
+		if (L.dedicated && L.dedport && DedLaunch_Running())
+			DedLaunch_Stop();
+		restore_overrides();
+		restore_client();
+	}
+	handoff_end();
 	Str_Copy(L.error, error ? error : "", sizeof(L.error));
 	if (error && *error)
 		Con_Printf("lobby: %s\n", error);
@@ -335,14 +638,50 @@ static bool can_chat(void)
 	return L.localseat >= 0 && (L.phase == LOBBY_WAITING || L.phase == LOBBY_COUNTDOWN || L.phase == LOBBY_STARTING);
 }
 
-static json_t *settings_json(void)
+/* the server's name when the host gave none */
+static const char *server_name(void)
+{
+	static char name[96];
+	if (L.hostname[0])
+		return L.hostname;
+	snprintf(name, sizeof(name), "%s's server", L.seats[0].used && L.seats[0].name[0] ? L.seats[0].name : "Stiletto");
+	return name;
+}
+
+/* for_host: the host's own page, which may see the password */
+static json_t *settings_json(bool for_host)
 {
 	json_t *s = JSON_New(JSON_OBJECT);
 	JSON_SetString(s, "ruleset", L.ruleset);
-	JSON_SetString(s, "servertype", "LISTEN SERVER");
+	JSON_SetString(s, "servertype", L.dedicated ? "DEDICATED SERVER" : "LISTEN SERVER");
 	JSON_SetString(s, "timelimit", L.timelimit);
 	JSON_SetString(s, "fraglimit", L.fraglimit);
+	JSON_SetString(s, "hostname", L.host ? server_name() : L.hostname);
+	JSON_SetNumber(s, "maxplayers", L.max);
+	/* bots: a count, -1 fill; botsDefault: the rules' own bots (0 for older pages) */
+	JSON_SetNumber(s, "bots", L.bots == BOTS_DEFAULT ? 0 : L.bots);
+	JSON_SetBool(s, "botsDefault", L.bots == BOTS_DEFAULT);
+	JSON_SetBool(s, "public", L.listed);
+	JSON_SetBool(s, "password", L.host ? L.password[0] != 0 : L.locked);
+	if (for_host)
+		JSON_SetString(s, "passwordText", L.password);
 	return s;
+}
+
+/* what this engine's lobby can host, for the page's server settings */
+static json_t *hosting_json(void)
+{
+	json_t *h = JSON_New(JSON_OBJECT), *types = JSON_New(JSON_ARRAY);
+	cvar_t *ls = Cvar_Find("live_server");
+	JSON_Append(types, JSON_NewString("listen"));
+	if (DedLaunch_Supported())
+		JSON_Append(types, JSON_NewString("dedicated"));
+	JSON_Set(h, "serverTypes", types);
+	JSON_SetNumber(h, "maxSeats", LOBBY_SEATS);
+	JSON_SetBool(h, "online", Live_Connected());
+	JSON_SetBool(h, "onlineConfigured", ls && ls->string[0]);
+	JSON_SetBool(h, "dedicatedRunning", DedLaunch_Running());
+	return h;
 }
 
 static json_t *players_json(void)
@@ -377,6 +716,249 @@ static json_t *chat_json(void)
 	return arr;
 }
 
+/* --- what the host can pick: maps and rulesets ------------------------------------------ */
+
+/* The game names its lobby's choices in scripts/lobby.txt, one per line:
+ *   map <id> "<title>"
+ *   ruleset <ID> "<title>" [<map the ruleset picks>]
+ * A listed map whose maps/<id>.bsp (or .scene) isn't there is left out. With
+ * no file, every map in maps/ is offered under its own name, with the
+ * built-in rulesets below. MenuQC's lobby_registermode adds rulesets either
+ * way. The page shows these lists ("maps", "rulesets" in getlobby) and falls
+ * back to its own when they are missing. */
+#define LOBBY_MAX_MAPS 64
+#define LOBBY_MAX_RULESETS 24
+
+typedef struct {
+	char id[64], name[64];
+} lobbymap_t;
+
+typedef struct {
+	char id[32], name[64], map[64];
+	bool available; /* its progs are in this game */
+	bool seatbots;  /* the rules fill their own seats with bots (arena_bots) */
+} lobbyruleset_t;
+
+static const struct {
+	const char *id, *name;
+	bool seatbots;
+} builtin_rulesets[] = {
+	{"DUEL", "Duel", false},       {"DEATHMATCH", "Deathmatch", false}, {"TEAMDM", "Team Deathmatch", false},
+	{"DOMINATION", "Domination", false}, {"FREEZETAG", "Freeze Tag", true}, {"ARCHSTILETTO", "Archstiletto", true},
+};
+
+static struct {
+	int fsgen;
+	bool loaded, fromfile;
+	lobbymap_t maps[LOBBY_MAX_MAPS];
+	int nummaps;
+	lobbyruleset_t rulesets[LOBBY_MAX_RULESETS];
+	int numrulesets;
+} cat = {.fsgen = -1};
+
+static bool map_present(const char *id)
+{
+	return FS_FileExists(va("maps/%s.bsp", id)) || FS_FileExists(va("maps/%s.scene", id));
+}
+
+/* Nuclide runs a ruleset from progs/<id in lower case>.dat; without it the
+ * server has no rules and nobody spawns, so such a ruleset can't be picked */
+static bool progs_present(const char *id)
+{
+	char path[64];
+	int n = snprintf(path, sizeof(path), "progs/%s.dat", id);
+	for (int i = 6; i < n; i++)
+		path[i] = (char)tolower((unsigned char)path[i]);
+	return FS_FileExists(path);
+}
+
+static void add_map(const char *id, const char *name)
+{
+	if (cat.nummaps == LOBBY_MAX_MAPS || !*id)
+		return;
+	for (int i = 0; i < cat.nummaps; i++)
+		if (!Str_ICmp(cat.maps[i].id, id))
+			return;
+	Str_Copy(cat.maps[cat.nummaps].id, id, sizeof(cat.maps[0].id));
+	Str_Copy(cat.maps[cat.nummaps].name, *name ? name : id, sizeof(cat.maps[0].name));
+	cat.nummaps++;
+}
+
+static void add_ruleset(const char *id, const char *name, const char *map, bool seatbots)
+{
+	lobbyruleset_t *r = NULL;
+	char up[32];
+	int n = 0;
+	for (; id[n] && n < (int)sizeof(up) - 1; n++)
+		up[n] = (char)toupper((unsigned char)id[n]);
+	up[n] = 0;
+	if (!n)
+		return;
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (!strcmp(cat.rulesets[i].id, up))
+			r = &cat.rulesets[i];
+	if (!r) {
+		if (cat.numrulesets == LOBBY_MAX_RULESETS)
+			return;
+		r = &cat.rulesets[cat.numrulesets++];
+	}
+	Str_Copy(r->id, up, sizeof(r->id));
+	Str_Copy(r->name, *name ? name : up, sizeof(r->name));
+	Str_Copy(r->map, map, sizeof(r->map));
+	r->available = progs_present(up);
+	r->seatbots = seatbots;
+}
+
+static void list_map(const char *name, const char *searchpath, void *ctx)
+{
+	char id[64];
+	const char *base = strrchr(name, '/');
+	size_t n;
+	(void)searchpath;
+	(void)ctx;
+	base = base ? base + 1 : name;
+	n = strlen(base);
+	if (n < 5 || n - 4 >= sizeof(id) || Str_ICmp(base + n - 4, ".bsp"))
+		return;
+	memcpy(id, base, n - 4);
+	id[n - 4] = 0;
+	for (const char *p = id; *p; p++)
+		if (!isalnum((unsigned char)*p) && *p != '_')
+			return;
+	add_map(id, id);
+}
+
+static int cmp_maps(const void *a, const void *b)
+{
+	return Str_ICmp(((const lobbymap_t *)a)->id, ((const lobbymap_t *)b)->id);
+}
+
+static void parse_catalog(const char *text)
+{
+	char line[512], kind[16], id[64], name[64], map[64], flag[32];
+	while (*text) {
+		const char *end = strchr(text, '\n'), *p;
+		size_t n = end ? (size_t)(end - text) : strlen(text);
+		if (n >= sizeof(line))
+			n = sizeof(line) - 1;
+		memcpy(line, text, n);
+		line[n] = 0;
+		text += end ? (size_t)(end - text) + 1 : strlen(text);
+		kind[0] = id[0] = name[0] = map[0] = flag[0] = 0;
+		if (!(p = COM_Parse(line, kind, sizeof(kind))))
+			continue;
+		if ((p = COM_Parse(p, id, sizeof(id))))
+			if ((p = COM_Parse(p, name, sizeof(name))))
+				if ((p = COM_Parse(p, map, sizeof(map))))
+					COM_Parse(p, flag, sizeof(flag));
+		if (!Str_ICmp(kind, "map")) {
+			if (map_present(id))
+				add_map(id, name);
+			else
+				Con_DPrintf("lobby: scripts/lobby.txt lists map %s, which isn't in this game\n", id);
+		} else if (!Str_ICmp(kind, "ruleset"))
+			add_ruleset(id, name, map, !Str_ICmp(flag, "seatbots"));
+	}
+}
+
+/* (re)built when the lobby opens or the search path changes */
+static void load_catalog(void)
+{
+	char *text;
+	if (cat.loaded && cat.fsgen == FS_Generation())
+		return;
+	cat.loaded = true;
+	cat.fsgen = FS_Generation();
+	cat.nummaps = cat.numrulesets = 0;
+	text = FS_LoadFile("scripts/lobby.txt", NULL);
+	cat.fromfile = text != NULL;
+	if (text) {
+		parse_catalog(text);
+		Mem_Free(text);
+	}
+	if (!cat.nummaps) {
+		FS_List("maps/*.bsp", true, list_map, NULL);
+		qsort(cat.maps, (size_t)cat.nummaps, sizeof(cat.maps[0]), cmp_maps);
+	}
+	if (!cat.numrulesets)
+		for (size_t i = 0; i < BW_ARRAY_COUNT(builtin_rulesets); i++)
+			add_ruleset(builtin_rulesets[i].id, builtin_rulesets[i].name, "", builtin_rulesets[i].seatbots);
+}
+
+static const lobbyruleset_t *find_ruleset(const char *id)
+{
+	load_catalog();
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (!Str_ICmp(cat.rulesets[i].id, id))
+			return &cat.rulesets[i];
+	return NULL;
+}
+
+/* A game with no rules progs at all (not Nuclide) runs any ruleset alike */
+static bool ruleset_runs(const char *id)
+{
+	const lobbyruleset_t *r = find_ruleset(id); /* loads the catalog; its answer is cached */
+	if (r ? r->available : progs_present(id))
+		return true;
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (cat.rulesets[i].available)
+			return false;
+	return true;
+}
+
+/* the map a ruleset starts on: lobby_defaultmap when set, else the ruleset's
+ * own, else the first listed (docs/spec/lobby.md) */
+static const char *ruleset_map(const char *id)
+{
+	const lobbyruleset_t *r = find_ruleset(id);
+	load_catalog();
+	if (*lobby_defaultmap->string)
+		return lobby_defaultmap->string;
+	if (r && r->map[0] && map_present(r->map))
+		return r->map;
+	return cat.nummaps ? cat.maps[0].id : "start";
+}
+
+static json_t *maps_json(void)
+{
+	json_t *arr = JSON_New(JSON_ARRAY);
+	load_catalog();
+	for (int i = 0; i < cat.nummaps; i++) {
+		json_t *m = JSON_New(JSON_OBJECT);
+		JSON_SetString(m, "id", cat.maps[i].id);
+		JSON_SetString(m, "name", cat.maps[i].name);
+		JSON_Append(arr, m);
+	}
+	return arr;
+}
+
+static json_t *rulesets_json(void)
+{
+	json_t *arr = JSON_New(JSON_ARRAY);
+	load_catalog();
+	for (int i = 0; i < cat.numrulesets; i++) {
+		json_t *r = JSON_New(JSON_OBJECT);
+		JSON_SetString(r, "id", cat.rulesets[i].id);
+		JSON_SetString(r, "name", cat.rulesets[i].name);
+		JSON_SetString(r, "map", cat.rulesets[i].map);
+		JSON_SetBool(r, "available", ruleset_runs(cat.rulesets[i].id));
+		JSON_SetBool(r, "seatbots", cat.rulesets[i].seatbots);
+		JSON_Append(arr, r);
+	}
+	for (int i = 0; i < nummodes; i++) {
+		json_t *r;
+		if (find_ruleset(modes[i].id))
+			continue;
+		r = JSON_New(JSON_OBJECT);
+		JSON_SetString(r, "id", modes[i].id);
+		JSON_SetString(r, "name", modes[i].name[0] ? modes[i].name : modes[i].id);
+		JSON_SetString(r, "map", "");
+		JSON_SetBool(r, "available", ruleset_runs(modes[i].id));
+		JSON_Append(arr, r);
+	}
+	return arr;
+}
+
 /* what the lobby page reads (getlobby) */
 static json_t *local_snapshot(void)
 {
@@ -406,8 +988,17 @@ static json_t *local_snapshot(void)
 	JSON_SetBool(j, "canChangeMap", active && can_change());
 	JSON_SetBool(j, "canLeave", active);
 	JSON_SetBool(j, "canChat", active && can_chat());
-	JSON_Set(j, "settings", active ? settings_json() : JSON_New(JSON_OBJECT));
+	JSON_Set(j, "settings", active ? settings_json(L.host) : JSON_New(JSON_OBJECT));
+	JSON_Set(j, "hosting", hosting_json());
+	JSON_SetBool(j, "needPassword", L.needpass && (L.phase == LOBBY_IDLE || L.phase == LOBBY_CLOSING));
+	JSON_SetString(j, "joinTarget", L.needpass ? L.jointarget : "");
+	/* an "online" lobby without Bulwark Live is one this network can join only */
+	JSON_SetString(j, "warning", active && L.host && !strcmp(L.network, "online") && !Live_Connected()
+	                                 ? "Online services are not connected in this build: this room code works on this network only."
+	                                 : "");
 	JSON_Set(j, "players", active ? players_json() : JSON_New(JSON_ARRAY));
+	JSON_Set(j, "maps", maps_json());
+	JSON_Set(j, "rulesets", rulesets_json());
 	return j;
 }
 
@@ -428,7 +1019,7 @@ static void send_snapshot(int seat)
 	JSON_SetNumber(j, "remaining", L.phase == LOBBY_COUNTDOWN ? BW_MAX(0, L.countdown_end - now) : -1);
 	JSON_SetNumber(j, "ack", L.seats[seat].lastseq);
 	JSON_SetNumber(j, "seat", seat);
-	JSON_Set(j, "settings", settings_json());
+	JSON_Set(j, "settings", settings_json(false));
 	JSON_Set(j, "players", players_json());
 	JSON_Set(j, "chat", chat_json());
 	send_to(&L.seats[seat].addr, j);
@@ -487,8 +1078,6 @@ static void publish(void)
 
 /* --- modes ---------------------------------------------------------------------------- */
 
-static const char *const builtin_rulesets[] = {"DUEL", "DEATHMATCH", "TEAMDM", "DOMINATION", NULL};
-
 static const lobbymode_t *find_mode(const char *id)
 {
 	for (int i = 0; i < nummodes; i++)
@@ -499,10 +1088,22 @@ static const lobbymode_t *find_mode(const char *id)
 
 static bool valid_ruleset(const char *id)
 {
-	for (int i = 0; builtin_rulesets[i]; i++)
-		if (!Str_ICmp(builtin_rulesets[i], id))
-			return true;
-	return find_mode(id) != NULL;
+	return find_ruleset(id) != NULL || find_mode(id) != NULL;
+}
+
+/* lobby_defaultruleset when it can run, else the first listed that can */
+static const char *default_ruleset(void)
+{
+	const char *want = *lobby_defaultruleset->string ? lobby_defaultruleset->string : "DUEL";
+	if (valid_ruleset(want) && ruleset_runs(want))
+		return want;
+	for (int i = 0; i < cat.numrulesets; i++)
+		if (cat.rulesets[i].available) {
+			Con_Printf("^3lobby: ruleset %s isn't in this game (its progs are missing); the lobby starts on %s\n", want,
+			           cat.rulesets[i].name);
+			return cat.rulesets[i].id;
+		}
+	return want;
 }
 
 static void bi_lobby_registermode(qcvm_t *vm)
@@ -535,6 +1136,18 @@ const qc_builtin_t lobby_builtins[] = {
 
 /* --- creating and joining ------------------------------------------------------------- */
 
+/* a server name or password that can go into a config and a userinfo
+ * string: printable, no quotes, backslashes or semicolons, under 64 bytes */
+static bool text_ok(const char *t)
+{
+	if (strlen(t) > 63)
+		return false;
+	for (const unsigned char *p = (const unsigned char *)t; *p; p++)
+		if (*p < 0x20 || *p == '"' || *p == '\\' || *p == ';' || *p == 0x7f)
+			return false;
+	return true;
+}
+
 static void local_name(char *out, size_t size)
 {
 	cvar_t *n = Cvar_Find("name");
@@ -547,12 +1160,28 @@ static void new_session(void)
 	L.sid = random32();
 	L.max = BW_CLAMP(lobby_maxplayers->ivalue, 1, LOBBY_SEATS);
 	L.error[0] = 0;
-	Str_Copy(L.map, lobby_defaultmap->string, sizeof(L.map));
-	Str_Copy(L.ruleset, *lobby_defaultruleset->string ? lobby_defaultruleset->string : "DUEL", sizeof(L.ruleset));
+	cat.loaded = false; /* a new lobby looks at the game's files again */
+	Str_Copy(L.ruleset, default_ruleset(), sizeof(L.ruleset));
 	Str_Copy(L.timelimit, "0", sizeof(L.timelimit));
 	Str_Copy(L.fraglimit, "0", sizeof(L.fraglimit));
+	/* the hosting options start from the lobby_* cvars (the console can preset them) */
+	Str_Copy(L.hostname, text_ok(lobby_hostname->string) ? lobby_hostname->string : "", sizeof(L.hostname));
+	Str_Copy(L.password, text_ok(lobby_password->string) ? lobby_password->string : "", sizeof(L.password));
+	L.locked = false;
+	L.bots = !Str_ICmp(lobby_bots->string, "fill") ? -1
+	         : (!lobby_bots->string[0] || !Str_ICmp(lobby_bots->string, "default")) ? BOTS_DEFAULT
+	                                                                                : BW_CLAMP(lobby_bots->ivalue, 0, LOBBY_SEATS - 1);
+	L.listed = lobby_public->ivalue != 0;
+	L.dedicated = !Str_ICmp(lobby_servertype->string, "dedicated") && DedLaunch_Supported();
+	L.dedpending = false;
+	L.dedport = 0;
+	L.joinpass[0] = 0;
+	L.needpass = false;
 	for (char *p = L.ruleset; *p; p++)
 		*p = (char)toupper((unsigned char)*p);
+	/* lobby_defaultmap, when set, wins; otherwise the ruleset's own map */
+	Str_Copy(L.map, ruleset_map(L.ruleset), sizeof(L.map));
+	L.mapchosen = false;
 }
 
 static void LobbyCreate_f(int argc, const char **argv)
@@ -604,11 +1233,16 @@ static void LobbyJoin_f(int argc, const char **argv)
 {
 	char target[80];
 	if (argc < 2) {
-		Con_Printf("usage: lobby_join <address|room code>\n");
+		Con_Printf("usage: lobby_join <address|room code> [password]\n");
+		return;
+	}
+	if (argc > 2 && !text_ok(argv[2])) {
+		Con_Printf("lobby_join: a password can't have quotes, backslashes or semicolons\n");
 		return;
 	}
 	new_session();
 	Str_Copy(L.jointarget, argv[1], sizeof(L.jointarget));
+	Str_Copy(L.joinpass, argc > 2 ? argv[2] : "", sizeof(L.joinpass));
 	Str_Copy(L.network, looks_like_address(argv[1]) ? "lan" : "online", sizeof(L.network));
 	if (!sock_open(0)) {
 		close_with("Couldn't open a socket");
@@ -642,7 +1276,10 @@ static void LobbyJoin_f(int argc, const char **argv)
 			return;
 		}
 		if (!ok) {
-			close_with(va("No lobby with room code %s was found on this network", argv[1]));
+			cvar_t *ls = Cvar_Find("live_server");
+			close_with(va("No lobby with room code %s was found on this network%s", argv[1],
+			              ls && ls->string[0] ? " (Bulwark Live isn't connected)"
+			                                  : ". Online services are not connected in this build"));
 			return;
 		}
 		Str_Copy(L.roomcode, argv[1], sizeof(L.roomcode));
@@ -764,6 +1401,18 @@ static void host_join(const struct sockaddr_in *from, const json_t *msg)
 			send_simple(from, "reject", "reason", "The game is starting");
 			return;
 		}
+		if (L.password[0] && strcmp(JSON_GetString(msg, "pass", ""), L.password)) {
+			json_t *no = JSON_New(JSON_OBJECT);
+			bool tried = JSON_GetString(msg, "pass", "")[0] != 0;
+			JSON_SetString(no, "t", "reject");
+			JSON_SetNumber(no, "sid", L.sid);
+			JSON_SetString(no, "reason", tried ? "Wrong password" : "This lobby needs a password");
+			JSON_SetBool(no, "needpass", true);
+			send_to(from, no);
+			JSON_Free(no);
+			Con_Printf("lobby: turned %s away (%s password)\n", *name ? name : "player", tried ? "wrong" : "no");
+			return;
+		}
 		for (int i = 1; i < L.max && seat < 0; i++)
 			if (!L.seats[i].used)
 				seat = i;
@@ -839,6 +1488,7 @@ static void begin_start(void)
 	L.startdeadline = Sys_Seconds() + 30;
 	L.startsent = false;
 	changed();
+	handoff_begin();
 	/* Nuclide loads progs/<g_gametype>.dat, named in lower case */
 	for (const char *p = L.ruleset; *p && n < (int)sizeof(gametype) - 1; p++)
 		gametype[n++] = (char)tolower((unsigned char)*p);
@@ -851,20 +1501,82 @@ static void begin_start(void)
 	}
 	{
 		strbuf_t sb = {0};
+		/* Nuclide's bots: bot_minClients keeps that many players (bots
+		 * included) on the server, on every map; -1 leaves bots alone */
+		int bots = L.bots == -1 ? L.max : BW_MIN(L.max, occupied() + BW_MAX(L.bots, 0));
+		const lobbyruleset_t *rs = find_ruleset(L.ruleset);
 		SB_Printf(&sb, "set sv_background 0\nset coop 0\nset deathmatch 1\nset maxplayers %d\nset sv_playerslots %d\n"
 		               "set g_gametype %s\n",
 		          L.max, L.max, gametype);
+		SB_Printf(&sb, "set hostname \"%s\"\nset sv_password \"%s\"\nset sv_public %d\n", server_name(), L.password,
+		          L.listed ? 1 : 0);
+		/* rules that seat bots themselves (Stiletto's Freeze Tag and
+		 * Archstiletto: arena_bots) would fight a quota: they get theirs
+		 * switched on or off instead */
+		if (L.bots == BOTS_DEFAULT)
+			; /* the default: the rules' own bots, as a console map gets them */
+		else if (rs && rs->seatbots)
+			SB_Printf(&sb, "set bot_minClients -1\nset arena_bots %d\n", L.bots != 0 ? 1 : 0);
+		else
+			SB_Printf(&sb, "set bot_minClients %d\n", L.bots == 0 ? 0 : bots);
 		if (atoi(L.timelimit) > 0)
 			SB_Printf(&sb, "set timelimit %s\n", L.timelimit);
 		if (atoi(L.fraglimit) > 0)
 			SB_Printf(&sb, "set fraglimit %s\n", L.fraglimit);
 		if (mode && mode->startcmds[0])
 			SB_Printf(&sb, "%s\n", mode->startcmds);
-		SB_Printf(&sb, "map %s\n", L.map);
-		/* ahead of anything waiting in the buffer (a script's waits) */
-		Cbuf_InsertText(sb.data);
+		if (L.dedicated) {
+			/* the same settings for a server program of its own (cl_dedlaunch.c),
+			 * started once the title's local map has stopped */
+			snprintf(L.rconpass, sizeof(L.rconpass), "%08x%08x", random32(), random32());
+			SB_Printf(&sb, "set rcon_password %s\nmap %s\n", L.rconpass, L.map);
+			Str_Copy(L.dedcmds, sb.data, sizeof(L.dedcmds));
+			L.dedpending = true;
+			L.dedport = 0;
+			Str_Copy(L.status, "Starting the dedicated server...", sizeof(L.status));
+			if (sv.active || cl.state != ca_disconnected)
+				Cbuf_InsertText("disconnect\nkillserver\n");
+		} else {
+			SB_Printf(&sb, "map %s\n", L.map);
+			/* this session's cvars go back once the game's server stops */
+			save_overrides(mode ? mode->startcmds : NULL);
+			/* ahead of anything waiting in the buffer (a script's waits) */
+			Cbuf_InsertText(sb.data);
+		}
 		SB_Free(&sb);
 	}
+}
+
+/* dedicated: start the server program, then connect to it like a guest */
+static bool host_dedicated_frame(double now)
+{
+	if (L.dedpending) {
+		char err[160];
+		if (sv.active || cl.state != ca_disconnected)
+			return false; /* the title's map is still stopping */
+		L.dedpending = false;
+		L.dedport = DedLaunch_Start(L.dedcmds, err, sizeof(err));
+		if (!L.dedport) {
+			close_with(err);
+			return false;
+		}
+		set_client_cvar("rcon_password", L.rconpass);
+		set_client_cvar("rcon_address", va("127.0.0.1:%d", L.dedport));
+		L.nextconnect = now + 0.5;
+		return false;
+	}
+	if (!DedLaunch_Running()) {
+		close_with("The dedicated server stopped; dedicated.log in your game folder says why");
+		return false;
+	}
+	if (cl.state == ca_disconnected && now >= L.nextconnect) {
+		/* the host knows the password; connect retries for ten seconds */
+		set_client_cvar("password", L.password);
+		/* straight away: a script's "wait" holds the whole command buffer */
+		CL_Connect(va("127.0.0.1:%d", L.dedport));
+		L.nextconnect = now + 12;
+	}
+	return cl.state == ca_active;
 }
 
 /* the host's server is up: tell the guests where it is */
@@ -876,10 +1588,11 @@ static void host_starting_frame(void)
 		close_with("The game didn't start");
 		return;
 	}
-	if (!sv.active || cl.state != ca_active || (occupied() > 1 && !NET_ServerPort()))
+	if (L.dedicated ? !host_dedicated_frame(now) : (!sv.active || cl.state != ca_active || (occupied() > 1 && !NET_ServerPort())))
 		return; /* still loading */
 	if (L.phase == LOBBY_STARTING) {
 		L.phase = LOBBY_INGAME;
+		saved.up = saved.k.armed;
 		Str_Copy(L.status, "In game", sizeof(L.status));
 		L.startdeadline = now + 10; /* for the guests' answers */
 		changed();
@@ -893,14 +1606,16 @@ static void host_starting_frame(void)
 		JSON_SetString(j, "t", "start");
 		JSON_SetNumber(j, "sid", L.sid);
 		JSON_SetNumber(j, "nonce", L.startnonce);
-		JSON_SetNumber(j, "port", NET_ServerPort());
+		JSON_SetNumber(j, "port", L.dedicated ? L.dedport : NET_ServerPort());
 		JSON_SetString(j, "map", L.map);
+		JSON_SetString(j, "pass", L.password);
 		send_to(&L.seats[i].addr, j);
 		JSON_Free(j);
 	}
 	if (all) {
 		/* everyone is on their way: the party is over */
 		Con_DPrintf("lobby: every guest has the game's address\n");
+		handoff_keep_page();
 		reset_session();
 	}
 }
@@ -931,6 +1646,11 @@ static void guest_snapshot(const json_t *j)
 		Str_Copy(L.ruleset, JSON_GetString(settings, "ruleset", L.ruleset), sizeof(L.ruleset));
 		Str_Copy(L.timelimit, JSON_GetString(settings, "timelimit", L.timelimit), sizeof(L.timelimit));
 		Str_Copy(L.fraglimit, JSON_GetString(settings, "fraglimit", L.fraglimit), sizeof(L.fraglimit));
+		Str_Copy(L.hostname, JSON_GetString(settings, "hostname", L.hostname), sizeof(L.hostname));
+		L.bots = JSON_GetBool(settings, "botsDefault", false) ? BOTS_DEFAULT : (int)JSON_GetNumber(settings, "bots", L.bots);
+		L.listed = JSON_GetBool(settings, "public", L.listed);
+		L.locked = JSON_GetBool(settings, "password", L.locked);
+		L.dedicated = !strcmp(JSON_GetString(settings, "servertype", ""), "DEDICATED SERVER");
 	}
 	if (players) {
 		memset(L.seats, 0, sizeof(L.seats));
@@ -968,6 +1688,9 @@ static void guest_start(const json_t *j)
 	if (nonce == L.seenstart)
 		return; /* a repeat: connect once */
 	L.seenstart = nonce;
+	/* a passworded server checks the "password" userinfo key */
+	set_client_cvar("password", JSON_GetString(j, "pass", L.joinpass));
+	handoff_begin();
 	if (is_live(&L.hostaddr)) {
 		Con_Printf("lobby: the game is on live:%u\n", (unsigned)L.hostaddr.sin_addr.s_addr);
 		Cbuf_InsertText(va("%sconnect live:%u\n", sv.active ? "killserver\n" : "", (unsigned)L.hostaddr.sin_addr.s_addr));
@@ -1038,6 +1761,8 @@ static void handle(const struct sockaddr_in *from, const json_t *j)
 		return;
 	}
 	if (!strcmp(t, "reject") && L.phase == LOBBY_JOINING) {
+		/* the page asks for the password and joins again (joinpass:) */
+		L.needpass = JSON_GetBool(j, "needpass", false);
 		close_with(JSON_GetString(j, "reason", "The host turned us away"));
 		return;
 	}
@@ -1228,6 +1953,24 @@ static void LobbyStart_f(int argc, const char **argv)
 
 static void LobbyClose_f(int argc, const char **argv)
 {
+	/* Leave while the lobby's game is on its way to this client: it doesn't
+	 * go in after all, and the title comes back once nothing is running */
+	bool abandon = Lobby_GameStarting();
+	L.needpass = false; /* the page's password question is answered with Leave */
+	handoff_end();
+	if (abandon) {
+		/* guests haven't heard of a dedicated server yet: stop it */
+		if (L.host && L.phase == LOBBY_STARTING && L.dedicated && L.dedport && DedLaunch_Running())
+			DedLaunch_Stop();
+		L.dedpending = false;
+		if (cl.state != ca_disconnected)
+			Cmd_ExecuteString("disconnect");
+		if (sv.active)
+			Cmd_ExecuteString("killserver");
+		restore_overrides();
+		restore_client();
+		Con_Printf("lobby: left before the game started\n");
+	}
 	if (L.phase == LOBBY_IDLE)
 		return;
 	if (L.host) {
@@ -1244,6 +1987,7 @@ static void LobbyClose_f(int argc, const char **argv)
 
 static void set_map(const char *id)
 {
+	L.mapchosen = true;
 	if (!strcmp(L.map, id))
 		return;
 	cancel_countdown("The map changed");
@@ -1255,7 +1999,7 @@ static bool set_ruleset(const char *id)
 {
 	char up[32];
 	int n = 0;
-	if (!valid_ruleset(id))
+	if (!valid_ruleset(id) || !ruleset_runs(id))
 		return false;
 	for (; id[n] && n < (int)sizeof(up) - 1; n++)
 		up[n] = (char)toupper((unsigned char)id[n]);
@@ -1263,6 +2007,9 @@ static bool set_ruleset(const char *id)
 	if (strcmp(L.ruleset, up)) {
 		cancel_countdown("The rules changed");
 		Str_Copy(L.ruleset, up, sizeof(L.ruleset));
+		/* until the host picks a map, each ruleset brings its own (Duel: duel_alley) */
+		if (!L.mapchosen && !*lobby_defaultmap->string)
+			Str_Copy(L.map, ruleset_map(up), sizeof(L.map));
 		changed();
 	}
 	return true;
@@ -1284,14 +2031,96 @@ static bool set_limits(int minutes, int frags)
 	return true;
 }
 
+/* the server the lobby starts; NULL leaves a setting as it is. Refuses a
+ * player count below the seats in use, more bots than free slots, a name or
+ * password that can't go into a config, and Dedicated where programs can't
+ * be started. */
+static const char *set_server(const char *type, const char *max, const char *bots, const char *listed,
+                              const char *name, const char *pass)
+{
+	bool dedicated = L.dedicated, pub = L.listed;
+	int m = L.max, b = L.bots;
+	if (type) {
+		if (!Str_ICmp(type, "dedicated"))
+			dedicated = true;
+		else if (!Str_ICmp(type, "listen"))
+			dedicated = false;
+		else
+			return "the server type is listen or dedicated";
+		if (dedicated && !DedLaunch_Supported())
+			return "no dedicated server program was found (ded_exe names one)";
+	}
+	if (max) {
+		char *end;
+		long v = strtol(max, &end, 10);
+		if (*end || v < 1 || v > LOBBY_SEATS)
+			return va("max players is 1 to %d", LOBBY_SEATS);
+		for (int i = (int)v; i < LOBBY_SEATS; i++)
+			if (L.seats[i].used)
+				return "there are more players in the lobby than that";
+		m = (int)v;
+	}
+	if (bots) {
+		char *end;
+		long v = strtol(bots, &end, 10);
+		if (!Str_ICmp(bots, "fill") || !strcmp(bots, "-1"))
+			b = -1;
+		else if (!bots[0] || !Str_ICmp(bots, "default"))
+			b = BOTS_DEFAULT; /* leave the bots to the game's rules */
+		else if (*end || v < 0 || v >= LOBBY_SEATS)
+			return "bots is a number or fill";
+		else
+			b = (int)v;
+	}
+	if (b > 0 && b > m - occupied())
+		return "that's more bots than free player slots";
+	if (listed)
+		pub = atoi(listed) != 0;
+	if ((name && !text_ok(name)) || (pass && !text_ok(pass)))
+		return "names and passwords can't have quotes, backslashes or semicolons (63 bytes at most)";
+	if (dedicated != L.dedicated || m != L.max || b != L.bots || pub != L.listed ||
+	    (name && strcmp(name, L.hostname)) || (pass && strcmp(pass, L.password))) {
+		cancel_countdown("The server settings changed");
+		L.dedicated = dedicated;
+		L.max = m;
+		L.bots = b;
+		L.listed = pub;
+		if (name)
+			Str_Copy(L.hostname, name, sizeof(L.hostname));
+		if (pass)
+			Str_Copy(L.password, pass, sizeof(L.password));
+		changed();
+	}
+	return NULL;
+}
+
 static void LobbySet_f(int argc, const char **argv)
 {
-	if (argc < 3 || !can_change()) {
+	static const char *const keys[] = {"servertype", "maxplayers", "bots", "public", "hostname", "password"};
+	if (argc < 2 || !can_change()) {
+		Con_Printf("usage: lobby_set <ruleset|map|servertype|maxplayers|bots|public|hostname|password> <value> (host only)\n");
+		return;
+	}
+	for (int k = 0; k < (int)BW_ARRAY_COUNT(keys); k++) {
+		const char *v[6] = {0}, *why;
+		if (Str_ICmp(argv[1], keys[k]))
+			continue;
+		/* an empty or missing value clears the name or password */
+		v[k] = argc > 2 ? argv[2] : "";
+		if ((why = set_server(v[0], v[1], v[2], v[3], v[4], v[5])))
+			Con_Printf("lobby_set: %s\n", why);
+		return;
+	}
+	if (argc < 3) {
 		Con_Printf("usage: lobby_set <ruleset|map> <value> (host only)\n");
 		return;
 	}
-	if (!Str_ICmp(argv[1], "ruleset") && !set_ruleset(argv[2]))
-		Con_Printf("lobby_set: unknown ruleset %s\n", argv[2]);
+	if (!Str_ICmp(argv[1], "ruleset") && !set_ruleset(argv[2])) {
+		if (valid_ruleset(argv[2]))
+			Con_Printf("lobby_set: ruleset %s isn't in this game (its progs are missing)\n", argv[2]);
+		else
+			Con_Printf("lobby_set: unknown ruleset %s\n", argv[2]);
+	}
 	else if (!Str_ICmp(argv[1], "map"))
 		set_map(argv[2]);
 }
@@ -1396,7 +2225,7 @@ static bool map_id_ok(const char *id)
 	for (const char *p = id; *p; p++)
 		if (!isalnum((unsigned char)*p) && *p != '_')
 			return false;
-	return FS_FileExists(va("maps/%s.bsp", id)) || FS_FileExists(va("maps/%s.scene", id));
+	return map_present(id);
 }
 
 static void lobby_action(const char *a, strbuf_t *out)
@@ -1443,13 +2272,59 @@ static void lobby_action(const char *a, strbuf_t *out)
 	}
 	if (!strncmp(a, "chat:", 5))
 		return reply(out, chat(a + 5), "can't send that");
+	if (!strncmp(a, "setserver:", 10)) {
+		/* setserver:<listen|dedicated>:<max>:<bots|fill>:<public 0|1>:<name hex>:<password hex> */
+		char buf[600], *f[6], name[256] = "", pass[256] = "";
+		const char *why;
+		int nf = 0;
+		Str_Copy(buf, a + 10, sizeof(buf));
+		f[nf++] = buf;
+		for (char *p = buf; *p && nf < 6; p++)
+			if (*p == ':') {
+				*p = 0;
+				f[nf++] = p + 1;
+			}
+		if (!can_change() || nf != 6 || strchr(f[5], ':'))
+			return reply(out, false, "bad server settings");
+		if ((f[4][0] && !decode_hex(f[4], name, sizeof(name))) || (f[5][0] && !decode_hex(f[5], pass, sizeof(pass))))
+			return reply(out, false, "bad text");
+		if ((why = set_server(f[0], f[1], f[2], f[3], name, pass))) {
+			strbuf_t e = {0};
+			SB_AppendStr(out, "{\"ok\":false,\"error\":");
+			json_t *msg = JSON_NewString(why);
+			JSON_Write(&e, msg, -1);
+			JSON_Free(msg);
+			SB_AppendStr(out, e.data);
+			SB_AppendStr(out, "}");
+			SB_Free(&e);
+			return;
+		}
+		return reply(out, true, NULL);
+	}
+	if (!strncmp(a, "joinpass:", 9)) {
+		/* the guest answers the host's password question: join again with it */
+		char pass[256], target[80];
+		if (L.phase != LOBBY_IDLE && L.phase != LOBBY_CLOSING)
+			return reply(out, false, NULL);
+		if (!L.needpass || !L.jointarget[0] || !decode_hex(a + 9, pass, sizeof(pass)) || !text_ok(pass))
+			return reply(out, false, "bad password");
+		Str_Copy(target, L.jointarget, sizeof(target));
+		reset_session();
+		LobbyJoin_f(3, (const char *[]){"lobby_join", target, pass});
+		return reply(out, true, NULL);
+	}
 	reply(out, false, "unknown action");
 }
 
 bool Lobby_Query(const char *req, strbuf_t *out)
 {
 	if (!strcmp(req, "getlobby")) {
-		json_t *j = local_snapshot();
+		json_t *j;
+		if (L.phase == LOBBY_IDLE && handoff.page.data && Lobby_GameStarting()) {
+			SB_AppendStr(out, handoff.page.data);
+			return true;
+		}
+		j = local_snapshot();
 		JSON_Write(out, j, -1);
 		JSON_Free(j);
 	} else if (!strcmp(req, "getlobbychat")) {
@@ -1478,6 +2353,8 @@ bool Lobby_Query(const char *req, strbuf_t *out)
 void Lobby_Frame(void)
 {
 	double now = Sys_Seconds();
+	Lobby_ServerCheck();
+	client_check();
 	receive();
 	switch (L.phase) {
 	case LOBBY_IDLE:
@@ -1517,6 +2394,8 @@ void Lobby_Frame(void)
 			JSON_SetString(j, "t", "join");
 			JSON_SetNumber(j, "proto", 1);
 			JSON_SetString(j, "name", name);
+			if (L.joinpass[0])
+				JSON_SetString(j, "pass", L.joinpass);
 			send_to(&L.hostaddr, j);
 			JSON_Free(j);
 		}
@@ -1546,8 +2425,10 @@ void Lobby_Frame(void)
 				broadcast_snapshot();
 		} else {
 			if (L.phase == LOBBY_INGAME) {
-				if (now >= L.startdeadline)
+				if (now >= L.startdeadline) {
+					handoff_keep_page();
 					reset_session();
+				}
 				break;
 			}
 			if (now - L.lastfromhost > LOBBY_TIMEOUT) {
@@ -1577,19 +2458,27 @@ void Lobby_Init(void)
 	lobby_port = Cvar_Get("lobby_port", "27501", 0, "UDP port a lobby host listens on");
 	lobby_readytime = Cvar_Get("lobby_readytime", "5", CVAR_ARCHIVE, "Seconds of countdown once every lobby player is ready");
 	lobby_maxplayers = Cvar_Get("lobby_maxplayers", "16", 0, "Seats in a lobby");
-	lobby_defaultmap = Cvar_Get("lobby_defaultmap", "envtest", 0, "The map a new lobby picks");
+	lobby_defaultmap = Cvar_Get("lobby_defaultmap", "", 0, "The map a new lobby picks; empty picks the ruleset's own (scripts/lobby.txt)");
 	lobby_defaultruleset = Cvar_Get("lobby_defaultruleset", "DUEL", 0, "The rules a new lobby picks");
 	lobby_snapshot = Cvar_Get("lobby_snapshot", "", CVAR_READONLY | CVAR_NOSAVE, "The lobby's state as JSON");
+	lobby_hostname = Cvar_Get("lobby_hostname", "", CVAR_ARCHIVE, "The server name a new lobby starts with; empty: <name>'s server");
+	lobby_password = Cvar_Get("lobby_password", "", 0, "The password a new lobby starts with (joining it, and its server)");
+	lobby_bots = Cvar_Get("lobby_bots", "", CVAR_ARCHIVE,
+	                      "Bots a new lobby's server adds besides the players, or fill; empty: the game's own bots");
+	lobby_public = Cvar_Get("lobby_public", "0", CVAR_ARCHIVE, "1: a new lobby's server is listed on the master servers (sv_public)");
+	lobby_servertype = Cvar_Get("lobby_servertype", "listen", CVAR_ARCHIVE, "listen or dedicated: the server a new lobby starts");
+	DedLaunch_Init();
 	Cmd_AddD("lobby_create", LobbyCreate_f, "lobby_create <lan|online|offline>: host a lobby");
 	Cmd_AddD("lobby_create_lan", LobbyCreate_f, "Host a lobby on this network");
 	Cmd_AddD("lobby_create_online", LobbyCreate_f, "Host a lobby with a room code");
 	Cmd_AddD("lobby_create_offline", LobbyCreate_f, "Host a lobby nobody else can join (tests)");
-	Cmd_AddD("lobby_join", LobbyJoin_f, "lobby_join <address|room code>: join a lobby");
+	Cmd_AddD("lobby_join", LobbyJoin_f, "lobby_join <address|room code> [password]: join a lobby");
 	Cmd_AddD("lobby_ready", LobbyReady_f, "lobby_ready [1|0]: say you are ready, or not");
 	Cmd_AddD("lobby_cancel", LobbyCancel_f, "Stop the lobby's countdown (host)");
 	Cmd_AddD("lobby_start", LobbyStart_f, "Start the lobby's game now (host)");
 	Cmd_AddD("lobby_close", LobbyClose_f, "Leave the lobby, or close it when hosting");
-	Cmd_AddD("lobby_set", LobbySet_f, "lobby_set <ruleset|map> <value>: change the lobby's game (host)");
+	Cmd_AddD("lobby_set", LobbySet_f,
+	         "lobby_set <ruleset|map|servertype|maxplayers|bots|public|hostname|password> <value>: change the lobby's game (host)");
 	Cmd_AddD("lobby_limits", LobbyLimits_f, "lobby_limits <minutes> <frags>: the game's limits (host)");
 	Cmd_AddD("lobby_chat_hex", LobbyChatHex_f, "lobby_chat_hex <hex>: say something in the lobby (UTF-8 as hex)");
 	Cmd_AddD("lobby_snapshot", LobbySnapshot_f, "Print the lobby's state and write lobby_snapshot.json");
@@ -1600,5 +2489,6 @@ void Lobby_Init(void)
 
 void Lobby_Shutdown(void)
 {
+	handoff_end(); /* quitting: nothing to abandon */
 	LobbyClose_f(1, (const char *[]){"lobby_close"});
 }

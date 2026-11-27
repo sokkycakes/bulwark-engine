@@ -19,10 +19,12 @@ reference engine's was never documented.
 | Command | |
 |---|---|
 | `lobby_create <lan\|online\|offline>` (`lobby_create_lan`, ...) | Host. `lan` and `online` listen on `lobby_port`; `online` also makes a six-character room code. `offline` has no network (tests). |
-| `lobby_join <address\|room code>` | Join. Something with a dot or colon, or `localhost`, is an address (port `lobby_port` unless given); anything else is a room code, looked for on this network (below). |
+| `lobby_join <address\|room code> [password]` | Join. Something with a dot or colon, or `localhost`, is an address (port `lobby_port` unless given); anything else is a room code, looked for on this network (below). The password is for a lobby that has one. |
 | `lobby_ready [1\|0]` | Ready (or not). |
 | `lobby_start` / `lobby_cancel` | Host: start now / stop the countdown. |
 | `lobby_set ruleset <id>` / `lobby_set map <id>` / `lobby_limits <minutes> <frags>` | Host: the game's settings. |
+| `lobby_set servertype <listen\|dedicated>` / `maxplayers <1-16>` / `bots <n\|fill\|default>` / `public <0\|1>` / `hostname <text>` / `password <text>` | Host: the server the lobby starts (below). An empty name or password clears it. |
+| `ded_stop` / `ded_status` | Stop / ask about the dedicated server this game started. |
 | `lobby_chat_hex <hex>` | Say something: UTF-8 bytes as hex, at most 240. |
 | `lobby_close` | Leave, or close the lobby for everyone when hosting. |
 | `lobby_snapshot` / `lobby_chat_snapshot` | Print the state (and write `lobby_snapshot.json`) / the chat. |
@@ -32,15 +34,50 @@ reference engine's was never documented.
 | `lobby_port` | 27501 | the host's UDP port |
 | `lobby_readytime` | 5 | countdown seconds once everyone is ready |
 | `lobby_maxplayers` | 16 | seats |
-| `lobby_defaultmap` | envtest | |
-| `lobby_defaultruleset` | DUEL | |
+| `lobby_defaultmap` | (empty) | when set, the map every new lobby picks; empty picks the ruleset's own map (below) |
+| `lobby_defaultruleset` | DUEL | the rules a new lobby picks, when they can run (below) |
 | `lobby_snapshot` | | the state as JSON (read-only); also written to `lobby_snapshot.json` in the working directory while `developer` is on |
+| `lobby_hostname` / `lobby_password` / `lobby_bots` / `lobby_public` / `lobby_servertype` | (empty) / (empty) / (empty: default) / 0 / listen | what a new lobby's server settings start from |
+| `ded_exe` | (empty) | the dedicated server program; empty: `bulwark-ded` beside this program, else this program with `-dedicated` |
+| `ded_port` | 27500 | the first UDP port tried for it (the first free one of the next 32 is used) |
 
 The legacy mirrors `lobby_room_code`, `lobby_host_name`, `lobby_state_str`,
 `lobby_player_count`, `lobby_max_players` and `lobby_player1_name` ..
 `lobby_player4_name` (with a `[READY] ` prefix) are kept for menus written
 against them. MenuQC can add rulesets with `lobby_registermode(id, name,
 start_cmds)` and `lobby_addteam(...)`.
+
+## Maps and rulesets
+
+The game names what its host can pick in `scripts/lobby.txt`, one per line
+(`//` comments):
+
+```
+map <id> "<title>"
+ruleset <ID> "<title>" [<map the ruleset picks>]
+```
+
+- A listed map is offered only when `maps/<id>.bsp` (or `.scene`) is in the
+  game. With no file, or no listed map present, every `maps/*.bsp` is offered
+  under its own name.
+- With no `ruleset` lines the built-in rulesets are offered: DUEL "Duel",
+  DEATHMATCH "Deathmatch", TEAMDM "Team Deathmatch", DOMINATION
+  "Domination", FREEZETAG "Freeze Tag", ARCHSTILETTO "Archstiletto".
+  Rulesets MenuQC registers are added to either list.
+- A ruleset runs from `progs/<id in lower case>.dat` (Nuclide). When that
+  file isn't in the game the ruleset is still listed but can't be picked
+  (`available: false`; `lobby_set ruleset` and `setruleset:` refuse it), since
+  a Nuclide server without its rules progs spawns nobody. A game with none of
+  these progs (not Nuclide) runs every ruleset alike.
+- A new lobby picks `lobby_defaultruleset`, or the first listed ruleset that
+  can run when it can't, and then `lobby_defaultmap` when set, else that
+  ruleset's map, else the first listed map. Until the host picks a map,
+  switching ruleset also switches to the new ruleset's map (Duel picks
+  `duel_alley` in Stiletto).
+- The lists are read when a lobby is created (and again when the search path
+  changes), and `getlobby` carries them as `maps` (`[{id, name}]`) and
+  `rulesets` (`[{id, name, map, available}]`). The lobby page shows them and
+  falls back to its own lists when they are missing.
 
 ## Rules
 
@@ -54,8 +91,8 @@ start_cmds)` and `lobby_addteam(...)`.
   stops the countdown and clears everyone's ready. The host's Start skips
   the wait whether or not everyone is ready (Stiletto's own tests start
   after a cancel cleared everyone).
-- Joins are refused when full, after the countdown has started, or with
-  another protocol version.
+- Joins are refused when full, after the countdown has started, with
+  another protocol version, or without the lobby's password (below).
 - Starting, the host runs, ahead of anything waiting in the command
   buffer: `sv_background 0`, `coop 0`, `deathmatch 1`, `maxplayers` and
   `sv_playerslots` set to the seats, `g_gametype` set to the ruleset in
@@ -67,6 +104,107 @@ start_cmds)` and `lobby_addteam(...)`.
 - A guest silent for 10 s loses its seat; a host silent for 10 s closes the
   lobby on the guest's side.
 
+## Hosting options
+
+The host also picks the server the lobby starts. `getlobby`'s `settings`
+carries them (`servertype` LISTEN SERVER or DEDICATED SERVER, `hostname`,
+`maxplayers`, `bots`: a number or -1 for fill, `botsDefault`: true when the
+lobby leaves bots to the rules (then `bots` is 0), `public`, `password`: whether
+there is one, and `passwordText` on the host's own page only), and `hosting`
+says what this engine can host: `serverTypes` (`listen`, and `dedicated`
+where programs can be started), `maxSeats`, `online` and `onlineConfigured`
+(Bulwark Live), `dedicatedRunning`. The page changes them with
+`setserver:<listen|dedicated>:<max>:<bots|fill>:<public 0|1>:<name hex>:<password hex>`
+(UTF-8 as hex, empty for none; an empty or `default` bots field is the
+rules' own bots); a refusal answers
+`{"ok":false,"error":"<why>"}`. Refused: fewer seats than players in the
+lobby, more bots than free seats, a name or password with `"`, `\` or `;`
+or over 63 bytes, Dedicated where programs can't be started or no server
+program is found (without /proc, as on macOS, only `ded_exe` names one; the
+page isn't offered `dedicated` then). A change stops
+the countdown like any other.
+
+- **Password.** A lobby with a password turns a `join` without the right
+  `pass` away with `reject` and `needpass: true` ("This lobby needs a
+  password" / "Wrong password"). The guest's `getlobby` then has
+  `needPassword` and `joinTarget` while it is IDLE or CLOSING, the lobby
+  page stays open and asks, and `joinpass:<hex>` joins again with it
+  (`close` gives up). The `start` message carries the password, which the
+  guest sets as its `password` userinfo before it connects; the server runs
+  with `sv_password` set to it. The lobby's password stays while the guest
+  may still go back to that game: after a connection timeout, `reconnect`
+  still gets in (as in FTE, where the userinfo simply stays), and the
+  title's backdrop map in between doesn't change that (a local client never
+  needs a password). The backdrop is told by the local server's
+  `sv_background` cvar until the map spawns and by its `background`
+  serverinfo key after that, since Nuclide's worldspawn sets the key and
+  puts the cvar back to 0. Playing or stopping a demo doesn't count as
+  leaving the lobby's server either. The guest's own `password` comes back
+  as soon as the lobby's game is over for it, whatever comes next: it
+  disconnects from that server (`disconnect`, Leave, or the server drops it
+  or shuts down), it
+  connects to any other server (the address differs from the one it
+  connected to after `start`), it starts a local game of its own other than
+  the backdrop, or the start fails. So the lobby's password is never sent
+  to another server.
+- **Starting** adds `hostname` (the host's name, else "<host>'s server"),
+  `sv_password`, `sv_public` and bots to the commands above. Bots use the
+  game's own quota, Nuclide's `bot_minClients`: the lobby's players plus the
+  count (at most `maxplayers`), `maxplayers` for fill, 0 for none. The
+  default (empty Bots) sets neither cvar, so the rules seat their own bots
+  as they do for a console `map`. A ruleset
+  marked `seatbots` in `scripts/lobby.txt` (a fourth word on its line; built
+  in: FREEZETAG and ARCHSTILETTO) fills its own seats, and a quota would
+  fight it: it gets `bot_minClients -1` and `arena_bots` 1 (any bots) or 0.
+  On a listen server these are the host's own cvars: the lobby keeps what
+  `hostname`, `sv_password`, `sv_public`, `bot_minClients`, `arena_bots`,
+  `maxplayers`, `sv_playerslots`, `timelimit`, `fraglimit`, `g_gametype`,
+  `deathmatch`, `coop` and `sv_background` were, and every cvar the mode's
+  start commands set (`set`/`seta`/`sets`/`setu <cvar>`, or `<cvar>
+  <value>`), and puts them back once that game's server stops
+  (`disconnect`, `killserver`), or when the start fails, so a later console
+  `map` doesn't inherit them. A cvar that didn't exist before goes back to
+  its default. The values kept are those from before the first lobby game,
+  however many follow before the server stops.
+  A player joining a server that bots fill takes a bot's slot
+  (`sv_botsyield`, server side).
+- **Dedicated** (`src/client/cl_dedlaunch.c`): instead of `map`, the host
+  stops its title map, writes the same commands, a random `rcon_password`
+  and `map` to `lobby_dedicated.cfg` in its game directory, and starts the
+  dedicated server program in the background: `-basedir`, every `-game`,
+  `-userdir` and `-enginedata` as this client has them, `+set sv_port <the
+  first free port from ded_port>` and `+exec lobby_dedicated.cfg`, its
+  standard input from /dev/null, its output in `dedicated.log` beside the
+  config, in a session of its own. The host then sets `password`,
+  `rcon_password` and `rcon_address` (so `rcon` reaches the server, also
+  after a timeout drops the host out of it). All three go back to what they
+  were once the lobby's game is over for the host: it disconnects from that
+  server or the server drops it, the server stops (`ded_stop`, or it exits),
+  the host connects to any other server, the start fails, or the host
+  starts a local game of its own. `rcon_password` is also the cvar a listen
+  server checks, so even the title's backdrop map takes the rcon settings
+  back (the password stays there, as for a guest). The host
+  connects to 127.0.0.1 on that port straight away (not through the command
+  buffer, which a script's `wait` holds), again every 12 s while it isn't in.
+  Guests get that port in `start`. If the program exits first, the lobby
+  closes with "The dedicated server stopped"; if the game doesn't start in
+  30 s the lobby stops the server it launched. The server keeps running when
+  the host leaves, as a dedicated server does; `ded_stop` stops it.
+- **The hand-off.** From Start until this client is in the lobby's game
+  (or the start fails, or 90 s pass), the session can already be over
+  (every guest has the address) while the title map still runs and the
+  game loads. The lobby page stays open meanwhile, showing STARTING and
+  "Starting the game..." with only Leave to press; the title page does not
+  come back over it. Leave (`lobby_close`) then abandons the start for this
+  client: it disconnects from the game, stops its own listen server (or a
+  dedicated server no guest has heard of yet), puts back the cvars the
+  lobby set, and only then is the title page back. A dedicated server the
+  guests already have keeps running, as above.
+- **Online without Bulwark Live.** An `online` lobby's host whose Live isn't
+  connected gets `warning` ("Online services are not connected in this
+  build: this room code works on this network only."), and a room code not
+  found on this network says the same instead of only "not found".
+
 ## Wire format
 
 UDP datagrams, each the text `BWLB1 ` followed by one JSON object whose
@@ -77,13 +215,13 @@ Guests send from a port of their own; the host listens on `lobby_port`.
 |---|---|---|---|
 | `discover` | anyone | | broadcast to `lobby_port` and sent to 127.0.0.1; a host in WAITING answers with `info` |
 | `info` | host | `proto`, `name`, `map`, `code`, `players`, `max` | becomes a `gethostcache` row |
-| `join` | guest | `proto` (1), `name` | resent every 0.5 s, 20 times at most |
+| `join` | guest | `proto` (1), `name`, `pass` (when the guest has one) | resent every 0.5 s, 20 times at most |
 | `accept` | host | `seat`, `tok` | the guest's seat and token |
-| `reject` | host | `reason` | |
+| `reject` | host | `reason`, `needpass` (true when the lobby's password is missing or wrong) | |
 | `intent` | guest | `tok`, `seq`, `kind` (`ready`, `unready`, `chat` with `text`, `leave`, `ping` with seq 0) | resent every 0.25 s until a snapshot's `ack` covers its `seq`; pings once a second |
-| `snap` | host | `rev`, `phase`, `status`, `map`, `code`, `network`, `max`, `remaining` (countdown seconds, -1 for none), `ack`, `seat`, `settings`, `players`, `chat` (the last 10 lines) | on every change and once a second; answers each intent |
+| `snap` | host | `rev`, `phase`, `status`, `map`, `code`, `network`, `max`, `remaining` (countdown seconds, -1 for none), `ack`, `seat`, `settings` (with the hosting options but never `passwordText`), `players`, `chat` (the last 10 lines) | on every change and once a second; answers each intent |
 | `close` | host | `reason` | the host closed the lobby |
-| `start` | host | `nonce`, `port`, `map` | resent each frame until acknowledged |
+| `start` | host | `nonce`, `port`, `map`, `pass` (the server's password, or empty) | resent each frame until acknowledged |
 | `startack` | guest | `tok`, `nonce` | a repeated `start` is acknowledged but connects only once |
 
 The countdown travels as time remaining, never as a clock reading, so the

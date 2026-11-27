@@ -712,14 +712,47 @@ static bool write_text_file(const char *name, const char *text, size_t len)
 	return true;
 }
 
-/* the default config is config.cfg in the game directory; a named one
+/* the main config's file name. A game folder is often shared with FTEQW,
+ * whose quake.rc runs fte.cfg and then config.cfg: Bulwark writes neither
+ * (it would put cvars FTE doesn't know, and stale settings, into a file FTE
+ * runs after its own), so those names give bulwark.cfg. "exec config.cfg"
+ * runs bulwark.cfg in its place, see Cfg_ExecName. */
+const char *Cfg_MainName(void)
+{
+	static char name[256];
+	const char *n = cfg_save_name && cfg_save_name->string[0] ? cfg_save_name->string : "bulwark";
+	char stem[200];
+	Str_Copy(stem, n, sizeof(stem));
+	char *dot = strrchr(stem, '.');
+	if (dot && !Str_ICmp(dot, ".cfg"))
+		*dot = 0;
+	if (!Str_ICmp(stem, "config") || !Str_ICmp(stem, "fte"))
+		Str_Copy(stem, "bulwark", sizeof(stem));
+	snprintf(name, sizeof(name), "%s%s", stem, strchr(stem, '.') ? "" : ".cfg");
+	return name;
+}
+
+/* the file "exec <name>" reads: config.cfg is the main config's slot in a
+ * quake.rc, so it runs bulwark.cfg once that exists (before it does, an
+ * older Bulwark's config.cfg runs, and the next save moves to bulwark.cfg) */
+const char *Cfg_ExecName(const char *name)
+{
+	if (!Str_ICmp(name, "config.cfg")) {
+		const char *main = Cfg_MainName();
+		if (Str_ICmp(main, "config.cfg") && FS_FileExists(main))
+			return main;
+	}
+	return name;
+}
+
+/* the default config is bulwark.cfg in the game directory; a named one
  * lives under configs/, as FTE keeps them */
 static const char *cfg_name(int argc, const char **argv, bool reading)
 {
 	static char name[256];
 	char base[200];
 	if (argc < 2) {
-		snprintf(name, sizeof(name), "%s%s", cfg_save_name->string, strchr(cfg_save_name->string, '.') ? "" : ".cfg");
+		Str_Copy(name, Cfg_MainName(), sizeof(name));
 		return name;
 	}
 	Str_Copy(base, argv[1], sizeof(base));
@@ -735,11 +768,34 @@ static const char *cfg_name(int argc, const char **argv, bool reading)
 	return name;
 }
 
+/* an older Bulwark saved config.cfg, which FTEQW's quake.rc runs after its
+ * own fte.cfg: once the main config is saved as bulwark.cfg, a config.cfg
+ * Bulwark wrote (and only that) is renamed out of FTE's way */
+static void retire_old_config(const char *saved)
+{
+	char path[1024], old[1100];
+	char head[64] = {0};
+	if (Str_ICmp(saved, Cfg_MainName()) || !FS_WritePath("config.cfg", path, sizeof(path)))
+		return;
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return;
+	size_t n = fread(head, 1, sizeof(head) - 1, f);
+	fclose(f);
+	head[n] = 0;
+	if (strncmp(head, "// written by Bulwark", 21))
+		return;
+	snprintf(old, sizeof(old), "%s.bulwark-old", path);
+	remove(old);
+	if (!rename(path, old))
+		Con_Printf("moved Bulwark's old config.cfg aside (now %s), FTEQW runs config.cfg\n", Cfg_MainName());
+}
+
 bool Cfg_Save(const char *name)
 {
 	strbuf_t sb = {0};
 	bool ok;
-	SB_AppendStr(&sb, "// written by Bulwark; settings you change in the game are saved here\n");
+	SB_AppendStr(&sb, "// written by Bulwark: settings you change in the game are saved here\n");
 	if (cfg_write_hook)
 		cfg_write_hook(&sb);
 	Cvar_WriteArchived(&sb);
@@ -749,6 +805,7 @@ bool Cfg_Save(const char *name)
 	if (ok) {
 		Con_Printf("wrote %s/%s\n", FS_GameDir(), name);
 		cfg_saved_at = cfg_modified;
+		retire_old_config(name);
 	}
 	return ok;
 }
@@ -972,7 +1029,7 @@ static void Memstats_f(int argc, const char **argv)
 
 void Cmd_InitExtra(void)
 {
-	cfg_save_name = Cvar_Get("cfg_save_name", "config", CVAR_ARCHIVE, "Config file that cfg_save writes and cfg_load reads");
+	cfg_save_name = Cvar_Get("cfg_save_name", "bulwark", CVAR_ARCHIVE, "Config file that cfg_save writes and cfg_load reads (config and fte, FTEQW's files, mean bulwark)");
 	cfg_save_auto = Cvar_Get("cfg_save_auto", "1", CVAR_ARCHIVE, "Save the config on quit when a setting or bind changed");
 	con_logfile = Cvar_Get("con_logfile", "", 0, "Copy console output to this file in the game directory");
 	con_timestamp = Cvar_Get("con_timestamp", "0", CVAR_ARCHIVE, "Prefix lines in the console log with the date and time");
@@ -1046,7 +1103,7 @@ void Cmd_DescribeAll(void)
 		{"joy_virtual_set", "Set up the on-screen controller"},
 		{"map", "map <name>: start a map"},
 		{"menu_restart", "Reload the menu"},
-		{"music", "music <file or track> [-]: play music"},
+		{"music", "music <file or track> [-|0|1]: play music, once with - or 0"},
 		{"netstats", "Network statistics: latency, loss and traffic"},
 		{"path", "The search path for game files"},
 		{"pingserver", "pingserver <address>: ask a server for its status"},

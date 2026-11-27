@@ -79,6 +79,7 @@ static struct {
 } pads[MAX_PADS];
 
 static cvar_t *in_padglyphs;
+static cvar_t *joy_rumble; /* scales every rumble, 0 turns it off */
 static int last_pad = -1;
 
 static int pad_for_id(SDL_JoystickID id)
@@ -315,8 +316,14 @@ static void JoyVirtualSet_f(int argc, const char **argv)
 #endif
 }
 
+static float rumble_scale(void)
+{
+	return joy_rumble ? BW_MAX(0, BW_MIN(joy_rumble->value, 1)) : 1;
+}
+
 void VID_Rumble(int dev, float low, float high, float seconds)
 {
+	low *= rumble_scale(), high *= rumble_scale();
 	if (dev >= 0 && dev < MAX_PADS && pads[dev].steam)
 		INS_Rumble(dev, low, high, seconds);
 	else if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
@@ -326,6 +333,7 @@ void VID_Rumble(int dev, float low, float high, float seconds)
 
 void VID_RumbleTriggers(int dev, float left, float right, float seconds)
 {
+	left *= rumble_scale(), right *= rumble_scale();
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 	if (dev >= 0 && dev < MAX_PADS && pads[dev].gc)
 		SDL_GameControllerRumbleTriggers(pads[dev].gc, (Uint16)(BW_MAX(0, BW_MIN(left, 1)) * 65535),
@@ -652,6 +660,7 @@ bool VID_Init(int width, int height, bool fullscreen)
 	                        "Button prompts for the controller used last: xbox, xbox360, ps4, ps5, switch, steamdeck "
 	                        "or steamcontroller ({images}/glyphs/<set>/)");
 	IN_PadGlyph = pad_glyph;
+	joy_rumble = Cvar_Get("joy_rumble", "1", CVAR_ARCHIVE, "Controller vibration strength, 0 (off) to 1");
 	Cmd_AddD("in_glyph", InGlyph_f, "Show the controller prompt for a key or command");
 	/* Steam Input first: whether Steam runs decides how SDL should treat
 	 * Valve's controllers */
@@ -695,6 +704,10 @@ void VID_Shutdown(void)
 }
 
 bool VID_Active(void) { return window != NULL; }
+
+/* keyboard focus and not minimised; s_inactive and cl_idlefps act on it */
+static bool win_focus = true, win_minimised;
+bool VID_Focused(void) { return !window || (win_focus && !win_minimised); }
 
 void VID_GetSize(int *w, int *h)
 {
@@ -873,8 +886,15 @@ bool VID_PumpEvents(void)
 			break;
 		}
 		case SDL_WINDOWEVENT:
-			if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+			if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
 				IN_ReleaseAll();
+				win_focus = false;
+			} else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
+				win_focus = true;
+			else if (ev.window.event == SDL_WINDOWEVENT_MINIMIZED)
+				win_minimised = true;
+			else if (ev.window.event == SDL_WINDOWEVENT_RESTORED || ev.window.event == SDL_WINDOWEVENT_MAXIMIZED)
+				win_minimised = false;
 			break;
 		}
 	}

@@ -147,11 +147,18 @@ static void close_socket(void)
 	boundport = 0;
 }
 
+/* a port another program (a second copy of the game) holds: try it again now
+ * and then, and say so once, not every frame */
+static double bind_retry;
+static int bind_warned;
+
 static void open_socket(void)
 {
 	struct sockaddr_in a;
 	int port = sv_link_port->ivalue, one = 1;
 	if (port == boundport && (sock >= 0 || port <= 0))
+		return;
+	if (port == boundport && Sys_Seconds() < bind_retry)
 		return;
 	close_socket();
 	boundport = port;
@@ -167,11 +174,15 @@ static void open_socket(void)
 	a.sin_port = htons((uint16_t)port);
 	a.sin_addr.s_addr = htonl(INADDR_ANY);
 	if (bind(sock, (struct sockaddr *)&a, sizeof(a)) < 0) {
-		Con_Printf("link: can't use UDP port %d\n", port);
+		if (bind_warned != port)
+			Con_Printf("link: can't use UDP port %d (in use?); trying again every 10 seconds\n", port);
+		bind_warned = port;
+		bind_retry = Sys_Seconds() + 10;
 		close(sock);
 		sock = -1;
 		return;
 	}
+	bind_warned = 0;
 	Con_DPrintf("link: listening on UDP port %d\n", port);
 }
 

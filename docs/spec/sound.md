@@ -6,8 +6,14 @@
 number of samples, and an entity's other channels replace each other, as
 fteextensions.qc documents for `sound()`. Distance and side panning are
 worked out on the main thread, and SDL pulls mixed frames from its own
-thread. Music is streamed separately and mixed in last, so room effects
-don't apply to it.
+thread. Music (Ogg and MP3 decoded as it plays, WAV decoded when it
+starts) is loaded and opened off the mixer lock, swapped in under it, and
+mixed in last, so room effects
+don't apply to it. Nor do they apply to sounds started with
+SOUNDFLAG_NOREVERB (32; fteextensions.qc: "disables the use of
+underwater/reverb effects on this sound effect"), or to menu and HUD sounds
+(the engine's own local sounds and the `localsound` builtin): the mixer
+runs the room over the world's sounds, then adds these dry.
 
 ### Distance and direction
 
@@ -45,6 +51,19 @@ and attenuation 0 sounds weren't panned. The cvar was called
 `snd_nominaldistance`, so Nuclide read 0 and every one of its sounds
 played everywhere.
 
+### In the background
+
+While the window lacks focus or is minimised (alt-tab), the whole mix,
+voice chat included, is scaled by `s_inactive`. FTE's name for it is
+`s_inactive`, and `snd_inactive` is another name for the same cvar, as on
+FTE: either name reads and sets one value, so the last one set wins, and
+only `s_inactive` is saved to the config. 1, the default as on FTE (checked: fteqw64 reports
+`s_inactive` "1"), keeps playing. 0 mutes, and a value between lowers the
+sound to that scale. It takes effect at once, with no `snd_restart`.
+`soundinfo` prints whether the window is in the background and the scale.
+The frame rate is capped at `cl_idlefps` (60, FTE's default) at the same
+time.
+
 ## Room effects (`src/sound/snd_dsp.c`)
 
 ### The game's reverb slots
@@ -78,7 +97,13 @@ The checks run in this order; the first match wins:
 5. `dsp_automatic 1` (the default) guesses a room from traces. Every 0.5 s
    it casts nine rays (eight around the listener and one up) and measures
    the mean wall distance, the ceiling height, and how many rays reach sky
-   or nothing. These set the decay time, density, reflection and late
+   or nothing. A Q3 face flagged SURF_SKY, or SURF_NODRAW on a plain
+   solid brush (caulk), counts as sky, since nothing is drawn there; clip
+   brushes (weapclip and the other *clip shaders, which carry the
+   translucent content bit) are nodraw too but stay walls, as they smooth
+   indoor rooms. duel_alley is boxed in by caulk under
+   its `sky` key, and read as a closed 1.8 s room until 2026-11-25 (now
+   about 1.1 s with weak reflections, as an alley open above). These set the decay time, density, reflection and late
    delays (at 13500 units/s), and in large open spaces a slap-back echo.
    The guess is only replaced when the room is clearly different (decay
    off by more than 25%, density by more than 0.25, or the echo appears or
@@ -116,7 +141,14 @@ The effect is a fresh software design in the Schroeder/Moorer style:
   capped at 1. Four series allpasses (gain 0.25 + 0.45 × diffusion) follow.
 - **Tail level:** the tail is scaled by lategain × gain ÷ √(Σ 1/(1 − fb²)),
   so its energy doesn't grow with the decay time. With the generic preset,
-  the tail's energy sits about 12 dB under an impulse's.
+  the tail's energy sits about 12 dB under an impulse's. The constant
+  (LATE_LEVEL, 1.0) was set on 2026-11-25 from a capture: a 20 ms noise
+  click played with `play` in duel_alley, `room_type 1` against `dsp_off 1`,
+  gives a tail 12.3 dB under the dry click and an RT60 of about 1.4 s.
+  Before that it was 0.12, chosen while the allpasses still had their extra
+  gain; once they were fixed the tail sat near -30 dB and could barely be
+  heard. A busy mix (`play` of a gunshot every frame) in `room_type 10`
+  clips 10% of samples against 8.5% dry.
 - **Echo:** a feedback delay at the echo time (0.075 to 0.25 s), with
   feedback 0.55 × depth, feeding the tail and heard directly.
 - **Not modelled:** gain LF and decay LF ratio, late pan, air absorption
@@ -125,7 +157,8 @@ The effect is a fresh software design in the Schroeder/Moorer style:
 Checked offline by feeding an impulse through `S_ApplyDSP`: each preset's
 measured RT60 comes out within about 0.3 s of its decay time, the
 difference being pre-delay and measuring windows, and the generic tail sits
-at -12 dB.
+at -12 dB. (That level was measured before the allpass fix; see Tail level
+for the 2026-11-25 recalibration.)
 
 ## Player movement
 
