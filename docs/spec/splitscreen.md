@@ -111,7 +111,11 @@ seat the server won't allow.
 ## Input
 
 - Devices: 0 is the keyboard and mouse, 1..4 the SDL controller slots.
-  Seat 0 has the keyboard, mouse and first controller.
+  Seat 0 has the keyboard and mouse, and the first controller to press a
+  button (until one does, the first one listed). With a PS4 pad and an
+  arcade stick plugged in, the one the player picks up is theirs, and the
+  other's Start joins split screen. Once a guest has joined, controllers stay
+  where they are; unplugging player 1's lets the next one pressed take over.
 - A controller nobody has joins as a guest with Start (`cl_seat_autojoin`,
   default 1). Out of a game it drives the menus like seat 0's.
 - A seat's device runs its bindings as `p<seat> <binding>`; `p1`..`p4` (and

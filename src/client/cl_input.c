@@ -541,9 +541,11 @@ static void seat_key_event(int dev, int seat, int key, bool down)
  * menus outside a game */
 void IN_DeviceKeyEvent(int device, int key, bool down, int unicode)
 {
-	int seat = CL_SeatForDevice(device);
 	if (key < 0 || key >= K_MAX || device < 0 || device >= IN_DEVICES)
 		return;
+	if (down)
+		CL_SeatClaimPad(device);
+	int seat = CL_SeatForDevice(device);
 	if (seat < 0 && down)
 		CL_SeatDevicePressed(device, key);
 	seat = CL_SeatForDevice(device);
@@ -751,6 +753,7 @@ void IN_ControllerAdded(int dev)
 void IN_ControllerRemoved(int dev)
 {
 	int seat = CL_SeatForDevice(dev + 1);
+	CL_SeatPadRemoved(dev + 1);
 	if (seat > 0) {
 		/* the guest keeps the seat: the same controller slot picks it up again */
 		IN_ReleaseSeat(seat);

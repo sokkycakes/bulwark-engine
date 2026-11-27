@@ -250,6 +250,34 @@ void CL_SeatsFrame(void)
 	}
 }
 
+/* Player 1's controller is the first one to press a button, not the first
+ * one the system lists: with a PS4 pad and an arcade stick plugged in, the
+ * one the player picks up is theirs, and another's Start then joins split
+ * screen. Until a pad claims it, seat 0 holds the first slot as before, so a
+ * lone controller works from its first press. Once a guest has joined the
+ * pads stay where they are. */
+static bool pad_claimed;
+
+void CL_SeatClaimPad(int device)
+{
+	if (pad_claimed || device < 1 || device > MAX_SEATS)
+		return;
+	pad_claimed = true;
+	for (int k = 1; k < MAX_SEATS; k++)
+		if (cl_seats[k].state != SEAT_FREE)
+			return; /* split screen is set up already: keep it */
+	cl_seats[0].device = (cl_seats[0].device & 1u) | 1u << device;
+}
+
+/* player 1's controller went away: the next one pressed takes its place */
+void CL_SeatPadRemoved(int device)
+{
+	if (device < 1 || device > MAX_SEATS || !(cl_seats[0].device & (1u << device)))
+		return;
+	pad_claimed = false;
+	cl_seats[0].device = (cl_seats[0].device & 1u) | 1u << 1;
+}
+
 /* Press Start to join: a controller nobody has, on its Start button, adds a
  * guest with it, as a console does */
 void CL_SeatDevicePressed(int device, int key)
@@ -342,6 +370,8 @@ static void SeatDevice_f(int argc, const char **argv)
 	for (int i = 0; i < MAX_SEATS; i++)
 		cl_seats[i].device &= ~(1u << d);
 	cl_seats[k].device |= 1u << d;
+	if (d)
+		pad_claimed = true; /* a controller placed by hand stays put */
 }
 
 /* --- screen layout -------------------------------------------------------- */
